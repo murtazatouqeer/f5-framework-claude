@@ -1,0 +1,307 @@
+# F5 Auto-Activation Configuration
+# Version: 1.0.0
+# Automatically activates features when changing workflow phases
+
+# ═══════════════════════════════════════════════════════════════
+# GENERAL SETTINGS
+# ═══════════════════════════════════════════════════════════════
+
+settings:
+  enabled: true
+
+  # What to auto-activate
+  auto_activate:
+    mode: true
+    persona: true
+    verbosity: true
+    agents: false      # Only suggest, don't auto-invoke
+
+  # Notification settings
+  notify:
+    on_activation: true
+    show_reason: true
+    show_alternatives: true
+
+  # Override behavior
+  overrides:
+    user_explicit_wins: true
+    duration: "until_phase_change"
+
+# ═══════════════════════════════════════════════════════════════
+# ACTIVATION TRIGGERS
+# ═══════════════════════════════════════════════════════════════
+
+triggers:
+  # Trigger on workflow phase change
+  on_phase_change:
+    enabled: true
+    actions:
+      - activate_mode
+      - activate_persona
+      - set_verbosity
+      - suggest_agents
+      - update_checklist
+
+  # Trigger on workflow load
+  on_workflow_load:
+    enabled: true
+    actions:
+      - activate_mode
+      - activate_persona
+      - show_phase_help
+
+  # Trigger on gate completion
+  on_gate_complete:
+    enabled: true
+    actions:
+      - check_next_phase
+      - suggest_phase_transition
+
+  # Trigger on file open (context detection)
+  on_file_context:
+    enabled: true
+    priority: "lower_than_phase"
+    actions:
+      - suggest_mode_change
+      - suggest_persona_change
+
+# ═══════════════════════════════════════════════════════════════
+# ACTIVATION FLOW
+# ═══════════════════════════════════════════════════════════════
+
+activation_flow:
+  # When phase changes
+  phase_change:
+    steps:
+      1:
+        action: "lookup_phase_features"
+        source: "phase-mapping.yaml"
+
+      2:
+        action: "check_user_overrides"
+        behavior: "skip_if_user_set"
+
+      3:
+        action: "activate_mode"
+        notify: true
+        format: "{mode_emoji} Mode: {mode} (auto-activated for {phase})"
+
+      4:
+        action: "activate_persona"
+        notify: true
+        format: "{persona_emoji} Persona: {persona} (recommended for {phase})"
+
+      5:
+        action: "set_verbosity"
+        notify: false
+
+      6:
+        action: "suggest_agents"
+        format: |
+          Recommended agents for {phase}:
+          {agent_list}
+
+          Run: /f5-agent invoke {recommended_agent}
+          Or pipeline: /f5-agent pipeline {recommended_pipeline}
+
+      7:
+        action: "show_phase_commands"
+        format: |
+          Key commands for {phase}:
+          {command_list}
+
+# ═══════════════════════════════════════════════════════════════
+# NOTIFICATION TEMPLATES
+# ═══════════════════════════════════════════════════════════════
+
+notifications:
+  phase_transition:
+    template: |
+      ┌─────────────────────────────────────────────────────────────┐
+      │  Phase Transition: {from_phase} → {to_phase}               │
+      ├─────────────────────────────────────────────────────────────┤
+      │                                                             │
+      │  Auto-activated:                                            │
+      │  • Mode: {mode_emoji} {mode}                                │
+      │  • Persona: {persona_emoji} {persona}                       │
+      │  • Verbosity: {verbosity}/5                                 │
+      │                                                             │
+      │  Recommended:                                               │
+      │  • Agents: {agents}                                         │
+      │  • Pipeline: {pipeline}                                     │
+      │                                                             │
+      │  Key commands:                                              │
+      │  {commands}                                                 │
+      │                                                             │
+      ├─────────────────────────────────────────────────────────────┤
+      │  Override: /f5-mode set X | /f5-persona Y                   │
+      └─────────────────────────────────────────────────────────────┘
+
+  compact:
+    template: |
+      {phase}: {mode_emoji} {mode} | {persona_emoji} {persona} | Agents: {agents}
+
+  agent_suggestion:
+    template: |
+      For {task}, consider:
+      • /f5-agent invoke {agent}
+      • /f5-agent pipeline {pipeline}
+
+  mode_activation:
+    template: "{mode_emoji} Mode: {mode} → Auto-activated for {phase}"
+
+  persona_activation:
+    template: "{persona_emoji} Persona: {persona} → Recommended for {phase}"
+
+  verbosity_change:
+    template: "Verbosity: {verbosity}/5 → {reason}"
+
+# ═══════════════════════════════════════════════════════════════
+# CONTEXT DETECTION
+# ═══════════════════════════════════════════════════════════════
+
+context_detection:
+  # Detect phase from user message
+  message_patterns:
+    discovery:
+      - "research"
+      - "requirements"
+      - "gather"
+      - "stakeholder"
+
+    analysis:
+      - "spec"
+      - "specification"
+      - "SRS"
+      - "document"
+
+    design:
+      - "design"
+      - "architecture"
+      - "API"
+      - "database schema"
+      - "ERD"
+
+    implementation:
+      - "implement"
+      - "code"
+      - "build"
+      - "create"
+      - "develop"
+
+    testing:
+      - "test"
+      - "QA"
+      - "coverage"
+      - "security audit"
+      - "bug"
+
+    deployment:
+      - "deploy"
+      - "release"
+      - "production"
+      - "staging"
+
+  # Action when detected
+  on_detection:
+    confirm: true
+    format: |
+      Detected: You seem to be working on {detected_phase}
+      Current phase: {current_phase}
+
+      [A] Stay in {current_phase}
+      [B] Switch to {detected_phase}
+
+# ═══════════════════════════════════════════════════════════════
+# OVERRIDE MANAGEMENT
+# ═══════════════════════════════════════════════════════════════
+
+override_management:
+  # How user overrides work
+  user_overrides:
+    # Mode override
+    mode:
+      command: "/f5-mode set <mode>"
+      persistence: "until_phase_change"
+      clear: "/f5-mode reset"
+
+    # Persona override
+    persona:
+      command: "/f5-persona <persona>"
+      persistence: "until_phase_change"
+      clear: "/f5-persona reset"
+
+    # Verbosity override
+    verbosity:
+      command: "--v{1-5}"
+      persistence: "single_command"
+
+  # How overrides expire
+  expiration:
+    on_phase_change: true
+    on_session_end: false
+    on_explicit_reset: true
+
+# ═══════════════════════════════════════════════════════════════
+# DISABLE/ENABLE AUTO-ACTIVATION
+# ═══════════════════════════════════════════════════════════════
+
+controls:
+  # Disable all auto-activation
+  disable_all:
+    command: "/f5-workflow auto off"
+    action: "set settings.enabled = false"
+
+  # Enable all auto-activation
+  enable_all:
+    command: "/f5-workflow auto on"
+    action: "set settings.enabled = true"
+
+  # Selective disable
+  disable_mode:
+    command: "/f5-workflow auto --no-mode"
+    action: "set settings.auto_activate.mode = false"
+
+  disable_persona:
+    command: "/f5-workflow auto --no-persona"
+    action: "set settings.auto_activate.persona = false"
+
+  disable_verbosity:
+    command: "/f5-workflow auto --no-verbosity"
+    action: "set settings.auto_activate.verbosity = false"
+
+# ═══════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════
+
+logging:
+  enabled: true
+  log_file: ".f5/analytics/auto-activation.log"
+
+  log_events:
+    - phase_change
+    - mode_activation
+    - persona_activation
+    - user_override
+    - context_detection
+
+  format: "[{timestamp}] {event}: {details}"
+
+# ═══════════════════════════════════════════════════════════════
+# PHASE-SPECIFIC MESSAGES (Japanese Support)
+# ═══════════════════════════════════════════════════════════════
+
+i18n:
+  en:
+    phase_transition: "Phase Transition"
+    auto_activated: "Auto-activated"
+    recommended: "Recommended"
+    key_commands: "Key commands"
+    override: "Override"
+
+  ja:
+    phase_transition: "フェーズ遷移"
+    auto_activated: "自動有効化"
+    recommended: "推奨"
+    key_commands: "主要コマンド"
+    override: "オーバーライド"

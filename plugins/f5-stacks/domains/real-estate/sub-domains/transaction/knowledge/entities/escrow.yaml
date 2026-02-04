@@ -1,0 +1,489 @@
+# Escrow Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Escrow account and fund management
+
+entity:
+  name: Escrow
+  name_vi: Ký quỹ
+  name_ja: エスクロー
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Manages escrow accounts holding funds during real estate transactions.
+    Tracks deposits, disbursements, and ensures proper fund handling.
+
+  # Database Configuration
+  database:
+    table_name: escrows
+    primary_key: id
+    indexes:
+      - columns: [escrow_id]
+        unique: true
+      - columns: [transaction_id]
+        unique: true
+      - columns: [status]
+      - columns: [escrow_account_number]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: escrow_id
+      type: string
+      format: "ESC-{YYYYMMDD}-{XXXXXX}"
+      unique: true
+      description: Escrow account ID
+      example: "ESC-20241215-E1F2G3"
+
+    - name: transaction_id
+      type: uuid
+      required: true
+      foreign_key: transactions.id
+      description: Associated transaction
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - pending_setup
+        - opened
+        - active
+        - pending_disbursement
+        - partially_disbursed
+        - fully_disbursed
+        - closed
+        - disputed
+      default: pending_setup
+      description: Escrow account status
+
+    # Escrow Holder
+    - name: escrow_holder_type
+      type: enum
+      values:
+        - escrow_company
+        - bank
+        - notary
+        - attorney
+        - real_estate_agency
+        - title_company
+      required: true
+      description: Type of escrow holder
+
+    - name: escrow_holder_id
+      type: uuid
+      nullable: true
+      description: Escrow holder entity ID
+
+    - name: escrow_holder_name
+      type: string
+      required: true
+      description: Name of escrow holder
+
+    - name: escrow_holder_license
+      type: string
+      nullable: true
+      description: License number if applicable
+
+    - name: escrow_holder_contact
+      type: jsonb
+      description: Contact information
+      schema:
+        type: object
+        properties:
+          contact_name: { type: string }
+          phone: { type: string }
+          email: { type: string }
+          address: { type: string }
+
+    # Account Details
+    - name: escrow_account_number
+      type: string
+      nullable: true
+      description: Escrow account number
+
+    - name: bank_name
+      type: string
+      nullable: true
+      description: Bank holding escrow
+
+    - name: bank_branch
+      type: string
+      nullable: true
+
+    - name: bank_swift_code
+      type: string
+      nullable: true
+
+    # Financial Summary
+    - name: total_expected
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Total expected deposits
+
+    - name: total_deposited
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Total deposited amount
+
+    - name: total_disbursed
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Total disbursed amount
+
+    - name: current_balance
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Current balance
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    - name: interest_bearing
+      type: boolean
+      default: false
+      description: Whether account earns interest
+
+    - name: interest_rate
+      type: decimal
+      precision: 5
+      scale: 4
+      nullable: true
+      description: Interest rate if applicable
+
+    - name: interest_earned
+      type: decimal
+      precision: 12
+      scale: 2
+      default: 0
+
+    - name: interest_beneficiary
+      type: enum
+      values:
+        - buyer
+        - seller
+        - split
+        - holder
+      nullable: true
+
+    # Transactions Log
+    - name: transactions
+      type: jsonb
+      description: All escrow transactions
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            transaction_id: { type: string }
+            date: { type: string, format: datetime }
+            type: { type: string, enum: [deposit, disbursement, fee, interest, adjustment] }
+            amount: { type: number }
+            description: { type: string }
+            reference: { type: string }
+            balance_after: { type: number }
+            recorded_by: { type: string }
+
+    # Disbursement Instructions
+    - name: disbursement_instructions
+      type: jsonb
+      description: How to disburse funds
+      schema:
+        type: object
+        properties:
+          trigger: { type: string }
+          authorization_required: { type: array, items: { type: string } }
+          special_instructions: { type: string }
+
+    - name: disbursement_authorization
+      type: jsonb
+      description: Authorization records
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            party: { type: string }
+            authorized_at: { type: string, format: datetime }
+            signature_url: { type: string }
+
+    # Disbursements
+    - name: disbursements
+      type: jsonb
+      description: Disbursement records
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            disbursement_id: { type: string }
+            payee_name: { type: string }
+            payee_type: { type: string, enum: [seller, buyer, agent, agency, government, other] }
+            amount: { type: number }
+            purpose: { type: string }
+            payment_method: { type: string }
+            bank_account: { type: string }
+            reference: { type: string }
+            scheduled_date: { type: string, format: date }
+            paid_date: { type: string, format: date }
+            status: { type: string, enum: [pending, approved, paid, cancelled] }
+
+    # Fees
+    - name: escrow_fee
+      type: decimal
+      precision: 12
+      scale: 2
+      nullable: true
+      description: Escrow service fee
+
+    - name: fee_paid_by
+      type: enum
+      values:
+        - buyer
+        - seller
+        - split
+      nullable: true
+
+    - name: fee_paid
+      type: boolean
+      default: false
+
+    # Timeline
+    - name: opened_at
+      type: timestamp
+      nullable: true
+      description: When escrow opened
+
+    - name: first_deposit_at
+      type: timestamp
+      nullable: true
+
+    - name: disbursement_started_at
+      type: timestamp
+      nullable: true
+
+    - name: closed_at
+      type: timestamp
+      nullable: true
+
+    # Dispute
+    - name: is_disputed
+      type: boolean
+      default: false
+
+    - name: dispute_details
+      type: jsonb
+      nullable: true
+      schema:
+        type: object
+        properties:
+          filed_date: { type: string, format: date }
+          filed_by: { type: string }
+          reason: { type: string }
+          resolution: { type: string }
+          resolved_date: { type: string, format: date }
+
+    # Documents
+    - name: escrow_agreement_url
+      type: string
+      nullable: true
+      description: Escrow agreement document
+
+    - name: statements
+      type: jsonb
+      description: Account statements
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            period: { type: string }
+            generated_at: { type: string, format: datetime }
+            url: { type: string }
+
+    # Notes
+    - name: notes
+      type: text
+      nullable: true
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: deposits
+      type: has_many
+      entity: Deposit
+      foreign_key: escrow_id
+
+    - name: closing
+      type: has_one
+      entity: Closing
+      foreign_key: escrow_id
+
+  # State Machine
+  state_machine:
+    field: status
+    initial: pending_setup
+    transitions:
+      - from: pending_setup
+        to: opened
+        trigger: setup_complete
+        action: record_opening
+
+      - from: opened
+        to: active
+        trigger: first_deposit
+        action: record_first_deposit
+
+      - from: active
+        to: pending_disbursement
+        trigger: initiate_disbursement
+        guard: closing_ready
+        action: prepare_disbursement
+
+      - from: pending_disbursement
+        to: partially_disbursed
+        trigger: partial_disburse
+        action: record_disbursement
+
+      - from: [pending_disbursement, partially_disbursed]
+        to: fully_disbursed
+        trigger: complete_disbursement
+        guard: balance_zero
+        action: finalize_disbursements
+
+      - from: fully_disbursed
+        to: closed
+        trigger: close_account
+        action: record_closure
+
+      - from: [active, pending_disbursement]
+        to: disputed
+        trigger: dispute_filed
+        action: freeze_account
+
+      - from: disputed
+        to: [active, pending_disbursement, closed]
+        trigger: resolve_dispute
+        action: apply_resolution
+
+  # Computed Fields
+  computed_fields:
+    - name: pending_amount
+      formula: "total_expected - total_deposited"
+
+    - name: available_for_disbursement
+      formula: "total_deposited - total_disbursed"
+
+    - name: is_fully_funded
+      formula: "total_deposited >= total_expected"
+
+  # Business Rules
+  business_rules:
+    - rule: BR-ESC-001
+      name: Balance verification
+      description: Current balance must equal deposits minus disbursements
+
+    - rule: BR-ESC-002
+      name: Disbursement limit
+      description: Cannot disburse more than current balance
+
+    - rule: BR-ESC-003
+      name: Authorization required
+      description: Disbursement requires proper authorization
+
+    - rule: BR-ESC-004
+      name: Account reconciliation
+      description: Regular reconciliation required
+
+  # Validations
+  validations:
+    - field: total_deposited
+      rule: gte
+      value: 0
+      message: "Total deposited cannot be negative"
+
+    - field: total_disbursed
+      rule: lte_field
+      compare_to: total_deposited
+      message: "Cannot disburse more than deposited"
+
+    - field: current_balance
+      rule: gte
+      value: 0
+      message: "Balance cannot be negative"
+
+  # Events
+  events:
+    - name: escrow.opened
+      trigger: on_transition_to_opened
+      payload: [id, escrow_id, transaction_id]
+
+    - name: escrow.deposit_received
+      trigger: on_deposit
+      payload: [id, amount, total_deposited]
+
+    - name: escrow.disbursement_made
+      trigger: on_disbursement
+      payload: [id, payee, amount]
+
+    - name: escrow.closed
+      trigger: on_transition_to_closed
+      payload: [id, total_disbursed]
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/escrows
+        description: List escrow accounts
+
+      - method: GET
+        path: /api/escrows/{id}
+        description: Get escrow details
+
+      - method: POST
+        path: /api/transactions/{transaction_id}/escrow
+        description: Create escrow account
+
+      - method: POST
+        path: /api/escrows/{id}/deposit
+        description: Record deposit
+
+      - method: POST
+        path: /api/escrows/{id}/disburse
+        description: Process disbursement
+
+      - method: GET
+        path: /api/escrows/{id}/statement
+        description: Get account statement

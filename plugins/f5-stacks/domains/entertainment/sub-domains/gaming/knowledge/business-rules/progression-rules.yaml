@@ -1,0 +1,408 @@
+name: progression-rules
+display_name: Progression Rules
+description: |
+  Rules governing player progression including XP, levels,
+  ranks, seasons, and achievement unlocks.
+
+domain: entertainment
+subdomain: gaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  # ============================================
+  # EXPERIENCE POINTS
+  # ============================================
+  - id: BR-PR-001
+    name: XP Earning Rules
+    description: How players earn experience points
+    category: xp_system
+    priority: high
+    rules:
+      - id: R001
+        name: Base XP from Match
+        description: XP earned from completing a match
+        condition: match.completed
+        action: |
+          base_xp = match.duration_minutes * 10
+
+          MULTIPLIERS:
+          - victory: 1.5x
+          - first_win_of_day: 2.0x
+          - party_bonus (2+): 1.1x
+          - premium_account: 1.25x
+          - xp_boost_active: varies
+
+          final_xp = base_xp * product(multipliers)
+
+          CAP: 1000 XP per match (prevent exploits)
+        rationale: Reward time spent and winning
+
+      - id: R002
+        name: Performance XP Bonus
+        description: Additional XP for good performance
+        condition: match.completed AND player.performed_well
+        action: |
+          CALCULATE performance_score:
+          - Score/objective contribution
+          - KDA ratio (if applicable)
+          - Teamwork actions
+
+          IF performance_score > 0.8:
+            performance_xp = base_xp * 0.2
+          IF mvp:
+            mvp_bonus = 100
+
+          ADD performance_xp + mvp_bonus
+        rationale: Incentivize good gameplay
+
+      - id: R003
+        name: Daily/Weekly XP Bonuses
+        description: Bonus XP for regular play
+        condition: daily_reset OR weekly_reset
+        action: |
+          DAILY:
+          - first_win_bonus: 500 XP
+          - daily_login: 100 XP
+          - daily_mission_completion: 200 XP each (max 3)
+
+          WEEKLY:
+          - weekly_mission_completion: 1000 XP each (max 5)
+          - weekly_playtime_milestone: 500 XP per 5 hours
+        rationale: Encourage regular engagement
+
+  # ============================================
+  # LEVELING SYSTEM
+  # ============================================
+  - id: BR-PR-010
+    name: Level Progression
+    description: Rules for player leveling
+    category: leveling
+    priority: high
+    rules:
+      - id: R010
+        name: XP Curve
+        description: XP required per level
+        condition: always
+        action: |
+          FORMULA: xp_required = base * (1 + (level - 1) * growth_rate)
+
+          Levels 1-10: base = 1000, growth = 0.05
+          Levels 11-30: base = 1500, growth = 0.08
+          Levels 31-50: base = 2000, growth = 0.10
+          Levels 51-100: base = 3000, growth = 0.12
+          Levels 101+: base = 5000, growth = 0.15
+
+          Example:
+          - Level 1→2: 1000 XP
+          - Level 10→11: 1450 XP
+          - Level 50→51: 7000 XP
+        rationale: Progressive difficulty with achievable early levels
+
+      - id: R011
+        name: Level Up Rewards
+        description: Rewards granted on level up
+        condition: player.level_up
+        action: |
+          GRANT:
+          - level_up_currency: level * 100 soft currency
+          - level_chest (every 5 levels)
+          - title_unlock (milestone levels: 25, 50, 100)
+
+          MILESTONE LEVELS:
+          - Level 25: Veteran title, exclusive frame
+          - Level 50: Elite title, avatar
+          - Level 100: Legend title, emote
+          - Level 200: Mythic title, complete set
+        rationale: Reward continued engagement
+
+      - id: R012
+        name: Prestige System
+        description: Reset and prestige mechanics
+        condition: player.level >= max_level
+        action: |
+          OPTION: Prestige reset
+
+          IF player.chooses_prestige:
+            - Reset level to 1
+            - Increment prestige_rank
+            - Grant prestige_reward (unique items)
+            - Apply permanent prestige_bonus (+5% XP per prestige)
+            - Keep all unlocked content
+
+          MAX prestige: 10
+
+          PRESTIGE REWARDS:
+          - Prestige 1: Prestige border
+          - Prestige 5: Prestige avatar
+          - Prestige 10: Prestige title "Legendary"
+        rationale: Provide long-term goals for dedicated players
+
+  # ============================================
+  # COMPETITIVE RANKING
+  # ============================================
+  - id: BR-PR-020
+    name: Ranked Progression
+    description: Competitive rank system rules
+    category: ranked
+    priority: critical
+    rules:
+      - id: R020
+        name: Rank Tiers
+        description: Competitive rank structure
+        condition: ranked_mode
+        action: |
+          TIERS (lowest to highest):
+          1. Bronze (I, II, III, IV)
+          2. Silver (I, II, III, IV)
+          3. Gold (I, II, III, IV)
+          4. Platinum (I, II, III, IV)
+          5. Diamond (I, II, III, IV)
+          6. Master (no divisions, MMR shown)
+          7. Grandmaster (top 500)
+          8. Champion (top 100)
+
+          POINTS per division: 100 RP
+          PROMOTION at 100+ RP
+          DEMOTION at 0 RP with shield depleted
+        rationale: Clear progression with aspirational peaks
+
+      - id: R021
+        name: Rank Point Gains/Losses
+        description: RP changes per match
+        condition: ranked_match.completed
+        action: |
+          BASE_GAIN = 25 RP
+          BASE_LOSS = 20 RP (slightly less than gain)
+
+          MODIFIERS:
+          - vs_higher_rank: +5 to +15 RP on win
+          - vs_lower_rank: -5 to -15 RP on loss
+          - streak_bonus: +3 RP per consecutive win
+          - performance_bonus: +0 to +10 RP for MVP
+
+          CAPS:
+          - Max gain: 50 RP
+          - Max loss: 35 RP
+          - Loss protection: 0 RP loss at rank floor
+        rationale: Reward skill while preventing frustration
+
+      - id: R022
+        name: Demotion Protection
+        description: Shield against rank demotioncon
+        condition: player.rp = 0 AND player.loses_match
+        action: |
+          IF demotion_shield_available:
+            CONSUME shield
+            SET rp = 25 (buffer)
+            DO NOT demote
+
+          ELSE:
+            DEMOTE to previous rank
+            SET rp = 75 (not bottom)
+
+          SHIELD regenerates:
+          - Bronze-Gold: After 2 wins at 0 RP
+          - Platinum+: After 3 wins at 0 RP
+        rationale: Reduce rank anxiety while maintaining stakes
+
+      - id: R023
+        name: Rank Decay
+        description: Decay for inactive ranked players
+        condition: player.rank >= Diamond AND player.inactive_days >= 14
+        action: |
+          AFTER 14 days inactive:
+            - Warning notification
+
+          AFTER 21 days inactive:
+            - Decay 50 RP per week
+            - Can only decay to Diamond IV floor
+
+          MASTER/GM/CHAMPION:
+            - Decay after 7 days
+            - 100 RP per 3 days
+
+          RESET decay timer on any ranked game
+        rationale: Keep high ranks active and earned
+
+  # ============================================
+  # SEASON PROGRESSION
+  # ============================================
+  - id: BR-PR-030
+    name: Season Rules
+    description: Seasonal progression mechanics
+    category: seasons
+    priority: high
+    rules:
+      - id: R030
+        name: Season Duration
+        description: Season timing and structure
+        condition: season_management
+        action: |
+          SEASON_LENGTH: 90 days (3 months)
+
+          STRUCTURE:
+          - Pre-season: 2 weeks (off-season, no rank)
+          - Early season: Weeks 1-4 (placement, climbing)
+          - Mid season: Weeks 5-8 (stable ranking)
+          - Late season: Weeks 9-12 (final push)
+          - Season end: 1 week notice before reset
+        rationale: Regular fresh starts while allowing achievement
+
+      - id: R031
+        name: Season Rewards
+        description: End-of-season reward distribution
+        condition: season.ends
+        action: |
+          REWARD based on peak_rank:
+
+          Bronze: Season icon
+          Silver: Season icon + spray
+          Gold: Season icon + spray + avatar
+          Platinum: Above + weapon skin
+          Diamond: Above + premium skin
+          Master: Above + animated avatar
+          GM: Above + unique title
+          Champion: All above + exclusive mount/pet
+
+          DISTRIBUTE within 48 hours of season end
+        validation:
+          - Minimum 25 ranked games to qualify
+          - No active bans during season
+
+      - id: R032
+        name: Season Reset
+        description: How ranks reset between seasons
+        condition: new_season.starts
+        action: |
+          SOFT RESET formula:
+          new_mmr = (current_mmr + 1200) / 2
+
+          RANK MAPPING from MMR:
+          - Below 800: Bronze IV
+          - 800-1000: Silver
+          - 1000-1200: Gold
+          - 1200-1500: Platinum
+          - Above 1500: Diamond (max start)
+
+          REQUIRE placement matches: 5
+        rationale: Partial reset rewards skill while allowing re-calibration
+
+  # ============================================
+  # BATTLE PASS
+  # ============================================
+  - id: BR-PR-040
+    name: Battle Pass Rules
+    description: Premium season pass progression
+    category: battle_pass
+    priority: medium
+    rules:
+      - id: R040
+        name: Battle Pass Structure
+        description: Pass tier and track system
+        condition: battle_pass_active
+        action: |
+          TRACKS:
+          - Free track: Basic rewards at each tier
+          - Premium track: Additional rewards (requires purchase)
+
+          TIERS: 100 per season
+          XP_PER_TIER: 10,000 battle pass XP
+
+          BEYOND 100:
+          - Prestige tiers with bonus currency
+          - Every 10 prestige tiers: special reward
+        rationale: Value for all players, premium for dedicated
+
+      - id: R041
+        name: Battle Pass XP Sources
+        description: How to earn battle pass XP
+        condition: player.has_battle_pass OR player.earns_bp_xp
+        action: |
+          SOURCES:
+          - Match completion: 100-500 BP XP
+          - Daily challenges: 3 × 500 BP XP
+          - Weekly challenges: 5 × 5000 BP XP
+          - Special event challenges: Varies
+
+          BOOSTS:
+          - Premium pass: +10% BP XP
+          - Party bonus: +5% per party member
+          - Weekly reset: Catch-up XP if behind
+        rationale: Achievable through regular play
+
+      - id: R042
+        name: Battle Pass Completion
+        description: Ensuring completability
+        condition: season_active
+        action: |
+          CALCULATION:
+          - Total XP available > 130% of required
+          - Daily play (30 min) should complete in 80% of season
+          - Catch-up mechanics for late joiners
+
+          SAFETY NETS:
+          - Double XP weekends late season
+          - Tier skip tokens in pass
+          - Purchase tier skips option
+        validation:
+          - Pass must be completable by average player
+          - No FOMO for reasonable time investment
+
+  # ============================================
+  # ACHIEVEMENT UNLOCKS
+  # ============================================
+  - id: BR-PR-050
+    name: Achievement Rules
+    description: Achievement unlock mechanics
+    category: achievements
+    priority: medium
+    rules:
+      - id: R050
+        name: Achievement Progress
+        description: Track achievement progress
+        condition: player.action_performed
+        action: |
+          FOR EACH relevant_achievement:
+            IF criteria_type = 'stat_threshold':
+              UPDATE progress = current_stat_value
+            IF criteria_type = 'action_count':
+              INCREMENT progress
+            IF criteria_type = 'collection':
+              UPDATE collected_items
+
+            IF progress >= required:
+              TRIGGER unlock_achievement
+        rationale: Real-time progress tracking
+
+      - id: R051
+        name: Achievement Unlock
+        description: Process achievement completion
+        condition: achievement.criteria_met
+        action: |
+          GRANT:
+          - achievement.points to player.achievement_points
+          - achievement.xp_reward to player.xp
+          - achievement.currency_reward
+          - achievement.item_rewards
+          - achievement.title_reward (if any)
+
+          NOTIFY player
+          RECORD unlock_timestamp
+          UPDATE global_statistics
+
+          IF first_unlock_globally:
+            ANNOUNCE server-wide
+            RECORD first_unlocked_by
+        rationale: Immediate gratification and recognition
+
+compliance:
+  standards:
+    - Achievable progression for all skill levels
+    - No pay-to-win mechanics
+    - Clear progression visibility
+  monitoring:
+    - Average time to reach milestones
+    - Battle pass completion rates
+    - Rank distribution health

@@ -1,0 +1,327 @@
+# Renewal Business Rules
+# F5 Framework v2.0 - Education/Certification
+# Rules governing certificate renewal
+
+business_rules:
+  domain: education
+  subdomain: certification
+  category: renewal
+  version: "1.0.0"
+  
+  description: |
+    Business rules governing the certificate renewal process, including
+    renewal windows, CEU requirements, exam requirements, and fees.
+
+  rule_groups:
+    # ==========================================
+    # Renewal Window Rules
+    # ==========================================
+    - id: renewal_window
+      name: Renewal Window Rules
+      name_ja: 更新期間ルール
+      description: Rules for when renewal can occur
+      
+      rules:
+        - id: BR-RNW-001
+          name: Renewal Window Period
+          name_ja: 更新可能期間
+          description: Define when renewal can be initiated
+          priority: critical
+          
+          window:
+            opens:
+              calculation: "valid_until - program.renewal_window_months MONTHS"
+              default_months: 3
+              
+            closes:
+              standard: valid_until
+              grace_period: "valid_until + program.grace_period_days DAYS"
+              
+          validation:
+            too_early: |
+              CURRENT_DATE < (valid_until - renewal_window_months MONTHS)
+            within_window: |
+              CURRENT_DATE BETWEEN window_open AND window_close
+              
+          error_messages:
+            too_early: "Renewal window not yet open"
+            past_deadline: "Renewal deadline has passed"
+            
+        - id: BR-RNW-002
+          name: Early Renewal Policy
+          name_ja: 早期更新ポリシー
+          description: Handle early renewal requests
+          priority: medium
+          
+          condition:
+            when: "CURRENT_DATE < renewal_window_opens"
+            
+          options:
+            program_allows_early:
+              new_valid_from: original_valid_until
+              new_valid_until: original_valid_until + validity_period
+              note: "No lost time"
+              
+            program_disallows_early:
+              action: reject
+              message: "Please wait until renewal window opens"
+              
+        - id: BR-RNW-003
+          name: Late Renewal in Grace Period
+          name_ja: 猶予期間内遅延更新
+          description: Allow renewal during grace period with penalties
+          priority: high
+          
+          condition:
+            when: "CURRENT_DATE > valid_until AND CURRENT_DATE <= grace_deadline"
+            
+          consequences:
+            status_during: "expired"
+            renewal_allowed: true
+            late_fee: true
+            new_valid_from: approval_date
+            new_valid_until: "approval_date + validity_period"
+
+    # ==========================================
+    # CEU Requirement Rules
+    # ==========================================
+    - id: ceu_requirements
+      name: CEU Requirement Rules
+      name_ja: CEU要件ルール
+      description: Rules for continuing education requirements
+      
+      rules:
+        - id: BR-RNW-010
+          name: CEU Minimum Requirement
+          name_ja: CEU最低要件
+          description: Minimum CEUs required for renewal
+          priority: critical
+          
+          validation:
+            condition: "ceu_approved >= program.ceu_required_per_period"
+            
+          calculation:
+            required: "program.ceu_required_per_period"
+            earned: "SUM(ceu_records.ceu_approved WHERE status='approved')"
+            remaining: "required - earned"
+            
+          error_message: "Insufficient CEUs earned ({earned} of {required} required)"
+          
+        - id: BR-RNW-011
+          name: CEU Source Limits
+          name_ja: CEUソース制限
+          description: Limits on CEUs from specific sources
+          priority: high
+          
+          limits:
+            self_study:
+              max_percent: 50
+              description: "Max 50% from self-study activities"
+              
+            work_experience:
+              max_percent: 25
+              description: "Max 25% from work experience"
+              
+            repeat_activities:
+              max_repeats: 1
+              description: "Cannot count same activity twice"
+              
+          validation: |
+            FOR EACH source_type:
+              source_ceus / total_ceus <= max_percent
+              
+        - id: BR-RNW-012
+          name: CEU Carryover
+          name_ja: CEU繰り越し
+          description: Rules for carrying over excess CEUs
+          priority: medium
+          
+          configuration:
+            allowed: true
+            max_percent: 10
+            max_units: "ceu_required * 0.1"
+            
+          conditions:
+            - current_requirement_met: true
+            - earned_in_last_year: true
+            
+          carryover_expiration:
+            expires_with: next_renewal_period
+            non_transferable: true
+
+    # ==========================================
+    # Exam Requirement Rules
+    # ==========================================
+    - id: exam_requirements
+      name: Exam Requirement Rules
+      name_ja: 試験要件ルール
+      description: Rules for renewal exams
+      
+      rules:
+        - id: BR-RNW-020
+          name: Renewal Exam Requirement
+          name_ja: 更新試験要件
+          description: Passing exam required for renewal if specified
+          priority: high
+          
+          condition:
+            when: "program.renewal_exam_required = true"
+            
+          validation:
+            - exam_taken: "renewal.exam_attempt_id IS NOT NULL"
+            - exam_passed: "renewal.exam_passed = true"
+            - score_threshold: "renewal.exam_score >= program.min_score"
+            
+          retake_policy:
+            max_attempts: 3
+            wait_between_attempts_days: 7
+            
+        - id: BR-RNW-021
+          name: Waived Exam Conditions
+          name_ja: 試験免除条件
+          description: Conditions under which exam can be waived
+          priority: medium
+          
+          waiver_conditions:
+            any_of:
+              - ceu_exceeded_200_percent: true
+              - instructor_for_program: true
+              - continuous_employment_in_field: true
+              
+          approval:
+            requires: admin_approval
+            documentation: required
+
+    # ==========================================
+    # Fee Rules
+    # ==========================================
+    - id: fee_rules
+      name: Fee Rules
+      name_ja: 料金ルール
+      description: Rules for renewal fees
+      
+      rules:
+        - id: BR-RNW-030
+          name: Standard Renewal Fee
+          name_ja: 標準更新料金
+          description: Calculate standard renewal fee
+          priority: high
+          
+          calculation:
+            base_fee: "program.renewal_fee"
+            
+        - id: BR-RNW-031
+          name: Late Renewal Fee
+          name_ja: 遅延更新料金
+          description: Calculate late fees
+          priority: high
+          
+          calculation:
+            condition: "renewal.is_late = true"
+            late_fee: "program.late_renewal_fee OR program.renewal_fee * 0.25"
+            total_fee: "base_fee + late_fee"
+            
+        - id: BR-RNW-032
+          name: Payment Requirements
+          name_ja: 支払い要件
+          description: Payment must be completed before approval
+          priority: critical
+          
+          validation:
+            condition: "renewal.fee_paid = true"
+            
+          timing:
+            payment_due: before_approval
+            refund_policy: "if_denied"
+
+    # ==========================================
+    # Approval Rules
+    # ==========================================
+    - id: approval_rules
+      name: Approval Rules
+      name_ja: 承認ルール
+      description: Rules for renewal approval
+      
+      rules:
+        - id: BR-RNW-040
+          name: Auto-Approval Conditions
+          name_ja: 自動承認条件
+          description: Automatically approve when all conditions met
+          priority: high
+          
+          conditions:
+            all_of:
+              - ceu_requirement_met: true
+              - exam_passed_if_required: true
+              - fee_paid: true
+              - no_holds_on_account: true
+              - no_disciplinary_actions: true
+              
+          action:
+            - approve_renewal
+            - generate_new_certificate
+            - retire_old_certificate
+            - send_notification
+            
+        - id: BR-RNW-041
+          name: Manual Review Required
+          name_ja: 手動レビュー要件
+          description: Conditions requiring manual review
+          priority: medium
+          
+          triggers:
+            any_of:
+              - ceu_from_non_approved_provider: true
+              - waiver_requested: true
+              - previous_denial: true
+              - disciplinary_flag: true
+              
+          workflow:
+            - assign_to_reviewer
+            - await_decision
+            - notify_holder_of_outcome
+            
+        - id: BR-RNW-042
+          name: New Certificate Generation
+          name_ja: 新証明書生成
+          description: Generate new certificate upon approval
+          priority: critical
+          
+          on_approval:
+            - create_new_certificate:
+                holder_id: original.holder_id
+                program_id: original.program_id
+                previous_certificate_id: original.id
+                valid_from: calculated
+                valid_until: calculated
+                renewal_count: original.renewal_count + 1
+                
+            - update_old_certificate:
+                status: renewed
+                
+            - update_renewal:
+                status: approved
+                new_certificate_id: new.id
+
+  process_flow:
+    standard_renewal:
+      - step: initiate_renewal
+        rules: [BR-RNW-001, BR-RNW-002]
+        
+      - step: verify_ceu
+        rules: [BR-RNW-010, BR-RNW-011, BR-RNW-012]
+        
+      - step: take_exam
+        condition: "program.renewal_exam_required"
+        rules: [BR-RNW-020]
+        
+      - step: process_payment
+        rules: [BR-RNW-030, BR-RNW-031, BR-RNW-032]
+        
+      - step: approve_renewal
+        rules: [BR-RNW-040, BR-RNW-041, BR-RNW-042]
+
+  enforcement:
+    mode: strict
+    automated_checks: true
+    manual_override: requires_approval

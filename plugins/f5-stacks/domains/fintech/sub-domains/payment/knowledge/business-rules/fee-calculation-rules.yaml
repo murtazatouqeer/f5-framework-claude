@@ -1,0 +1,400 @@
+# Fee Calculation Rules
+# Domain: fintech/payment
+# Purpose: Rules for calculating processing fees, refund fees, and other charges
+
+name: Fee Calculation Rules
+display_name: Fee Calculation Rules
+description: |
+  Business rules for calculating all fees in the payment system including
+  processing fees, refund fees, dispute fees, and volume-based discounts.
+
+  Vietnamese: Quy tắc tính tất cả các loại phí trong hệ thống thanh toán
+  bao gồm phí xử lý, phí hoàn tiền, phí tranh chấp và giảm giá theo doanh số.
+
+domain: fintech
+sub_domain: payment
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # ============ PROCESSING FEES ============
+  processing_fees:
+    - id: BR-FEE-001
+      name: Domestic Card Processing Fee
+      description: Fee for domestic card transactions
+      vietnamese: Phí xử lý thẻ nội địa
+      condition: |
+        payment_method_type = 'card'
+        AND card_issuer_country = merchant_country
+      formula: |
+        fee = (amount * percentage_rate / 100) + fixed_fee
+      parameters:
+        percentage_rate: 2.9
+        fixed_fee: 2000  # VND
+        currency: VND
+      example:
+        amount: 1000000
+        calculation: "(1000000 * 2.9 / 100) + 2000 = 31000 VND"
+
+    - id: BR-FEE-002
+      name: International Card Processing Fee
+      description: Fee for international card transactions
+      vietnamese: Phí xử lý thẻ quốc tế
+      condition: |
+        payment_method_type = 'card'
+        AND card_issuer_country != merchant_country
+      formula: |
+        fee = (amount * percentage_rate / 100) + fixed_fee
+      parameters:
+        percentage_rate: 3.5
+        fixed_fee: 2000  # VND
+        currency: VND
+      example:
+        amount: 1000000
+        calculation: "(1000000 * 3.5 / 100) + 2000 = 37000 VND"
+
+    - id: BR-FEE-003
+      name: E-Wallet Processing Fee
+      description: Fee for e-wallet transactions
+      vietnamese: Phí xử lý ví điện tử
+      condition: |
+        payment_method_type = 'e_wallet'
+      formula: |
+        fee = amount * percentage_rate / 100
+      parameters:
+        percentage_rate: 1.5
+        fixed_fee: 0
+        currency: VND
+      example:
+        amount: 1000000
+        calculation: "1000000 * 1.5 / 100 = 15000 VND"
+
+    - id: BR-FEE-004
+      name: Bank Transfer Processing Fee
+      description: Fee for bank transfer transactions
+      vietnamese: Phí xử lý chuyển khoản ngân hàng
+      condition: |
+        payment_method_type = 'bank_transfer'
+      formula: |
+        fee = MIN(MAX(amount * percentage_rate / 100, min_fee), max_fee)
+      parameters:
+        percentage_rate: 0.5
+        min_fee: 5000  # VND
+        max_fee: 50000  # VND
+        currency: VND
+      example:
+        amount: 1000000
+        calculation: "MIN(MAX(1000000 * 0.5 / 100, 5000), 50000) = 5000 VND"
+        amount_2: 20000000
+        calculation_2: "MIN(MAX(20000000 * 0.5 / 100, 5000), 50000) = 50000 VND"
+
+    - id: BR-FEE-005
+      name: QR Code Processing Fee
+      description: Fee for QR code payments
+      vietnamese: Phí xử lý thanh toán QR
+      condition: |
+        payment_method_type = 'qr_code'
+      formula: |
+        fee = amount * percentage_rate / 100
+      parameters:
+        percentage_rate: 1.0
+        currency: VND
+
+    - id: BR-FEE-006
+      name: Premium Card Fee
+      description: Additional fee for premium card types
+      vietnamese: Phí bổ sung cho thẻ cao cấp
+      condition: |
+        payment_method_type = 'card'
+        AND card_type IN ['amex', 'diners']
+      formula: |
+        additional_fee = amount * additional_rate / 100
+      parameters:
+        additional_rate: 0.5  # On top of base rate
+      note: Added to base processing fee
+
+  # ============ VOLUME DISCOUNTS ============
+  volume_discounts:
+    - id: BR-FEE-010
+      name: Volume Tier - Starter
+      description: Standard rate for starter volume
+      vietnamese: Mức phí chuẩn cho doanh số khởi đầu
+      condition: |
+        merchant.monthly_volume <= tier_max
+      parameters:
+        tier_max: 100000000  # 100M VND
+        card_rate: 2.9
+        card_fixed: 2000
+
+    - id: BR-FEE-011
+      name: Volume Tier - Growth
+      description: Discounted rate for growth volume
+      vietnamese: Mức phí giảm cho doanh số tăng trưởng
+      condition: |
+        merchant.monthly_volume > tier_min
+        AND merchant.monthly_volume <= tier_max
+      parameters:
+        tier_min: 100000000   # 100M VND
+        tier_max: 500000000   # 500M VND
+        card_rate: 2.7
+        card_fixed: 2000
+        discount_vs_standard: "0.2%"
+
+    - id: BR-FEE-012
+      name: Volume Tier - Scale
+      description: Better rate for scale volume
+      vietnamese: Mức phí tốt hơn cho doanh số quy mô
+      condition: |
+        merchant.monthly_volume > tier_min
+        AND merchant.monthly_volume <= tier_max
+      parameters:
+        tier_min: 500000000    # 500M VND
+        tier_max: 2000000000   # 2B VND
+        card_rate: 2.5
+        card_fixed: 2000
+        discount_vs_standard: "0.4%"
+
+    - id: BR-FEE-013
+      name: Volume Tier - Enterprise
+      description: Negotiated rate for enterprise volume
+      vietnamese: Mức phí thương lượng cho doanh số doanh nghiệp
+      condition: |
+        merchant.monthly_volume > tier_min
+      parameters:
+        tier_min: 2000000000  # 2B VND
+        card_rate: "negotiated"
+        card_fixed: "negotiated"
+      note: Contact sales for custom pricing
+
+    - id: BR-FEE-014
+      name: Volume Tier Application
+      description: Apply volume tier based on previous month
+      vietnamese: Áp dụng mức theo doanh số tháng trước
+      condition: |
+        tier = get_volume_tier(merchant.previous_month_volume)
+        rate = tier.card_rate
+      evaluation_timing: first_day_of_month
+      lookback_period: previous_calendar_month
+
+  # ============ REFUND FEES ============
+  refund_fees:
+    - id: BR-FEE-020
+      name: Refund Fee - Card
+      description: Processing fee not returned on refund
+      vietnamese: Phí xử lý không được hoàn khi hoàn tiền
+      condition: |
+        fee_type = 'refund'
+        AND original_payment.payment_method_type = 'card'
+      formula: |
+        refund_fee = 0  # No additional fee
+        processing_fee_returned = false
+      note: Original processing fee is not refunded
+
+    - id: BR-FEE-021
+      name: Refund Fee - E-Wallet
+      description: E-wallet refund fee handling
+      vietnamese: Xử lý phí hoàn tiền ví điện tử
+      condition: |
+        fee_type = 'refund'
+        AND original_payment.payment_method_type = 'e_wallet'
+      formula: |
+        refund_fee = 0
+        processing_fee_returned = false
+
+    - id: BR-FEE-022
+      name: Refund Fee - Bank Transfer
+      description: Bank transfer refund may incur fee
+      vietnamese: Hoàn tiền chuyển khoản có thể phát sinh phí
+      condition: |
+        fee_type = 'refund'
+        AND original_payment.payment_method_type = 'bank_transfer'
+      formula: |
+        IF refund_to_different_account
+        THEN refund_fee = bank_transfer_fee
+        ELSE refund_fee = 0
+      parameters:
+        bank_transfer_fee: 5000  # VND
+
+  # ============ DISPUTE FEES ============
+  dispute_fees:
+    - id: BR-FEE-030
+      name: Chargeback Fee
+      description: Fee charged when dispute is filed
+      vietnamese: Phí khi tranh chấp được nộp
+      condition: |
+        fee_type = 'dispute'
+        AND dispute.status IN ['needs_response', 'under_review']
+      formula: |
+        dispute_fee = fixed_fee
+      parameters:
+        fixed_fee: 300000  # VND
+      note: Fee is charged when dispute is received
+
+    - id: BR-FEE-031
+      name: Chargeback Fee Reversal
+      description: Fee refunded if merchant wins dispute
+      vietnamese: Hoàn phí nếu merchant thắng tranh chấp
+      condition: |
+        fee_type = 'dispute'
+        AND dispute.outcome = 'won'
+      action: |
+        refund_dispute_fee(dispute_fee)
+
+    - id: BR-FEE-032
+      name: High Dispute Rate Surcharge
+      description: Additional fee for high dispute rate merchants
+      vietnamese: Phí bổ sung cho merchant có tỷ lệ tranh chấp cao
+      condition: |
+        merchant.dispute_rate > threshold
+      formula: |
+        surcharge = base_processing_fee * surcharge_rate
+      parameters:
+        threshold: 0.9  # 0.9% dispute rate
+        surcharge_rate: 0.5  # 50% increase
+
+  # ============ PAYOUT FEES ============
+  payout_fees:
+    - id: BR-FEE-040
+      name: Standard Payout Fee
+      description: No fee for standard payouts
+      vietnamese: Không phí cho thanh toán tiêu chuẩn
+      condition: |
+        payout.is_instant = false
+        AND payout.transfer_method = 'napas'
+      formula: |
+        payout_fee = 0
+
+    - id: BR-FEE-041
+      name: Instant Payout Fee
+      description: Fee for instant payouts
+      vietnamese: Phí cho thanh toán tức thì
+      condition: |
+        payout.is_instant = true
+      formula: |
+        payout_fee = MAX(amount * percentage_rate / 100, min_fee)
+      parameters:
+        percentage_rate: 0.5
+        min_fee: 5000  # VND
+      example:
+        amount: 1000000
+        calculation: "MAX(1000000 * 0.5 / 100, 5000) = 5000 VND"
+
+    - id: BR-FEE-042
+      name: International Payout Fee
+      description: Fee for international wire transfers
+      vietnamese: Phí cho chuyển khoản quốc tế
+      condition: |
+        payout.transfer_method = 'swift'
+      formula: |
+        payout_fee = fixed_fee
+      parameters:
+        fixed_fee: 150000  # VND
+
+  # ============ OTHER FEES ============
+  other_fees:
+    - id: BR-FEE-050
+      name: Monthly Platform Fee
+      description: Monthly platform subscription fee
+      vietnamese: Phí nền tảng hàng tháng
+      condition: |
+        fee_type = 'monthly'
+        AND merchant.plan != 'free'
+      formula: |
+        monthly_fee = plan_fee
+      parameters:
+        plans:
+          free: 0
+          starter: 0
+          growth: 500000
+          enterprise: "custom"
+
+    - id: BR-FEE-051
+      name: Currency Conversion Fee
+      description: Fee for currency conversion
+      vietnamese: Phí chuyển đổi tiền tệ
+      condition: |
+        payment.currency != merchant.settlement_currency
+      formula: |
+        conversion_fee = converted_amount * conversion_rate
+      parameters:
+        conversion_rate: 2.0  # percent
+
+    - id: BR-FEE-052
+      name: Failed Payout Retry Fee
+      description: Fee for retrying failed payouts
+      vietnamese: Phí thử lại thanh toán thất bại
+      condition: |
+        payout.retry_count > 1
+      formula: |
+        retry_fee = fixed_fee
+      parameters:
+        fixed_fee: 10000  # VND per retry
+
+  # ============ TAX RULES ============
+  tax:
+    - id: BR-FEE-060
+      name: VAT on Fees
+      description: VAT applied to all fees
+      vietnamese: VAT áp dụng cho tất cả các phí
+      condition: |
+        merchant.tax_status = 'taxable'
+      formula: |
+        tax_amount = fee_amount * vat_rate
+        gross_fee = fee_amount + tax_amount
+      parameters:
+        vat_rate: 10  # percent for Vietnam
+
+    - id: BR-FEE-061
+      name: Withholding Tax
+      description: Withholding tax for cross-border payments
+      vietnamese: Thuế khấu trừ cho thanh toán xuyên biên giới
+      condition: |
+        merchant.country != 'VN'
+        AND tax_treaty_exempt = false
+      formula: |
+        withholding = net_payout * withholding_rate
+      parameters:
+        withholding_rate: 10  # percent
+
+fee_calculation_order:
+  - step: 1
+    description: Calculate base processing fee
+  - step: 2
+    description: Apply volume discount if eligible
+  - step: 3
+    description: Add surcharges (international, premium card)
+  - step: 4
+    description: Calculate VAT on total fee
+  - step: 5
+    description: Round to nearest VND
+
+rounding_rules:
+  currency: VND
+  method: round_half_up
+  precision: 0  # whole number
+
+fee_reporting:
+  daily_summary:
+    - total_processing_fees
+    - total_refund_fees
+    - total_dispute_fees
+    - total_payout_fees
+    - vat_collected
+
+  monthly_invoice:
+    - itemized_fee_breakdown
+    - volume_tier_applied
+    - discounts_applied
+    - total_fees
+    - vat
+    - grand_total
+
+audit_trail:
+  required_fields:
+    - fee_calculation_timestamp
+    - rate_applied
+    - tier_applied
+    - formula_used
+    - input_amount
+    - calculated_fee
+    - rule_version

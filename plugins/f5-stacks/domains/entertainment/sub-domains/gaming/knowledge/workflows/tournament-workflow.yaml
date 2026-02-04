@@ -1,0 +1,447 @@
+name: tournament-workflow
+display_name: Tournament Workflow
+description: |
+  Complete tournament lifecycle from announcement to prize distribution.
+  Covers registration, brackets, matches, and results.
+
+domain: entertainment
+subdomain: gaming
+category: workflows
+version: "1.0.0"
+status: active
+
+trigger:
+  event: tournament.created
+  conditions:
+    - tournament.approved
+    - tournament.has_schedule
+
+workflow:
+  id: WF-TN-001
+  name: Tournament Lifecycle
+  description: End-to-end tournament management
+
+  actors:
+    - id: organizer
+      name: Tournament Organizer
+      type: primary
+    - id: participant
+      name: Participant (Player/Team)
+      type: primary
+    - id: tournament_service
+      name: Tournament Service
+      type: system
+    - id: match_service
+      name: Match Service
+      type: system
+
+  phases:
+    # ============================================
+    # PHASE 1: ANNOUNCEMENT
+    # ============================================
+    - id: phase_announcement
+      name: Tournament Announcement
+      description: Tournament is announced to public
+      steps:
+        - id: step_1_1
+          name: Create Tournament
+          actor: organizer
+          action: |
+            - Set tournament details:
+              - Name, description
+              - Game and mode
+              - Format (single/double elim, etc.)
+              - Schedule
+              - Entry requirements
+              - Prize pool
+          outputs:
+            - tournament_record
+
+        - id: step_1_2
+          name: Configure Settings
+          actor: organizer
+          action: |
+            - Set eligibility requirements
+            - Configure match settings
+            - Set map pool (if applicable)
+            - Define rules document
+            - Set check-in requirements
+          outputs:
+            - tournament_config
+
+        - id: step_1_3
+          name: Announce Tournament
+          actor: tournament_service
+          action: |
+            - Publish tournament listing
+            - Send notifications to eligible players
+            - Post to announcements channel
+            - Update tournament status = 'announced'
+          outputs:
+            - announcement_notifications
+
+    # ============================================
+    # PHASE 2: REGISTRATION
+    # ============================================
+    - id: phase_registration
+      name: Registration Phase
+      description: Players register for tournament
+      trigger: registration_start_date
+      steps:
+        - id: step_2_1
+          name: Open Registration
+          actor: tournament_service
+          action: |
+            - Set status = 'registration_open'
+            - Enable registration UI
+            - Start registration countdown
+
+        - id: step_2_2
+          name: Player Registration
+          actor: participant
+          action: |
+            - View tournament details
+            - Check eligibility
+            - Accept rules
+            - Pay entry fee (if any)
+            - Submit registration
+          validations:
+            - Meets all eligibility requirements
+            - Not already registered
+            - Payment processed (if required)
+
+        - id: step_2_3
+          name: Validate Registration
+          actor: tournament_service
+          action: |
+            - Verify eligibility
+            - Process payment
+            - Add to participant list
+            - Send confirmation
+            - Update registered count
+
+        - id: step_2_4
+          name: Team Formation
+          actor: participant
+          condition: tournament.team_based = true
+          action: |
+            - Create team or join existing
+            - Invite team members
+            - Set team name and logo
+            - Lock roster
+
+        - id: step_2_5
+          name: Close Registration
+          actor: tournament_service
+          trigger: registration_end_date
+          action: |
+            - Set status = 'registration_closed'
+            - Finalize participant list
+            - Process waitlist
+            - Send confirmation to all
+
+    # ============================================
+    # PHASE 3: CHECK-IN
+    # ============================================
+    - id: phase_checkin
+      name: Check-In Phase
+      description: Participants confirm attendance
+      trigger: checkin_start_time
+      steps:
+        - id: step_3_1
+          name: Open Check-In
+          actor: tournament_service
+          action: |
+            - Set status = 'check_in'
+            - Enable check-in UI
+            - Send reminder notifications
+            - Start check-in countdown
+
+        - id: step_3_2
+          name: Participant Check-In
+          actor: participant
+          action: |
+            - Click "Check In" button
+            - Verify account still eligible
+            - Confirm ready to play
+          validations:
+            - Still meets requirements
+            - No active bans
+            - All team members check in (if team)
+
+        - id: step_3_3
+          name: Handle No-Shows
+          actor: tournament_service
+          trigger: checkin_end_time
+          action: |
+            - Mark unchecked as DQ
+            - Promote from waitlist if spots available
+            - Refund entry fees to DQ'd (policy-dependent)
+            - Finalize participant count
+
+        - id: step_3_4
+          name: Close Check-In
+          actor: tournament_service
+          action: |
+            - Lock participant list
+            - Calculate bracket size
+            - Prepare for bracket generation
+
+    # ============================================
+    # PHASE 4: BRACKET GENERATION
+    # ============================================
+    - id: phase_bracket
+      name: Bracket Generation
+      description: Create tournament brackets
+      steps:
+        - id: step_4_1
+          name: Seed Participants
+          actor: tournament_service
+          action: |
+            SEEDING based on seeding_method:
+            - Random: Shuffle randomly
+            - MMR: Sort by MMR
+            - Manual: Use preset seeds
+            - Registration: Order of registration
+
+            Handle byes if not power of 2
+
+        - id: step_4_2
+          name: Generate Bracket
+          actor: tournament_service
+          action: |
+            CREATE bracket structure:
+            - Single elimination: Standard bracket
+            - Double elimination: Winners + Losers
+            - Round robin: All vs all groups
+            - Swiss: Pair by record
+
+            Assign initial matchups
+
+        - id: step_4_3
+          name: Publish Bracket
+          actor: tournament_service
+          action: |
+            - Display bracket to participants
+            - Show match schedule
+            - Send match assignments
+            - Set status = 'in_progress'
+
+    # ============================================
+    # PHASE 5: TOURNAMENT MATCHES
+    # ============================================
+    - id: phase_matches
+      name: Match Phase
+      description: Play tournament matches
+      repeat: true
+      until: tournament.completed
+      steps:
+        - id: step_5_1
+          name: Round Start
+          actor: tournament_service
+          action: |
+            - Activate round matches
+            - Notify participants
+            - Start round timer
+            - Open match lobbies
+
+        - id: step_5_2
+          name: Match Lobby
+          actor: match_service
+          action: |
+            - Create match lobby
+            - Invite participants
+            - Wait for ready-up
+            - Configure match settings
+
+        - id: step_5_3
+          name: Ready Check
+          actor: participant
+          action: |
+            - Join lobby
+            - Confirm ready
+            - Select character/loadout (if applicable)
+          timeout:
+            duration: 5 minutes
+            action: handle_no_show
+
+        - id: step_5_4
+          name: Play Match
+          actor: match_service
+          action: |
+            - Start match
+            - Track score/progress
+            - Handle pauses
+            - Record replay
+          outputs:
+            - match_result
+            - match_stats
+
+        - id: step_5_5
+          name: Report Result
+          actor: tournament_service
+          action: |
+            - Record match outcome
+            - Update bracket
+            - Advance winner
+            - Update standings
+            - Check for disputes
+
+        - id: step_5_6
+          name: Handle Disputes
+          actor: organizer
+          condition: dispute_filed
+          action: |
+            - Review dispute
+            - Check evidence
+            - Make ruling
+            - Apply result changes if needed
+
+        - id: step_5_7
+          name: Round Complete
+          actor: tournament_service
+          action: |
+            - Verify all matches complete
+            - Update bracket
+            - Determine next round matchups
+            - Notify next round participants
+
+    # ============================================
+    # PHASE 6: FINALS
+    # ============================================
+    - id: phase_finals
+      name: Finals
+      description: Championship matches
+      steps:
+        - id: step_6_1
+          name: Grand Finals
+          actor: match_service
+          action: |
+            - Special grand finals rules (if double elim)
+            - Best of X format
+            - Extended break between games
+            - Priority spectating
+
+        - id: step_6_2
+          name: Determine Champion
+          actor: tournament_service
+          action: |
+            - Record final result
+            - Declare winner
+            - Finalize standings
+            - Generate final bracket
+
+    # ============================================
+    # PHASE 7: CONCLUSION
+    # ============================================
+    - id: phase_conclusion
+      name: Tournament Conclusion
+      description: Post-tournament activities
+      steps:
+        - id: step_7_1
+          name: Finalize Results
+          actor: tournament_service
+          action: |
+            - Lock all results
+            - Calculate final standings
+            - Set status = 'completed'
+            - Archive tournament data
+
+        - id: step_7_2
+          name: Distribute Prizes
+          actor: tournament_service
+          action: |
+            FOR EACH prize_winner:
+              - Verify eligibility
+              - Calculate prize amount
+              - Process distribution:
+                - In-game items: Grant immediately
+                - Currency: Credit to account
+                - Cash: Queue for payment (with verification)
+          timeline: within 14 days
+
+        - id: step_7_3
+          name: Grant Achievements
+          actor: tournament_service
+          action: |
+            - Grant participation rewards
+            - Grant placement achievements
+            - Update player tournament stats
+            - Award exclusive items (champion skin, etc.)
+
+        - id: step_7_4
+          name: Publish Results
+          actor: tournament_service
+          action: |
+            - Post final standings
+            - Announce winners
+            - Share highlight replay links
+            - Update leaderboards
+
+        - id: step_7_5
+          name: Post-Tournament Survey
+          actor: tournament_service
+          action: |
+            - Send feedback survey
+            - Collect improvement suggestions
+            - Rate admin performance
+
+  error_handling:
+    - error: participant_no_show
+      action: |
+        - Wait grace period (10 min)
+        - Issue forfeit loss
+        - Advance opponent
+        - Apply tournament ban if repeat offense
+
+    - error: server_failure_during_match
+      action: |
+        - Attempt immediate recovery
+        - If < 50% complete: Restart match
+        - If >= 50%: Admin decision based on score
+        - Document for dispute resolution
+
+    - error: cheating_detected
+      action: |
+        - Pause tournament if necessary
+        - Investigate immediately
+        - DQ if confirmed
+        - Adjust bracket/results
+        - Permanent tournament ban
+
+    - error: bracket_error
+      action: |
+        - Identify incorrect result
+        - Correct bracket
+        - Replay affected matches if necessary
+        - Notify all affected participants
+
+  metrics:
+    - name: registration_rate
+      description: Announced vs registered participants
+
+    - name: check_in_rate
+      description: Registered vs checked-in
+      target: > 85%
+
+    - name: completion_rate
+      description: Matches completed vs scheduled
+      target: > 95%
+
+    - name: dispute_rate
+      description: Matches with disputes
+      target: < 5%
+
+    - name: participant_satisfaction
+      description: Post-tournament survey score
+      target: > 4.0/5.0
+
+integrations:
+  - service: bracket_service
+    events: [bracket_generated, match_updated, result_recorded]
+  - service: match_service
+    events: [lobby_created, match_started, match_ended]
+  - service: prize_service
+    events: [prize_calculated, prize_distributed]
+  - service: notification_service
+    events: [announcement, reminder, result]

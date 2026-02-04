@@ -1,0 +1,589 @@
+name: Repayment Workflow
+display_name: Repayment Workflow / Quy trình thanh toán
+description: |
+  Workflow for processing loan repayments including auto-debit execution,
+  manual payments, payment allocation, and investor distribution.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-P2P-REPAY
+  name: Repayment Processing
+  name_vi: Xử lý thanh toán
+  category: loan_repayment
+
+  triggers:
+    - type: scheduled
+      event: due_date_reached
+    - type: manual
+      event: borrower_initiates_payment
+    - type: auto_debit
+      event: auto_debit_execution
+
+  actors:
+    - system
+    - borrower
+    - bank_partner
+    - operations
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Identify Due Payments
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: identify_due_payments
+    name: Identify Due Payments
+    name_vi: Xác định các khoản đến hạn
+    actor: system
+
+    description: |
+      Identify all installments due for payment today.
+
+    query_criteria:
+      due_date: today
+      status: pending
+      loan_status: active
+
+    batch_processing:
+      timing: "06:00 daily"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    for_each_due_payment:
+      - calculate_total_due
+      - check_auto_debit_status
+      - determine_payment_method
+
+    total_due_calculation:
+      components:
+        - scheduled_principal
+        - scheduled_interest
+        - outstanding_late_fees
+        - outstanding_penalties
+
+    outputs:
+      - due_payments_list
+      - total_amount_due
+      - auto_debit_enabled_count
+
+    next_step: execute_auto_debit
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Execute Auto-Debit
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: execute_auto_debit
+    name: Execute Auto-Debit
+    name_vi: Thực hiện trích nợ tự động
+    actor: system
+
+    description: |
+      Attempt automatic debit from borrower bank accounts.
+
+    execution_timing:
+      primary: "06:00"
+      retry_1: "10:00"
+      retry_2: "14:00"
+      retry_3: "18:00"
+      next_day_retry: "06:00 +1 day"
+
+    for_each_auto_debit:
+      - verify_mandate_active
+      - check_debit_amount
+      - initiate_bank_request
+      - await_response
+
+    bank_request:
+      type: direct_debit
+      reference: "REPAY-{loan_number}-{installment}"
+      amount: total_due
+
+    response_handling:
+      success:
+        - mark_payment_received
+        - proceed_to_allocation
+      insufficient_funds:
+        - schedule_retry
+        - notify_borrower
+      mandate_cancelled:
+        - mark_auto_debit_failed
+        - notify_borrower
+        - request_manual_payment
+      bank_error:
+        - schedule_retry
+        - log_error
+
+    outputs:
+      - auto_debit_results
+      - successful_count
+      - failed_count
+
+    next_step:
+      for_successful: allocate_payment
+      for_failed: await_manual_payment
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Await Manual Payment
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: await_manual_payment
+    name: Await Manual Payment
+    name_vi: Chờ thanh toán thủ công
+    actor: borrower
+    conditional: true
+
+    description: |
+      Wait for borrower to make manual payment when auto-debit fails.
+
+    payment_options:
+      internal_wallet:
+        processing_time: instant
+        fee: 0
+
+      bank_transfer:
+        processing_time: same_day
+        fee: 0
+        details:
+          - platform_bank_account
+          - reference_code
+
+      card_payment:
+        processing_time: instant
+        fee: 22000
+        accepted: [visa, mastercard, jcb]
+
+      cash_at_partner:
+        processing_time: same_day
+        fee: 11000
+        locations: convenience_stores
+
+    payment_interface:
+      display:
+        - total_amount_due
+        - breakdown_by_component
+        - payment_options
+        - due_date_reminder
+
+    notifications:
+      on_due_date:
+        channels: [push, sms]
+        content: "Payment of X VND is due today"
+
+      if_not_paid:
+        day_1:
+          channels: [push, sms]
+          content: "Payment overdue by 1 day"
+        day_2:
+          channels: [push, sms, email]
+          content: "Payment overdue - grace period ending"
+        day_3:
+          channels: [push, sms, email]
+          content: "Final grace period warning"
+
+    outputs:
+      - payment_received: boolean
+      - payment_method
+      - payment_timestamp
+
+    next_step:
+      if_paid: allocate_payment
+      if_grace_expired: apply_late_fees
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Apply Late Fees
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: apply_late_fees
+    name: Apply Late Fees
+    name_vi: Áp dụng phí trễ hạn
+    actor: system
+    conditional: true
+
+    description: |
+      Apply late payment fees after grace period ends.
+
+    grace_period:
+      duration: 3_days
+      from: due_date
+
+    late_fee_calculation:
+      method: percentage_per_day
+      rate: 0.5
+      base: overdue_amount
+      cap: 15.0
+      formula: "MIN(overdue_amount * 0.5% * days_late, overdue_amount * 15%)"
+
+    fee_accrual:
+      frequency: daily
+      timing: "00:01"
+      compounding: false
+
+    first_late_waiver:
+      eligibility: "no_previous_late_payments"
+      waiver: 100
+      automatic: true
+
+    actions:
+      - calculate_late_fee
+      - add_to_outstanding
+      - update_payment_status
+      - trigger_collection_if_needed
+
+    outputs:
+      - late_fee_amount
+      - total_overdue
+      - dpd_count
+
+    next_step:
+      if_payment_received: allocate_payment
+      else: continue_awaiting
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Receive Payment
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: receive_payment
+    name: Receive Payment
+    name_vi: Nhận thanh toán
+    actor: system
+
+    description: |
+      Process incoming payment from any source.
+
+    payment_sources:
+      auto_debit:
+        verification: bank_confirmation
+      bank_transfer:
+        verification: statement_reconciliation
+      wallet:
+        verification: instant
+      card:
+        verification: gateway_confirmation
+      cash:
+        verification: partner_confirmation
+
+    validation:
+      - verify_payment_amount
+      - match_to_loan
+      - verify_payer_identity
+      - check_for_duplicates
+
+    outputs:
+      - payment_id
+      - payment_amount
+      - payment_source
+      - received_timestamp
+
+    next_step: allocate_payment
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Allocate Payment
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: allocate_payment
+    name: Allocate Payment
+    name_vi: Phân bổ thanh toán
+    actor: system
+
+    description: |
+      Allocate payment to outstanding amounts in priority order.
+
+    allocation_priority:
+      order:
+        1: late_fees
+        2: penalties
+        3: accrued_interest
+        4: current_interest
+        5: principal
+
+    allocation_process:
+      for_each_priority:
+        - check_outstanding_amount
+        - allocate_up_to_amount
+        - reduce_remaining_payment
+        - update_component_balance
+
+    partial_payment:
+      allowed: true
+      minimum: interest_due
+      treatment: apply_in_priority_order
+      status_effect: still_delinquent_until_current
+
+    overpayment:
+      allowed: true
+      treatment: apply_to_principal
+      effect_options:
+        - reduce_term: shorten_loan_duration
+        - reduce_payment: lower_monthly_amount
+      default: reduce_payment
+      borrower_choice: true
+
+    outputs:
+      - allocation_breakdown
+      - remaining_principal
+      - loan_fully_paid: boolean
+
+    next_step:
+      if_fully_paid: close_loan
+      if_installment_paid: distribute_to_investors
+      if_partial: update_outstanding
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Distribute to Investors
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: distribute_to_investors
+    name: Distribute to Investors
+    name_vi: Phân phối cho nhà đầu tư
+    actor: system
+
+    description: |
+      Distribute received funds to investors based on their share.
+
+    distribution_calculation:
+      for_each_investor:
+        share_percentage: "investment_amount / total_funded"
+        principal_share: "paid_principal * share_percentage"
+        interest_share: "paid_interest * share_percentage"
+
+    deductions:
+      platform_service_fee:
+        rate: 1.0
+        base: interest_share
+        description: "Platform service fee"
+
+      provision_fund:
+        rate: 0.5
+        base: interest_share
+        description: "Investor protection contribution"
+
+    net_distribution:
+      formula: |
+        net_interest = interest_share - service_fee - provision_contribution
+        total_distribution = principal_share + net_interest
+
+    distribution_method:
+      timing: immediate
+      destination: investor_wallet
+      confirmation: automatic
+
+    outputs:
+      - distributions_count
+      - total_principal_distributed
+      - total_interest_distributed
+      - total_fees_collected
+      - provision_fund_contribution
+
+    next_step: update_records
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Update Records
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: update_records
+    name: Update Records
+    name_vi: Cập nhật hồ sơ
+    actor: system
+
+    description: |
+      Update all relevant records after payment processing.
+
+    updates:
+      loan_record:
+        - remaining_principal
+        - next_due_date
+        - payments_made_count
+        - payment_status
+
+      installment_record:
+        - status: paid
+        - paid_date
+        - paid_amount
+        - allocation_details
+
+      borrower_record:
+        - payment_history
+        - on_time_payment_streak
+        - credit_behavior_score
+
+      investor_records:
+        - received_principal
+        - received_interest
+        - current_balance
+        - portfolio_value
+
+    credit_reporting:
+      if_on_time:
+        report: positive_payment
+        to: credit_bureau
+      if_late:
+        report: late_payment
+        days_late: dpd_count
+
+    outputs:
+      - records_updated: true
+      - credit_reported: boolean
+
+    next_step: send_confirmations
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Send Confirmations
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: send_confirmations
+    name: Send Confirmations
+    name_vi: Gửi xác nhận
+    actor: system
+
+    description: |
+      Send payment confirmations to all parties.
+
+    to_borrower:
+      channels: [push, sms]
+      timing: immediate
+      content:
+        - payment_amount
+        - payment_date
+        - remaining_balance
+        - next_due_date
+        - installments_remaining
+
+    to_investors:
+      channels: [push]
+      timing: immediate
+      content:
+        - received_amount
+        - breakdown: [principal, interest]
+        - updated_balance
+
+    outputs:
+      - borrower_notified: true
+      - investors_notified: count
+
+    next_step: complete
+
+  # ---------------------------------------------------------------------------
+  # Step 10: Close Loan
+  # ---------------------------------------------------------------------------
+  - step: 10
+    id: close_loan
+    name: Close Loan
+    name_vi: Đóng khoản vay
+    actor: system
+    conditional: true
+
+    description: |
+      Close fully paid loan and finalize all records.
+
+    closure_actions:
+      - verify_zero_balance
+      - update_loan_status_to_paid_off
+      - generate_completion_certificate
+      - release_any_liens
+      - archive_loan_records
+
+    final_calculations:
+      - total_principal_paid
+      - total_interest_paid
+      - total_fees_paid
+      - actual_apr
+      - payment_performance_score
+
+    borrower_benefits:
+      credit_score_boost:
+        on_time_completion: +20_points
+        early_payoff: +25_points
+
+      loyalty_discount:
+        next_loan: increased_discount
+        eligibility: immediate
+
+    notifications:
+      to_borrower:
+        channels: [push, email, sms]
+        content: "Congratulations! Your loan is fully paid!"
+        attachments:
+          - completion_certificate
+          - payment_history
+
+      to_investors:
+        channels: [push, email]
+        content: "Investment completed with full return"
+
+    outputs:
+      - loan_status: paid_off
+      - closure_date
+      - completion_certificate_id
+
+    next_step: complete
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  payment_processing_error:
+    retries: 3
+    action: queue_for_manual_review
+    notification: operations
+
+  distribution_error:
+    action: hold_funds
+    notification: finance_team
+    resolution: manual
+
+  duplicate_payment:
+    action: flag_and_hold
+    notification: operations
+    resolution: refund_if_confirmed
+
+# =============================================================================
+# SLA & METRICS
+# =============================================================================
+sla:
+  auto_debit_execution:
+    target: 5_minutes
+    maximum: 30_minutes
+
+  payment_allocation:
+    target: 1_minute
+    maximum: 5_minutes
+
+  investor_distribution:
+    target: 5_minutes
+    maximum: 1_hour
+
+  confirmation_send:
+    target: immediate
+    maximum: 5_minutes
+
+metrics:
+  tracked:
+    - on_time_payment_rate
+    - auto_debit_success_rate
+    - average_dpd
+    - early_payoff_rate
+    - collection_rate
+
+  targets:
+    on_time_payment_rate: "> 90%"
+    auto_debit_success_rate: "> 85%"
+    average_dpd: "< 5 days"
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_all_payments: true
+  log_allocations: true
+  log_distributions: true
+  log_fee_calculations: true
+  retention_years: 10

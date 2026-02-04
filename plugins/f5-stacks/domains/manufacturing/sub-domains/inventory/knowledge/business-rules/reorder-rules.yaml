@@ -1,0 +1,413 @@
+name: reorder-rules
+display_name: Reorder & Replenishment Rules
+display_name_vi: Quy tắc đặt hàng lại & Bổ sung
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Business rules governing material reordering, replenishment triggers,
+  safety stock management, and automatic procurement. Supports MRP,
+  reorder point, and kanban-based replenishment strategies.
+
+rule_categories:
+  - reorder_point_rules
+  - safety_stock_rules
+  - replenishment_rules
+  - lot_sizing_rules
+  - mrp_rules
+
+rules:
+  # ============================================
+  # REORDER POINT RULES
+  # ============================================
+  - id: ROP-001
+    name: Reorder Point Trigger
+    category: reorder_point_rules
+    priority: critical
+    description: |
+      When available stock falls below reorder point, trigger replenishment.
+    condition: |
+      Inventory.available_qty < ReorderPoint.reorder_point
+      AND ReorderPoint.auto_replenish = TRUE
+      AND Material.status = 'active'
+    action: |
+      CREATE MaterialRequirement (
+        requirement_type = 'reorder_point',
+        material_id = Material.id,
+        required_qty = calculated_order_qty,
+        due_date = TODAY + lead_time_days
+      )
+      NOTIFY planner_group
+    exceptions:
+      - Material is blocked or obsolete
+      - Open requisition/PO exists for same material
+      - Stock freeze in effect
+
+  - id: ROP-002
+    name: Reorder Point Calculation
+    category: reorder_point_rules
+    priority: high
+    description: |
+      Calculate reorder point based on demand and lead time.
+    formula: |
+      ROP = (Average_Daily_Demand × Lead_Time_Days) + Safety_Stock
+
+      Where:
+      - Average_Daily_Demand = 30-day moving average
+      - Lead_Time_Days = Material.lead_time_days + variance
+      - Safety_Stock = calculated per SS-001
+    recalculation_frequency: monthly
+    applies_to: All MRP-planned materials
+
+  - id: ROP-003
+    name: Economic Order Quantity (EOQ)
+    category: reorder_point_rules
+    priority: medium
+    description: |
+      Calculate optimal order quantity to minimize total cost.
+    formula: |
+      EOQ = √((2 × Annual_Demand × Order_Cost) / Holding_Cost_Rate)
+
+      Where:
+      - Annual_Demand = Average_Daily × 365
+      - Order_Cost = fixed ordering cost per order
+      - Holding_Cost_Rate = carrying cost as % of item value
+    constraints:
+      - min_order_qty <= EOQ <= max_order_qty
+      - Round to order_multiple
+    applies_to: lot_size_type = 'eoq'
+
+  - id: ROP-004
+    name: Min-Max Replenishment
+    category: reorder_point_rules
+    priority: medium
+    description: |
+      Order up to maximum when stock drops to minimum.
+    condition: |
+      Inventory.available_qty <= ReorderPoint.reorder_point
+    action: |
+      order_qty = ReorderPoint.max_stock - Inventory.on_hand_qty
+      CREATE MaterialRequirement (required_qty = order_qty)
+    applies_to: lot_size_type = 'replenish_to_max'
+
+  # ============================================
+  # SAFETY STOCK RULES
+  # ============================================
+  - id: SS-001
+    name: Service Level Safety Stock
+    category: safety_stock_rules
+    priority: high
+    description: |
+      Calculate safety stock based on target service level.
+    formula: |
+      Safety_Stock = Z × σ_D × √(Lead_Time)
+
+      Where:
+      - Z = service factor (1.65 for 95%, 2.33 for 99%)
+      - σ_D = demand standard deviation
+      - Lead_Time = average lead time in days
+    parameters:
+      service_levels:
+        - level: 90%
+          z_factor: 1.28
+        - level: 95%
+          z_factor: 1.65
+        - level: 98%
+          z_factor: 2.05
+        - level: 99%
+          z_factor: 2.33
+
+  - id: SS-002
+    name: ABC Safety Stock Differentiation
+    category: safety_stock_rules
+    priority: medium
+    description: |
+      Apply different safety stock policies by ABC class.
+    rules:
+      A_class:
+        service_level: 99%
+        review_frequency: weekly
+        calculation_method: service_level
+      B_class:
+        service_level: 95%
+        review_frequency: monthly
+        calculation_method: service_level
+      C_class:
+        service_level: 90%
+        review_frequency: quarterly
+        calculation_method: fixed_weeks_supply
+        weeks_supply: 4
+
+  - id: SS-003
+    name: Safety Stock Floor
+    category: safety_stock_rules
+    priority: low
+    description: |
+      Minimum safety stock regardless of calculation.
+    condition: |
+      Material.criticality = 'critical'
+    rule: |
+      Safety_Stock >= MIN(
+        1 week supply,
+        10 units
+      )
+    rationale: Critical materials need minimum coverage
+
+  - id: SS-004
+    name: Lead Time Variability Buffer
+    category: safety_stock_rules
+    priority: medium
+    description: |
+      Additional safety stock for unreliable suppliers.
+    condition: |
+      Supplier.on_time_delivery_rate < 90%
+    formula: |
+      Additional_SS = σ_LT × Average_Daily_Demand
+
+      Where:
+      - σ_LT = lead time standard deviation
+    applies_to: External procurement items
+
+  # ============================================
+  # REPLENISHMENT RULES
+  # ============================================
+  - id: REP-001
+    name: Automatic Requisition Generation
+    category: replenishment_rules
+    priority: high
+    description: |
+      Auto-generate purchase requisitions when triggered.
+    trigger: |
+      Inventory.below_reorder_point = TRUE
+      AND Material.procurement_type IN ('external', 'both')
+      AND ReorderPoint.auto_replenish = TRUE
+    action: |
+      CREATE PurchaseRequisition (
+        material_id = Material.id,
+        quantity = calculated_order_qty,
+        required_date = TODAY + lead_time_days,
+        supplier_id = Material.default_supplier_id,
+        source = 'auto_reorder'
+      )
+    validation:
+      - No duplicate open requisition
+      - Supplier is active
+      - Material not blocked
+
+  - id: REP-002
+    name: Production Replenishment
+    category: replenishment_rules
+    priority: high
+    description: |
+      Generate production orders for make items.
+    trigger: |
+      Inventory.below_reorder_point = TRUE
+      AND Material.procurement_type IN ('in_house', 'both')
+    action: |
+      CREATE PlannedProductionOrder (
+        material_id = Material.id,
+        quantity = calculated_order_qty,
+        start_date = required_date - production_lead_time,
+        finish_date = required_date
+      )
+    validation:
+      - BOM exists and active
+      - Routing exists and active
+      - Capacity available
+
+  - id: REP-003
+    name: Transfer Replenishment
+    category: replenishment_rules
+    priority: medium
+    description: |
+      Generate stock transfers from source location.
+    trigger: |
+      Inventory.below_reorder_point = TRUE
+      AND ReorderPoint.replenishment_type = 'transfer'
+      AND source_has_available_stock
+    action: |
+      CREATE StockTransfer (
+        source_warehouse_id = ReorderPoint.source_warehouse_id,
+        destination_warehouse_id = current_warehouse,
+        material_id = Material.id,
+        quantity = calculated_order_qty
+      )
+    validation:
+      - Source has sufficient available stock
+      - Transfer lead time acceptable
+
+  - id: REP-004
+    name: Kanban Replenishment
+    category: replenishment_rules
+    priority: medium
+    description: |
+      Trigger replenishment when kanban bin is empty.
+    trigger: |
+      KanbanCard.status = 'empty'
+    action: |
+      SET KanbanCard.status = 'in_transit'
+      CREATE ReplenishmentSignal (
+        kanban_id = KanbanCard.id,
+        quantity = KanbanCard.container_qty,
+        source = KanbanCard.supply_source
+      )
+    validation:
+      - Kanban is active
+      - No existing replenishment in progress
+
+  # ============================================
+  # LOT SIZING RULES
+  # ============================================
+  - id: LOT-001
+    name: Fixed Lot Size
+    category: lot_sizing_rules
+    priority: low
+    description: |
+      Order in fixed quantities regardless of demand.
+    condition: |
+      Material.lot_size_type = 'fixed'
+    rule: |
+      order_qty = Material.fixed_lot_size
+    constraints:
+      - Must satisfy demand
+      - May create excess inventory
+
+  - id: LOT-002
+    name: Lot for Lot
+    category: lot_sizing_rules
+    priority: low
+    description: |
+      Order exactly what is needed, no more.
+    condition: |
+      Material.lot_size_type = 'lot_for_lot'
+    rule: |
+      order_qty = net_requirement
+    constraints:
+      - Round up to min_order_qty
+      - Round to order_multiple
+
+  - id: LOT-003
+    name: Period Lot Sizing
+    category: lot_sizing_rules
+    priority: low
+    description: |
+      Combine requirements within a time period.
+    condition: |
+      Material.lot_size_type = 'period_lot'
+    rule: |
+      order_qty = SUM(requirements within period)
+    parameters:
+      period_options:
+        - 1_week
+        - 2_weeks
+        - 1_month
+
+  - id: LOT-004
+    name: Order Quantity Constraints
+    category: lot_sizing_rules
+    priority: high
+    description: |
+      Apply min/max and multiple constraints to order quantity.
+    rules: |
+      IF calculated_qty < min_order_qty THEN
+        order_qty = min_order_qty
+      ELSE IF calculated_qty > max_order_qty THEN
+        SPLIT into multiple orders
+
+      ROUND order_qty TO nearest order_multiple
+    applies_to: All order quantities
+
+  # ============================================
+  # MRP RULES
+  # ============================================
+  - id: MRP-001
+    name: Net Requirement Calculation
+    category: mrp_rules
+    priority: critical
+    description: |
+      Calculate net requirements from gross requirements.
+    formula: |
+      Net_Requirement = Gross_Requirement
+                       - On_Hand_Available
+                       - Scheduled_Receipts
+                       + Safety_Stock
+
+      IF Net_Requirement > 0 THEN
+        CREATE Planned_Order
+    processing_order: Level by level (low to high BOM level)
+
+  - id: MRP-002
+    name: Pegging
+    category: mrp_rules
+    priority: high
+    description: |
+      Maintain parent-child relationship for requirements.
+    rule: |
+      Each dependent demand LINKS TO parent requirement
+      Each supply LINKS TO demand it satisfies
+    purpose:
+      - Trace demand source
+      - Impact analysis for changes
+      - Exception handling
+
+  - id: MRP-003
+    name: Regenerative vs Net Change
+    category: mrp_rules
+    priority: medium
+    description: |
+      MRP run mode selection.
+    modes:
+      regenerative:
+        description: Full recalculation of all requirements
+        frequency: Weekly
+        triggers: Major planning changes
+      net_change:
+        description: Process only changed items
+        frequency: Daily
+        triggers: Transaction processing
+
+  - id: MRP-004
+    name: Exception Messages
+    category: mrp_rules
+    priority: high
+    description: |
+      Generate exception messages for planner action.
+    exception_types:
+      - code: EXPEDITE
+        condition: Required date < scheduled date
+        action: Speed up supply
+      - code: DEFER
+        condition: Required date > scheduled date
+        action: Push out supply
+      - code: CANCEL
+        condition: No longer needed
+        action: Cancel planned order
+      - code: PAST_DUE
+        condition: Required date in past
+        action: Immediate attention
+      - code: NO_SUPPLY
+        condition: Cannot meet requirement
+        action: Find alternative
+
+compliance:
+  standards:
+    - ISO 9001 (Purchasing)
+    - APICS CPIM (Inventory Management)
+
+metrics:
+  - name: Reorder Point Accuracy
+    formula: Actual_Stock_Out_Rate / Target_Service_Level
+    target: "> 95%"
+
+  - name: Safety Stock Efficiency
+    formula: Service_Level_Achieved / Safety_Stock_Investment
+    target: Optimal balance
+
+  - name: Order Quantity Optimization
+    formula: Total_Cost / EOQ_Theoretical_Cost
+    target: "< 110%"
+
+  - name: MRP Exception Resolution Time
+    formula: AVG(Resolution_Date - Exception_Date)
+    target: "< 2 days"

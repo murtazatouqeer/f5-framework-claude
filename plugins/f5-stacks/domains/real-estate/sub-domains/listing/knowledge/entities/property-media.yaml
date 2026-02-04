@@ -1,0 +1,339 @@
+# Property Media Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# Photos, videos, and media files
+
+entity:
+  id: property_media
+  name: Property Media
+  name_ja: 物件メディア
+  name_vi: Media bất động sản
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+  
+  description: |
+    Media files associated with properties and listings, including
+    photos, videos, virtual tours, floor plans, and documents.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+      
+    - name: media_id
+      type: string
+      format: "MED-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    # References
+    - name: property_id
+      type: uuid
+      foreign_key: property.id
+      required: true
+      indexed: true
+      
+    - name: listing_id
+      type: uuid
+      foreign_key: listing.id
+      indexed: true
+      description: Optional specific listing association
+
+    # Type
+    - name: media_type
+      type: enum
+      values: [photo, video, virtual_tour, floor_plan, document, panorama]
+      required: true
+      indexed: true
+
+    # Status
+    - name: status
+      type: enum
+      values: [uploading, pending, approved, rejected, archived]
+      default: pending
+      indexed: true
+      
+    - name: rejection_reason
+      type: text
+      description: Reason if rejected
+
+    # File Information
+    - name: file_url
+      type: string
+      max_length: 500
+      required: true
+      
+    - name: file_url_cdn
+      type: string
+      max_length: 500
+      description: CDN URL for optimized delivery
+      
+    - name: thumbnail_url
+      type: string
+      max_length: 500
+      
+    - name: thumbnail_small_url
+      type: string
+      max_length: 500
+      
+    - name: original_filename
+      type: string
+      max_length: 255
+      
+    - name: file_size_bytes
+      type: integer
+      
+    - name: mime_type
+      type: string
+      max_length: 100
+
+    # Image/Video Specs
+    - name: width
+      type: integer
+      description: Width in pixels
+      
+    - name: height
+      type: integer
+      description: Height in pixels
+      
+    - name: duration_seconds
+      type: integer
+      description: Duration for video/tour
+      
+    - name: aspect_ratio
+      type: string
+      max_length: 10
+      description: "e.g., 16:9, 4:3"
+
+    # Metadata
+    - name: title
+      type: string
+      max_length: 200
+      
+    - name: description
+      type: text
+      
+    - name: alt_text
+      type: string
+      max_length: 255
+      description: Accessibility alt text
+      
+    - name: room_type
+      type: enum
+      values: [exterior, living_room, bedroom, master_bedroom, bathroom, kitchen, dining, balcony, view, garden, pool, parking, other]
+      indexed: true
+      
+    - name: tags
+      type: array
+      items: string
+
+    # Ordering
+    - name: sequence_order
+      type: integer
+      default: 0
+      indexed: true
+      
+    - name: is_primary
+      type: boolean
+      default: false
+      indexed: true
+      description: Primary photo for listings
+
+    # Quality
+    - name: quality_score
+      type: decimal
+      precision: 3
+      scale: 2
+      description: Auto-assessed quality 0-1
+      
+    - name: is_professional
+      type: boolean
+      default: false
+      description: Professionally shot
+
+    # Virtual Tour/3D
+    - name: tour_provider
+      type: enum
+      values: [matterport, zillow_3d, custom, other]
+      description: For virtual tours
+      
+    - name: tour_embed_code
+      type: text
+      description: Embed code for virtual tours
+      
+    - name: tour_external_url
+      type: string
+      max_length: 500
+
+    # Moderation
+    - name: auto_moderated
+      type: boolean
+      default: false
+      
+    - name: auto_moderation_score
+      type: decimal
+      precision: 3
+      scale: 2
+      
+    - name: auto_moderation_flags
+      type: array
+      items: string
+      description: AI detected issues
+      
+    - name: moderated_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: moderated_at
+      type: timestamp
+
+    # EXIF Data (for photos)
+    - name: exif_data
+      type: jsonb
+      description: Extracted EXIF metadata
+      schema:
+        camera_make: string
+        camera_model: string
+        date_taken: timestamp
+        gps_latitude: number
+        gps_longitude: number
+        orientation: integer
+
+    # Timestamps
+    - name: uploaded_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: uploaded_at
+      type: timestamp
+      auto: true
+      
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_landscape
+      formula: "width > height"
+      
+    - name: file_size_mb
+      formula: "file_size_bytes / 1048576"
+
+  relationships:
+    - name: property
+      type: belongs_to
+      entity: property
+      foreign_key: property_id
+      
+    - name: listing
+      type: belongs_to
+      entity: listing
+      foreign_key: listing_id
+      
+    - name: uploader
+      type: belongs_to
+      entity: user
+      foreign_key: uploaded_by
+      
+    - name: moderator
+      type: belongs_to
+      entity: user
+      foreign_key: moderated_by
+
+  indexes:
+    - fields: [property_id, status, sequence_order]
+      name: idx_property_media_order
+      
+    - fields: [property_id, is_primary]
+      name: idx_primary_photo
+      
+    - fields: [media_type, status]
+      name: idx_type_status
+      
+    - fields: [status, moderated_at]
+      name: idx_moderation_queue
+
+  validations:
+    - field: file_size_bytes
+      rule: less_than_or_equal
+      value: 52428800  # 50MB
+      message: File size must be under 50MB
+      
+    - field: width
+      rule: greater_than_or_equal
+      value: 800
+      condition: "media_type = 'photo'"
+      message: Photo width must be at least 800px
+      
+    - field: height
+      rule: greater_than_or_equal
+      value: 600
+      condition: "media_type = 'photo'"
+      message: Photo height must be at least 600px
+
+  media_requirements:
+    photo:
+      min_width: 800
+      min_height: 600
+      max_file_size_mb: 10
+      allowed_formats: [jpg, jpeg, png, webp]
+      recommended_aspect_ratio: "4:3"
+      
+    video:
+      max_duration_seconds: 300
+      max_file_size_mb: 50
+      allowed_formats: [mp4, mov, webm]
+      recommended_resolution: "1080p"
+      
+    floor_plan:
+      min_width: 600
+      allowed_formats: [jpg, jpeg, png, pdf]
+      
+    virtual_tour:
+      providers: [matterport, zillow_3d]
+      embed_required: true
+
+  state_machine:
+    initial: uploading
+    
+    transitions:
+      - from: uploading
+        to: pending
+        trigger: upload_complete
+        actions:
+          - generate_thumbnails
+          - extract_metadata
+          - run_auto_moderation
+          
+      - from: pending
+        to: approved
+        trigger: approve
+        conditions:
+          - passes_quality_check
+          - no_moderation_flags
+        actions:
+          - update_property_media_count
+          
+      - from: pending
+        to: rejected
+        trigger: reject
+        actions:
+          - set_rejection_reason
+          - notify_uploader
+          
+      - from: rejected
+        to: pending
+        trigger: resubmit
+        conditions:
+          - file_replaced
+          
+      - from: approved
+        to: archived
+        trigger: archive
+        actions:
+          - update_property_media_count
+
+  audit:
+    enabled: true
+    track_changes: true

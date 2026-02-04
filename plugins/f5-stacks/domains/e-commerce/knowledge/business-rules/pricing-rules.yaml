@@ -1,0 +1,281 @@
+name: Pricing Rules
+display_name: Pricing Rules / Quy tắc định giá
+description: |
+  Business rules governing product pricing, discounts, and price calculations.
+  Includes base pricing, promotional pricing, and dynamic pricing rules.
+
+domain: e-commerce
+category: pricing
+
+rules:
+  # Base Pricing Rules
+  - id: BR-PRI-001
+    name: Minimum Price Constraint
+    description: Selling price must be greater than or equal to cost price
+    priority: critical
+    condition: product.selling_price >= product.cost_price
+    action: reject_if_violated
+    message: "Selling price cannot be below cost price"
+    applies_to: [Product, ProductVariant]
+
+  - id: BR-PRI-002
+    name: Compare Price Validation
+    description: Compare-at price must be higher than selling price
+    priority: high
+    condition: |
+      product.compare_at_price IS NULL OR
+      product.compare_at_price > product.selling_price
+    action: reject_if_violated
+    message: "Compare-at price must be greater than selling price"
+    applies_to: [Product, ProductVariant]
+
+  - id: BR-PRI-003
+    name: Maximum Discount Percentage
+    description: Discount cannot exceed 90% of original price
+    priority: high
+    condition: |
+      ((compare_at_price - selling_price) / compare_at_price) * 100 <= 90
+    action: reject_if_violated
+    message: "Discount cannot exceed 90%"
+    applies_to: [Product, ProductVariant, Coupon]
+
+  - id: BR-PRI-004
+    name: Price Currency Consistency
+    description: All prices in same order must use same currency
+    priority: critical
+    condition: order.currency = ALL(order_items.currency)
+    action: reject_if_violated
+    message: "All items must use the same currency as the order"
+    applies_to: [Order, OrderItem]
+
+  - id: BR-PRI-005
+    name: Price Precision
+    description: Prices must have at most 2 decimal places for most currencies
+    priority: medium
+    condition: |
+      CASE
+        WHEN currency = 'VND' THEN ROUND(price, 0) = price
+        ELSE ROUND(price, 2) = price
+      END
+    action: auto_round
+    message: "Price precision adjusted for currency"
+    applies_to: [Product, ProductVariant, Order]
+
+  # Discount Rules
+  - id: BR-PRI-010
+    name: Percentage Discount Cap
+    description: Percentage discounts capped at max_discount_amount
+    priority: high
+    condition: |
+      coupon.type = 'percentage' AND
+      coupon.max_discount_amount IS NOT NULL
+    action: |
+      discount = MIN(
+        order.subtotal * (coupon.discount_value / 100),
+        coupon.max_discount_amount
+      )
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRI-011
+    name: Minimum Order for Discount
+    description: Discount only applies if minimum order amount met
+    priority: high
+    condition: |
+      coupon.minimum_order_amount IS NULL OR
+      order.subtotal >= coupon.minimum_order_amount
+    action: reject_coupon_if_violated
+    message: "Order does not meet minimum amount for this coupon"
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRI-012
+    name: Non-Combinable Coupons
+    description: Non-combinable coupons cannot be used with other coupons
+    priority: high
+    condition: |
+      coupon.is_combinable = true OR
+      COUNT(order.applied_coupons) <= 1
+    action: reject_if_violated
+    message: "This coupon cannot be combined with other coupons"
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRI-013
+    name: Coupon Priority Application
+    description: Apply coupons in priority order (highest first)
+    priority: medium
+    condition: always
+    action: |
+      ORDER BY coupon.priority DESC
+      APPLY each coupon sequentially
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRI-014
+    name: Discount Cannot Exceed Subtotal
+    description: Total discount cannot exceed order subtotal
+    priority: critical
+    condition: order.discount_amount <= order.subtotal
+    action: cap_discount
+    message: "Discount capped at order subtotal"
+    applies_to: [Order]
+
+  # Dynamic Pricing Rules
+  - id: BR-PRI-020
+    name: Flash Sale Pricing
+    description: Flash sale prices override regular prices during sale period
+    priority: high
+    condition: |
+      NOW() BETWEEN flash_sale.start_time AND flash_sale.end_time AND
+      flash_sale.remaining_quantity > 0
+    action: |
+      effective_price = flash_sale.price
+    applies_to: [Product, ProductVariant]
+
+  - id: BR-PRI-021
+    name: Tiered Pricing
+    description: Price decreases based on quantity purchased
+    priority: medium
+    condition: |
+      product.tiered_pricing IS NOT NULL AND
+      quantity >= MIN(tiered_pricing.min_quantity)
+    action: |
+      effective_price = SELECT price FROM tiered_pricing
+      WHERE min_quantity <= quantity
+      ORDER BY min_quantity DESC LIMIT 1
+    applies_to: [Product, CartItem, OrderItem]
+
+  - id: BR-PRI-022
+    name: Customer Tier Pricing
+    description: VIP customers get tier-based discounts
+    priority: medium
+    condition: customer.loyalty_tier IN ('gold', 'platinum', 'diamond')
+    action: |
+      tier_discount = CASE customer.loyalty_tier
+        WHEN 'gold' THEN 5
+        WHEN 'platinum' THEN 10
+        WHEN 'diamond' THEN 15
+      END
+      effective_price = price * (1 - tier_discount/100)
+    applies_to: [Order]
+
+  - id: BR-PRI-023
+    name: Bundle Pricing
+    description: Bundle products priced as sum of bundle price
+    priority: medium
+    condition: product.type = 'bundle'
+    action: |
+      bundle_price = SUM(bundle_items.bundle_price)
+      discount_from_individual = SUM(bundle_items.selling_price) - bundle_price
+    applies_to: [Product]
+
+  # Tax Rules
+  - id: BR-PRI-030
+    name: VAT Calculation Vietnam
+    description: 10% VAT for Vietnam orders
+    priority: high
+    condition: order.shipping_address.country = 'VN'
+    action: |
+      tax_rate = 0.10
+      tax_amount = (subtotal - discount_amount) * tax_rate
+    applies_to: [Order]
+
+  - id: BR-PRI-031
+    name: Tax-Exempt Products
+    description: Certain product categories are tax-exempt
+    priority: high
+    condition: product.category IN (tax_exempt_categories)
+    action: item_tax_amount = 0
+    applies_to: [OrderItem]
+
+  - id: BR-PRI-032
+    name: Tax Rounding
+    description: Tax amounts rounded to nearest whole unit for VND
+    priority: medium
+    condition: order.currency = 'VND'
+    action: tax_amount = ROUND(tax_amount, 0)
+    applies_to: [Order, OrderItem]
+
+  # Order Total Rules
+  - id: BR-PRI-040
+    name: Order Total Calculation
+    description: Order total = subtotal - discount + shipping + tax
+    priority: critical
+    condition: always
+    action: |
+      total_amount = subtotal - discount_amount + shipping_amount + tax_amount
+    applies_to: [Order]
+
+  - id: BR-PRI-041
+    name: Line Total Calculation
+    description: Line total = (quantity × unit_price) - discount + tax
+    priority: critical
+    condition: always
+    action: |
+      line_total = (quantity * unit_price) - discount_amount + tax_amount
+    applies_to: [OrderItem, CartItem]
+
+  - id: BR-PRI-042
+    name: Minimum Order Value
+    description: Orders must meet minimum value (configurable)
+    priority: medium
+    condition: order.total_amount >= config.minimum_order_value
+    action: reject_if_violated
+    message: "Order does not meet minimum value requirement"
+    applies_to: [Order]
+    config:
+      minimum_order_value: 50000
+
+  # Price Lock Rules
+  - id: BR-PRI-050
+    name: Cart Price Validity
+    description: Cart prices valid for 24 hours
+    priority: medium
+    condition: |
+      NOW() - cart_item.added_at <= INTERVAL '24 hours'
+    action: |
+      IF expired THEN refresh_price()
+    applies_to: [CartItem]
+
+  - id: BR-PRI-051
+    name: Order Price Lock
+    description: Prices locked at order creation
+    priority: critical
+    condition: order.status != 'pending'
+    action: prevent_price_modification
+    message: "Prices cannot be modified after order confirmation"
+    applies_to: [Order, OrderItem]
+
+  - id: BR-PRI-052
+    name: Checkout Price Refresh
+    description: Refresh all prices at checkout initiation
+    priority: high
+    condition: checkout.initiated = true
+    action: |
+      FOR each cart_item:
+        refresh_price_from_product()
+        recalculate_discounts()
+    applies_to: [Cart, CartItem]
+
+validation_order:
+  - BR-PRI-001  # Cost price check first
+  - BR-PRI-002  # Compare price validation
+  - BR-PRI-005  # Price precision
+  - BR-PRI-020  # Flash sale override
+  - BR-PRI-021  # Tiered pricing
+  - BR-PRI-022  # Customer tier discount
+  - BR-PRI-011  # Minimum order check
+  - BR-PRI-010  # Percentage cap
+  - BR-PRI-012  # Combinability check
+  - BR-PRI-014  # Discount cap
+  - BR-PRI-030  # Tax calculation
+  - BR-PRI-040  # Order total
+
+exceptions:
+  - name: AdminPriceOverride
+    description: Admin can override prices with audit trail
+    requires: admin_approval
+    audit: required
+
+  - name: PromotionalPricing
+    description: Marketing campaigns can set prices below cost
+    requires: marketing_approval
+    duration: limited
+    audit: required

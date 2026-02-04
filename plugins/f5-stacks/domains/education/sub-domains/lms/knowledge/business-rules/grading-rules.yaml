@@ -1,0 +1,550 @@
+# Grading Business Rules
+# F5 Framework v2.0 - Education/LMS
+# Rules governing assessment grading and evaluation
+
+business_rules:
+  id: grading-rules
+  name: Grading Rules
+  name_ja: 採点ルール
+  description: Business rules for assessment grading and evaluation
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  rules:
+    # Auto-Grading Quiz
+    - id: BR-GRD-001
+      name: Auto-Grade Quiz
+      name_ja: クイズ自動採点
+      description: Automatically grade objective quiz questions
+      category: auto_grading
+      priority: critical
+      
+      trigger:
+        event: quiz_submitted
+        entity: quiz_attempt
+        
+      conditions:
+        - field: quiz.auto_gradable
+          operator: equals
+          value: true
+          
+      actions:
+        - grade_questions:
+            for_each: quiz_attempt.answers
+            method: compare_to_correct
+        - calculate_score:
+            formula: "(correct_answers / total_questions) * max_score"
+        - apply_partial_credit:
+            if: quiz.partial_credit_enabled
+        - apply_negative_marking:
+            if: quiz.negative_marking_enabled
+        - record_score:
+            immediate: true
+        - update_progress
+        - check_passing_status
+        
+      question_types:
+        multiple_choice:
+          grading: exact_match
+          partial_credit: false
+        multiple_select:
+          grading: partial_per_correct
+          penalty_per_wrong: quiz.wrong_selection_penalty
+        true_false:
+          grading: exact_match
+        fill_in_blank:
+          grading: case_insensitive_match
+          alternatives: question.accepted_answers
+        matching:
+          grading: per_pair
+          partial_credit: true
+        ordering:
+          grading: exact_sequence | partial_position
+        numeric:
+          grading: within_tolerance
+          tolerance: question.tolerance
+          
+    # Manual Grading Assignment
+    - id: BR-GRD-010
+      name: Assignment Grading
+      name_ja: 課題採点
+      description: Handle manual grading of assignments
+      category: manual_grading
+      priority: high
+      
+      trigger:
+        event: assignment_submitted
+        entity: assignment_submission
+        
+      conditions:
+        - field: assignment.requires_manual_grading
+          operator: equals
+          value: true
+          
+      actions:
+        - create_grading_task:
+            assigned_to: course.graders
+            deadline: assignment.grading_deadline
+        - notify_graders:
+            template: new_submission_to_grade
+        - update_submission_status: pending_grade
+        
+      grading_workflow:
+        assignment_types:
+          essay:
+            rubric_required: true
+            plagiarism_check: true
+          project:
+            rubric_required: true
+            file_review: true
+          code:
+            rubric_required: false
+            auto_tests: true
+            manual_review: optional
+          presentation:
+            rubric_required: true
+            recording_review: true
+            
+    # Rubric-Based Grading
+    - id: BR-GRD-020
+      name: Rubric Grading
+      name_ja: ルーブリック採点
+      description: Apply rubric criteria for structured grading
+      category: rubric
+      priority: high
+      
+      trigger:
+        event: grading_started
+        entity: assignment_submission
+        conditions:
+          - assignment.rubric_id != null
+          
+      actions:
+        - load_rubric:
+            rubric_id: assignment.rubric_id
+        - present_criteria:
+            for_each: rubric.criteria
+            with: performance_levels
+        - collect_scores:
+            for_each: criterion
+            validate: within_level_range
+        - calculate_total:
+            method: rubric.calculation_method
+        - generate_feedback:
+            from: selected_levels.descriptions
+            
+      rubric_structure:
+        criteria:
+          - name: criterion_name
+            weight: percentage
+            levels:
+              - score: points
+                label: performance_level
+                description: feedback_text
+                
+      calculation_methods:
+        sum: "SUM(criterion_scores)"
+        weighted: "SUM(criterion_scores * weights)"
+        holistic: "single_overall_score"
+        
+    # Peer Review Grading
+    - id: BR-GRD-030
+      name: Peer Review
+      name_ja: ピアレビュー
+      description: Manage peer review assessment process
+      category: peer_review
+      priority: medium
+      
+      trigger:
+        event: assignment_submitted
+        entity: assignment_submission
+        conditions:
+          - assignment.peer_review_enabled == true
+          
+      actions:
+        - assign_reviewers:
+            count: assignment.reviewers_per_submission
+            method: random_balanced
+            exclude: same_learner
+        - create_review_tasks:
+            deadline: assignment.review_deadline
+        - notify_reviewers:
+            template: peer_review_assigned
+            
+      peer_review_process:
+        assignment_methods:
+          random: true
+          balanced: ensure_equal_reviews
+          calibrated: based_on_reviewer_accuracy
+        anonymity:
+          single_blind: reviewer_knows_author
+          double_blind: both_anonymous
+        scoring:
+          aggregate: average | median | mode
+          exclude_outliers: true
+          instructor_weight: configurable
+          
+      calibration:
+        enabled: assignment.calibration_required
+        sample_submissions: 3
+        minimum_accuracy: 80%
+        
+    # Late Submission Penalty
+    - id: BR-GRD-040
+      name: Late Penalty Calculation
+      name_ja: 遅延ペナルティ計算
+      description: Calculate and apply late submission penalties
+      category: penalties
+      priority: high
+      
+      trigger:
+        event: assignment_submitted
+        entity: assignment_submission
+        conditions:
+          - submission.submitted_at > assignment.due_date
+          
+      conditions:
+        - field: assignment.late_policy
+          operator: is_not_null
+        - field: submission.extension_granted
+          operator: equals
+          value: false
+          
+      actions:
+        - calculate_late_duration:
+            formula: "submission.submitted_at - assignment.due_date"
+        - apply_penalty:
+            policy: assignment.late_policy
+        - cap_minimum_score:
+            at: assignment.late_minimum_score
+        - log_penalty_applied
+        
+      late_policies:
+        none:
+          description: No penalty
+          deduction: 0
+        percentage_per_day:
+          description: Fixed percentage per day late
+          deduction: "late_days * daily_penalty_percent"
+          example: "10% per day"
+        tiered:
+          description: Increasing penalty tiers
+          tiers:
+            - days: 1-2
+              deduction: 10%
+            - days: 3-5
+              deduction: 25%
+            - days: 6+
+              deduction: 50%
+        hard_deadline:
+          description: No submissions after deadline
+          action: reject_submission
+        grace_period:
+          description: No penalty within grace period
+          grace_hours: 24
+          then_policy: percentage_per_day
+          
+    # Grade Curve Application
+    - id: BR-GRD-050
+      name: Grade Curve
+      name_ja: 成績カーブ
+      description: Apply grade curve to assessment scores
+      category: normalization
+      priority: medium
+      
+      trigger:
+        event: curve_requested
+        entity: assessment
+        conditions:
+          - user.is_instructor == true
+          - assessment.curve_applicable == true
+          
+      conditions:
+        - field: assessment.all_submissions_graded
+          operator: equals
+          value: true
+          
+      actions:
+        - calculate_statistics:
+            mean: true
+            median: true
+            std_deviation: true
+        - apply_curve:
+            method: assessment.curve_method
+        - preview_results:
+            before_apply: true
+        - update_scores:
+            if: instructor_approved
+        - log_curve_application
+        
+      curve_methods:
+        add_points:
+          description: Add fixed points to all scores
+          formula: "score + bonus_points"
+        scale_to_max:
+          description: Scale highest score to max
+          formula: "score * (max_score / highest_score)"
+        bell_curve:
+          description: Normalize to bell curve
+          target_mean: 75
+          target_std: 10
+        square_root:
+          description: Square root curve
+          formula: "sqrt(score / max_score) * max_score"
+        drop_lowest:
+          description: Drop lowest assessment
+          count: 1
+          
+    # Plagiarism Check Integration
+    - id: BR-GRD-060
+      name: Plagiarism Detection
+      name_ja: 剽窃検出
+      description: Integrate plagiarism detection in grading workflow
+      category: integrity
+      priority: high
+      
+      trigger:
+        event: assignment_submitted
+        entity: assignment_submission
+        conditions:
+          - assignment.plagiarism_check_enabled == true
+          
+      actions:
+        - submit_to_checker:
+            service: assignment.plagiarism_service
+            content: submission.content
+        - await_results:
+            timeout: 30 minutes
+        - store_results:
+            similarity_score: true
+            matched_sources: true
+        - flag_if_threshold_exceeded:
+            threshold: assignment.plagiarism_threshold
+        - notify_instructor:
+            if: flagged
+            
+      plagiarism_services:
+        - turnitin
+        - copyscape
+        - moss (for code)
+        - internal_database
+        
+      thresholds:
+        acceptable: "< 15%"
+        review_required: "15-30%"
+        flagged: "> 30%"
+        
+      handling:
+        auto_flag: true
+        block_grading: false
+        instructor_review: required_if_flagged
+        
+    # Extra Credit Handling
+    - id: BR-GRD-070
+      name: Extra Credit
+      name_ja: 追加クレジット
+      description: Handle extra credit assignments and bonus points
+      category: bonus
+      priority: low
+      
+      trigger:
+        event: extra_credit_submitted
+        entity: assignment_submission
+        conditions:
+          - assignment.is_extra_credit == true
+          
+      actions:
+        - grade_submission
+        - apply_to_category:
+            category: assignment.applies_to_category
+            method: add_to_total
+        - cap_category_max:
+            if: course.cap_extra_credit
+            max: course.max_extra_credit_percent
+            
+      extra_credit_rules:
+        applies_to: category | overall | specific_assignment
+        max_bonus: configurable
+        replaces_lowest: optional
+        
+    # Grade Appeal Process
+    - id: BR-GRD-080
+      name: Grade Appeal
+      name_ja: 成績不服申立
+      description: Handle grade appeal requests
+      category: appeals
+      priority: medium
+      
+      trigger:
+        event: grade_appeal_submitted
+        entity: grade_appeal
+        
+      conditions:
+        - field: submission.grade_finalized
+          operator: equals
+          value: true
+        - field: appeal.submitted_within_deadline
+          operator: equals
+          value: true
+          
+      actions:
+        - create_appeal_case
+        - notify_instructor:
+            template: grade_appeal_received
+        - set_review_deadline
+        - track_appeal_status
+        
+      appeal_workflow:
+        stages:
+          - submitted
+          - under_review
+          - decision_made
+          - closed
+        outcomes:
+          - upheld (grade unchanged)
+          - modified (grade adjusted)
+          - withdrawn (by learner)
+        timeline:
+          submission_window: 14 days after grade posted
+          review_deadline: 7 days after submission
+          
+    # Grade Sync to External Systems
+    - id: BR-GRD-090
+      name: Grade Export/Sync
+      name_ja: 成績エクスポート/同期
+      description: Sync grades to external systems (SIS, LTI)
+      category: integration
+      priority: high
+      
+      trigger:
+        event: grade_finalized
+        entity: enrollment
+        
+      conditions:
+        - field: course.grade_sync_enabled
+          operator: equals
+          value: true
+        - field: enrollment.sync_to_sis
+          operator: equals
+          value: true
+          
+      actions:
+        - format_grade:
+            target_format: integration.grade_format
+        - sync_to_sis:
+            if: integration.sis_enabled
+            data: formatted_grade
+        - sync_via_lti:
+            if: integration.lti_gradebook
+            endpoint: lti_tool.grade_passback_url
+        - log_sync_result
+        
+      integrations:
+        sis:
+          format: letter | percentage | pass_fail
+          mapping: configurable
+        lti:
+          service: Assignment and Grade Services 2.0
+          score_format: decimal (0-1)
+          
+    # Competency-Based Assessment
+    - id: BR-GRD-100
+      name: Competency Assessment
+      name_ja: コンピテンシー評価
+      description: Evaluate competency mastery levels
+      category: competency
+      priority: medium
+      
+      trigger:
+        event: competency_assessment_completed
+        entity: competency_record
+        
+      conditions:
+        - field: course.is_competency_based
+          operator: equals
+          value: true
+          
+      actions:
+        - evaluate_evidence:
+            against: competency.criteria
+        - determine_mastery_level:
+            levels: [not_yet, approaching, meets, exceeds]
+        - update_competency_record
+        - check_progression:
+            if: all_competencies_met
+            then: advance_to_next_level
+            
+      competency_model:
+        mastery_levels:
+          not_yet:
+            description: "Has not demonstrated competency"
+            can_progress: false
+          approaching:
+            description: "Developing understanding"
+            can_progress: with_support
+          meets:
+            description: "Demonstrates competency"
+            can_progress: true
+          exceeds:
+            description: "Exceeds expectations"
+            can_progress: true
+            bonus: true
+        evidence_types:
+          - assessments
+          - projects
+          - observations
+          - self_reflection
+        reassessment:
+          allowed: unlimited
+          cooldown: 24 hours
+
+  grading_scales:
+    percentage:
+      type: numeric
+      precision: 2
+      range: [0, 100]
+      
+    points:
+      type: numeric
+      precision: 1
+      range: [0, max_points]
+      
+    letter:
+      type: categorical
+      mapping:
+        A: [90, 100]
+        B: [80, 89.99]
+        C: [70, 79.99]
+        D: [60, 69.99]
+        F: [0, 59.99]
+        
+    pass_fail:
+      type: binary
+      passing_threshold: 60
+      
+    competency:
+      type: categorical
+      levels: [not_yet, approaching, meets, exceeds]
+
+  calculation_settings:
+    rounding:
+      method: half_up
+      precision: 2
+    weighting:
+      normalize: true
+      handle_missing: exclude | zero
+    drop_lowest:
+      enabled: per_category
+      count: configurable
+
+  audit:
+    enabled: true
+    log_events:
+      - grade_recorded
+      - grade_modified
+      - curve_applied
+      - appeal_submitted
+      - appeal_resolved
+      - grade_synced
+    retention: 7 years

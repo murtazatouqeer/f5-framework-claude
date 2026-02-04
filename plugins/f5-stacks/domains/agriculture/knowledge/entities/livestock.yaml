@@ -1,0 +1,184 @@
+name: Livestock
+display_name: Livestock / Gia súc gia cầm
+description: |
+  Thông tin về lô gia súc/gia cầm đang được nuôi hoặc đã bán.
+  Đây là đơn vị cơ bản để tạo listing.
+
+domain: agriculture
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: farm_id
+    type: uuid
+    required: true
+    description: Trang trại sở hữu
+
+  - name: batch_code
+    type: string
+    required: true
+    description: Mã lô
+    validation:
+      pattern: "^BATCH-[0-9]{8}-[A-Z0-9]{4}$"
+    example: "BATCH-20241201-A1B2"
+
+  - name: animal_type
+    type: enum
+    required: true
+    description: Loại vật nuôi
+    validation:
+      values: [pig, chicken, duck, cow, buffalo, goat]
+
+  - name: breed
+    type: string
+    required: true
+    description: Giống
+    example: "Duroc", "Gà ta", "Vịt Grimaud"
+
+  - name: quantity
+    type: integer
+    required: true
+    description: Số lượng con
+    validation:
+      min: 1
+
+  - name: available_quantity
+    type: integer
+    required: true
+    description: Số lượng còn khả dụng (chưa bán)
+
+  - name: avg_weight_kg
+    type: decimal
+    required: true
+    description: Trọng lượng trung bình (kg)
+    validation:
+      min: 0.1
+
+  - name: total_weight_kg
+    type: decimal
+    required: true
+    description: Tổng trọng lượng ước tính
+
+  - name: age_days
+    type: integer
+    required: true
+    description: Số ngày tuổi
+    validation:
+      min: 1
+
+  - name: birth_date
+    type: date
+    required: false
+    description: Ngày sinh/nhập đàn
+
+  - name: feed_type
+    type: enum
+    required: true
+    description: Loại thức ăn
+    validation:
+      values: [industrial, organic, mixed, natural]
+
+  - name: feed_brand
+    type: string
+    required: false
+    description: Thương hiệu cám
+
+  - name: vaccination_records
+    type: array
+    required: false
+    description: Lịch sử tiêm vaccine
+    example:
+      - vaccine: "Dịch tả heo châu Phi"
+        date: "2024-10-15"
+        batch: "VAC-123456"
+
+  - name: health_status
+    type: enum
+    required: true
+    description: Tình trạng sức khỏe
+    validation:
+      values: [healthy, under_observation, sick, quarantined]
+    default: healthy
+
+  - name: veterinary_cert_id
+    type: string
+    required: false
+    description: Mã giấy kiểm dịch
+
+  - name: images
+    type: array
+    required: false
+    description: Hình ảnh đàn
+
+  - name: video_url
+    type: string
+    required: false
+    description: Video đàn (YouTube/upload)
+
+  - name: status
+    type: enum
+    required: true
+    description: Trạng thái lô
+    validation:
+      values: [raising, ready_to_sell, listed, sold, disposed]
+    default: raising
+
+  - name: notes
+    type: text
+    required: false
+    description: Ghi chú
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: farm
+    type: belongs_to
+    entity: Farm
+    required: true
+
+  - name: listings
+    type: has_many
+    entity: Listing
+
+computed_fields:
+  - name: age_weeks
+    formula: FLOOR(age_days / 7)
+    description: Tuổi tính theo tuần
+
+  - name: is_optimal_age
+    formula: |
+      CASE animal_type
+        WHEN 'chicken' THEN age_days BETWEEN 40 AND 50
+        WHEN 'duck' THEN age_days BETWEEN 50 AND 60
+        WHEN 'pig' THEN age_days BETWEEN 150 AND 180
+        ELSE true
+      END
+    description: Có đang ở độ tuổi xuất chuồng tối ưu không
+
+  - name: daily_feed_cost
+    formula: |
+      quantity * config.feed_cost_per_head[animal_type]
+    description: Chi phí thức ăn ước tính/ngày
+
+indexes:
+  - [batch_code]
+  - [farm_id]
+  - [animal_type]
+  - [status]
+  - [health_status]
+
+business_rules:
+  - BR-LIVE-001: batch_code unique trong hệ thống
+  - BR-LIVE-002: available_quantity <= quantity
+  - BR-LIVE-003: Không thể tạo listing nếu health_status != healthy
+  - BR-LIVE-004: Tự động cập nhật age_days mỗi ngày
+  - BR-LIVE-005: Alert nếu vượt quá optimal_age (cần bán gấp)

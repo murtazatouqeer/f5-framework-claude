@@ -1,0 +1,476 @@
+name: fraud_detection_rules
+display_name: Fraud Detection Rules
+description: |
+  Business rules for detecting and investigating insurance fraud including
+  red flag indicators, scoring algorithms, and SIU referral criteria.
+
+domain: insurance
+subdomain: claims
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  claim_timing_indicators:
+    name: Claim Timing Red Flags
+    description: Suspicious timing patterns in claims
+
+    rules:
+      - id: FRD-TIM-001
+        name: Claim After Policy Inception
+        description: Claim shortly after policy start
+        priority: high
+        condition: |
+          DATEDIFF(claim.loss_date, policy.inception_date) <= 30
+        score_weight: 15
+        red_flag: "Claim within 30 days of policy inception"
+        applies_to: [claim]
+
+      - id: FRD-TIM-002
+        name: Claim Before Policy Lapse
+        description: Claim just before policy would lapse
+        priority: high
+        condition: |
+          policy.status = 'grace_period' AND
+          DATEDIFF(policy.grace_period_end_date, claim.loss_date) <= 7
+        score_weight: 20
+        red_flag: "Claim during grace period near lapse"
+        applies_to: [claim]
+
+      - id: FRD-TIM-003
+        name: Coverage Change Before Claim
+        description: Coverage increased shortly before claim
+        priority: high
+        condition: |
+          EXISTS(policy_change WHERE
+            policy_change.policy_id = claim.policy_id AND
+            policy_change.change_type = 'coverage_increase' AND
+            DATEDIFF(claim.loss_date, policy_change.effective_date) <= 60)
+        score_weight: 25
+        red_flag: "Coverage increased within 60 days of claim"
+        applies_to: [claim]
+
+      - id: FRD-TIM-004
+        name: Weekend or Holiday Claim
+        description: Incident occurs on weekend or holiday
+        priority: low
+        condition: |
+          DAYOFWEEK(claim.loss_date) IN (1, 7) OR
+          claim.loss_date IN (holidays)
+        score_weight: 5
+        red_flag: "Incident on weekend or holiday"
+        applies_to: [claim]
+
+      - id: FRD-TIM-005
+        name: Late Reporting
+        description: Significantly delayed claim reporting
+        priority: medium
+        condition: |
+          DATEDIFF(fnol.received_at, claim.loss_date) > 30 AND
+          claim.late_report_reason IS NULL
+        score_weight: 10
+        red_flag: "Late claim reporting without explanation"
+        applies_to: [claim, fnol]
+
+  documentation_indicators:
+    name: Documentation Red Flags
+    description: Suspicious document patterns
+
+    rules:
+      - id: FRD-DOC-001
+        name: Missing Key Documents
+        description: Claimant unable to provide key documents
+        priority: medium
+        condition: |
+          claim.status = 'pending_documents' AND
+          DATEDIFF(NOW(), claim.documents_requested_at) > 14
+        score_weight: 10
+        red_flag: "Unable to provide requested documents"
+        applies_to: [claim]
+
+      - id: FRD-DOC-002
+        name: Altered Documents Suspected
+        description: Documents appear altered or manipulated
+        priority: critical
+        condition: |
+          EXISTS(claim_document WHERE
+            claim_document.claim_id = claim.id AND
+            claim_document.authenticity_score < 50)
+        score_weight: 40
+        red_flag: "Document authenticity concerns"
+        action: immediate_siu_review
+        applies_to: [claim, claim_document]
+
+      - id: FRD-DOC-003
+        name: Receipts Without Business Details
+        description: Receipts missing vendor information
+        priority: medium
+        condition: |
+          EXISTS(claim_document WHERE
+            claim_document.document_type IN ('repair_invoice', 'hospital_bill') AND
+            claim_document.verification_status = 'vendor_not_found')
+        score_weight: 15
+        red_flag: "Vendor cannot be verified"
+        applies_to: [claim_document]
+
+      - id: FRD-DOC-004
+        name: Inconsistent Document Dates
+        description: Document dates don't align with claim timeline
+        priority: high
+        condition: |
+          EXISTS(claim_document WHERE
+            claim_document.document_date < claim.loss_date OR
+            claim_document.document_date > NOW())
+        score_weight: 20
+        red_flag: "Document dates inconsistent with claim"
+        applies_to: [claim, claim_document]
+
+      - id: FRD-DOC-005
+        name: All Original Documents Lost
+        description: All original documents claimed lost
+        priority: high
+        condition: |
+          claim.original_documents_available = false AND
+          claim.documents_lost_reason = 'all_lost'
+        score_weight: 20
+        red_flag: "All original documents unavailable"
+        applies_to: [claim]
+
+  claim_history_indicators:
+    name: Claim History Red Flags
+    description: Suspicious claim history patterns
+
+    rules:
+      - id: FRD-HIS-001
+        name: Multiple Recent Claims
+        description: Multiple claims in short period
+        priority: high
+        condition: |
+          COUNT(claim WHERE
+            claim.policy_holder_id = policy.policy_holder_id AND
+            claim.created_at > NOW() - INTERVAL '12 months') >= 3
+        score_weight: 20
+        red_flag: "3+ claims in past 12 months"
+        applies_to: [claim]
+
+      - id: FRD-HIS-002
+        name: Prior Fraud History
+        description: Claimant has prior fraud flag
+        priority: critical
+        condition: |
+          EXISTS(fraud_indicator WHERE
+            fraud_indicator.claim.claimant_id = claim.claimant_id AND
+            fraud_indicator.final_determination = 'fraud_confirmed')
+        score_weight: 50
+        red_flag: "Prior confirmed fraud"
+        action: immediate_siu_review
+        applies_to: [claim, claimant]
+
+      - id: FRD-HIS-003
+        name: Similar Claim Pattern
+        description: Similar claims across different policies
+        priority: high
+        condition: |
+          EXISTS(claim c2 WHERE
+            c2.claimant_id = claim.claimant_id AND
+            c2.claim_type = claim.claim_type AND
+            c2.id != claim.id AND
+            c2.created_at > NOW() - INTERVAL '24 months')
+        score_weight: 15
+        red_flag: "Similar prior claims found"
+        applies_to: [claim]
+
+      - id: FRD-HIS-004
+        name: Prior Denied Claims
+        description: Multiple previously denied claims
+        priority: high
+        condition: |
+          COUNT(claim WHERE
+            claim.policy_holder_id = policy.policy_holder_id AND
+            claim.status = 'denied') >= 2
+        score_weight: 15
+        red_flag: "Multiple prior denials"
+        applies_to: [claim]
+
+  amount_indicators:
+    name: Amount Red Flags
+    description: Suspicious amount patterns
+
+    rules:
+      - id: FRD-AMT-001
+        name: Claim Near Policy Limit
+        description: Claim amount near coverage limit
+        priority: medium
+        condition: |
+          claim.claimed_amount / coverage.sum_insured > 0.95
+        score_weight: 10
+        red_flag: "Claim near policy limit"
+        applies_to: [claim]
+
+      - id: FRD-AMT-002
+        name: Round Number Claims
+        description: Claimed amount is suspiciously round
+        priority: low
+        condition: |
+          claim.claimed_amount % 10000000 = 0 AND
+          claim.claimed_amount >= 50000000
+        score_weight: 5
+        red_flag: "Suspiciously round claimed amount"
+        applies_to: [claim]
+
+      - id: FRD-AMT-003
+        name: Inflated Amounts
+        description: Claimed amount significantly exceeds assessment
+        priority: high
+        condition: |
+          assessment.assessed_amount IS NOT NULL AND
+          claim.claimed_amount / assessment.assessed_amount > 2
+        score_weight: 25
+        red_flag: "Claimed amount more than 2x assessed"
+        applies_to: [claim, assessment]
+
+      - id: FRD-AMT-004
+        name: Just Under Threshold
+        description: Claim just under investigation threshold
+        priority: medium
+        condition: |
+          claim.claimed_amount >= 45000000 AND
+          claim.claimed_amount <= 50000000
+        score_weight: 10
+        red_flag: "Claim just under investigation threshold"
+        applies_to: [claim]
+
+  behavioral_indicators:
+    name: Behavioral Red Flags
+    description: Suspicious claimant behavior
+
+    rules:
+      - id: FRD-BEH-001
+        name: Excessive Claimant Knowledge
+        description: Claimant unusually familiar with process
+        priority: medium
+        condition: |
+          fnol.process_knowledge_flag = true
+        score_weight: 10
+        red_flag: "Excessive knowledge of claims process"
+        applies_to: [fnol]
+
+      - id: FRD-BEH-002
+        name: Pressure for Quick Settlement
+        description: Unusual pressure for fast payment
+        priority: medium
+        condition: |
+          claim.urgency_complaints >= 3 AND
+          claim.financial_hardship_stated = false
+        score_weight: 10
+        red_flag: "Unusual pressure for quick settlement"
+        applies_to: [claim]
+
+      - id: FRD-BEH-003
+        name: Inconsistent Statements
+        description: Claimant statements contradict each other
+        priority: high
+        condition: |
+          claim.statement_inconsistencies_count >= 2
+        score_weight: 25
+        red_flag: "Multiple statement inconsistencies"
+        applies_to: [claim]
+
+      - id: FRD-BEH-004
+        name: Refuses Inspection
+        description: Claimant refuses or delays inspection
+        priority: high
+        condition: |
+          surveyor_report.inspection_refused = true OR
+          surveyor_report.inspection_delayed_count >= 3
+        score_weight: 20
+        red_flag: "Inspection refused or repeatedly delayed"
+        applies_to: [surveyor_report]
+
+      - id: FRD-BEH-005
+        name: No Witnesses Available
+        description: No witnesses despite public incident
+        priority: medium
+        condition: |
+          claim.incident_location_type = 'public' AND
+          claim.witnesses_available = false
+        score_weight: 10
+        red_flag: "No witnesses for public incident"
+        applies_to: [claim]
+
+  incident_indicators:
+    name: Incident Red Flags
+    description: Suspicious incident patterns
+
+    rules:
+      - id: FRD-INC-001
+        name: Staged Accident Indicators
+        description: Signs of staged accident
+        priority: critical
+        condition: |
+          surveyor_report.staged_accident_indicators >= 3
+        score_weight: 40
+        red_flag: "Multiple staged accident indicators"
+        action: immediate_siu_review
+        applies_to: [surveyor_report]
+
+      - id: FRD-INC-002
+        name: Damage Inconsistent with Incident
+        description: Damage pattern doesn't match reported incident
+        priority: high
+        condition: |
+          surveyor_report.consistency_with_claim = 'inconsistent'
+        score_weight: 30
+        red_flag: "Damage inconsistent with incident description"
+        applies_to: [surveyor_report]
+
+      - id: FRD-INC-003
+        name: Fire Investigation Needed
+        description: Fire origin suspicious
+        priority: high
+        condition: |
+          claim.cause_of_loss = 'fire' AND
+          (surveyor_report.fire_origin_suspicious = true OR
+           surveyor_report.accelerant_detected = true)
+        score_weight: 35
+        red_flag: "Suspicious fire origin"
+        action: forensic_investigation
+        applies_to: [claim, surveyor_report]
+
+      - id: FRD-INC-004
+        name: Theft Without Force
+        description: Theft claim but no signs of forced entry
+        priority: high
+        condition: |
+          claim.claim_type = 'theft' AND
+          surveyor_report.forced_entry_evidence = false AND
+          claim.theft_with_key_access = false
+        score_weight: 20
+        red_flag: "Theft without evidence of forced entry"
+        applies_to: [claim, surveyor_report]
+
+  network_indicators:
+    name: Network Red Flags
+    description: Suspicious network patterns
+
+    rules:
+      - id: FRD-NET-001
+        name: Linked Claims
+        description: Claims linked to known fraud network
+        priority: critical
+        condition: |
+          fraud_indicator.ring_identified = true
+        score_weight: 50
+        red_flag: "Linked to known fraud network"
+        action: immediate_siu_review
+        applies_to: [fraud_indicator]
+
+      - id: FRD-NET-002
+        name: Common Provider Pattern
+        description: Multiple claims using same provider
+        priority: high
+        condition: |
+          EXISTS(
+            SELECT provider FROM claims
+            WHERE provider.name = claim.service_provider
+            GROUP BY provider.name
+            HAVING COUNT(*) >= 5 AND
+                   AVG(claim.claimed_amount) > threshold
+          )
+        score_weight: 25
+        red_flag: "Provider with suspicious claim pattern"
+        applies_to: [claim]
+
+      - id: FRD-NET-003
+        name: Same Address Different Claimants
+        description: Multiple claims from same address
+        priority: medium
+        condition: |
+          COUNT(claim WHERE
+            claim.claimant.address = claimant.address AND
+            claim.claimant_id != claimant.id AND
+            claim.created_at > NOW() - INTERVAL '12 months') >= 3
+        score_weight: 15
+        red_flag: "Multiple claims from same address"
+        applies_to: [claim, claimant]
+
+scoring_algorithm:
+  calculation: |
+    fraud_score = SUM(triggered_rule.score_weight)
+
+    # Apply multipliers
+    IF prior_fraud_confirmed:
+      fraud_score = fraud_score * 1.5
+
+    IF claim_amount > high_value_threshold:
+      fraud_score = fraud_score * 1.2
+
+    # Cap at 100
+    fraud_score = MIN(fraud_score, 100)
+
+  risk_levels:
+    - level: low
+      score_range: 0-29
+      action: normal_processing
+
+    - level: medium
+      score_range: 30-49
+      action: enhanced_verification
+
+    - level: high
+      score_range: 50-69
+      action: siu_review_recommended
+
+    - level: critical
+      score_range: 70-100
+      action: immediate_siu_referral
+
+siu_referral_criteria:
+  automatic_referral:
+    - fraud_score >= 70
+    - prior_fraud_confirmed = true
+    - document_forgery_suspected = true
+    - staged_accident_indicators >= 3
+    - fraud_ring_linked = true
+
+  recommended_referral:
+    - fraud_score >= 50
+    - claim_amount > 500000000
+    - multiple_red_flags >= 5
+
+  discretionary_referral:
+    - fraud_score >= 30
+    - handler_suspicion = true
+
+investigation_actions:
+  level_1_enhanced_verification:
+    - additional_documentation_request
+    - statement_verification
+    - provider_verification
+    - cross_reference_check
+
+  level_2_field_investigation:
+    - scene_investigation
+    - witness_interviews
+    - surveillance_consideration
+    - expert_consultation
+
+  level_3_siu_investigation:
+    - full_siu_assignment
+    - forensic_analysis
+    - surveillance_implementation
+    - law_enforcement_coordination
+
+reporting:
+  fraud_metrics:
+    - claims_flagged_count
+    - siu_referral_count
+    - confirmed_fraud_count
+    - fraud_savings
+    - false_positive_rate
+
+  reporting_frequency:
+    operational: daily
+    management: weekly
+    executive: monthly
+    regulatory: quarterly

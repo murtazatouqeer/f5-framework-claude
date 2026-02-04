@@ -1,0 +1,558 @@
+name: changeover-workflow
+display_name: Machine Changeover Workflow
+display_name_vi: Quy trình chuyển đổi máy
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: workflow
+
+description: |
+  Workflow for machine changeover/setup between production runs,
+  following SMED (Single-Minute Exchange of Die) principles.
+
+description_vi: |
+  Quy trình chuyển đổi/cài đặt máy giữa các đợt sản xuất,
+  theo nguyên tắc SMED (Đổi khuôn trong vài phút).
+
+trigger:
+  events:
+    - product_change_required
+    - work_order_change
+    - tooling_change_needed
+    - scheduled_changeover
+  conditions:
+    - current_production_complete OR interrupted
+    - next_production_scheduled
+
+actors:
+  - id: operator
+    name: Machine Operator
+    name_vi: Công nhân vận hành
+    responsibilities:
+      - Perform changeover steps
+      - Verify setup
+      - Run first article
+
+  - id: setup_technician
+    name: Setup Technician
+    name_vi: Kỹ thuật viên cài đặt
+    responsibilities:
+      - Complex setups
+      - Tooling changes
+      - Parameter adjustments
+
+  - id: lead_operator
+    name: Lead Operator
+    name_vi: Tổ trưởng
+    responsibilities:
+      - Coordinate changeover
+      - Verify completion
+      - Approve first article
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - First article inspection
+      - Setup verification
+
+  - id: material_handler
+    name: Material Handler
+    name_vi: Nhân viên vận chuyển
+    responsibilities:
+      - Stage new materials
+      - Remove old materials
+
+states:
+  - id: scheduled
+    name: Scheduled
+    name_vi: Đã lên lịch
+    description: Changeover planned
+
+  - id: preparing
+    name: Preparing
+    name_vi: Đang chuẩn bị
+    description: External setup in progress
+
+  - id: changing
+    name: Changing
+    name_vi: Đang chuyển đổi
+    description: Machine stopped, internal setup
+
+  - id: verifying
+    name: Verifying
+    name_vi: Đang xác minh
+    description: Setup verification
+
+  - id: qualifying
+    name: Qualifying
+    name_vi: Đang đánh giá
+    description: First article inspection
+
+  - id: complete
+    name: Complete
+    name_vi: Hoàn thành
+    description: Changeover finished
+
+steps:
+  - id: plan_changeover
+    name: Plan Changeover
+    name_vi: Lên kế hoạch chuyển đổi
+    state: scheduled
+    actor: lead_operator
+    timing: before_changeover
+
+    actions:
+      - action: identify_changeover_requirements
+        inputs:
+          - current_product
+          - next_product
+          - machine_id
+        outputs:
+          - changeover_checklist
+          - tooling_requirements
+          - material_requirements
+
+      - action: determine_changeover_type
+        types:
+          - full_changeover: Different product family
+          - partial_changeover: Same family, different size
+          - quick_changeover: Minor adjustment only
+        outputs:
+          - changeover_type
+          - estimated_duration
+
+      - action: create_changeover_plan
+        contents:
+          - external_setup_tasks
+          - internal_setup_tasks
+          - required_resources
+          - timing_targets
+        outputs:
+          - changeover_plan
+
+      - action: schedule_resources
+        resources:
+          - setup_technician_if_needed
+          - tooling
+          - materials
+          - quality_inspector
+
+    next_step: external_setup
+
+  - id: external_setup
+    name: External Setup
+    name_vi: Cài đặt bên ngoài
+    state: preparing
+    actor: operator
+    timing: while_machine_running
+    smed_category: external
+
+    description: |
+      Activities performed while machine is still running
+      previous product - minimizes actual downtime
+
+    actions:
+      - action: retrieve_next_tooling
+        description: Get tools, dies, fixtures for next product
+        location: tool_room_or_shadow_board
+        outputs:
+          - staged_tooling
+
+      - action: stage_next_materials
+        actor: material_handler
+        description: Position materials at machine
+        outputs:
+          - staged_materials
+
+      - action: prepare_documentation
+        items:
+          - work_instructions
+          - quality_specs
+          - setup_parameters
+        outputs:
+          - staged_documents
+
+      - action: pre_heat_or_condition
+        condition: equipment_requires_conditioning
+        examples:
+          - preheat_molds
+          - warm_up_hydraulics
+          - condition_coolant
+
+      - action: pre_assemble_tooling
+        condition: assembly_required
+        description: Assemble tool components before changeover
+
+      - action: complete_external_checklist
+        outputs:
+          - external_setup_complete_time
+
+    validations:
+      - rule: all_external_tasks_complete
+        message: Complete all external setup before stopping machine
+
+    transitions:
+      - to: changing
+        condition: current_production_complete
+        trigger: machine_stop
+
+    next_step: internal_setup
+
+  - id: internal_setup
+    name: Internal Setup
+    name_vi: Cài đặt bên trong
+    state: changing
+    actor: operator
+    timing: machine_stopped
+    smed_category: internal
+    time_critical: true
+
+    description: |
+      Activities that can only be performed when machine is stopped -
+      this is the actual changeover time to minimize
+
+    actions:
+      - action: stop_machine_safely
+        steps:
+          - complete_current_cycle
+          - clear_materials
+          - power_down_if_required
+        outputs:
+          - changeover_start_time
+
+      - action: remove_current_tooling
+        steps:
+          - release_clamps
+          - remove_dies_or_fixtures
+          - disconnect_utilities
+        smed_tips:
+          - use_quick_release_clamps
+          - standardize_mounting_heights
+          - use_one_turn_fasteners
+
+      - action: clean_machine
+        areas:
+          - work_area
+          - mounting_surfaces
+          - coolant_paths
+        time_target: minimize
+
+      - action: install_new_tooling
+        steps:
+          - position_new_tooling
+          - secure_mounting
+          - connect_utilities
+        smed_tips:
+          - use_locating_pins
+          - standardize_connections
+          - eliminate_adjustments
+
+      - action: load_program_parameters
+        inputs:
+          - cnc_program
+          - plc_settings
+          - speed_feed_parameters
+        method: preset_programs
+
+      - action: adjust_machine_settings
+        adjustments:
+          - stroke_length
+          - pressure_settings
+          - temperature_setpoints
+        smed_tips:
+          - use_preset_values
+          - eliminate_trial_and_error
+          - use_gauge_blocks
+
+      - action: load_new_materials
+        steps:
+          - load_raw_material
+          - thread_through_machine
+          - verify_material_spec
+
+      - action: record_changeover_time
+        outputs:
+          - internal_setup_duration
+
+    validations:
+      - rule: time_within_target
+        check: actual_time <= target_time * 1.10
+        message: Changeover exceeded target time
+
+    next_step: setup_verification
+
+  - id: setup_verification
+    name: Setup Verification
+    name_vi: Xác minh cài đặt
+    state: verifying
+    actor: operator
+
+    actions:
+      - action: verify_tooling_installation
+        checks:
+          - tooling_secure
+          - correct_tool_installed
+          - proper_orientation
+        outputs:
+          - tooling_verification
+
+      - action: verify_machine_parameters
+        checks:
+          - speeds_correct
+          - feeds_correct
+          - pressures_correct
+          - temperatures_correct
+        outputs:
+          - parameter_verification
+
+      - action: verify_materials
+        checks:
+          - correct_material_loaded
+          - material_positioned_correctly
+          - lot_number_recorded
+        outputs:
+          - material_verification
+
+      - action: verify_safety
+        checks:
+          - guards_in_place
+          - interlocks_active
+          - emergency_stop_accessible
+        outputs:
+          - safety_verification
+
+      - action: complete_setup_checklist
+        outputs:
+          - setup_checklist_signed
+
+    validations:
+      - rule: all_verifications_pass
+        message: All setup verifications must pass
+
+    next_step: first_article
+
+  - id: first_article
+    name: First Article Production
+    name_vi: Sản xuất sản phẩm đầu tiên
+    state: qualifying
+    actor: operator
+
+    actions:
+      - action: start_machine
+        mode: slow_or_manual_first
+        outputs:
+          - machine_started
+
+      - action: produce_first_piece
+        quantity: 1-3 pieces
+        method: careful_monitoring
+        outputs:
+          - first_article_pieces
+
+      - action: operator_self_check
+        checks:
+          - visual_inspection
+          - basic_measurements
+        outputs:
+          - self_check_results
+
+      - action: submit_for_inspection
+        to: quality_inspector
+        with: first_article_pieces
+
+      - action: first_article_inspection
+        actor: quality_inspector
+        checks:
+          - all_critical_dimensions
+          - visual_requirements
+          - functional_tests
+        outputs:
+          - fai_results
+          - fai_record
+
+      - action: approve_or_adjust
+        decision:
+          pass:
+            action: authorize_production
+            next: complete_changeover
+          fail:
+            action: identify_adjustment_needed
+            next: adjustment_loop
+
+    sub_workflow:
+      id: adjustment_loop
+      trigger: first_article_failed
+      max_iterations: 3
+      actions:
+        - diagnose_issue
+        - make_adjustment
+        - produce_new_first_article
+        - re_inspect
+      escalation:
+        condition: iterations > 3
+        to: setup_technician
+        action: expert_intervention
+
+    validations:
+      - rule: fai_approved
+        message: First article must be approved before production
+
+    next_step: complete_changeover
+
+  - id: complete_changeover
+    name: Complete Changeover
+    name_vi: Hoàn thành chuyển đổi
+    state: complete
+    actor: lead_operator
+
+    actions:
+      - action: authorize_full_production
+        outputs:
+          - production_authorized
+
+      - action: record_changeover_data
+        data:
+          - total_changeover_time
+          - setup_start_time
+          - setup_end_time
+          - first_article_time
+          - fai_result
+          - operator_id
+        outputs:
+          - changeover_record
+
+      - action: calculate_metrics
+        metrics:
+          - actual_vs_standard_time
+          - first_article_attempts
+          - downtime_impact
+
+      - action: store_removed_tooling
+        destination: tool_room_or_shadow_board
+        condition: tooling_reusable
+
+      - action: clear_work_area
+        description: Remove changeover materials and documents
+
+      - action: update_production_schedule
+        description: Confirm changeover complete in system
+
+    validations:
+      - rule: changeover_documented
+        message: Changeover must be fully documented
+
+    transitions:
+      - to: complete
+        condition: all_steps_done
+        action: release_to_production
+
+smed_principles:
+  - principle: separate_internal_external
+    description: Identify which activities require machine stop
+    benefit: Minimize actual downtime
+
+  - principle: convert_internal_to_external
+    description: Move activities to while machine running
+    examples:
+      - preheating
+      - pre_assembly
+      - staging
+
+  - principle: streamline_internal_operations
+    description: Reduce time for activities requiring machine stop
+    techniques:
+      - parallel_operations
+      - quick_release_mechanisms
+      - standardized_heights
+
+  - principle: eliminate_adjustments
+    description: Use preset values and eliminate trial and error
+    techniques:
+      - gauge_blocks
+      - preset_programs
+      - standardized_tooling
+
+kpis:
+  - metric: Changeover Time
+    formula: end_time - start_time
+    target: "Specific to machine/product"
+
+  - metric: Changeover Time Reduction
+    formula: (current - baseline) / baseline * 100
+    target: "50% reduction goal"
+
+  - metric: First Article Success Rate
+    formula: (first_attempt_pass / total_changeovers) * 100
+    target: "> 90%"
+
+  - metric: Changeover Frequency
+    formula: changeovers_per_period
+    track: For capacity planning
+
+  - metric: SMED Compliance
+    formula: (changeovers_meeting_target / total) * 100
+    target: "> 85%"
+
+changeover_types:
+  - type: product_family_change
+    typical_time: 2-4 hours
+    activities:
+      - major_tooling_change
+      - significant_parameter_changes
+      - material_change
+
+  - type: size_change
+    typical_time: 30-60 minutes
+    activities:
+      - adjustment_within_family
+      - minor_tooling_change
+
+  - type: color_change
+    typical_time: 15-30 minutes
+    activities:
+      - purge_previous_color
+      - load_new_color
+      - verify_color_match
+
+  - type: quick_change
+    typical_time: < 10 minutes
+    activities:
+      - minor_adjustments
+      - program_change_only
+
+notifications:
+  - event: changeover_starting
+    recipients: [supervisor]
+    message: "Changeover starting on {machine}: {from_product} → {to_product}"
+
+  - event: changeover_delayed
+    recipients: [supervisor]
+    condition: elapsed > target * 1.25
+    message: "Changeover delay on {machine}: {elapsed} vs {target} target"
+
+  - event: first_article_failed
+    recipients: [lead_operator, quality]
+    message: "FAI failed on {machine}: {failure_reason}"
+
+  - event: changeover_complete
+    recipients: [supervisor, planner]
+    message: "Changeover complete: {machine}, duration: {duration}"
+
+integrations:
+  - system: MES
+    events:
+      - changeover_start
+      - changeover_end
+    data: downtime_tracking, oee_impact
+
+  - system: Tool_Management
+    events:
+      - tool_checkout
+      - tool_return
+    data: tool_availability, tool_life
+
+  - system: QMS
+    events:
+      - fai_recorded
+    data: first_article_results

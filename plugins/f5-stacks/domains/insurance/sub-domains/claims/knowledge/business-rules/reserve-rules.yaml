@@ -1,0 +1,406 @@
+name: reserve_rules
+display_name: Reserve Management Rules
+description: |
+  Business rules for claims reserve management including initial setting,
+  adjustments, authority limits, and review requirements.
+
+domain: insurance
+subdomain: claims
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  initial_reserve:
+    name: Initial Reserve Setting Rules
+    description: Rules for setting initial claim reserves
+
+    rules:
+      - id: RES-INI-001
+        name: Mandatory Initial Reserve
+        description: All registered claims must have initial reserve
+        priority: critical
+        condition: |
+          claim.status = 'registered' IMPLIES
+          EXISTS(reserve WHERE reserve.claim_id = claim.id)
+        error_message: "Initial reserve required for registered claims"
+        action: require_reserve
+        sla: within_24_hours
+        applies_to: [claim]
+
+      - id: RES-INI-002
+        name: Reserve Based on Claimed Amount
+        description: Initial reserve should consider claimed amount
+        priority: high
+        condition: |
+          reserve.initial_reserve >= claim.claimed_amount * 0.5 AND
+          reserve.initial_reserve <= coverage.sum_insured
+        warning_message: "Initial reserve significantly differs from claimed amount"
+        action: flag_for_review
+        applies_to: [reserve, claim]
+
+      - id: RES-INI-003
+        name: Minimum Reserve Amount
+        description: Reserve must meet minimum threshold
+        priority: medium
+        condition: |
+          reserve.initial_reserve >= 1000000
+        warning_message: "Reserve below minimum threshold"
+        action: adjust_reserve
+        applies_to: [reserve]
+
+      - id: RES-INI-004
+        name: Reserve by Claim Type
+        description: Apply claim-type specific reserve guidelines
+        priority: high
+        tables:
+          initial_reserve_guidelines:
+            - claim_type: death
+              min_reserve: policy.death_benefit
+              max_reserve: policy.death_benefit
+
+            - claim_type: hospitalization
+              min_reserve: 10000000
+              max_reserve: coverage.sum_insured
+              formula: "estimated_days * daily_benefit"
+
+            - claim_type: motor_own_damage
+              min_reserve: 5000000
+              max_reserve: vehicle.sum_insured
+              formula: "repair_estimate * 1.1"
+
+            - claim_type: property_fire
+              min_reserve: 50000000
+              max_reserve: property.sum_insured
+              formula: "initial_loss_estimate"
+        applies_to: [reserve, claim]
+
+      - id: RES-INI-005
+        name: Expense Reserve Allocation
+        description: Allocate expense reserve in addition to indemnity
+        priority: medium
+        condition: |
+          EXISTS(reserve WHERE
+            reserve.claim_id = claim.id AND
+            reserve.reserve_category = 'expense')
+        calculation: |
+          expense_reserve = indemnity_reserve * 0.05
+        warning_message: "Expense reserve not allocated"
+        action: add_expense_reserve
+        applies_to: [reserve]
+
+  reserve_authority:
+    name: Reserve Authority Rules
+    description: Rules for reserve setting authority limits
+
+    rules:
+      - id: RES-AUT-001
+        name: Handler Authority Limit
+        description: Claims handler reserve authority
+        priority: critical
+        condition: |
+          reserve.set_by.role = 'handler' IMPLIES
+          reserve.current_reserve <= 100000000
+        error_message: "Reserve exceeds handler authority"
+        action: require_approval
+        escalate_to: senior_handler
+        applies_to: [reserve]
+
+      - id: RES-AUT-002
+        name: Senior Handler Authority Limit
+        description: Senior handler reserve authority
+        priority: critical
+        condition: |
+          reserve.set_by.role = 'senior_handler' IMPLIES
+          reserve.current_reserve <= 500000000
+        error_message: "Reserve exceeds senior handler authority"
+        action: require_approval
+        escalate_to: supervisor
+        applies_to: [reserve]
+
+      - id: RES-AUT-003
+        name: Supervisor Authority Limit
+        description: Supervisor reserve authority
+        priority: critical
+        condition: |
+          reserve.set_by.role = 'supervisor' IMPLIES
+          reserve.current_reserve <= 2000000000
+        error_message: "Reserve exceeds supervisor authority"
+        action: require_approval
+        escalate_to: manager
+        applies_to: [reserve]
+
+      - id: RES-AUT-004
+        name: Manager Authority Limit
+        description: Manager reserve authority
+        priority: critical
+        condition: |
+          reserve.set_by.role = 'manager' IMPLIES
+          reserve.current_reserve <= 10000000000
+        error_message: "Reserve exceeds manager authority"
+        action: require_approval
+        escalate_to: director
+        applies_to: [reserve]
+
+      - id: RES-AUT-005
+        name: Committee Required
+        description: Committee approval for very large reserves
+        priority: critical
+        condition: |
+          reserve.current_reserve > 10000000000 IMPLIES
+          reserve.approved_by_committee = true
+        error_message: "Committee approval required for large reserves"
+        action: escalate_to_committee
+        applies_to: [reserve]
+
+  reserve_adjustment:
+    name: Reserve Adjustment Rules
+    description: Rules for reserve adjustments
+
+    rules:
+      - id: RES-ADJ-001
+        name: Adjustment Justification Required
+        description: All adjustments must have documented reason
+        priority: high
+        condition: |
+          reserve.last_adjustment_reason IS NOT NULL AND
+          LENGTH(reserve.last_adjustment_reason) >= 20
+        error_message: "Adjustment reason required"
+        action: require_justification
+        applies_to: [reserve]
+
+      - id: RES-ADJ-002
+        name: Significant Increase Review
+        description: Large reserve increases require review
+        priority: high
+        condition: |
+          reserve.last_adjustment_amount > 0 AND
+          (reserve.last_adjustment_amount / reserve.current_reserve) > 0.25
+        warning_message: "Significant reserve increase requires review"
+        action: flag_for_review
+        applies_to: [reserve]
+
+      - id: RES-ADJ-003
+        name: Significant Decrease Review
+        description: Large reserve decreases require review
+        priority: high
+        condition: |
+          reserve.last_adjustment_amount < 0 AND
+          ABS(reserve.last_adjustment_amount /
+              (reserve.current_reserve + ABS(reserve.last_adjustment_amount))) > 0.30
+        warning_message: "Significant reserve decrease requires review"
+        action: flag_for_review
+        applies_to: [reserve]
+
+      - id: RES-ADJ-004
+        name: Adjustment Authority
+        description: Adjustment authority based on amount
+        priority: critical
+        condition: |
+          ABS(reserve.last_adjustment_amount) <=
+          authority_limit(reserve.adjusted_by.role)
+        error_message: "Adjustment exceeds authority"
+        action: require_approval
+        applies_to: [reserve]
+
+      - id: RES-ADJ-005
+        name: Post-Survey Adjustment
+        description: Adjust reserve after survey report
+        priority: high
+        condition: |
+          surveyor_report.status = 'finalized' IMPLIES
+          reserve.updated_at > surveyor_report.finalized_at
+        warning_message: "Reserve should be reviewed after survey report"
+        action: prompt_review
+        applies_to: [reserve, surveyor_report]
+
+      - id: RES-ADJ-006
+        name: Post-Assessment Adjustment
+        description: Adjust reserve after assessment
+        priority: high
+        condition: |
+          assessment.status = 'completed' IMPLIES
+          ABS(reserve.current_reserve - assessment.recommended_amount) /
+          reserve.current_reserve < 0.20
+        warning_message: "Reserve differs significantly from assessment"
+        action: prompt_adjustment
+        applies_to: [reserve, assessment]
+
+  reserve_review:
+    name: Reserve Review Rules
+    description: Rules for periodic reserve review
+
+    rules:
+      - id: RES-REV-001
+        name: Quarterly Review Requirement
+        description: Active reserves must be reviewed quarterly
+        priority: high
+        condition: |
+          reserve.status = 'active' IMPLIES
+          DATEDIFF(NOW(), reserve.last_reviewed_at) <= 90
+        warning_message: "Reserve review overdue"
+        action: schedule_review
+        applies_to: [reserve]
+
+      - id: RES-REV-002
+        name: Monthly Review for Large Claims
+        description: Large claim reserves reviewed monthly
+        priority: high
+        condition: |
+          reserve.current_reserve > 1000000000 IMPLIES
+          DATEDIFF(NOW(), reserve.last_reviewed_at) <= 30
+        warning_message: "Large claim reserve review overdue"
+        action: schedule_review
+        applies_to: [reserve]
+
+      - id: RES-REV-003
+        name: Stale Reserve Detection
+        description: Detect reserves without activity
+        priority: medium
+        condition: |
+          reserve.status = 'active' AND
+          DATEDIFF(NOW(), reserve.updated_at) > 180
+        warning_message: "Reserve has been stale for 6 months"
+        action: flag_for_review
+        applies_to: [reserve]
+
+      - id: RES-REV-004
+        name: Review After Key Events
+        description: Review reserve after significant claim events
+        priority: high
+        events:
+          - assessment.completed
+          - settlement.approved
+          - payment.completed
+          - litigation.filed
+          - fraud_indicator.confirmed
+        action: trigger_review
+        applies_to: [reserve]
+
+  reserve_release:
+    name: Reserve Release Rules
+    description: Rules for releasing reserves
+
+    rules:
+      - id: RES-REL-001
+        name: Release on Claim Closure
+        description: Release reserve when claim closes
+        priority: high
+        condition: |
+          claim.status IN ('closed', 'settled') IMPLIES
+          reserve.status IN ('released', 'closed')
+        action: release_reserve
+        applies_to: [reserve, claim]
+
+      - id: RES-REL-002
+        name: Partial Release After Payment
+        description: Reduce reserve after payment made
+        priority: high
+        condition: |
+          payment.status = 'completed' IMPLIES
+          reserve.current_reserve =
+            reserve.current_reserve - payment.net_amount
+        action: reduce_reserve
+        applies_to: [reserve, payment]
+
+      - id: RES-REL-003
+        name: Release Approval for Large Amounts
+        description: Large reserve releases need approval
+        priority: high
+        condition: |
+          reserve.released_amount > 500000000 IMPLIES
+          reserve.release_approved_by IS NOT NULL
+        error_message: "Large reserve release requires approval"
+        action: require_approval
+        applies_to: [reserve]
+
+      - id: RES-REL-004
+        name: Release Reason Required
+        description: Document reason for reserve release
+        priority: medium
+        condition: |
+          reserve.status = 'released' IMPLIES
+          reserve.release_reason IS NOT NULL
+        error_message: "Release reason required"
+        action: require_documentation
+        applies_to: [reserve]
+
+  ibnr_reserves:
+    name: IBNR Reserve Rules
+    description: Rules for Incurred But Not Reported reserves
+
+    rules:
+      - id: RES-IBNR-001
+        name: IBNR Calculation Method
+        description: IBNR calculation methodology
+        priority: high
+        calculation: |
+          ibnr_reserve = historical_claims * development_factor *
+                        inflation_adjustment - reported_reserves
+        frequency: monthly
+        applies_to: [reserve]
+
+      - id: RES-IBNR-002
+        name: IBNR Adequacy Review
+        description: Quarterly IBNR adequacy review
+        priority: high
+        condition: |
+          ibnr_adequacy_ratio BETWEEN 0.95 AND 1.05
+        warning_message: "IBNR adequacy outside acceptable range"
+        action: actuarial_review
+        applies_to: [reserve]
+
+      - id: RES-IBNR-003
+        name: Catastrophe IBNR
+        description: Additional IBNR for catastrophe events
+        priority: high
+        condition: |
+          catastrophe_event.declared = true IMPLIES
+          EXISTS(reserve WHERE
+            reserve.reserve_type = 'catastrophe' AND
+            reserve.event_id = catastrophe_event.id)
+        action: create_cat_reserve
+        applies_to: [reserve]
+
+authority_matrix:
+  levels:
+    - role: handler
+      initial_limit: 100000000
+      adjustment_limit: 50000000
+
+    - role: senior_handler
+      initial_limit: 500000000
+      adjustment_limit: 200000000
+
+    - role: supervisor
+      initial_limit: 2000000000
+      adjustment_limit: 500000000
+
+    - role: manager
+      initial_limit: 10000000000
+      adjustment_limit: 2000000000
+
+    - role: director
+      initial_limit: 50000000000
+      adjustment_limit: 10000000000
+
+    - role: committee
+      initial_limit: unlimited
+      adjustment_limit: unlimited
+
+review_schedule:
+  standard_claims:
+    frequency: quarterly
+    threshold: 100000000
+
+  large_claims:
+    frequency: monthly
+    threshold: 1000000000
+
+  catastrophe_claims:
+    frequency: weekly
+    threshold: any
+
+  litigation_claims:
+    frequency: monthly
+    threshold: any

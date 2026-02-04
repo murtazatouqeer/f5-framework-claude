@@ -1,0 +1,548 @@
+name: Premium
+display_name: Premium Payment
+description: |
+  Premium payment records and billing information.
+  Tracks due dates, payments, and collection status.
+
+domain: insurance
+subdomain: policy
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: premiums
+  primary_key: id
+  indexes:
+    - columns: [policy_id]
+    - columns: [premium_number]
+      unique: true
+    - columns: [due_date]
+    - columns: [status]
+    - columns: [payment_date]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: premium_number
+    type: string
+    description: Premium reference
+    pattern: "PRM-[A-Z0-9]{10}"
+    example: "PRM-2024A00001"
+    required: true
+    unique: true
+
+  - name: policy_id
+    type: uuid
+    description: Parent policy
+    required: true
+
+  - name: policy_number
+    type: string
+    description: Policy reference
+
+  # Billing period
+  - name: billing_period
+    type: integer
+    description: Period number (1, 2, 3...)
+    required: true
+
+  - name: period_start_date
+    type: date
+    description: Coverage period start
+
+  - name: period_end_date
+    type: date
+    description: Coverage period end
+
+  - name: policy_year
+    type: integer
+    description: Policy year (1, 2, 3...)
+
+  # Due dates
+  - name: due_date
+    type: date
+    description: Payment due date
+    required: true
+
+  - name: grace_period_end
+    type: date
+    description: End of grace period
+    computed: "due_date + grace_days"
+
+  - name: grace_days
+    type: integer
+    description: Grace period in days
+    default: 30
+
+  # Premium amounts
+  - name: base_premium
+    type: decimal
+    description: Base premium amount
+    precision: 12
+    scale: 2
+
+  - name: rider_premium
+    type: decimal
+    description: Total rider premiums
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: loading_amount
+    type: decimal
+    description: Total loading amount
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: discount_amount
+    type: decimal
+    description: Total discounts
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: net_premium
+    type: decimal
+    description: Premium before tax
+    precision: 12
+    scale: 2
+    computed: "base_premium + rider_premium + loading_amount - discount_amount"
+
+  - name: tax_amount
+    type: decimal
+    description: Tax amount
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: stamp_duty
+    type: decimal
+    description: Stamp duty
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: gross_premium
+    type: decimal
+    description: Total amount due
+    precision: 12
+    scale: 2
+    required: true
+    computed: "net_premium + tax_amount + stamp_duty"
+
+  - name: currency
+    type: string
+    description: Premium currency
+    default: "VND"
+
+  # Premium breakdown
+  - name: premium_breakdown
+    type: array
+    description: Detailed breakdown
+    items:
+      type: object
+      properties:
+        component:
+          type: string
+        coverage_id:
+          type: uuid
+        insured_id:
+          type: uuid
+        amount:
+          type: decimal
+        description:
+          type: string
+
+  - name: loadings_detail
+    type: array
+    description: Loading details
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        percentage:
+          type: decimal
+        amount:
+          type: decimal
+        reason:
+          type: string
+
+  - name: discounts_detail
+    type: array
+    description: Discount details
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        percentage:
+          type: decimal
+        amount:
+          type: decimal
+        reason:
+          type: string
+
+  - name: taxes_detail
+    type: array
+    description: Tax breakdown
+    items:
+      type: object
+      properties:
+        tax_type:
+          type: string
+        rate:
+          type: decimal
+        amount:
+          type: decimal
+
+  # Payment status
+  - name: status
+    type: enum
+    description: Payment status
+    values:
+      - pending
+      - notified
+      - partially_paid
+      - paid
+      - overdue
+      - in_grace
+      - waived
+      - cancelled
+      - refunded
+    default: pending
+
+  - name: payment_status
+    type: enum
+    description: Collection status
+    values:
+      - not_due
+      - due
+      - in_grace_period
+      - overdue
+      - paid
+      - waived
+    default: not_due
+
+  # Payment details
+  - name: amount_paid
+    type: decimal
+    description: Amount received
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: amount_outstanding
+    type: decimal
+    description: Remaining balance
+    precision: 12
+    scale: 2
+    computed: "gross_premium - amount_paid"
+
+  - name: payment_date
+    type: date
+    description: When paid in full
+
+  - name: payment_method
+    type: enum
+    description: How premium was paid
+    values:
+      - bank_transfer
+      - credit_card
+      - debit_card
+      - auto_debit
+      - cash
+      - cheque
+      - e_wallet
+      - salary_deduction
+
+  - name: payment_reference
+    type: string
+    description: Payment transaction reference
+
+  - name: received_by
+    type: uuid
+    description: Who received payment
+
+  - name: received_at
+    type: timestamp
+    description: Payment receipt time
+
+  # Partial payments
+  - name: partial_payments
+    type: array
+    description: Partial payment records
+    items:
+      type: object
+      properties:
+        payment_id:
+          type: uuid
+        amount:
+          type: decimal
+        payment_date:
+          type: date
+        payment_method:
+          type: string
+        reference:
+          type: string
+
+  # Auto-pay
+  - name: auto_pay_enabled
+    type: boolean
+    description: Auto payment active
+    default: false
+
+  - name: auto_pay_source
+    type: object
+    description: Auto-pay source
+    properties:
+      type:
+        type: string
+      account_id:
+        type: uuid
+      last_4_digits:
+        type: string
+
+  - name: auto_pay_date
+    type: date
+    description: Scheduled auto-pay date
+
+  - name: auto_pay_attempts
+    type: integer
+    description: Auto-pay attempt count
+    default: 0
+
+  - name: last_auto_pay_result
+    type: object
+    description: Last auto-pay result
+    properties:
+      attempted_at:
+        type: timestamp
+      success:
+        type: boolean
+      error_code:
+        type: string
+      error_message:
+        type: string
+
+  # Notifications
+  - name: reminder_sent
+    type: boolean
+    description: Reminder sent
+    default: false
+
+  - name: reminder_sent_at
+    type: timestamp
+    description: When reminder sent
+
+  - name: reminder_count
+    type: integer
+    description: Number of reminders
+    default: 0
+
+  - name: notification_history
+    type: array
+    description: Notification history
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        sent_at:
+          type: timestamp
+        channel:
+          type: string
+        status:
+          type: string
+
+  # Waiver
+  - name: waived
+    type: boolean
+    description: Premium waived
+    default: false
+
+  - name: waiver_reason
+    type: string
+    description: Why waived
+
+  - name: waiver_approved_by
+    type: uuid
+    description: Who approved waiver
+
+  - name: waiver_approved_at
+    type: timestamp
+
+  # Refund
+  - name: refunded
+    type: boolean
+    description: Premium refunded
+    default: false
+
+  - name: refund_amount
+    type: decimal
+    description: Refund amount
+    precision: 12
+    scale: 2
+
+  - name: refund_reason
+    type: string
+    description: Refund reason
+
+  - name: refund_date
+    type: date
+    description: When refunded
+
+  # Commission
+  - name: commission_amount
+    type: decimal
+    description: Agent commission
+    precision: 12
+    scale: 2
+
+  - name: commission_paid
+    type: boolean
+    description: Commission paid to agent
+    default: false
+
+  # Invoice
+  - name: invoice_number
+    type: string
+    description: Invoice reference
+
+  - name: invoice_date
+    type: date
+    description: Invoice date
+
+  - name: invoice_url
+    type: string
+    description: Invoice document URL
+    format: uri
+
+  # Receipt
+  - name: receipt_number
+    type: string
+    description: Receipt reference
+
+  - name: receipt_date
+    type: date
+    description: Receipt date
+
+  - name: receipt_url
+    type: string
+    description: Receipt document URL
+    format: uri
+
+  # Late payment
+  - name: days_overdue
+    type: integer
+    description: Days past due
+    computed: "NOW() - due_date IF overdue"
+
+  - name: late_fee
+    type: decimal
+    description: Late payment fee
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: interest_charged
+    type: decimal
+    description: Interest on late payment
+    precision: 10
+    scale: 2
+    default: 0
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: policy
+    type: belongs_to
+    entity: Policy
+    foreign_key: policy_id
+
+  - name: payments
+    type: has_many
+    entity: Payment
+    foreign_key: premium_id
+
+  - name: commission
+    type: has_one
+    entity: Commission
+    foreign_key: premium_id
+
+business_rules:
+  - rule: BR-PRM-001
+    description: Premium status transitions
+    validation: |
+      pending → notified → paid
+      pending → overdue → paid
+      pending → waived
+
+  - rule: BR-PRM-002
+    description: Grace period starts after due date
+    validation: in_grace IF due_date < NOW() < grace_period_end
+
+  - rule: BR-PRM-003
+    description: Policy lapses after grace period
+    validation: IF NOW() > grace_period_end AND status != 'paid' THEN policy.lapse
+
+  - rule: BR-PRM-004
+    description: Amount paid cannot exceed gross premium
+    validation: amount_paid <= gross_premium
+
+events:
+  - name: premium.created
+    payload: [premium_id, policy_id, gross_premium, due_date]
+
+  - name: premium.reminder_sent
+    payload: [premium_id, reminder_type]
+
+  - name: premium.paid
+    payload: [premium_id, amount, payment_method, payment_date]
+
+  - name: premium.overdue
+    payload: [premium_id, days_overdue]
+
+  - name: premium.grace_expiring
+    payload: [premium_id, days_remaining]
+
+  - name: premium.waived
+    payload: [premium_id, waiver_reason]
+
+  - name: premium.refunded
+    payload: [premium_id, refund_amount]
+
+api_endpoints:
+  - method: GET
+    path: /premiums
+    description: List premiums
+
+  - method: GET
+    path: /premiums/{id}
+    description: Get premium details
+
+  - method: POST
+    path: /premiums/{id}/pay
+    description: Record payment
+
+  - method: POST
+    path: /premiums/{id}/waive
+    description: Waive premium
+
+  - method: POST
+    path: /premiums/{id}/refund
+    description: Process refund

@@ -1,0 +1,454 @@
+name: CycleCountWorkflow
+display_name: Cycle Count Process Workflow
+description: |
+  End-to-end workflow for inventory cycle counting.
+  Covers scheduling, counting, variance investigation, and adjustments.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: cycle_count.scheduled
+  conditions:
+    - count_date <= today
+    - location.available_for_count
+
+actors:
+  - role: counter
+    responsibilities:
+      - Execute counts
+      - Record quantities
+      - Flag discrepancies
+  - role: inventory_controller
+    responsibilities:
+      - Schedule counts
+      - Investigate variances
+      - Approve adjustments
+  - role: supervisor
+    responsibilities:
+      - Approve high-value adjustments
+      - Review patterns
+
+steps:
+  - id: step_01
+    name: Generate Count Schedule
+    description: |
+      Generate cycle count schedule based on ABC classification.
+      Prioritize high-value and high-velocity items.
+    actor: inventory_controller
+    actions:
+      - action: identify_items_due
+        input: [abc_classification, last_count_date]
+        output: items_to_count
+      - action: group_by_zone
+        input: [items_to_count]
+        output: zone_count_lists
+      - action: create_count_tasks
+        input: [zone_count_lists]
+        output: count_tasks_created
+      - action: schedule_counts
+        input: [count_tasks, count_date]
+        output: schedule_created
+    validations:
+      - A items within monthly cycle
+      - B items within quarterly cycle
+      - C items within annual cycle
+    outputs:
+      - count_schedule
+      - total_locations
+      - estimated_time
+    events:
+      - name: cycle_count.scheduled
+        payload: [schedule_id, count_date, location_count]
+    next_step: step_02
+
+  - id: step_02
+    name: Assign Counters
+    description: |
+      Assign count tasks to qualified counters.
+      Balance workload across team.
+    actor: inventory_controller
+    actions:
+      - action: identify_available_counters
+        input: [warehouse_id, shift]
+        output: available_counters
+      - action: assign_count_tasks
+        input: [count_tasks, available_counters]
+        output: tasks_assigned
+      - action: notify_counters
+        input: [assignments]
+        output: notifications_sent
+    validations:
+      - counters trained on counting
+      - counters authorized for zones
+    outputs:
+      - assignments
+    events:
+      - name: cycle_count.assigned
+        payload: [count_id, counter_id]
+    next_step: step_03
+
+  - id: step_03
+    name: Lock Location
+    description: |
+      Lock location from other transactions during count.
+      Prevent picks and putaways.
+    actor: counter
+    actions:
+      - action: request_location_lock
+        input: [location_id]
+        output: lock_requested
+      - action: wait_for_clear
+        input: [location_id, active_tasks]
+        output: location_clear
+      - action: apply_lock
+        input: [location_id]
+        output: lock_applied
+    validations:
+      - no active tasks on location
+      - lock successful
+    decision:
+      condition: location_clear == false
+      true_path: step_03a
+      false_path: step_04
+    outputs:
+      - lock_id
+      - lock_time
+
+  - id: step_03a
+    name: Wait for Active Tasks
+    description: |
+      Wait for active picks/putaways to complete.
+      Escalate if waiting too long.
+    actor: counter
+    actions:
+      - action: identify_blocking_tasks
+        input: [location_id]
+        output: blocking_tasks
+      - action: wait_for_completion
+        input: [blocking_tasks, timeout]
+        output: wait_result
+      - action: escalate_if_timeout
+        input: [location_id, blocking_tasks]
+        output: escalation_status
+    outputs:
+      - wait_time
+    next_step: step_03
+
+  - id: step_04
+    name: Perform Count
+    description: |
+      Physically count inventory at location.
+      Use blind count method.
+    actor: counter
+    actions:
+      - action: navigate_to_location
+        input: [location_id]
+        output: at_location
+      - action: scan_location
+        input: [location_barcode]
+        output: location_confirmed
+      - action: count_inventory
+        input: [physical_items]
+        output: counted_quantities
+      - action: scan_items
+        input: [item_barcodes]
+        output: items_identified
+      - action: record_counts
+        input: [items, quantities]
+        output: counts_recorded
+    validations:
+      - location scanned and confirmed
+      - all items counted
+    outputs:
+      - counted_items
+      - counted_quantities
+    next_step: step_05
+
+  - id: step_05
+    name: Compare to System
+    description: |
+      Compare counted quantities to system quantities.
+      Identify variances.
+    actor: counter
+    actions:
+      - action: retrieve_system_quantities
+        input: [location_id]
+        output: system_quantities
+      - action: calculate_variances
+        input: [counted_quantities, system_quantities]
+        output: variance_report
+      - action: flag_variances
+        input: [variance_report, threshold]
+        output: variances_flagged
+    validations:
+      - variance calculated correctly
+    decision:
+      condition: has_variance_above_threshold
+      true_path: step_06
+      false_path: step_08
+    outputs:
+      - variance_report
+      - variance_count
+
+  - id: step_06
+    name: Recount Required
+    description: |
+      Significant variance requires recount by different person.
+      Ensures accuracy before adjustment.
+    actor: inventory_controller
+    actions:
+      - action: assign_recounter
+        input: [count_id, original_counter]
+        output: recounter_assigned
+      - action: trigger_recount
+        input: [count_id, recount_reason]
+        output: recount_triggered
+    validations:
+      - different counter assigned
+    outputs:
+      - recounter_id
+      - recount_task_id
+    next_step: step_06a
+
+  - id: step_06a
+    name: Execute Recount
+    description: |
+      Second counter performs independent recount.
+      No visibility to first count.
+    actor: counter
+    actions:
+      - action: perform_blind_recount
+        input: [location_id]
+        output: recount_quantities
+      - action: compare_counts
+        input: [first_count, recount]
+        output: count_comparison
+    decision:
+      condition: counts_match
+      true_path: step_07
+      false_path: step_06b
+    outputs:
+      - recount_result
+
+  - id: step_06b
+    name: Third Count Resolution
+    description: |
+      When first and second counts don't match,
+      supervisor performs deciding count.
+    actor: supervisor
+    actions:
+      - action: review_count_history
+        input: [count_id]
+        output: history_reviewed
+      - action: perform_final_count
+        input: [location_id]
+        output: final_count
+      - action: determine_correct_quantity
+        input: [all_counts]
+        output: correct_quantity
+    outputs:
+      - final_quantity
+    next_step: step_07
+
+  - id: step_07
+    name: Variance Investigation
+    description: |
+      Investigate root cause of variance.
+      Document findings.
+    actor: inventory_controller
+    actions:
+      - action: review_transaction_history
+        input: [location_id, item_id]
+        output: transaction_history
+      - action: check_adjacent_locations
+        input: [location_id]
+        output: adjacent_check
+      - action: analyze_patterns
+        input: [item_id, location_id]
+        output: pattern_analysis
+      - action: determine_cause
+        input: [investigation_data]
+        output: root_cause
+      - action: document_findings
+        input: [root_cause, evidence]
+        output: investigation_report
+    validations:
+      - root cause identified
+      - documentation complete
+    outputs:
+      - root_cause
+      - investigation_report
+    next_step: step_08
+
+  - id: step_08
+    name: Approve Adjustment
+    description: |
+      Get appropriate approval for inventory adjustment.
+      Based on value thresholds.
+    actor: inventory_controller
+    conditions:
+      - variance_exists
+    actions:
+      - action: calculate_adjustment_value
+        input: [variance_quantity, unit_cost]
+        output: adjustment_value
+      - action: determine_approval_level
+        input: [adjustment_value, thresholds]
+        output: required_approver
+      - action: submit_for_approval
+        input: [adjustment_request, approver]
+        output: approval_submitted
+    decision:
+      condition: adjustment_value > high_threshold
+      true_path: step_08a
+      false_path: step_09
+    outputs:
+      - adjustment_value
+      - approval_status
+
+  - id: step_08a
+    name: Management Approval
+    description: |
+      High-value adjustments require management approval.
+    actor: supervisor
+    actions:
+      - action: review_adjustment
+        input: [adjustment_request, investigation_report]
+        output: review_complete
+      - action: approve_or_reject
+        input: [adjustment_id]
+        output: approval_decision
+      - action: add_approval_notes
+        input: [notes]
+        output: notes_added
+    outputs:
+      - approval_status
+      - approver_notes
+    next_step: step_09
+
+  - id: step_09
+    name: Post Adjustment
+    description: |
+      Post approved inventory adjustment.
+      Update system quantities.
+    actor: inventory_controller
+    conditions:
+      - approval_status == 'approved'
+    actions:
+      - action: create_adjustment_record
+        input: [location_id, item_id, quantity, reason]
+        output: adjustment_created
+      - action: post_to_inventory
+        input: [adjustment_id]
+        output: inventory_updated
+      - action: post_to_financials
+        input: [adjustment_value]
+        output: financials_updated
+    validations:
+      - inventory updated correctly
+      - audit trail complete
+    outputs:
+      - adjustment_id
+      - new_quantity
+    events:
+      - name: cycle_count.adjustment_posted
+        payload: [count_id, adjustment_id, variance_value]
+    next_step: step_10
+
+  - id: step_10
+    name: Release Location
+    description: |
+      Remove lock from location.
+      Location available for normal operations.
+    actor: counter
+    actions:
+      - action: release_lock
+        input: [location_id, lock_id]
+        output: lock_released
+    outputs:
+      - location_released
+    next_step: step_11
+
+  - id: step_11
+    name: Complete Count
+    description: |
+      Mark count complete.
+      Update count records and metrics.
+    actor: inventory_controller
+    actions:
+      - action: mark_count_complete
+        input: [count_id]
+        output: count_completed
+      - action: update_last_count_date
+        input: [location_id, item_id]
+        output: dates_updated
+      - action: calculate_accuracy_metrics
+        input: [count_id]
+        output: accuracy_metrics
+      - action: generate_count_report
+        input: [count_id]
+        output: count_report
+    outputs:
+      - count_status
+      - accuracy_rate
+      - count_report_url
+    events:
+      - name: cycle_count.completed
+        payload: [count_id, accuracy_rate, variance_value]
+
+  - id: step_12
+    name: Trend Analysis
+    description: |
+      Analyze counting trends for process improvement.
+      Identify systemic issues.
+    actor: inventory_controller
+    conditions:
+      - periodic_analysis
+    actions:
+      - action: aggregate_count_data
+        input: [date_range]
+        output: count_statistics
+      - action: identify_problem_areas
+        input: [count_statistics]
+        output: problem_locations
+      - action: generate_recommendations
+        input: [analysis_results]
+        output: recommendations
+      - action: create_improvement_plan
+        input: [recommendations]
+        output: improvement_plan
+    outputs:
+      - trend_report
+      - improvement_plan
+
+sla:
+  - name: count_accuracy
+    description: Count matches system (within tolerance)
+    target: "> 97%"
+  - name: count_completion
+    description: Scheduled counts completed on time
+    target: "> 98%"
+  - name: adjustment_processing
+    description: Time from count to adjustment posted
+    target: "< 24 hours"
+
+exceptions:
+  - name: location_cannot_lock
+    handling: Reschedule count, prioritize blocking tasks
+  - name: item_not_found
+    handling: Search adjacent locations, investigate theft
+  - name: system_mismatch
+    handling: Investigate all transactions, escalate
+  - name: approval_timeout
+    handling: Escalate to next level
+
+integrations:
+  - system: WMS
+    purpose: Inventory updates, task management
+  - system: ERP
+    purpose: Financial adjustments
+  - system: Analytics
+    purpose: Trend analysis, reporting

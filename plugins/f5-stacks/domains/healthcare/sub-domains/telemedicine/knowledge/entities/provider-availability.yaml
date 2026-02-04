@@ -1,0 +1,342 @@
+# ProviderAvailability Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Provider telehealth schedule management
+
+entity:
+  id: provider-availability
+  name: ProviderAvailability
+  name_ja: 診療可能時間
+  description: Provider's telehealth availability and scheduling settings
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: provider_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: provider.id
+      description: Provider this schedule belongs to
+
+    # Schedule Type
+    - name: schedule_type
+      type: enum
+      values:
+        - recurring
+        - one_time
+        - exception
+      required: true
+      default: recurring
+      description: Type of availability entry
+
+    - name: status
+      type: enum
+      values:
+        - active
+        - inactive
+        - vacation
+        - sick
+        - administrative
+      required: true
+      default: active
+      indexed: true
+      description: Availability status
+
+    # Recurring Schedule (if schedule_type = recurring)
+    - name: day_of_week
+      type: enum
+      values:
+        - monday
+        - tuesday
+        - wednesday
+        - thursday
+        - friday
+        - saturday
+        - sunday
+      nullable: true
+      description: Day for recurring schedule
+
+    - name: start_time
+      type: time
+      nullable: true
+      description: Daily start time
+
+    - name: end_time
+      type: time
+      nullable: true
+      description: Daily end time
+
+    - name: recurring_start_date
+      type: date
+      nullable: true
+      description: When recurring schedule starts
+
+    - name: recurring_end_date
+      type: date
+      nullable: true
+      description: When recurring schedule ends (null = indefinite)
+
+    # One-Time/Exception (if schedule_type != recurring)
+    - name: specific_date
+      type: date
+      nullable: true
+      indexed: true
+      description: Specific date for one-time availability
+
+    - name: specific_start
+      type: datetime
+      nullable: true
+      description: Specific start datetime
+
+    - name: specific_end
+      type: datetime
+      nullable: true
+      description: Specific end datetime
+
+    # Exception Details
+    - name: exception_type
+      type: enum
+      values:
+        - time_off
+        - meeting
+        - training
+        - administrative
+        - personal
+        - holiday
+        - other
+      nullable: true
+      description: Type of exception
+
+    - name: exception_reason
+      type: string
+      nullable: true
+      max_length: 500
+      description: Reason for exception
+
+    # Visit Configuration
+    - name: visit_types_allowed
+      type: jsonb
+      default: '["scheduled", "follow_up"]'
+      description: |
+        Allowed visit types:
+        ["scheduled", "on_demand", "follow_up", "urgent"]
+
+    - name: modalities_supported
+      type: jsonb
+      default: '["video"]'
+      description: |
+        Supported modalities:
+        ["video", "audio_only", "chat"]
+
+    - name: specialties_available
+      type: jsonb
+      nullable: true
+      description: |
+        Specialties during this time:
+        ["primary_care", "dermatology", ...]
+
+    # Slot Configuration
+    - name: slot_duration_minutes
+      type: integer
+      required: true
+      default: 15
+      validation:
+        min: 5
+        max: 120
+      description: Default appointment slot length
+
+    - name: buffer_between_slots_minutes
+      type: integer
+      default: 5
+      validation:
+        min: 0
+        max: 30
+      description: Buffer between appointments
+
+    - name: max_concurrent_visits
+      type: integer
+      default: 1
+      validation:
+        min: 1
+        max: 5
+      description: Max simultaneous visits (usually 1)
+
+    # Overbooking
+    - name: overbooking_allowed
+      type: boolean
+      default: false
+      description: Allow overbooking
+
+    - name: overbooking_limit
+      type: integer
+      default: 0
+      description: Max overbooked slots per day
+
+    # On-Demand Settings
+    - name: on_demand_enabled
+      type: boolean
+      default: false
+      description: Available for on-demand visits
+
+    - name: on_demand_max_wait_minutes
+      type: integer
+      nullable: true
+      default: 15
+      description: Max wait for on-demand patients
+
+    # Capacity
+    - name: max_patients_per_day
+      type: integer
+      nullable: true
+      description: Daily patient limit
+
+    - name: current_booked_count
+      type: integer
+      default: 0
+      description: Currently booked appointments
+
+    # State Licensing
+    - name: licensed_states
+      type: jsonb
+      default: "[]"
+      description: |
+        States provider can see patients from:
+        ["CA", "NY", "TX", ...]
+
+    # Location
+    - name: provider_location
+      type: string
+      nullable: true
+      description: Where provider is working from
+
+    - name: timezone
+      type: string
+      required: true
+      default: "America/New_York"
+      description: Provider's timezone
+
+    # Notifications
+    - name: notification_preferences
+      type: jsonb
+      nullable: true
+      description: |
+        Notification settings:
+        {
+          new_booking: bool,
+          cancellation: bool,
+          reminder_minutes_before: int,
+          channels: ["email", "sms", "push"]
+        }
+
+    # Timestamps
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: datetime
+      required: true
+      default: now()
+      on_update: now()
+
+    - name: created_by
+      type: uuid
+      nullable: true
+      foreign_key: user.id
+      description: Who created this entry
+
+  relationships:
+    - name: provider
+      type: belongs_to
+      entity: provider
+      foreign_key: provider_id
+
+    - name: booked_visits
+      type: has_many
+      entity: tele_visit
+      through: schedule_slots
+      description: Visits booked in this availability
+
+  computed_fields:
+    - name: available_slots_count
+      expression: |
+        CASE 
+          WHEN schedule_type = 'recurring' THEN
+            ((end_time - start_time) / slot_duration_minutes) - current_booked_count
+          ELSE
+            ((specific_end - specific_start) / slot_duration_minutes) - current_booked_count
+        END
+      type: integer
+      description: Remaining available slots
+
+    - name: is_currently_available
+      expression: |
+        status = 'active' AND
+        (schedule_type != 'recurring' OR day_of_week = LOWER(TO_CHAR(NOW(), 'day'))) AND
+        CURRENT_TIME BETWEEN start_time AND end_time
+      type: boolean
+      description: Available right now
+
+  methods:
+    - name: get_available_slots
+      parameters:
+        - date: date
+      returns: array of time slots
+      description: Get available slots for a date
+
+    - name: check_slot_available
+      parameters:
+        - datetime: datetime
+        - duration_minutes: integer
+      returns: boolean
+      description: Check if specific slot is available
+
+    - name: book_slot
+      parameters:
+        - datetime: datetime
+        - visit_id: uuid
+      returns: boolean
+      description: Reserve a slot
+
+  indexes:
+    - name: idx_availability_provider_day
+      columns: [provider_id, day_of_week]
+      
+    - name: idx_availability_specific_date
+      columns: [specific_date]
+      
+    - name: idx_availability_status
+      columns: [status, schedule_type]
+
+  validations:
+    - name: valid_time_range
+      rule: start_time IS NULL OR end_time IS NULL OR end_time > start_time
+      message: End time must be after start time
+
+    - name: recurring_has_day
+      rule: schedule_type != 'recurring' OR day_of_week IS NOT NULL
+      message: Recurring schedule requires day of week
+
+    - name: one_time_has_date
+      rule: schedule_type != 'one_time' OR specific_date IS NOT NULL
+      message: One-time availability requires specific date
+
+    - name: valid_slot_duration
+      rule: slot_duration_minutes >= 5
+      message: Slot duration must be at least 5 minutes
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - start_time
+      - end_time
+      - licensed_states
+    retention_days: 365

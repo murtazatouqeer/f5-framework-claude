@@ -1,0 +1,226 @@
+name: Cancellation Rules
+display_name: Tour Cancellation Rules / Quy tắc hủy tour
+description: |
+  Rules governing tour cancellation, refund calculations,
+  and rebooking policies for customers and operators.
+
+domain: travel-hospitality
+subdomain: tour
+category: cancellation
+
+rules:
+  # Customer Cancellation
+  - id: BR-CAN-001
+    name: Free Cancellation Window
+    description: Full refund if cancelled within free cancellation period
+    priority: critical
+    condition: |
+      booking.tour_date - NOW() >= tour.free_cancellation_hours * INTERVAL '1 hour'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount
+      process_full_refund()
+    applies_to: [TourBooking, Tour]
+
+  - id: BR-CAN-002
+    name: Partial Refund - 48-72 Hours
+    description: 75% refund for cancellation 48-72 hours before tour
+    priority: high
+    condition: |
+      booking.tour_date - NOW() >= INTERVAL '48 hours' AND
+      booking.tour_date - NOW() < INTERVAL '72 hours'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount * 0.75
+      process_partial_refund()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-003
+    name: Partial Refund - 24-48 Hours
+    description: 50% refund for cancellation 24-48 hours before tour
+    priority: high
+    condition: |
+      booking.tour_date - NOW() >= INTERVAL '24 hours' AND
+      booking.tour_date - NOW() < INTERVAL '48 hours'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount * 0.50
+      process_partial_refund()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-004
+    name: No Refund - Within 24 Hours
+    description: No refund for cancellation within 24 hours
+    priority: high
+    condition: |
+      booking.tour_date - NOW() < INTERVAL '24 hours'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = 0
+      notify_no_refund()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-005
+    name: No-Show Policy
+    description: No refund for no-shows
+    priority: critical
+    condition: |
+      booking.status = 'no_show'
+    action: |
+      booking.refund_amount = 0
+      record_no_show()
+    applies_to: [TourBooking]
+
+  # Operator Cancellation
+  - id: BR-CAN-010
+    name: Operator Cancellation - Full Refund
+    description: Full refund when operator cancels tour
+    priority: critical
+    condition: |
+      booking.cancelled_by = 'operator'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount
+      process_full_refund()
+      offer_rebooking_credit()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-011
+    name: Minimum Not Met
+    description: Cancel tour if minimum participants not reached
+    priority: high
+    condition: |
+      schedule.tour_date - NOW() <= INTERVAL '48 hours' AND
+      schedule.booked_count < tour.min_participants AND
+      schedule.status != 'cancelled'
+    action: |
+      schedule.status = 'cancelled'
+      cancel_all_bookings()
+      process_full_refunds()
+      notify_all_customers()
+    applies_to: [TourSchedule, Tour]
+
+  - id: BR-CAN-012
+    name: Weather Cancellation
+    description: Full refund plus rebooking option for weather cancellation
+    priority: high
+    condition: |
+      booking.cancelled_by = 'weather'
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount
+      process_full_refund()
+      offer_free_reschedule()
+    applies_to: [TourBooking]
+
+  # Force Majeure
+  - id: BR-CAN-020
+    name: Force Majeure
+    description: Full refund or credit for force majeure events
+    priority: critical
+    condition: |
+      cancellation_reason IN ('natural_disaster', 'pandemic', 'civil_unrest', 'government_order')
+    action: |
+      booking.status = 'cancelled'
+      booking.refund_amount = booking.paid_amount
+      offer_choice(refund, credit_120_percent)
+    applies_to: [TourBooking]
+
+  # Rebooking Rules
+  - id: BR-CAN-030
+    name: Free Rebooking
+    description: Allow free date change within 24 hours of booking
+    priority: medium
+    condition: |
+      NOW() - booking.created_at <= INTERVAL '24 hours' AND
+      new_date.available_spots >= booking.total_participants
+    action: |
+      rebook_to_new_date()
+      no_additional_fee()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-031
+    name: Paid Rebooking
+    description: Charge rebooking fee after free period
+    priority: medium
+    condition: |
+      NOW() - booking.created_at > INTERVAL '24 hours' AND
+      booking.tour_date - NOW() >= INTERVAL '48 hours'
+    action: |
+      calculate_rebooking_fee()
+      rebook_to_new_date()
+      charge_difference_if_higher()
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-032
+    name: Rebooking Credit
+    description: Issue credit instead of refund (optional)
+    priority: low
+    condition: |
+      customer_chooses_credit = true
+    action: |
+      issue_credit(booking.refund_amount * 1.10)
+      credit_valid_for_12_months()
+    applies_to: [TourBooking]
+
+  # Refund Processing
+  - id: BR-CAN-040
+    name: Refund Processing Time
+    description: Process refund within 5-10 business days
+    priority: high
+    condition: |
+      booking.refund_status = 'pending'
+    action: |
+      initiate_refund()
+      set_expected_date(5-10_business_days)
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-041
+    name: Refund Method
+    description: Refund to original payment method
+    priority: high
+    condition: |
+      booking.refund_amount > 0
+    action: |
+      refund_to_original_method()
+      IF_FAILED: offer_alternative_method()
+    applies_to: [TourBooking]
+
+  # Dispute Handling
+  - id: BR-CAN-050
+    name: Dispute Window
+    description: Customer can dispute within 7 days of tour date
+    priority: medium
+    condition: |
+      NOW() - booking.tour_date <= INTERVAL '7 days'
+    action: allow_dispute
+    message: "Dispute period has expired"
+    applies_to: [TourBooking]
+
+  - id: BR-CAN-051
+    name: Dispute Resolution
+    description: Resolve disputes within 14 days
+    priority: high
+    condition: |
+      booking.status = 'disputed'
+    action: |
+      investigate_claim()
+      resolve_within(14_days)
+      notify_both_parties()
+    applies_to: [TourBooking]
+
+refund_schedule:
+  - hours_before: 72+
+    refund_percent: 100
+  - hours_before: 48-72
+    refund_percent: 75
+  - hours_before: 24-48
+    refund_percent: 50
+  - hours_before: 0-24
+    refund_percent: 0
+
+validation_order:
+  - BR-CAN-001
+  - BR-CAN-002
+  - BR-CAN-003
+  - BR-CAN-004

@@ -1,0 +1,447 @@
+name: quality-rules
+display_name: Production Quality Rules
+display_name_vi: Quy tắc chất lượng sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: business-rules
+
+description: |
+  Business rules for production quality management including inspection,
+  defect handling, SPC, and compliance with ISO 9001 standards.
+
+description_vi: |
+  Quy tắc quản lý chất lượng sản xuất bao gồm kiểm tra,
+  xử lý khuyết tật, SPC và tuân thủ tiêu chuẩn ISO 9001.
+
+rule_categories:
+  - inspection
+  - defect_handling
+  - statistical_process_control
+  - traceability
+  - compliance
+
+rules:
+  inspection:
+    - id: QUA-001
+      name: incoming_inspection
+      description: Inspect received materials before use
+      description_vi: Kiểm tra vật liệu nhận trước khi sử dụng
+      condition: material.requires_inspection = true
+      action: |
+        IF material.source = 'external' THEN
+          PERFORM incoming_inspection
+          IF inspection.result = 'fail' THEN
+            QUARANTINE material
+            CREATE supplier_ncr
+          ELSE
+            RELEASE material_to_production
+      priority: critical
+      category: inspection
+
+    - id: QUA-002
+      name: in_process_inspection
+      description: Perform inspection during production
+      description_vi: Thực hiện kiểm tra trong sản xuất
+      condition: operation.inspection_required = true
+      inspection_types:
+        - first_article: First piece after setup
+        - patrol: Random during production
+        - last_off: Last piece before changeover
+        - 100_percent: Every piece (critical dimensions)
+      action: |
+        PERFORM inspection_type
+        RECORD inspection_result
+        IF result = 'fail' THEN EXECUTE defect_handling
+      priority: critical
+      category: inspection
+
+    - id: QUA-003
+      name: first_article_inspection
+      description: Mandatory inspection of first piece
+      description_vi: Kiểm tra bắt buộc sản phẩm đầu tiên
+      condition: |
+        operation_start OR
+        setup_change OR
+        tool_change OR
+        material_change
+      action: |
+        STOP production
+        INSPECT first_article AGAINST specifications
+        IF passed THEN
+          APPROVE production_start
+          RECORD fai_result
+        ELSE
+          ADJUST process
+          REPEAT first_article_inspection
+      priority: critical
+      category: inspection
+
+    - id: QUA-004
+      name: sampling_plan
+      description: Statistical sampling for inspection
+      description_vi: Lấy mẫu thống kê cho kiểm tra
+      condition: inspection.method = 'sampling'
+      plans:
+        - aql_sampling: Based on AQL tables
+        - skip_lot: Reduced inspection for good history
+        - tightened: Increased inspection after failures
+      action: |
+        sample_size = GET_SAMPLE_SIZE(lot_size, aql, inspection_level)
+        IF defects_found <= accept_number THEN
+          ACCEPT lot
+        ELSE
+          REJECT lot OR perform_100_percent
+      priority: high
+      category: inspection
+
+    - id: QUA-005
+      name: final_inspection
+      description: Final quality check before shipment
+      description_vi: Kiểm tra chất lượng cuối trước xuất hàng
+      condition: order.ready_for_shipment = true
+      action: |
+        PERFORM final_inspection_checklist
+        VERIFY all_required_documents
+        IF passed THEN
+          RELEASE for_shipment
+          ATTACH quality_certificate
+        ELSE
+          HOLD shipment
+          INITIATE corrective_action
+      priority: critical
+      category: inspection
+
+  defect_handling:
+    - id: DEF-001
+      name: defect_classification
+      description: Classify defects by severity
+      description_vi: Phân loại khuyết tật theo mức độ
+      classifications:
+        - critical: Safety or regulatory non-compliance
+        - major: Functional failure likely
+        - minor: Does not affect functionality
+        - cosmetic: Appearance only
+      action: |
+        defect.severity = CLASSIFY(defect_type, defect_location)
+        APPLY disposition_rules BASED_ON severity
+      priority: critical
+      category: defect_handling
+
+    - id: DEF-002
+      name: defect_disposition
+      description: Determine disposition of defective items
+      description_vi: Xác định xử lý sản phẩm lỗi
+      dispositions:
+        - use_as_is: Accept with deviation approval
+        - rework: Repair to meet specifications
+        - repair: Fix but document deviation
+        - scrap: Cannot be salvaged
+        - return_to_vendor: Supplier defect
+      rules: |
+        IF defect.severity = 'critical' THEN
+          disposition IN ('scrap', 'return_to_vendor')
+        IF defect.severity = 'major' AND reworkable THEN
+          disposition = 'rework'
+        IF defect.severity = 'minor' AND customer_approved THEN
+          disposition = 'use_as_is'
+      priority: critical
+      category: defect_handling
+
+    - id: DEF-003
+      name: nonconformance_report
+      description: Document all nonconformances
+      description_vi: Ghi lại tất cả sự không phù hợp
+      condition: defect_found OR specification_deviation
+      action: |
+        CREATE ncr_record(
+          defect_description,
+          affected_quantity,
+          root_cause_analysis,
+          corrective_action,
+          preventive_action
+        )
+        NOTIFY quality_engineer
+        TRACK until_closure
+      priority: high
+      category: defect_handling
+
+    - id: DEF-004
+      name: containment_action
+      description: Immediate containment of defects
+      description_vi: Ngăn chặn ngay lập tức khuyết tật
+      condition: defect.severity IN ('critical', 'major')
+      action: |
+        STOP production IF still_running
+        QUARANTINE suspect_inventory
+        IDENTIFY all_affected_lots
+        NOTIFY downstream_operations
+        CHECK shipped_product IF applicable
+      priority: critical
+      category: defect_handling
+
+    - id: DEF-005
+      name: rework_control
+      description: Control rework operations
+      description_vi: Kiểm soát công đoạn làm lại
+      condition: disposition = 'rework'
+      action: |
+        CREATE rework_work_order
+        ASSIGN specific_routing
+        TRACK rework_cost
+        RE-INSPECT after_rework
+        DOCUMENT rework_history
+      priority: high
+      category: defect_handling
+
+  statistical_process_control:
+    - id: SPC-001
+      name: control_chart_monitoring
+      description: Monitor process with control charts
+      description_vi: Giám sát quy trình bằng biểu đồ kiểm soát
+      chart_types:
+        - x_bar_r: Variable data, subgroups
+        - x_bar_s: Variable data, larger subgroups
+        - individuals_mr: Variable data, single measurements
+        - p_chart: Proportion defective
+        - np_chart: Number defective
+        - c_chart: Count of defects
+        - u_chart: Defects per unit
+      action: |
+        COLLECT measurement_data
+        CALCULATE control_limits
+        PLOT on_control_chart
+        CHECK for_out_of_control
+      priority: high
+      category: statistical_process_control
+
+    - id: SPC-002
+      name: out_of_control_response
+      description: Respond to out-of-control signals
+      description_vi: Phản hồi tín hiệu ngoài kiểm soát
+      signals:
+        - point_beyond_limits: 1 point > 3 sigma
+        - run: 7+ points same side of centerline
+        - trend: 7+ points continuously up or down
+        - hugging: 15+ points within 1 sigma
+        - two_of_three: 2 of 3 points > 2 sigma
+      action: |
+        STOP process IF signal_detected
+        INVESTIGATE root_cause
+        TAKE corrective_action
+        DOCUMENT in_control_chart_log
+      priority: critical
+      category: statistical_process_control
+
+    - id: SPC-003
+      name: process_capability
+      description: Measure process capability
+      description_vi: Đo năng lực quy trình
+      metrics:
+        - cp: Process capability (spread)
+        - cpk: Process capability (centering)
+        - pp: Process performance
+        - ppk: Process performance (centering)
+      formulas: |
+        Cp = (USL - LSL) / (6 * sigma)
+        Cpk = MIN((USL - mean)/(3*sigma), (mean - LSL)/(3*sigma))
+      targets:
+        minimum: 1.0
+        capable: 1.33
+        excellent: 1.67
+      priority: high
+      category: statistical_process_control
+
+    - id: SPC-004
+      name: measurement_system_analysis
+      description: Validate measurement system
+      description_vi: Xác nhận hệ thống đo lường
+      components:
+        - bias: Difference from reference
+        - linearity: Bias across range
+        - stability: Bias over time
+        - repeatability: Variation within operator
+        - reproducibility: Variation between operators
+      acceptance: |
+        %GRR < 10%: Excellent
+        %GRR 10-30%: Acceptable
+        %GRR > 30%: Unacceptable
+      priority: high
+      category: statistical_process_control
+
+  traceability:
+    - id: TRA-001
+      name: lot_traceability
+      description: Full traceability of production lots
+      description_vi: Truy xuất đầy đủ lô sản xuất
+      condition: always
+      required_data:
+        - lot_number
+        - raw_materials_used
+        - machine_used
+        - operator
+        - date_time
+        - inspection_results
+        - process_parameters
+      action: |
+        RECORD all_required_data
+        LINK to_parent_lots AND child_lots
+        ENABLE forward_and_backward_trace
+      priority: critical
+      category: traceability
+
+    - id: TRA-002
+      name: genealogy_tracking
+      description: Track parent-child lot relationships
+      description_vi: Theo dõi quan hệ lô cha-con
+      action: |
+        FOR each production_lot:
+          RECORD input_lots AS parents
+          RECORD output_lots AS children
+          CALCULATE consumption_ratios
+      priority: high
+      category: traceability
+
+    - id: TRA-003
+      name: process_parameter_logging
+      description: Log critical process parameters
+      description_vi: Ghi lại thông số quy trình quan trọng
+      condition: parameter.is_critical = true
+      action: |
+        LOG parameter_value AT configured_frequency
+        VALIDATE within_specification_limits
+        ALERT IF out_of_spec
+      priority: high
+      category: traceability
+
+    - id: TRA-004
+      name: recall_capability
+      description: Support product recall if needed
+      description_vi: Hỗ trợ thu hồi sản phẩm nếu cần
+      condition: recall_initiated
+      action: |
+        IDENTIFY all_affected_lots
+        TRACE to_shipped_orders
+        IDENTIFY customer_shipments
+        GENERATE recall_list
+        NOTIFY affected_customers
+      priority: critical
+      category: traceability
+
+  compliance:
+    - id: COM-001
+      name: iso9001_documentation
+      description: Maintain ISO 9001 compliant records
+      description_vi: Duy trì hồ sơ tuân thủ ISO 9001
+      requirements:
+        - documented_procedures
+        - quality_records
+        - calibration_records
+        - training_records
+        - audit_records
+      retention_period: 7 years minimum
+      priority: critical
+      category: compliance
+
+    - id: COM-002
+      name: calibration_control
+      description: Control measuring equipment calibration
+      description_vi: Kiểm soát hiệu chuẩn thiết bị đo
+      condition: equipment.requires_calibration = true
+      action: |
+        SCHEDULE calibration_per_interval
+        PERFORM calibration_to_standards
+        RECORD calibration_results
+        LABEL equipment_with_status
+        QUARANTINE IF overdue
+      priority: critical
+      category: compliance
+
+    - id: COM-003
+      name: document_control
+      description: Control quality documents
+      description_vi: Kiểm soát tài liệu chất lượng
+      requirements:
+        - approval_before_issue
+        - revision_control
+        - distribution_control
+        - obsolete_document_control
+      action: |
+        ALL quality_documents MUST BE approved
+        ONLY current_revision IN use_locations
+        ARCHIVE obsolete_with_retention
+      priority: high
+      category: compliance
+
+    - id: COM-004
+      name: audit_readiness
+      description: Maintain audit-ready state
+      description_vi: Duy trì trạng thái sẵn sàng kiểm toán
+      requirements:
+        - records_accessible
+        - procedures_current
+        - calibrations_current
+        - training_current
+        - corrective_actions_closed
+      priority: high
+      category: compliance
+
+defect_codes:
+  dimensional:
+    - DIM-001: Out of tolerance
+    - DIM-002: Wrong dimension
+    - DIM-003: Warpage
+
+  surface:
+    - SUR-001: Scratch
+    - SUR-002: Dent
+    - SUR-003: Contamination
+    - SUR-004: Discoloration
+
+  functional:
+    - FUN-001: Does not operate
+    - FUN-002: Performance below spec
+    - FUN-003: Intermittent failure
+
+  material:
+    - MAT-001: Wrong material
+    - MAT-002: Material defect
+    - MAT-003: Contamination
+
+quality_metrics:
+  - metric: First Pass Yield (FPY)
+    formula: (good_units_first_time / total_units) * 100
+    target: "> 95%"
+
+  - metric: Rolled Throughput Yield (RTY)
+    formula: FPY1 * FPY2 * ... * FPYn
+    target: "> 90%"
+
+  - metric: Defects Per Million Opportunities (DPMO)
+    formula: (defects / opportunities) * 1000000
+    target: "< 3.4 (Six Sigma)"
+
+  - metric: Cost of Quality (COQ)
+    components:
+      - prevention_costs
+      - appraisal_costs
+      - internal_failure_costs
+      - external_failure_costs
+    target: "< 2% of revenue"
+
+integration_points:
+  - system: QMS
+    data: inspection_results, ncr, capa
+    direction: bidirectional
+
+  - system: MES
+    data: process_parameters, lot_tracking
+    direction: inbound
+
+  - system: ERP
+    data: quality_holds, scrap_reporting
+    direction: outbound
+
+  - system: SPC_Software
+    data: measurements, control_charts
+    direction: bidirectional

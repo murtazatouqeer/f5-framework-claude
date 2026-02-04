@@ -1,0 +1,595 @@
+# Content Access Business Rules
+# F5 Framework v2.0 - Education/LMS
+# Rules governing content access and delivery
+
+business_rules:
+  id: content-access-rules
+  name: Content Access Rules
+  name_ja: コンテンツアクセスルール
+  description: Business rules for content access control and delivery
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  rules:
+    # Enrollment-Based Access
+    - id: BR-ACC-001
+      name: Enrollment Required
+      name_ja: 登録必須
+      description: Verify active enrollment for content access
+      category: authentication
+      priority: critical
+      
+      trigger:
+        event: content_access_requested
+        entity: content_item
+        
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: enrollment.course_id
+          operator: equals
+          value: content.course_id
+          
+      actions:
+        on_pass:
+          - grant_access
+          - log_access_event
+        on_fail:
+          - deny_access
+          - redirect_to_enrollment
+          - message:
+              key: access.enrollment_required
+              
+      exceptions:
+        - condition: content.is_preview
+          action: grant_preview_access
+        - condition: user.is_instructor_of_course
+          action: grant_full_access
+        - condition: user.is_admin
+          action: grant_full_access
+          
+    # Sequential Content Unlock
+    - id: BR-ACC-010
+      name: Sequential Unlock
+      name_ja: 順次アンロック
+      description: Enforce sequential content completion requirements
+      category: progression
+      priority: high
+      
+      trigger:
+        event: content_access_requested
+        entity: lesson
+        conditions:
+          - module.unlock_type == 'sequential'
+          
+      conditions:
+        - field: previous_lesson.completed
+          operator: equals
+          value: true
+        - field: module.access_allowed
+          operator: equals
+          value: true
+          
+      actions:
+        on_pass:
+          - grant_access
+        on_fail:
+          - deny_access
+          - show_locked_state
+          - message:
+              key: access.complete_previous_first
+              params:
+                previous_lesson: "{{previous_lesson.title}}"
+                
+      unlock_patterns:
+        sequential:
+          description: Must complete in order
+          check: all_previous_completed
+        prerequisites:
+          description: Specific prerequisites required
+          check: prerequisite_lessons_completed
+        date_based:
+          description: Available after specific date
+          check: current_date >= lesson.available_at
+        module_gated:
+          description: Module must be unlocked first
+          check: module.is_unlocked
+          
+    # Time-Based Access (Drip Content)
+    - id: BR-ACC-020
+      name: Drip Content Release
+      name_ja: ドリップコンテンツ
+      description: Release content on schedule relative to enrollment
+      category: scheduling
+      priority: high
+      
+      trigger:
+        event: content_access_requested
+        entity: lesson
+        conditions:
+          - lesson.drip_enabled == true
+          
+      conditions:
+        - field: calculated_release_date
+          operator: is_past
+          calculation: "enrollment.enrolled_at + lesson.drip_days"
+          
+      actions:
+        on_pass:
+          - grant_access
+          - notify_if_new:
+              template: new_content_available
+        on_fail:
+          - deny_access
+          - show_release_countdown
+          - message:
+              key: access.content_not_yet_available
+              params:
+                release_date: "{{calculated_release_date}}"
+                
+      drip_configuration:
+        basis: enrollment_date | cohort_start_date | fixed_date
+        notification:
+          before_release: [1 day]
+          on_release: true
+          
+    # Cohort-Based Access
+    - id: BR-ACC-030
+      name: Cohort Access Control
+      name_ja: コホートアクセス制御
+      description: Control access based on cohort schedule
+      category: scheduling
+      priority: high
+      
+      trigger:
+        event: content_access_requested
+        entity: lesson
+        conditions:
+          - enrollment.cohort_id != null
+          
+      conditions:
+        - field: cohort.status
+          operator: equals
+          value: active
+        - field: cohort_schedule.is_current_or_past
+          operator: equals
+          value: true
+          
+      actions:
+        on_pass:
+          - grant_access
+        on_fail:
+          - deny_access
+          - show_cohort_schedule
+          - message:
+              key: access.cohort_schedule
+              params:
+                available_date: "{{cohort_schedule.available_at}}"
+                
+    # Live Session Access
+    - id: BR-ACC-040
+      name: Live Session Access
+      name_ja: ライブセッションアクセス
+      description: Control access to live learning sessions
+      category: live
+      priority: high
+      
+      trigger:
+        event: live_session_access_requested
+        entity: live_session
+        
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: live_session.status
+          operator: in
+          value: [scheduled, in_progress]
+        - field: current_time
+          operator: within_window
+          start: "live_session.starts_at - 15 minutes"
+          end: "live_session.ends_at"
+          
+      actions:
+        on_pass:
+          - generate_join_link
+          - grant_access
+          - log_attendance
+        on_fail_early:
+          - show_countdown
+          - enable_calendar_add
+          - set_reminder
+        on_fail_late:
+          - show_recording_access:
+              if: live_session.recording_available
+          - message:
+              key: access.session_ended
+              
+      session_rules:
+        join_window:
+          before_start: 15 minutes
+          after_start: 30 minutes (late join)
+        capacity:
+          enforce: true
+          waitlist: true
+        recording:
+          auto_available: live_session.auto_publish_recording
+          delay: 24 hours
+          
+    # Download Access
+    - id: BR-ACC-050
+      name: Download Permissions
+      name_ja: ダウンロード権限
+      description: Control file download permissions
+      category: downloads
+      priority: medium
+      
+      trigger:
+        event: download_requested
+        entity: resource
+        
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: resource.downloadable
+          operator: equals
+          value: true
+        - field: resource.requires_enrollment
+          operator: check_if_true
+          then_check: enrollment.exists
+          
+      actions:
+        on_pass:
+          - generate_download_link:
+              expiry: 1 hour
+              single_use: false
+          - increment_download_count
+          - log_download
+        on_fail:
+          - deny_download
+          - message:
+              key: access.download_not_available
+              
+      download_rules:
+        link_expiry: 1 hour
+        rate_limit: 100 per day per user
+        watermarking:
+          enabled: resource.watermark_enabled
+          include: learner_email
+          
+    # SCORM Content Access
+    - id: BR-ACC-060
+      name: SCORM Launch
+      name_ja: SCORMラウンチ
+      description: Control SCORM content package launch
+      category: standards
+      priority: high
+      
+      trigger:
+        event: scorm_launch_requested
+        entity: content_item
+        conditions:
+          - content_item.type == 'scorm'
+          
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: content_item.scorm_package.status
+          operator: equals
+          value: active
+          
+      actions:
+        on_pass:
+          - initialize_scorm_session
+          - generate_launch_url:
+              include_learner_id: true
+              include_session_id: true
+          - setup_api_endpoint
+          - log_scorm_launch
+        on_fail:
+          - deny_access
+          - message:
+              key: access.scorm_unavailable
+              
+      scorm_configuration:
+        api_version: auto_detect
+        completion_threshold: content_item.completion_threshold
+        time_tracking: true
+        suspend_data: persist
+        
+      compliance:
+        - standard: SCORM 1.2
+        - standard: SCORM 2004
+        - standard: cmi5
+        
+    # LTI Tool Launch
+    - id: BR-ACC-070
+      name: LTI Tool Launch
+      name_ja: LTIツールラウンチ
+      description: Control external tool launch via LTI
+      category: integration
+      priority: high
+      
+      trigger:
+        event: lti_launch_requested
+        entity: content_item
+        conditions:
+          - content_item.type == 'lti'
+          
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: lti_tool.status
+          operator: equals
+          value: active
+          
+      actions:
+        on_pass:
+          - generate_lti_launch:
+              version: lti_tool.lti_version
+              include_user_data: lti_tool.user_data_scope
+              include_grades: lti_tool.grades_enabled
+          - redirect_to_tool
+          - log_lti_launch
+        on_fail:
+          - deny_access
+          - message:
+              key: access.lti_tool_unavailable
+              
+      lti_configuration:
+        versions: [1.1, 1.3]
+        privacy:
+          send_name: configurable
+          send_email: configurable
+          anonymous_option: true
+        grade_passback: true
+        deep_linking: true
+        
+    # Trial Access
+    - id: BR-ACC-080
+      name: Trial Access Control
+      name_ja: トライアルアクセス制御
+      description: Control access during trial period
+      category: trial
+      priority: high
+      
+      trigger:
+        event: content_access_requested
+        entity: content_item
+        conditions:
+          - enrollment.access_type == 'trial'
+          
+      conditions:
+        - field: enrollment.trial_expires_at
+          operator: is_future
+        - field: content_item.available_in_trial
+          operator: equals
+          value: true
+          
+      actions:
+        on_pass:
+          - grant_access
+          - show_trial_notice:
+              remaining_days: "{{trial_days_remaining}}"
+              upgrade_cta: true
+        on_fail_expired:
+          - revoke_access
+          - redirect_to_upgrade
+          - message:
+              key: access.trial_expired
+        on_fail_restricted:
+          - show_preview_only
+          - show_upgrade_prompt
+          - message:
+              key: access.trial_content_restricted
+              
+      trial_rules:
+        content_access:
+          percentage: course.trial_content_percentage
+          specific_lessons: course.trial_lesson_ids
+        features:
+          downloads: false
+          certificates: false
+          discussions: limited
+          
+    # Geographic Restrictions
+    - id: BR-ACC-090
+      name: Geographic Access Control
+      name_ja: 地域アクセス制御
+      description: Control access based on geographic location
+      category: compliance
+      priority: high
+      
+      trigger:
+        event: content_access_requested
+        entity: course
+        conditions:
+          - course.geo_restrictions != null
+          
+      conditions:
+        - field: user.country_code
+          operator: in
+          value: course.allowed_countries
+        - field: user.country_code
+          operator: not_in
+          value: course.blocked_countries
+          
+      actions:
+        on_pass:
+          - grant_access
+        on_fail:
+          - deny_access
+          - message:
+              key: access.geographic_restriction
+              params:
+                country: "{{user.country_name}}"
+                
+      geo_detection:
+        method: ip_lookup
+        vpn_detection: course.block_vpn
+        override: admin_approval
+        
+    # Accessibility Features
+    - id: BR-ACC-100
+      name: Accessibility Support
+      name_ja: アクセシビリティサポート
+      description: Ensure accessible content delivery
+      category: accessibility
+      priority: critical
+      
+      trigger:
+        event: content_delivered
+        entity: content_item
+        
+      conditions:
+        - field: learner.accessibility_preferences
+          operator: is_not_null
+          
+      actions:
+        - apply_accessibility_settings:
+            captions: learner.needs_captions
+            audio_description: learner.needs_audio_description
+            screen_reader_optimized: learner.uses_screen_reader
+            high_contrast: learner.needs_high_contrast
+            reduced_motion: learner.prefers_reduced_motion
+        - provide_alternatives:
+            video: transcript
+            image: alt_text
+            interactive: static_version
+            
+      compliance:
+        - standard: WCAG 2.1
+          level: AA
+        - standard: Section 508
+        - standard: EN 301 549
+        
+      accessibility_features:
+        captions:
+          auto_generate: true
+          human_review: premium
+          multiple_languages: true
+        transcripts:
+          downloadable: true
+          timestamps: true
+        keyboard_navigation:
+          required: true
+          skip_links: true
+        screen_reader:
+          aria_labels: required
+          heading_structure: required
+          
+    # Offline Access
+    - id: BR-ACC-110
+      name: Offline Content Access
+      name_ja: オフラインコンテンツアクセス
+      description: Control offline content download and access
+      category: offline
+      priority: medium
+      
+      trigger:
+        event: offline_download_requested
+        entity: lesson
+        
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: course.offline_access_enabled
+          operator: equals
+          value: true
+        - field: lesson.offline_available
+          operator: equals
+          value: true
+          
+      actions:
+        on_pass:
+          - package_offline_content
+          - apply_drm:
+              if: course.drm_enabled
+          - set_offline_expiry:
+              duration: course.offline_duration_days
+          - enable_offline_progress_sync
+        on_fail:
+          - deny_offline_access
+          - message:
+              key: access.offline_not_available
+              
+      offline_rules:
+        expiry: 30 days
+        sync_required: every 7 days
+        drm_protection: video_content
+        progress_sync: on_reconnect
+
+  access_levels:
+    preview:
+      description: Limited access without enrollment
+      permissions:
+        - view_course_info
+        - view_preview_content
+        - view_curriculum
+        
+    trial:
+      description: Time-limited full or partial access
+      permissions:
+        - view_trial_content
+        - participate_discussions_limited
+        - track_progress
+        
+    enrolled:
+      description: Full access for enrolled learners
+      permissions:
+        - view_all_content
+        - download_resources
+        - participate_discussions
+        - submit_assignments
+        - take_assessments
+        - earn_certificate
+        
+    audit:
+      description: Read-only access without completion
+      permissions:
+        - view_all_content
+        - participate_discussions
+        
+    instructor:
+      description: Course creator/teacher access
+      permissions:
+        - all_enrolled_permissions
+        - view_learner_progress
+        - grade_assignments
+        - moderate_discussions
+        - update_content
+        
+    admin:
+      description: Platform administrator access
+      permissions:
+        - all_instructor_permissions
+        - manage_enrollments
+        - manage_courses
+        - view_analytics
+
+  rate_limits:
+    video_streaming:
+      concurrent_streams: 2 per user
+      bandwidth: adaptive
+    downloads:
+      per_day: 100 files
+      per_hour: 20 files
+    api_access:
+      per_minute: 60 requests
+      per_hour: 1000 requests
+
+  audit:
+    enabled: true
+    log_events:
+      - content_accessed
+      - content_denied
+      - download_requested
+      - scorm_launched
+      - lti_launched
+      - offline_sync

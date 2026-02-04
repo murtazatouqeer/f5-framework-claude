@@ -1,0 +1,703 @@
+name: Fund Transfer Workflow
+display_name: Fund Transfer Workflow / Quy trình chuyển tiền
+description: |
+  End-to-end workflow for processing fund transfers including
+  internal, domestic (NAPAS), and international (SWIFT) transfers.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-TRANSFER
+  name: Fund Transfer
+  name_vi: Chuyển tiền
+  category: transactions
+
+  trigger:
+    type: customer_request
+    channels:
+      - mobile_app
+      - web_banking
+      - branch
+      - atm
+      - api
+
+  transfer_types:
+    internal:
+      description: "Same bank transfer"
+      processing: real_time
+      availability: "24/7"
+
+    domestic:
+      description: "Interbank via NAPAS"
+      processing: real_time | batch
+      availability: "6:00-23:00"
+
+    international:
+      description: "Cross-border via SWIFT"
+      processing: batch
+      availability: business_days
+
+  actors:
+    - customer
+    - system
+    - fraud_officer
+    - compliance_officer
+    - treasury
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Initiate Transfer
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: initiate_transfer
+    name: Initiate Transfer
+    name_vi: Khởi tạo chuyển khoản
+    actor: customer
+
+    description: |
+      Customer initiates transfer request with beneficiary and amount.
+
+    inputs:
+      source_account:
+        - account_number
+        - account_type
+
+      beneficiary:
+        - beneficiary_type: saved | new
+        - account_number
+        - account_name
+        - bank_code  # for domestic/international
+        - bank_name
+        - swift_code  # for international
+        - country  # for international
+
+      transfer_details:
+        - amount
+        - currency
+        - transfer_type: internal | domestic | international
+        - purpose_code  # for international
+        - reference_message
+        - scheduled_date  # optional, for future-dated
+
+      fee_options:
+        - fee_type: our | ben | sha  # for international
+
+    validations:
+      - rule: source_account_active
+        condition: "source_account.status = 'active'"
+        error: "SOURCE_ACCOUNT_INACTIVE"
+
+      - rule: positive_amount
+        condition: "amount > 0"
+        error: "INVALID_AMOUNT"
+
+      - rule: currency_match
+        condition: "amount.currency = source_account.currency OR fx_enabled"
+        error: "CURRENCY_MISMATCH"
+
+    outputs:
+      - transfer_id
+      - transfer_status: initiated
+      - estimated_fee
+
+    next_step: validate_transfer
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Validate Transfer
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: validate_transfer
+    name: Validate Transfer
+    name_vi: Xác thực chuyển khoản
+    actor: system
+
+    description: |
+      Validate transfer against limits, balance, and business rules.
+
+    validations:
+      balance_check:
+        rule: |
+          total_debit = amount + fee
+          available_balance >= total_debit
+        error: "INSUFFICIENT_FUNDS"
+
+      per_transaction_limit:
+        rule: |
+          amount <= customer.per_transaction_limit[transfer_type]
+        error: "TRANSACTION_LIMIT_EXCEEDED"
+
+      daily_limit:
+        rule: |
+          daily_used + amount <= customer.daily_limit
+        error: "DAILY_LIMIT_EXCEEDED"
+
+      monthly_limit:
+        rule: |
+          monthly_used + amount <= customer.monthly_limit
+        error: "MONTHLY_LIMIT_EXCEEDED"
+
+      beneficiary_validation:
+        for_domestic:
+          - verify_bank_code
+          - verify_account_format
+        for_international:
+          - verify_swift_code
+          - verify_country_allowed
+
+      new_beneficiary_cooling:
+        rule: |
+          IF beneficiary.is_new AND amount > 50000000
+          AND beneficiary.created_at > NOW() - 24 hours
+          THEN block with cooling_period message
+        error: "COOLING_PERIOD_ACTIVE"
+
+    fee_calculation:
+      internal:
+        fee: 0
+
+      domestic:
+        tiers:
+          - max: 10000000
+            fee: 5500
+          - max: 50000000
+            fee: 8800
+          - max: null
+            fee: 11000
+
+      international:
+        base: "MAX(MIN(amount * 0.001, 1000000), 200000)"
+        cable_charge: 150000
+        correspondent: variable
+
+    outputs:
+      - validation_status: passed | failed
+      - calculated_fee
+      - fee_breakdown
+      - errors: []
+
+    next_step:
+      if_passed: check_fraud
+      if_failed: return_to_customer
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Fraud Screening
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: check_fraud
+    name: Fraud Screening
+    name_vi: Sàng lọc gian lận
+    actor: system
+
+    description: |
+      Real-time fraud detection and risk scoring.
+
+    screening_factors:
+      transaction_based:
+        - amount_vs_average
+        - time_of_transaction
+        - device_fingerprint
+        - ip_address
+        - geolocation
+
+      beneficiary_based:
+        - new_beneficiary
+        - high_risk_country
+        - mule_account_indicators
+
+      pattern_based:
+        - velocity_check
+        - unusual_behavior
+        - round_amount_pattern
+
+    risk_scoring:
+      low: 0-30
+      medium: 31-70
+      high: 71-90
+      critical: 91-100
+
+    actions_by_score:
+      low:
+        action: proceed
+        logging: standard
+
+      medium:
+        action: proceed_with_monitoring
+        logging: enhanced
+        alert: fraud_dashboard
+
+      high:
+        action: step_up_authentication
+        logging: enhanced
+        alert: fraud_officer
+
+      critical:
+        action: block
+        logging: full
+        alert: fraud_team
+        customer_notification: true
+
+    outputs:
+      - fraud_score
+      - fraud_decision: approve | step_up | block
+      - risk_indicators: []
+
+    next_step:
+      if_approved: authenticate_transfer
+      if_step_up: enhanced_authentication
+      if_blocked: fraud_review
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Authenticate Transfer
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: authenticate_transfer
+    name: Authenticate Transfer
+    name_vi: Xác thực chuyển khoản
+    actor: customer
+
+    description: |
+      Customer authenticates transfer with OTP or biometric.
+
+    authentication_methods:
+      standard:
+        - sms_otp
+        - smart_otp
+        - push_notification
+
+      biometric:
+        - fingerprint
+        - face_recognition
+        condition: amount <= biometric_limit
+
+      hardware_token:
+        for: enterprise_customers
+
+    otp_parameters:
+      validity: 180_seconds
+      length: 6_digits
+      max_attempts: 3
+      lockout: 5_minutes
+
+    authentication_requirements:
+      internal_small:  # < 5M
+        methods: [biometric, sms_otp]
+        required: 1
+
+      internal_large:  # >= 5M
+        methods: [sms_otp, smart_otp]
+        required: 1
+
+      domestic:
+        methods: [sms_otp, smart_otp]
+        required: 1
+
+      international:
+        methods: [smart_otp]
+        required: 1
+        additional: source_of_funds_declaration
+
+    outputs:
+      - authentication_status: success | failed
+      - authentication_method
+      - authentication_timestamp
+
+    next_step:
+      if_success: compliance_screening
+      if_failed: authentication_failed
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Compliance Screening
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: compliance_screening
+    name: Compliance Screening
+    name_vi: Sàng lọc tuân thủ
+    actor: system
+
+    description: |
+      AML and sanctions screening for transfers.
+
+    triggers:
+      always:
+        - international_transfers
+        - high_risk_countries
+
+      threshold_based:
+        - amount >= 200000000
+        - cumulative_daily >= 500000000
+
+      risk_based:
+        - pep_customer
+        - high_risk_customer
+
+    screening_checks:
+      sanctions:
+        lists:
+          - OFAC_SDN
+          - UN_Consolidated
+          - EU_Sanctions
+          - Vietnam_local
+        targets:
+          - beneficiary_name
+          - beneficiary_bank
+          - correspondent_banks
+
+      aml:
+        checks:
+          - transaction_monitoring_rules
+          - pattern_detection
+          - structuring_detection
+
+      country_risk:
+        check: destination_country_risk_level
+        high_risk_countries: FATF_grey_list
+
+    actions:
+      clear:
+        action: proceed
+
+      potential_match:
+        action: hold_for_review
+        escalate_to: compliance_officer
+        sla: 4_hours
+
+      confirmed_match:
+        action: block
+        escalate_to: compliance_team
+        report: SAR_required
+
+    outputs:
+      - screening_status: clear | pending_review | blocked
+      - screening_results: []
+      - alerts_raised: []
+
+    next_step:
+      if_clear: process_transfer
+      if_pending: compliance_review
+      if_blocked: reject_transfer
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Process Transfer
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: process_transfer
+    name: Process Transfer
+    name_vi: Xử lý chuyển khoản
+    actor: system
+
+    description: |
+      Execute the transfer based on type.
+
+    processing_by_type:
+      internal:
+        method: instant
+        steps:
+          - debit_source_account
+          - credit_destination_account
+          - update_balances
+          - generate_reference
+        completion: immediate
+
+      domestic:
+        method: napas_real_time
+        steps:
+          - debit_source_account
+          - hold_funds
+          - send_to_napas
+          - receive_response
+          - finalize_or_reverse
+
+        operating_hours: "06:00-23:00"
+        outside_hours: queue_for_next_window
+
+      international:
+        method: swift
+        steps:
+          - debit_source_account
+          - hold_funds
+          - fx_conversion_if_needed
+          - create_swift_message
+          - submit_to_swift
+          - await_confirmation
+
+        message_types:
+          - MT103: single_customer_transfer
+          - MT202: bank_to_bank
+
+    transaction_reference:
+      format: "TRF-YYYYMMDD-XXXXXX"
+      components:
+        TRF: prefix
+        YYYYMMDD: date
+        XXXXXX: sequence
+
+    outputs:
+      - transaction_reference
+      - processing_status: completed | pending | failed
+      - completion_timestamp
+      - network_reference  # NAPAS/SWIFT reference
+
+    next_step:
+      if_completed: notify_parties
+      if_pending: await_confirmation
+      if_failed: handle_failure
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Handle Failure
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: handle_failure
+    name: Handle Failure
+    name_vi: Xử lý thất bại
+    actor: system
+    conditional: true
+
+    description: |
+      Handle failed transfers and initiate reversal if needed.
+
+    failure_types:
+      network_timeout:
+        action: retry
+        max_retries: 3
+        interval: 30_seconds
+
+      beneficiary_account_issue:
+        issues:
+          - account_closed
+          - account_frozen
+          - invalid_account
+        action: reverse_and_notify
+
+      insufficient_funds_at_execution:
+        action: reject
+        reason: "INSUFFICIENT_FUNDS"
+
+      compliance_block:
+        action: hold
+        escalate: compliance_team
+
+    reversal_process:
+      - release_hold
+      - credit_source_account
+      - update_status: reversed
+      - generate_reversal_reference
+      - notify_customer
+
+    outputs:
+      - failure_reason
+      - reversal_reference  # if reversed
+      - next_action
+
+    next_step: notify_parties
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Notify Parties
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: notify_parties
+    name: Notify Parties
+    name_vi: Thông báo các bên
+    actor: system
+
+    description: |
+      Send notifications to sender and beneficiary.
+
+    sender_notifications:
+      success:
+        channels: [push, sms]
+        content: |
+          Transfer successful
+          Amount: {amount}
+          To: {beneficiary_name_masked}
+          Ref: {reference}
+          Balance: {new_balance}
+
+      pending:
+        channels: [push]
+        content: |
+          Transfer in progress
+          Expected completion: {eta}
+
+      failed:
+        channels: [push, sms]
+        content: |
+          Transfer failed
+          Reason: {reason}
+          Amount refunded: {amount}
+
+    beneficiary_notifications:
+      internal_only: true
+      channels: [push, sms]
+      content: |
+        You received {amount}
+        From: {sender_name_masked}
+        New balance: {balance}
+
+    email_receipt:
+      timing: within_5_minutes
+      includes:
+        - transaction_details
+        - fee_breakdown
+        - reference_number
+        - support_contacts
+
+    outputs:
+      - notifications_sent: []
+      - receipt_generated
+
+    next_step: complete_workflow
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Complete Workflow
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: complete_workflow
+    name: Complete Workflow
+    name_vi: Hoàn thành quy trình
+    actor: system
+
+    description: |
+      Finalize transfer and update records.
+
+    actions:
+      update_limits:
+        - daily_used += amount
+        - monthly_used += amount
+
+      update_beneficiary:
+        if: new_beneficiary AND successful
+        action: mark_as_verified
+
+      log_transaction:
+        data:
+          - transfer_id
+          - amount
+          - fee
+          - status
+          - processing_time
+          - channel
+
+      reporting:
+        - CTR if threshold exceeded
+        - Internal reporting
+        - Analytics events
+
+    outputs:
+      - workflow_status: completed
+      - final_status
+      - completion_timestamp
+
+# =============================================================================
+# SCHEDULED TRANSFERS
+# =============================================================================
+scheduled_transfer:
+  supported: true
+
+  scheduling_options:
+    future_dated:
+      max_days_ahead: 365
+      execution_time: "06:00"
+
+    recurring:
+      frequencies: [daily, weekly, monthly]
+      max_occurrences: 999
+
+  pre_execution_checks:
+    timing: 1_hour_before
+    checks:
+      - balance_availability
+      - limit_availability
+      - account_status
+
+    if_failed:
+      action: notify_and_skip
+      notification: customer
+
+  modification:
+    allowed_until: execution_date - 1_day
+    cutoff_time: "17:00"
+
+# =============================================================================
+# SLA AND METRICS
+# =============================================================================
+sla:
+  processing_time:
+    internal: 5_seconds
+    domestic_real_time: 30_seconds
+    domestic_batch: next_window
+    international: 1-3_business_days
+
+  customer_facing:
+    initiation_to_confirmation: 2_minutes
+    failure_notification: 1_minute
+
+metrics:
+  tracked:
+    - success_rate
+    - average_processing_time
+    - fraud_detection_rate
+    - false_positive_rate
+    - compliance_escalation_rate
+    - customer_satisfaction
+
+  targets:
+    success_rate: "> 99%"
+    processing_time_p95: "< 30s for domestic"
+    fraud_detection_rate: "> 95%"
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  network_errors:
+    napas_timeout:
+      action: retry_with_backoff
+      max_retries: 3
+      escalation: operations
+
+    swift_rejection:
+      action: analyze_and_notify
+      customer_notification: true
+
+  system_errors:
+    cbs_unavailable:
+      action: queue_for_retry
+      notification: operations
+
+    fraud_service_down:
+      action: apply_conservative_rules
+      logging: enhanced
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - transfer_initiated
+    - validation_completed
+    - fraud_check_completed
+    - authentication_completed
+    - compliance_screened
+    - transfer_processed
+    - transfer_completed
+    - transfer_failed
+    - transfer_reversed
+
+  data_captured:
+    - all_inputs
+    - all_validations
+    - screening_results
+    - processing_details
+    - timestamps
+    - user_actions
+
+  retention: 10_years

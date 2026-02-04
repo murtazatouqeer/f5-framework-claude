@@ -1,0 +1,577 @@
+# =============================================================================
+# PRESCRIPTION WORKFLOW - EHR Sub-domain
+# Quy trình Kê đơn thuốc
+# =============================================================================
+
+name: PrescriptionWorkflow
+display_name: Prescription Workflow / Quy trình Kê đơn thuốc
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: medication
+
+description: |
+  End-to-end workflow for medication prescribing from order entry through
+  dispensing. Includes safety checks, e-prescribing, controlled substance
+  requirements, and medication therapy management.
+
+# =============================================================================
+# WORKFLOW TRIGGERS
+# =============================================================================
+triggers:
+  - id: TRIG-PRX-001
+    name: New Prescription
+    description: Provider orders new medication
+    event: medication_order_created
+    actors: [physician, np, pa]
+
+  - id: TRIG-PRX-002
+    name: Refill Request
+    description: Patient or pharmacy requests refill
+    event: refill_request_received
+    sources: [patient_portal, pharmacy_fax, phone_call]
+
+  - id: TRIG-PRX-003
+    name: Medication Renewal
+    description: Annual medication review and renewal
+    event: medication_due_for_renewal
+    timing: 30_days_before_expiration
+
+  - id: TRIG-PRX-004
+    name: Formulary Change
+    description: Insurance formulary requires medication change
+    event: formulary_change_notification
+    action: therapeutic_substitution_review
+
+  - id: TRIG-PRX-005
+    name: Prior Authorization Required
+    description: PA needed for coverage
+    event: pa_required_notification
+    action: initiate_pa_workflow
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: draft
+    name: Draft
+    description: Prescription being composed
+    allowed_transitions: [pending_review, cancelled]
+
+  - id: pending_review
+    name: Pending Review
+    description: Awaiting clinical review or approval
+    allowed_transitions: [pending_signature, rejected, draft]
+
+  - id: pending_signature
+    name: Pending Signature
+    description: Awaiting prescriber signature
+    allowed_transitions: [signed, cancelled]
+
+  - id: signed
+    name: Signed
+    description: Prescription signed, ready to transmit
+    entry_actions:
+      - validate_prescription
+      - check_epcs_requirements
+    allowed_transitions: [transmitted, print_requested]
+
+  - id: transmitted
+    name: Transmitted
+    description: Sent to pharmacy electronically
+    entry_actions:
+      - send_to_surescripts
+      - log_transmission
+    allowed_transitions: [dispensed, cancelled, rejected_by_pharmacy]
+
+  - id: print_requested
+    name: Print Requested
+    description: Printed for patient to take to pharmacy
+    allowed_transitions: [dispensed]
+
+  - id: rejected_by_pharmacy
+    name: Rejected by Pharmacy
+    description: Pharmacy unable to fill
+    entry_actions:
+      - notify_prescriber
+      - document_rejection_reason
+    allowed_transitions: [draft, cancelled]
+
+  - id: dispensed
+    name: Dispensed
+    description: Medication dispensed to patient
+    allowed_transitions: [completed]
+
+  - id: completed
+    name: Completed
+    description: Prescription fully processed
+    allowed_transitions: []
+
+  - id: cancelled
+    name: Cancelled
+    description: Prescription cancelled
+    entry_actions:
+      - document_cancellation_reason
+      - send_cancel_to_pharmacy_if_transmitted
+    allowed_transitions: []
+
+  - id: rejected
+    name: Rejected
+    description: Prescription rejected during review
+    allowed_transitions: [draft]
+
+# =============================================================================
+# PRESCRIPTION ENTRY WORKFLOW
+# =============================================================================
+prescription_entry:
+  # Step 1: Medication Selection
+  - id: STEP-001
+    name: Medication Selection
+    description: Select medication from formulary
+    order: 1
+    actors: [prescriber]
+    actions:
+      - action: search_medication
+        description: Search by name, generic, or class
+        features:
+          - autocomplete
+          - generic_first
+          - formulary_status_display
+      - action: select_medication
+        description: Choose specific medication
+        displays:
+          - brand_and_generic_options
+          - available_strengths
+          - available_forms
+          - formulary_tier
+          - prior_auth_required
+
+  # Step 2: Dosing
+  - id: STEP-002
+    name: Dosing
+    description: Specify dose, frequency, duration
+    order: 2
+    actors: [prescriber]
+    actions:
+      - action: enter_dose
+        description: Specify dose amount
+        validation:
+          - within_therapeutic_range
+          - appropriate_for_age
+          - adjusted_for_renal_function
+      - action: enter_frequency
+        description: Specify how often
+        options:
+          - once_daily
+          - twice_daily
+          - three_times_daily
+          - four_times_daily
+          - every_x_hours
+          - prn
+          - custom
+      - action: enter_duration
+        description: Specify length of therapy
+        options:
+          - days
+          - weeks
+          - months
+          - ongoing
+      - action: enter_quantity
+        description: Total quantity to dispense
+        calculation: auto_calculate_from_duration
+
+  # Step 3: Sig Instructions
+  - id: STEP-003
+    name: Sig Instructions
+    description: Patient directions
+    order: 3
+    actors: [prescriber]
+    actions:
+      - action: generate_sig
+        description: Create patient instructions
+        format: "Take [dose] [route] [frequency] [with_food] [for_condition]"
+      - action: add_auxiliary_instructions
+        description: Additional patient guidance
+        examples:
+          - take_with_food
+          - avoid_alcohol
+          - take_at_bedtime
+          - may_cause_drowsiness
+
+  # Step 4: Pharmacy Selection
+  - id: STEP-004
+    name: Pharmacy Selection
+    description: Choose dispensing pharmacy
+    order: 4
+    actors: [prescriber, patient]
+    actions:
+      - action: select_pharmacy
+        description: Choose patient's pharmacy
+        options:
+          - patient_preferred_pharmacy
+          - search_by_location
+          - mail_order
+          - specialty_pharmacy
+      - action: verify_eprescribe_capability
+        description: Confirm pharmacy accepts e-rx
+        for_controlled: verify_epcs_capable
+
+  # Step 5: Safety Checks
+  - id: STEP-005
+    name: Safety Checks
+    description: Automated safety screening
+    order: 5
+    actors: [system]
+    checks:
+      - check: drug_drug_interaction
+        action: alert_if_significant
+        override: require_reason
+      - check: drug_allergy
+        action: hard_stop_if_match
+        override: require_reason_and_supervisor
+      - check: drug_disease
+        action: alert_if_contraindicated
+        override: require_reason
+      - check: dose_range
+        action: alert_if_outside_range
+        override: require_reason
+      - check: duplicate_therapy
+        action: alert_if_duplicate
+        override: allow_with_acknowledgment
+      - check: pregnancy
+        action: alert_if_category_d_or_x
+        override: require_informed_consent
+      - check: age_appropriateness
+        action: alert_if_inappropriate
+        override: require_reason
+
+  # Step 6: Controlled Substance Checks
+  - id: STEP-006
+    name: Controlled Substance Checks
+    description: Additional checks for controlled substances
+    order: 6
+    conditional: medication.is_controlled
+    actors: [prescriber, system]
+    checks:
+      - check: pdmp_query
+        description: Query prescription monitoring program
+        required: per_state_law
+        documentation: record_query_result
+      - check: dea_verification
+        description: Verify prescriber DEA active
+        required: true
+      - check: quantity_limits
+        description: Check against quantity limits
+        schedule_ii: max_90_day_supply
+      - check: refill_limits
+        description: Verify refill compliance
+        schedule_ii: no_refills
+        schedule_iii_v: max_5_refills_in_6_months
+
+  # Step 7: Signature
+  - id: STEP-007
+    name: Prescription Signature
+    description: Authenticate and sign prescription
+    order: 7
+    actors: [prescriber]
+    actions:
+      - action: review_prescription
+        description: Final review before signing
+      - action: sign_prescription
+        description: Apply electronic signature
+        for_controlled:
+          method: epcs_two_factor
+          credential: dea_epcs_credential
+      - action: attest
+        description: Attestation for legitimate purpose
+
+  # Step 8: Transmission
+  - id: STEP-008
+    name: Prescription Transmission
+    description: Send to pharmacy
+    order: 8
+    actors: [system]
+    actions:
+      - action: format_prescription
+        description: Format per NCPDP SCRIPT standard
+      - action: transmit
+        description: Send via Surescripts
+        for_controlled: epcs_network
+      - action: confirm_receipt
+        description: Verify pharmacy received
+      - action: document_transmission
+        description: Log in patient record
+
+# =============================================================================
+# REFILL REQUEST WORKFLOW
+# =============================================================================
+refill_workflow:
+  - id: REFILL-001
+    name: Receive Refill Request
+    description: Request received from patient or pharmacy
+    actors: [ma, nurse, system]
+    actions:
+      - action: receive_request
+        sources: [surescripts, patient_portal, phone, fax]
+      - action: validate_request
+        checks:
+          - prescription_exists
+          - refills_remaining
+          - not_too_early
+      - action: route_to_provider
+        if: requires_provider_review
+
+  - id: REFILL-002
+    name: Provider Review
+    description: Provider evaluates refill request
+    actors: [prescriber]
+    conditions_for_auto_approval:
+      - chronic_medication: true
+      - recent_visit: within_12_months
+      - labs_current: if_required
+      - no_concerning_trends: true
+    actions:
+      - action: review_history
+        description: Review prescription history
+      - action: review_monitoring
+        description: Review required monitoring
+      - action: decision
+        options:
+          - approve_refill
+          - deny_with_reason
+          - schedule_visit_first
+          - change_medication
+
+  - id: REFILL-003
+    name: Process Refill
+    description: Execute approved refill
+    actors: [prescriber, system]
+    actions:
+      - action: generate_refill
+        description: Create refill prescription
+      - action: sign_refill
+        description: Authenticate refill
+      - action: transmit_refill
+        description: Send to pharmacy
+      - action: notify_patient
+        description: Inform patient of approval
+
+# =============================================================================
+# PRIOR AUTHORIZATION WORKFLOW
+# =============================================================================
+prior_authorization:
+  - id: PA-001
+    name: PA Initiation
+    description: Start prior authorization process
+    triggers:
+      - formulary_pa_required
+      - quantity_limit_exceeded
+      - step_therapy_required
+    actors: [prescriber, pa_staff]
+    actions:
+      - action: gather_clinical_info
+        description: Collect supporting documentation
+        includes:
+          - diagnosis_codes
+          - prior_medications_tried
+          - lab_results
+          - clinical_notes
+      - action: submit_pa_request
+        method: [covermymeds, fax, phone, payer_portal]
+
+  - id: PA-002
+    name: PA Decision
+    description: Receive and process PA decision
+    actors: [pa_staff, prescriber]
+    outcomes:
+      - approved:
+          action: proceed_with_prescription
+          document: pa_approval_number
+      - denied:
+          actions:
+            - notify_prescriber
+            - offer_alternatives
+            - appeal_if_appropriate
+      - pending_additional_info:
+          action: gather_and_resubmit
+
+  - id: PA-003
+    name: PA Appeal
+    description: Appeal denied prior authorization
+    actors: [prescriber]
+    actions:
+      - action: peer_to_peer_review
+        description: Schedule call with payer MD
+      - action: submit_appeal
+        description: Formal appeal with supporting docs
+      - action: expedited_review
+        if: urgent_clinical_need
+
+# =============================================================================
+# CONTROLLED SUBSTANCE MONITORING
+# =============================================================================
+controlled_substance_monitoring:
+  - id: CSM-001
+    name: PDMP Query
+    description: Query prescription drug monitoring program
+    required: per_state_law
+    timing:
+      initial_prescription: before_prescribing
+      ongoing: per_state_requirement
+    documentation:
+      - query_date
+      - findings_summary
+      - clinical_decision
+      - provider_attestation
+
+  - id: CSM-002
+    name: Opioid Risk Evaluation
+    description: Assess risk for opioid therapy
+    tools:
+      - opioid_risk_tool: ort
+      - screener_and_opioid_assessment: soapp
+      - current_opioid_misuse_measure: comm
+    documentation:
+      - risk_category
+      - mitigation_plan
+      - monitoring_frequency
+
+  - id: CSM-003
+    name: Treatment Agreement
+    description: Controlled substance agreement
+    for: chronic_opioid_therapy
+    elements:
+      - single_prescriber
+      - single_pharmacy
+      - random_drug_testing
+      - pill_counts
+      - pdmp_consent
+      - risk_acknowledgment
+    renewal: annual
+
+  - id: CSM-004
+    name: Morphine Milligram Equivalent Monitoring
+    description: Track total opioid dose
+    calculation: sum_of_all_opioids_in_mme
+    thresholds:
+      - mme_50: caution_alert
+      - mme_90: high_risk_alert
+    documentation:
+      - current_mme
+      - justification_if_high
+
+# =============================================================================
+# MEDICATION THERAPY MANAGEMENT
+# =============================================================================
+medication_therapy_management:
+  - id: MTM-001
+    name: Comprehensive Medication Review
+    description: Pharmacist-led medication review
+    frequency: annual_or_as_needed
+    actors: [pharmacist, patient]
+    components:
+      - medication_list_reconciliation
+      - adherence_assessment
+      - therapeutic_goal_review
+      - drug_therapy_problem_identification
+      - care_plan_development
+
+  - id: MTM-002
+    name: Drug Therapy Problem Resolution
+    description: Address identified medication issues
+    problem_types:
+      - unnecessary_therapy
+      - needs_additional_therapy
+      - ineffective_drug
+      - dosage_too_low
+      - adverse_drug_reaction
+      - dosage_too_high
+      - nonadherence
+    resolution:
+      - pharmacist_recommendation
+      - prescriber_collaboration
+      - patient_education
+
+# =============================================================================
+# INTEGRATIONS
+# =============================================================================
+integrations:
+  - id: INT-001
+    name: Surescripts E-Prescribing
+    description: Electronic prescription transmission
+    standards: NCPDP_SCRIPT
+    transactions:
+      - newrx
+      - refill_request
+      - refill_response
+      - cancel_rx
+      - rx_change
+
+  - id: INT-002
+    name: PDMP Integration
+    description: Prescription monitoring program query
+    standards: PMIX_NIEM
+    mode: real_time_or_batch
+
+  - id: INT-003
+    name: Formulary and Benefits
+    description: Real-time formulary checking
+    standards: NCPDP
+    data:
+      - formulary_status
+      - copay_information
+      - alternatives
+      - prior_auth_requirements
+
+  - id: INT-004
+    name: CoverMyMeds
+    description: Prior authorization automation
+    transactions:
+      - pa_initiation
+      - pa_status
+      - pa_response
+
+  - id: INT-005
+    name: Drug Information Database
+    description: Clinical drug information
+    vendors: [first_databank, medispan, medi_span]
+    data:
+      - dosing
+      - interactions
+      - contraindications
+      - pricing
+
+# =============================================================================
+# METRICS
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: E-Prescribing Rate
+    description: Percentage of prescriptions sent electronically
+    target: "> 80%"
+    exclusions: [schedule_ii_in_some_states]
+
+  - id: MET-002
+    name: Generic Dispensing Rate
+    description: Generics dispensed when available
+    target: "> 85%"
+
+  - id: MET-003
+    name: Formulary Compliance Rate
+    description: Prescriptions on formulary
+    target: "> 90%"
+
+  - id: MET-004
+    name: PDMP Query Compliance
+    description: PDMP checked per requirements
+    target: "100%"
+
+  - id: MET-005
+    name: Refill Response Time
+    description: Time to respond to refill requests
+    target: "< 48 hours"
+
+  - id: MET-006
+    name: Prior Auth Approval Rate
+    description: PA requests approved
+    target: "> 80%"

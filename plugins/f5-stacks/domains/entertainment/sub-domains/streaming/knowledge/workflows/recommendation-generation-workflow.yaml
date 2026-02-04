@@ -1,0 +1,548 @@
+name: recommendation_generation_workflow
+display_name: Recommendation Generation Workflow
+description: |
+  Workflow for generating, personalizing, and serving content
+  recommendations to users across the platform.
+
+domain: entertainment
+subdomain: streaming
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-STR-004
+trigger:
+  events:
+    - user_profile_access
+    - batch_recommendation_job
+    - real_time_update
+  source: recommendation_service
+
+participants:
+  roles:
+    - ml_engineer
+    - content_curator
+    - system
+
+  systems:
+    - recommendation_engine
+    - user_profile_service
+    - content_catalog
+    - watch_history_service
+    - feature_store
+    - serving_layer
+    - analytics_service
+
+stages:
+  # ============================================
+  # Batch Recommendation Generation
+  # ============================================
+  - id: RG-001
+    name: Data Collection
+    description: Gather data for recommendation generation
+    actor: system
+    schedule: daily
+
+    inputs:
+      - user_profiles
+      - watch_history
+      - content_metadata
+      - interaction_events
+
+    activities:
+      - id: RG-001-A
+        name: Extract User Features
+        type: automated
+        action: Build user feature vectors
+        features:
+          - watch_history_embedding
+          - genre_preferences
+          - time_of_day_patterns
+          - device_preferences
+          - completion_rates
+          - rating_history
+
+      - id: RG-001-B
+        name: Extract Content Features
+        type: automated
+        action: Build content feature vectors
+        features:
+          - content_embedding
+          - genre_vector
+          - cast_crew_embedding
+          - popularity_score
+          - recency_score
+          - quality_metrics
+
+      - id: RG-001-C
+        name: Build Interaction Matrix
+        type: automated
+        action: Create user-item interaction matrix
+        interactions:
+          - explicit: ratings, favorites
+          - implicit: watch_time, completion, abandonment
+
+      - id: RG-001-D
+        name: Store in Feature Store
+        type: automated
+        action: Persist features for serving
+        storage:
+          - user_features: redis
+          - content_features: redis
+          - interaction_matrix: distributed_storage
+
+    outputs:
+      - user_features
+      - content_features
+      - interaction_matrix
+
+    sla: 4_hours
+    next_stage: RG-002
+
+  - id: RG-002
+    name: Model Training
+    description: Train recommendation models
+    actor: system
+    schedule: weekly
+
+    inputs:
+      - user_features
+      - content_features
+      - interaction_matrix
+
+    activities:
+      - id: RG-002-A
+        name: Train Collaborative Filtering Model
+        type: automated
+        action: Train matrix factorization model
+        algorithm: ALS
+        parameters:
+          - factors: 100
+          - regularization: 0.01
+          - iterations: 15
+
+      - id: RG-002-B
+        name: Train Content-Based Model
+        type: automated
+        action: Train content similarity model
+        algorithm: neural_network
+        architecture:
+          - embedding_layer
+          - attention_layer
+          - dense_layers
+
+      - id: RG-002-C
+        name: Train Deep Learning Model
+        type: automated
+        action: Train neural collaborative filtering
+        algorithm: NCF
+        parameters:
+          - embedding_size: 64
+          - hidden_layers: [128, 64, 32]
+          - learning_rate: 0.001
+
+      - id: RG-002-D
+        name: Ensemble Models
+        type: automated
+        action: Combine model predictions
+        method: weighted_average
+        weights:
+          - collaborative: 0.4
+          - content_based: 0.3
+          - deep_learning: 0.3
+
+      - id: RG-002-E
+        name: Evaluate Models
+        type: automated
+        action: Run evaluation metrics
+        metrics:
+          - precision_at_k
+          - recall_at_k
+          - ndcg
+          - coverage
+          - diversity
+
+    outputs:
+      - trained_models
+      - evaluation_metrics
+
+    sla: 8_hours
+    decision_point:
+      metrics_pass: RG-003
+      metrics_fail: notify_ml_team
+    next_stage: RG-003
+
+  - id: RG-003
+    name: Candidate Generation
+    description: Generate recommendation candidates per user
+    actor: system
+    schedule: daily
+
+    inputs:
+      - trained_models
+      - user_profiles
+
+    activities:
+      - id: RG-003-A
+        name: Generate Collaborative Candidates
+        type: automated
+        action: Get similar user recommendations
+        method: approximate_nearest_neighbors
+        candidates: 1000
+
+      - id: RG-003-B
+        name: Generate Content-Based Candidates
+        type: automated
+        action: Get content similarity recommendations
+        method: embedding_similarity
+        candidates: 500
+
+      - id: RG-003-C
+        name: Add Trending Candidates
+        type: automated
+        action: Include trending content
+        source: trending_service
+        candidates: 100
+
+      - id: RG-003-D
+        name: Add Editorial Candidates
+        type: automated
+        action: Include curated content
+        source: editorial_picks
+        candidates: 50
+
+      - id: RG-003-E
+        name: Merge Candidates
+        type: automated
+        action: Combine and deduplicate
+        method: union
+        output: candidate_pool
+
+    outputs:
+      - candidate_pool_per_user
+
+    sla: 2_hours
+    parallel_execution: true
+    next_stage: RG-004
+
+  - id: RG-004
+    name: Filtering & Ranking
+    description: Filter and rank candidates
+    actor: system
+
+    inputs:
+      - candidate_pool
+      - user_context
+      - business_rules
+
+    activities:
+      - id: RG-004-A
+        name: Apply Hard Filters
+        type: automated
+        action: Remove ineligible content
+        filters:
+          - maturity_rating
+          - geographic_availability
+          - already_watched
+          - user_dismissals
+          - license_expiration
+
+      - id: RG-004-B
+        name: Score Candidates
+        type: automated
+        action: Calculate final scores
+        scoring:
+          - relevance_score: 0.4
+          - freshness_score: 0.2
+          - diversity_score: 0.15
+          - business_score: 0.15
+          - serendipity_score: 0.1
+
+      - id: RG-004-C
+        name: Rank by Score
+        type: automated
+        action: Sort by combined score
+        output: ranked_list
+
+      - id: RG-004-D
+        name: Apply Diversity Rules
+        type: automated
+        action: Ensure content diversity
+        rules:
+          - max_same_genre: 40%
+          - min_genres: 3
+          - max_same_franchise: 3
+
+      - id: RG-004-E
+        name: Apply Business Rules
+        type: automated
+        action: Boost priority content
+        boosts:
+          - originals: 1.3x
+          - expiring_soon: 1.2x
+          - new_releases: 1.5x
+
+    outputs:
+      - ranked_recommendations
+
+    sla: 30_minutes
+    next_stage: RG-005
+
+  - id: RG-005
+    name: Store & Serve
+    description: Store recommendations for serving
+    actor: system
+
+    inputs:
+      - ranked_recommendations
+
+    activities:
+      - id: RG-005-A
+        name: Store in Cache
+        type: automated
+        action: Cache recommendations
+        storage: redis_cluster
+        ttl: 6_hours
+
+      - id: RG-005-B
+        name: Prepare Serving Format
+        type: automated
+        action: Format for API responses
+        format:
+          - recommendation_rows
+          - content_metadata
+          - explanation_text
+
+      - id: RG-005-C
+        name: Index for Fast Lookup
+        type: automated
+        action: Index by user and context
+        indexes:
+          - user_id
+          - profile_id
+          - context_type
+
+    outputs:
+      - cached_recommendations
+
+    sla: 15_minutes
+    next_stage: complete
+
+  # ============================================
+  # Real-time Recommendation Serving
+  # ============================================
+  - id: RG-010
+    name: Request Handling
+    description: Handle real-time recommendation request
+    actor: system
+    trigger: api_request
+
+    inputs:
+      - user_id
+      - profile_id
+      - context
+      - device_info
+
+    activities:
+      - id: RG-010-A
+        name: Fetch Cached Recommendations
+        type: automated
+        action: Retrieve pre-computed recommendations
+        source: redis_cache
+
+      - id: RG-010-B
+        name: Apply Real-time Context
+        type: automated
+        action: Adjust for current context
+        context_factors:
+          - time_of_day
+          - device_type
+          - recent_activity
+          - current_session
+
+      - id: RG-010-C
+        name: Check Cold Start
+        type: decision
+        condition: insufficient_history
+        on_cold_start:
+          - use_popularity_based
+          - show_preference_survey
+          - use_demographic_similar
+
+    outputs:
+      - contextualized_recommendations
+
+    sla: 100_ms
+    next_stage: RG-011
+
+  - id: RG-011
+    name: Response Assembly
+    description: Assemble final recommendation response
+    actor: system
+
+    inputs:
+      - contextualized_recommendations
+      - ui_requirements
+
+    activities:
+      - id: RG-011-A
+        name: Build Recommendation Rows
+        type: automated
+        action: Organize into UI rows
+        row_types:
+          - continue_watching
+          - because_you_watched
+          - trending_now
+          - new_releases
+          - top_10
+          - genre_rows
+
+      - id: RG-011-B
+        name: Fetch Content Details
+        type: automated
+        action: Hydrate with content metadata
+        fields:
+          - title
+          - poster_url
+          - rating
+          - year
+          - duration
+
+      - id: RG-011-C
+        name: Generate Explanations
+        type: automated
+        action: Create recommendation reasons
+        templates:
+          - because_you_watched: "Because you watched {title}"
+          - similar_taste: "Popular with viewers like you"
+          - trending: "Trending in {region}"
+
+      - id: RG-011-D
+        name: Apply Personalization
+        type: automated
+        action: Final personalization touches
+        adjustments:
+          - preferred_artwork
+          - position_optimization
+          - row_ordering
+
+    outputs:
+      - recommendation_response
+
+    sla: 50_ms
+    next_stage: RG-012
+
+  - id: RG-012
+    name: Tracking & Feedback
+    description: Track impressions and collect feedback
+    actor: system
+
+    inputs:
+      - recommendation_response
+      - user_interaction
+
+    activities:
+      - id: RG-012-A
+        name: Log Impressions
+        type: automated
+        action: Record shown recommendations
+        data:
+          - recommendation_id
+          - position
+          - context
+          - timestamp
+
+      - id: RG-012-B
+        name: Track Clicks
+        type: automated
+        action: Record user clicks
+        data:
+          - clicked_content
+          - source_row
+          - position
+
+      - id: RG-012-C
+        name: Collect Implicit Feedback
+        type: automated
+        action: Gather engagement signals
+        signals:
+          - hover_time
+          - scroll_depth
+          - time_to_click
+          - session_duration
+
+      - id: RG-012-D
+        name: Update User Signals
+        type: automated
+        action: Feed back to ML pipeline
+        updates:
+          - real_time_preferences
+          - engagement_patterns
+
+    outputs:
+      - tracking_events
+      - feedback_signals
+
+    sla: async
+    next_stage: complete
+
+completion_criteria:
+  batch:
+    - models_trained
+    - recommendations_cached
+    - evaluation_passed
+
+  real_time:
+    - response_served
+    - impressions_logged
+
+exception_handling:
+  cache_miss:
+    action: generate_on_demand
+    fallback: popularity_based
+
+  model_failure:
+    action: use_fallback_model
+    notification: ml_team
+
+  cold_start:
+    action: use_cold_start_strategy
+    strategy: popularity_and_diversity
+
+  timeout:
+    action: serve_partial_response
+    fallback: cached_popular
+
+ab_testing:
+  supported: true
+  experiment_types:
+    - algorithm_comparison
+    - ranking_weights
+    - diversity_levels
+    - ui_layouts
+  metrics:
+    - click_through_rate
+    - watch_start_rate
+    - completion_rate
+    - satisfaction_score
+
+metrics:
+  - name: recommendation_click_rate
+    target: "> 15%"
+
+  - name: recommendation_conversion_rate
+    target: "> 40%"
+
+  - name: catalog_coverage
+    target: "> 80%"
+
+  - name: diversity_score
+    target: "> 0.6"
+
+  - name: serving_latency_p99
+    target: "< 100ms"
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

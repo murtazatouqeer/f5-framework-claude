@@ -1,0 +1,347 @@
+# Controlled Substance Log Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# DEA-compliant controlled substance tracking entity
+
+entity:
+  id: controlled_substance_log
+  name: Controlled Substance Log
+  name_ja: 規制物質ログ
+  description: DEA-compliant perpetual inventory and transaction log for controlled substances
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: log_id
+      type: uuid
+      primary_key: true
+      description: Unique log entry ID
+      
+    - name: log_number
+      type: string
+      length: 50
+      unique: true
+      auto_generate: true
+      description: Sequential log number
+      format: "CS-YYYYMMDD-NNNNNN"
+
+    # Drug Information
+    - name: ndc
+      type: string
+      length: 11
+      required: true
+      references: drug
+      description: Drug NDC
+      
+    - name: drug_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: dea_schedule
+      type: enum
+      values: [II, III, IV, V]
+      required: true
+      description: DEA schedule (no unscheduled)
+      
+    - name: package_size
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Package size for receipts
+
+    # Lot Tracking
+    - name: lot_number
+      type: string
+      length: 50
+      description: Manufacturer lot number
+      
+    - name: expiration_date
+      type: date
+      description: Drug expiration date
+
+    # Transaction Type
+    - name: transaction_type
+      type: enum
+      values: [
+        receipt, dispense, return_to_stock, adjustment_increase,
+        adjustment_decrease, transfer_in, transfer_out,
+        destruction, theft_loss, inventory_count
+      ]
+      required: true
+      description: Type of transaction
+      
+    - name: transaction_reason
+      type: string
+      description: Reason for adjustment/destruction
+
+    # Quantities
+    - name: quantity_in
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      description: Quantity added to inventory
+      
+    - name: quantity_out
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      description: Quantity removed from inventory
+      
+    - name: balance_before
+      type: decimal
+      precision: 10
+      scale: 2
+      required: true
+      description: Inventory balance before transaction
+      
+    - name: balance_after
+      type: decimal
+      precision: 10
+      scale: 2
+      required: true
+      description: Inventory balance after transaction
+
+    # Associated Records
+    - name: rx_number
+      type: string
+      references: prescription
+      description: Associated prescription if dispense
+      
+    - name: dispense_id
+      type: uuid
+      references: dispense
+      description: Associated dispense record
+      
+    - name: invoice_number
+      type: string
+      description: Invoice number for receipts
+      
+    - name: purchase_order_number
+      type: string
+      description: PO number for receipts
+      
+    - name: dea_order_form
+      type: string
+      description: DEA Form 222 or CSOS order number
+
+    # Transfer Information
+    - name: transfer_pharmacy_name
+      type: string
+      description: Pharmacy transferred to/from
+      
+    - name: transfer_pharmacy_dea
+      type: string
+      length: 9
+      description: DEA number of transfer pharmacy
+      
+    - name: transfer_date
+      type: date
+      description: Date of transfer
+
+    # Supplier Information (for receipts)
+    - name: supplier_name
+      type: string
+      description: Supplier/wholesaler name
+      
+    - name: supplier_dea
+      type: string
+      length: 9
+      description: Supplier DEA number
+
+    # Destruction Information
+    - name: destruction_method
+      type: enum
+      values: [reverse_distribution, witnessed_destruction, dea_takeback]
+      description: Method of destruction
+      
+    - name: destruction_witness_1
+      type: string
+      description: First witness name
+      
+    - name: destruction_witness_2
+      type: string
+      description: Second witness name
+      
+    - name: reverse_distributor
+      type: string
+      description: Reverse distributor company
+      
+    - name: destruction_manifest
+      type: string
+      description: Destruction manifest number
+
+    # Theft/Loss Information
+    - name: theft_loss_discovered_date
+      type: date
+      description: Date theft/loss discovered
+      
+    - name: dea_form_106_filed
+      type: boolean
+      default: false
+      description: DEA Form 106 filed
+      
+    - name: dea_form_106_date
+      type: date
+      description: Date Form 106 filed
+      
+    - name: police_report_number
+      type: string
+      description: Police report number if applicable
+      
+    - name: investigation_notes
+      type: text
+      description: Investigation notes
+
+    # Staff
+    - name: performed_by
+      type: uuid
+      required: true
+      description: Staff who performed transaction
+      
+    - name: verified_by
+      type: uuid
+      description: Staff who verified (required for some transactions)
+      
+    - name: witnessed_by
+      type: uuid
+      description: Witness for counts/destructions
+
+    # Timestamps
+    - name: transaction_datetime
+      type: timestamp
+      required: true
+      auto: create
+      description: When transaction occurred
+      
+    - name: verified_datetime
+      type: timestamp
+      description: When verification occurred
+
+    # Physical Count Information
+    - name: physical_count
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Physical count quantity
+      
+    - name: count_variance
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Variance from perpetual inventory
+      
+    - name: variance_resolved
+      type: boolean
+      default: false
+      description: Variance has been investigated/resolved
+      
+    - name: variance_resolution
+      type: text
+      description: How variance was resolved
+
+    # Notes
+    - name: notes
+      type: text
+      description: Additional notes
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  business_rules:
+    - id: CS-LOG-001
+      name: Schedule II Witness Requirement
+      rule: "Schedule II counts require witness verification"
+      condition: "dea_schedule == 'II' AND transaction_type == 'inventory_count'"
+      action: "witnessed_by required"
+      
+    - id: CS-LOG-002
+      name: Balance Verification
+      rule: "Balance after must equal balance before +/- transaction"
+      condition: "always"
+      action: "Validate balance_after = balance_before + quantity_in - quantity_out"
+      
+    - id: CS-LOG-003
+      name: Destruction Documentation
+      rule: "Destruction requires proper documentation"
+      condition: "transaction_type == 'destruction'"
+      action: "destruction_method and witnesses required"
+      
+    - id: CS-LOG-004
+      name: Theft/Loss Reporting
+      rule: "Theft/loss requires DEA reporting"
+      condition: "transaction_type == 'theft_loss'"
+      action: "DEA Form 106 must be filed"
+
+  relationships:
+    - name: drug
+      type: many_to_one
+      target: drug
+      foreign_key: ndc
+      
+    - name: prescription
+      type: many_to_one
+      target: prescription
+      foreign_key: rx_number
+      
+    - name: dispense
+      type: many_to_one
+      target: dispense
+      foreign_key: dispense_id
+      
+    - name: inventory
+      type: many_to_one
+      target: drug_inventory
+      description: Associated inventory record
+
+  indexes:
+    - fields: [log_number]
+      unique: true
+      name: idx_cs_log_number
+      
+    - fields: [ndc]
+      name: idx_cs_log_ndc
+      
+    - fields: [transaction_datetime]
+      name: idx_cs_log_datetime
+      
+    - fields: [transaction_type]
+      name: idx_cs_log_type
+      
+    - fields: [dea_schedule]
+      name: idx_cs_log_schedule
+      
+    - fields: [rx_number]
+      name: idx_cs_log_rx
+
+  validations:
+    - field: dea_schedule
+      rule: in_list
+      values: [II, III, IV, V]
+      message: "Only controlled substances allowed"
+      
+    - field: balance_after
+      rule: non_negative
+      message: "Balance cannot go negative"
+      
+    - field: witnessed_by
+      rule: required_if
+      condition: "dea_schedule == 'II' AND transaction_type == 'inventory_count'"
+      message: "Witness required for Schedule II counts"
+
+  audit:
+    enabled: true
+    events: [create, update, delete]
+    retention_days: 3650
+    dea_compliant: true
+    immutable: true
+    fields: [all]

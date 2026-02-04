@@ -1,0 +1,485 @@
+name: portfolio-rebalancing
+display_name: Portfolio Rebalancing
+description: |
+  Portfolio rebalancing process according to predefined strategy.
+  Supports both manual and automated scheduled rebalancing.
+
+domain: fintech/stock-trading
+version: "1.0"
+type: sequential_with_parallel
+
+actors:
+  - id: investor
+    name: Investor
+    description: Portfolio owner
+
+  - id: portfolio_system
+    name: Portfolio System
+    description: Core portfolio management system
+
+  - id: rebalancing_engine
+    name: Rebalancing Engine
+    description: Calculates and proposes adjustments
+
+  - id: trading_system
+    name: Trading System
+    description: Executes buy/sell orders
+
+  - id: risk_engine
+    name: Risk Management Engine
+    description: Assesses risk of adjustments
+
+  - id: notification_service
+    name: Notification Service
+    description: Sends notifications and reports
+
+states:
+  - id: monitoring
+    name: Monitoring Portfolio
+    description: System monitoring portfolio and weights
+    terminal: false
+
+  - id: drift_detected
+    name: Drift Detected
+    description: Actual weights deviated from target
+    terminal: false
+
+  - id: analyzing
+    name: Analyzing
+    description: Engine calculating optimal adjustments
+    terminal: false
+
+  - id: proposal_generated
+    name: Proposal Generated
+    description: Adjustment order list created
+    terminal: false
+
+  - id: pending_approval
+    name: Pending Approval
+    description: Awaiting investor confirmation
+    terminal: false
+
+  - id: approved
+    name: Approved
+    description: Investor approved proposal
+    terminal: false
+
+  - id: risk_checking
+    name: Risk Checking
+    description: Assessing risk of orders
+    terminal: false
+
+  - id: risk_rejected
+    name: Risk Rejected
+    description: Proposal rejected due to high risk
+    terminal: false
+
+  - id: executing
+    name: Executing
+    description: Orders being sent and executed
+    terminal: false
+
+  - id: partial_executed
+    name: Partial Executed
+    description: Some orders filled, some pending
+    terminal: false
+
+  - id: executed
+    name: Executed
+    description: All orders filled
+    terminal: false
+
+  - id: reconciling
+    name: Reconciling
+    description: Reconciling weights after rebalancing
+    terminal: false
+
+  - id: completed
+    name: Completed
+    description: Rebalancing successful
+    terminal: true
+
+  - id: failed
+    name: Failed
+    description: Rebalancing unsuccessful
+    terminal: true
+
+  - id: cancelled
+    name: Cancelled
+    description: Investor cancelled proposal
+    terminal: true
+
+transitions:
+  # ===== MONITORING FLOW =====
+  - from: monitoring
+    to: drift_detected
+    trigger: drift_threshold_exceeded
+    actor: portfolio_system
+    conditions:
+      - Weight deviation > allowed threshold (typically 5-10%)
+    actions:
+      - Record detection time
+      - Calculate drift magnitude
+      - Notify investor (if configured)
+
+  - from: monitoring
+    to: drift_detected
+    trigger: scheduled_rebalance
+    actor: portfolio_system
+    conditions:
+      - Periodic rebalancing schedule reached (monthly/quarterly)
+    actions:
+      - Trigger rebalancing process
+
+  - from: monitoring
+    to: drift_detected
+    trigger: manual_trigger
+    actor: investor
+    actions:
+      - Record manual request
+
+  # ===== ANALYSIS FLOW =====
+  - from: drift_detected
+    to: analyzing
+    trigger: start_analysis
+    actor: rebalancing_engine
+    actions:
+      - Collect current market prices
+      - Calculate current weights
+      - Compare with target weights
+
+  - from: analyzing
+    to: proposal_generated
+    trigger: analysis_complete
+    actor: rebalancing_engine
+    actions:
+      - Create buy/sell order list
+      - Optimize execution order (sell before buy)
+      - Estimate transaction costs
+      - Estimate taxes (if any)
+
+  - from: analyzing
+    to: monitoring
+    trigger: no_action_needed
+    actor: rebalancing_engine
+    conditions:
+      - Weight deviation < minimum threshold
+      - Or cost > benefit
+    actions:
+      - Log no adjustment needed
+
+  # ===== APPROVAL FLOW =====
+  - from: proposal_generated
+    to: pending_approval
+    trigger: send_for_approval
+    actor: portfolio_system
+    conditions:
+      - Configuration requires approval
+    actions:
+      - Send notification to investor
+      - Display proposal details
+
+  - from: proposal_generated
+    to: approved
+    trigger: auto_approve
+    actor: portfolio_system
+    conditions:
+      - Auto-rebalancing configured
+      - Or no approval required
+    actions:
+      - Auto approve
+
+  - from: pending_approval
+    to: approved
+    trigger: investor_approve
+    actor: investor
+    actions:
+      - Record approval
+      - Record approval time
+
+  - from: pending_approval
+    to: cancelled
+    trigger: investor_reject
+    actor: investor
+    actions:
+      - Record rejection reason
+      - Return to monitoring
+
+  - from: pending_approval
+    to: cancelled
+    trigger: approval_timeout
+    actor: portfolio_system
+    conditions:
+      - No response after 24 hours
+    actions:
+      - Cancel proposal
+      - Notify investor
+
+  # ===== RISK CHECK FLOW =====
+  - from: approved
+    to: risk_checking
+    trigger: start_risk_check
+    actor: risk_engine
+    actions:
+      - Check margin requirement
+      - Check concentration risk
+      - Check liquidity risk
+
+  - from: risk_checking
+    to: executing
+    trigger: risk_passed
+    actor: risk_engine
+    conditions:
+      - All risk checks passed
+    actions:
+      - Record risk approved
+
+  - from: risk_checking
+    to: risk_rejected
+    trigger: risk_failed
+    actor: risk_engine
+    conditions:
+      - One or more checks failed
+    actions:
+      - Log detailed reasons
+      - Notify investor
+
+  - from: risk_rejected
+    to: analyzing
+    trigger: adjust_proposal
+    actor: rebalancing_engine
+    actions:
+      - Adjust proposal per risk limits
+      - Create new proposal
+
+  # ===== EXECUTION FLOW =====
+  - from: executing
+    to: partial_executed
+    trigger: first_order_filled
+    actor: trading_system
+    actions:
+      - Update order status
+      - Calculate temporary weights
+
+  - from: partial_executed
+    to: partial_executed
+    trigger: additional_order_filled
+    actor: trading_system
+    conditions:
+      - Orders still pending
+    actions:
+      - Update progress
+      - Push realtime notification
+
+  - from: partial_executed
+    to: executed
+    trigger: all_orders_filled
+    actor: trading_system
+    conditions:
+      - All orders filled
+    actions:
+      - Update portfolio
+      - Record completion time
+
+  - from: executing
+    to: executed
+    trigger: instant_fill
+    actor: trading_system
+    conditions:
+      - All orders filled immediately
+    actions:
+      - Update portfolio
+
+  - from: [executing, partial_executed]
+    to: failed
+    trigger: execution_failed
+    actor: trading_system
+    conditions:
+      - Critical error cannot continue
+      - Or market unexpectedly closed
+    actions:
+      - Cancel pending orders
+      - Log error
+      - Notify investor
+
+  # ===== RECONCILIATION FLOW =====
+  - from: executed
+    to: reconciling
+    trigger: start_reconciliation
+    actor: portfolio_system
+    actions:
+      - Calculate new weights
+      - Compare with target
+
+  - from: reconciling
+    to: completed
+    trigger: reconciliation_success
+    actor: portfolio_system
+    conditions:
+      - Weights within acceptable range
+    actions:
+      - Update last_rebalanced_at
+      - Send report to investor
+      - Return to monitoring state
+
+  - from: reconciling
+    to: drift_detected
+    trigger: still_drifted
+    actor: portfolio_system
+    conditions:
+      - Weights still deviated after rebalancing
+      - Due to slippage or partial fills
+    actions:
+      - Trigger new rebalancing cycle
+
+rebalancing_strategies:
+  threshold_based:
+    description: Rebalance when weights exceed threshold
+    parameters:
+      drift_threshold: 5-10%
+      min_trade_size: 100 shares or $1000
+
+  calendar_based:
+    description: Rebalance on fixed schedule
+    frequencies: [monthly, quarterly, semi-annually, annually]
+
+  hybrid:
+    description: Combine threshold and calendar
+    parameters:
+      max_drift: 15%
+      scheduled_review: quarterly
+
+execution_strategies:
+  immediate:
+    description: Execute immediately with market orders
+    use_case: High liquidity market
+
+  staged:
+    description: Split and execute in stages
+    use_case: Large orders, low liquidity market
+
+  algorithmic:
+    description: Use algo trading (TWAP, VWAP)
+    use_case: Institutional trading
+
+sla:
+  analysis:
+    target: 5 seconds
+    description: Analysis and proposal generation time
+
+  execution:
+    target: 1 minute
+    description: Order execution time
+
+  notification:
+    target: 1 second
+    description: Notification delivery time
+
+diagram: |
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │                         PORTFOLIO REBALANCING                                    │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+                    ┌──────────────────────┐
+                    │     MONITORING       │ <────────────────────────────┐
+                    │   (Monitor portfolio)│                              │
+                    └──────────┬───────────┘                              │
+                               │                                          │
+          ┌────────────────────┼────────────────────┐                     │
+          │                    │                    │                     │
+          ▼                    ▼                    ▼                     │
+  ┌───────────────┐   ┌───────────────┐   ┌───────────────┐              │
+  │  Drift > 5%   │   │  Scheduled    │   │   Manual      │              │
+  │  (Auto)       │   │  (Periodic)   │   │   (Manual)    │              │
+  └───────────────┘   └───────────────┘   └───────────────┘              │
+          │                    │                    │                     │
+          └────────────────────┼────────────────────┘                     │
+                               ▼                                          │
+                    ┌──────────────────────┐                              │
+                    │     ANALYZING        │                              │
+                    │  (Optimize analysis) │                              │
+                    └──────────┬───────────┘                              │
+                               │                                          │
+          ┌────────────────────┼────────────────────┐                     │
+          │                    │                    │                     │
+          ▼                    ▼                    │                     │
+  ┌───────────────┐   ┌────────────────────┐        │                     │
+  │ No Action     │   │  PROPOSAL          │        │                     │
+  │ Needed        │───│  GENERATED         │        │                     │
+  └───────────────┘   └────────┬───────────┘        │                     │
+          │                    │                    │                     │
+          │           ┌────────┴────────┐           │                     │
+          │           ▼                 ▼           │                     │
+          │   ┌───────────────┐ ┌───────────────┐   │                     │
+          │   │ Auto Approve  │ │ Need Approval │   │                     │
+          │   └───────┬───────┘ └───────┬───────┘   │                     │
+          │           │                 │           │                     │
+          │           │         ┌───────┴───────┐   │                     │
+          │           │         ▼               ▼   │                     │
+          │           │ ┌─────────────┐ ┌─────────────┐                   │
+          │           │ │  Approved   │ │  Rejected   │───────────────────┘
+          │           │ └─────┬───────┘ └─────────────┘
+          │           │       │
+          │           └───────┤
+          │                   ▼
+          │         ┌──────────────────────┐
+          │         │    RISK CHECKING     │
+          │         │  (Check risk)        │
+          │         └──────────┬───────────┘
+          │                    │
+          │           ┌────────┴────────┐
+          │           ▼                 ▼
+          │   ┌───────────────┐ ┌───────────────┐
+          │   │  Risk Passed  │ │ Risk Failed   │
+          │   └───────┬───────┘ └───────┬───────┘
+          │           │                 │
+          │           │                 └──────────────► Adjust & Retry
+          │           ▼
+          │ ┌──────────────────────┐
+          │ │     EXECUTING        │
+          │ │  (Execute orders)    │
+          │ └──────────┬───────────┘
+          │            │
+          │   ┌────────┴────────┐
+          │   ▼                 ▼
+          │ ┌───────────┐ ┌───────────────┐
+          │ │ Partial   │ │   Executed    │
+          │ │ Executed  │─│   ✓ Complete  │
+          │ └───────────┘ └───────┬───────┘
+          │                       │
+          │                       ▼
+          │             ┌──────────────────────┐
+          │             │    RECONCILING       │
+          │             │  (Reconcile results) │
+          │             └──────────┬───────────┘
+          │                        │
+          └────────────────────────┤
+                                   ▼
+                         ┌──────────────────────┐
+                         │     COMPLETED        │
+                         │   ✓ Rebalanced       │
+                         └──────────────────────┘
+
+metrics:
+  - name: rebalancing_frequency
+    description: Rebalancing frequency in period
+    target: "According to chosen strategy"
+
+  - name: drift_reduction
+    description: Drift reduction after rebalancing
+    formula: (drift_before - drift_after) / drift_before × 100
+    target: ">= 90%"
+
+  - name: execution_efficiency
+    description: Transaction cost ratio / rebalance value
+    target: "< 0.5%"
+
+  - name: tracking_error
+    description: Deviation from target allocation
+    formula: SQRT(SUM((actual_weight - target_weight)^2))
+    target: "< 2%"
+
+  - name: auto_approval_rate
+    description: Auto rebalancing rate (no approval needed)
+    formula: auto_approved / total_rebalancing × 100
+    target: ">= 70%"

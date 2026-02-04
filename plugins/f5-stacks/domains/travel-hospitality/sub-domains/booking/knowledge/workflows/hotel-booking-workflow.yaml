@@ -1,0 +1,514 @@
+name: hotel-booking-workflow
+display_name: Hotel Booking Workflow
+display_name_vi: Quy trình đặt khách sạn
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  End-to-end workflow for booking hotels including search,
+  room selection, guest details, payment, and confirmation.
+
+workflow:
+  id: WF-HTL-BOOK
+  name: Hotel Booking
+  type: sequential_with_branches
+
+  trigger:
+    type: user_action
+    action: hotel_search_initiated
+
+  actors:
+    - traveler: Primary booker
+    - system: OTA platform
+    - supplier: Hotel aggregator/direct
+    - hotel: Property
+    - payment_gateway: Payment processor
+
+  states:
+    - searching
+    - results_displayed
+    - property_selected
+    - room_selected
+    - guest_details
+    - extras_selection
+    - payment_pending
+    - payment_processing
+    - booking_confirmed
+    - voucher_generated
+    - failed
+    - abandoned
+
+steps:
+  - id: STEP-01
+    name: Search Initiation
+    description: Traveler initiates hotel search
+    state: searching
+    actor: traveler
+    inputs:
+      - destination: city, region, or property
+      - check_in_date: required
+      - check_out_date: required
+      - rooms: number of rooms
+      - guests_per_room: adults, children with ages
+      - filters: optional (star_rating, amenities, price)
+    validations:
+      - valid_destination
+      - future_dates
+      - check_out_after_check_in
+      - reasonable_stay_length
+    outputs:
+      - search_id
+      - validated_parameters
+    next: STEP-02
+
+  - id: STEP-02
+    name: Search Execution
+    description: System queries multiple hotel sources
+    state: searching
+    actor: system
+    actions:
+      - query_direct_contracts:
+          type: parallel
+          timeout: 8s
+      - query_hotelbeds:
+          type: parallel
+          timeout: 10s
+      - query_booking_com:
+          type: parallel
+          timeout: 10s
+      - query_expedia:
+          type: parallel
+          timeout: 10s
+    processing:
+      - aggregate_results
+      - deduplicate_properties
+      - select_best_rate_per_property
+      - apply_markup
+      - rank_by_relevance
+      - cache_results
+    outputs:
+      - hotel_options: list
+      - search_metadata
+    timeout: 12s
+    on_timeout: return_available_results
+    next: STEP-03
+
+  - id: STEP-03
+    name: Results Display
+    description: Present hotel search results
+    state: results_displayed
+    actor: system
+    display:
+      - default_sort: popularity
+      - map_view: available
+      - list_view: default
+      - filters: [star_rating, price, amenities, guest_rating, distance]
+      - price_display: per_night_total_room
+    content_per_result:
+      - property_name
+      - star_rating
+      - guest_rating
+      - location
+      - thumbnail_images
+      - starting_price
+      - key_amenities
+      - deal_indicators
+    tracking:
+      - log_impressions
+      - track_filter_usage
+    wait_for: user_selection
+    timeout: 30m
+    next: STEP-04 | STEP-01 (modify_search) | END (abandon)
+
+  - id: STEP-04
+    name: Property Selection
+    description: Traveler selects a hotel property
+    state: property_selected
+    actor: traveler
+    inputs:
+      - selected_property_id
+    actions:
+      - fetch_property_details:
+          includes:
+            - full_description
+            - all_images
+            - amenities_list
+            - policies
+            - location_details
+      - fetch_room_availability:
+          type: real_time
+          source: supplier
+    display:
+      - property_gallery
+      - full_amenities
+      - guest_reviews
+      - location_map
+      - nearby_attractions
+      - hotel_policies
+    outputs:
+      - property_details
+      - available_rooms: list
+    next: STEP-05
+
+  - id: STEP-05
+    name: Room Selection
+    description: Select room type and rate plan
+    state: room_selected
+    actor: traveler
+    display:
+      per_room_type:
+        - room_name
+        - room_images
+        - bed_configuration
+        - max_occupancy
+        - room_size
+        - room_amenities
+      per_rate_plan:
+        - rate_name
+        - meal_plan
+        - cancellation_policy
+        - price_per_night
+        - total_price
+        - payment_terms
+    inputs:
+      - selected_room_id
+      - selected_rate_id
+      - room_quantity: if_multiple_rooms
+    validations:
+      - rate_available
+      - occupancy_valid
+    actions:
+      - verify_price:
+          type: real_time_check
+      - soft_hold:
+          duration: 15m
+    outputs:
+      - selected_room_details
+      - total_price
+      - cancellation_deadline
+    on_unavailable: STEP-04 (show_alternatives)
+    next: STEP-06
+
+  - id: STEP-06
+    name: Guest Details
+    description: Collect guest information
+    state: guest_details
+    actor: traveler
+    inputs:
+      lead_guest:
+        - first_name: required
+        - last_name: required
+        - email: required
+        - phone: required
+      additional_guests:
+        - first_name
+        - last_name
+      per_room:
+        - special_requests: text
+        - bed_preference: if_options
+        - smoking_preference
+        - accessibility_needs
+      arrival_info:
+        - estimated_arrival_time
+        - flight_number: optional
+        - late_arrival: if_after_standard
+    validations:
+      - lead_guest_complete
+      - guest_count_matches_booking
+    outputs:
+      - guest_list
+      - special_requests
+    next: STEP-07
+
+  - id: STEP-07
+    name: Extras Selection
+    description: Offer additional services
+    state: extras_selection
+    actor: traveler
+    offers:
+      - airport_transfer:
+          display: if_available
+          pricing: per_way
+      - breakfast_addon:
+          display: if_not_included
+          pricing: per_person_per_day
+      - room_upgrade:
+          display: if_available
+          pricing: per_night
+      - early_checkin:
+          display: subject_to_availability
+      - late_checkout:
+          display: subject_to_availability
+      - travel_insurance:
+          display: always
+          pricing: per_booking
+    inputs:
+      - selected_extras: list
+    outputs:
+      - extras_total
+      - updated_booking_total
+    timeout: 10m
+    next: STEP-08
+
+  - id: STEP-08
+    name: Review & Terms
+    description: Review booking and accept terms
+    state: guest_details
+    actor: traveler
+    display:
+      - property_summary
+      - room_details
+      - dates_and_guests
+      - price_breakdown:
+          - room_rate
+          - taxes_and_fees
+          - extras
+          - total
+      - cancellation_policy: prominent
+      - hotel_policies
+      - payment_terms: prepaid_or_pay_at_hotel
+      - terms_and_conditions
+    inputs:
+      - terms_accepted: required
+      - cancellation_policy_acknowledged: required
+    validations:
+      - terms_accepted = true
+      - price_not_expired
+    next: STEP-09
+
+  - id: STEP-09
+    name: Payment Processing
+    description: Handle payment based on rate type
+    state: payment_processing
+    actor: system
+
+    branching:
+      prepaid_rate:
+        actions:
+          - collect_full_payment
+          - process_payment:
+              type: auth_capture
+          - confirm_to_hotel:
+              type: prepaid
+        on_success: STEP-10
+        on_failure: retry_payment
+
+      pay_at_hotel:
+        actions:
+          - collect_card_guarantee:
+              type: auth_only
+              amount: first_night
+          - confirm_to_hotel:
+              type: guarantee
+        on_success: STEP-10
+        on_failure: retry_guarantee
+
+      deposit_required:
+        actions:
+          - collect_deposit:
+              percentage: 20-50%
+          - schedule_balance:
+              due_date: before_check_in
+          - confirm_to_hotel:
+              type: deposit
+        on_success: STEP-10
+        on_failure: retry_deposit
+
+    security:
+      - pci_compliant
+      - 3ds_if_required
+      - fraud_screening
+    outputs:
+      - payment_reference
+      - payment_status
+    next: STEP-10
+
+  - id: STEP-10
+    name: Booking Confirmation
+    description: Confirm with supplier and create record
+    state: booking_confirmed
+    actor: system
+    actions:
+      - send_to_supplier:
+          type: booking_request
+          wait_for: confirmation
+      - receive_confirmation:
+          includes:
+            - supplier_reference
+            - hotel_confirmation_number
+      - create_booking_record:
+          database: booking_db
+      - assign_booking_reference
+    validations:
+      - supplier_confirmed
+      - hotel_confirmed
+    on_request_booking:
+      - wait_for_hotel_response
+      - timeout: 24_hours
+      - notify_customer: pending_confirmation
+    outputs:
+      - booking_id
+      - booking_reference
+      - supplier_confirmation
+      - hotel_confirmation
+    next: STEP-11
+
+  - id: STEP-11
+    name: Voucher Generation
+    description: Create hotel voucher
+    state: voucher_generated
+    actor: system
+    actions:
+      - generate_voucher:
+          content:
+            - booking_reference
+            - hotel_confirmation_number
+            - guest_names
+            - check_in_date
+            - check_out_date
+            - room_type
+            - meal_plan
+            - payment_status
+            - special_requests
+            - hotel_contact
+            - cancellation_policy
+      - generate_pdf
+      - generate_qr_code
+    outputs:
+      - voucher_id
+      - voucher_pdf_url
+      - voucher_qr_code
+    next: STEP-12
+
+  - id: STEP-12
+    name: Confirmation Delivery
+    description: Send booking confirmation
+    state: voucher_generated
+    actor: system
+    actions:
+      - send_confirmation_email:
+          attachments:
+            - voucher_pdf
+            - invoice
+          content:
+            - booking_summary
+            - hotel_details
+            - check_in_info
+            - map_link
+      - send_sms:
+          if: phone_provided
+      - add_to_app:
+          if: app_user
+      - create_calendar_event:
+          format: ics
+    schedule_reminders:
+      - days_before_check_in: 7
+        content: upcoming_stay_reminder
+      - days_before_check_in: 1
+        content: check_in_reminder
+    outputs:
+      - confirmation_sent
+      - reminders_scheduled
+    next: END
+
+post_booking:
+  - id: POST-01
+    name: Pre-Arrival Communication
+    trigger: 7_days_before_check_in
+    actions:
+      - send_pre_arrival_email
+      - offer_upgrades
+      - collect_preferences
+
+  - id: POST-02
+    name: Check-in Reminder
+    trigger: 1_day_before_check_in
+    actions:
+      - send_reminder
+      - provide_directions
+      - share_early_checkin_options
+
+  - id: POST-03
+    name: Post-Stay Follow-up
+    trigger: 1_day_after_checkout
+    actions:
+      - request_review
+      - thank_customer
+      - offer_loyalty_points
+
+error_handling:
+  - step: STEP-02
+    error: supplier_timeout
+    action: return_available_results
+
+  - step: STEP-05
+    error: rate_no_longer_available
+    action: show_alternatives
+
+  - step: STEP-09
+    error: payment_declined
+    action: retry_with_different_method
+    max_retries: 3
+
+  - step: STEP-10
+    error: supplier_rejected
+    action: full_refund_and_alternatives
+
+rollback:
+  - on: supplier_rejection_after_payment
+    actions:
+      - process_full_refund
+      - notify_customer
+      - offer_alternatives
+
+  - on: customer_cancellation
+    actions:
+      - check_cancellation_policy
+      - calculate_refund
+      - process_refund
+      - notify_hotel
+
+sla:
+  - step: STEP-02
+    max_time: 12s
+
+  - step: STEP-09
+    max_time: 30s
+
+  - step: STEP-10
+    max_time: 60s
+
+  - overall:
+    target: < 4 minutes
+    p95: < 6 minutes
+
+metrics:
+  - name: search_to_book_conversion
+    target: "> 3%"
+
+  - name: confirmation_success_rate
+    target: "> 99%"
+
+  - name: average_booking_time
+    target: "< 4 minutes"
+
+  - name: cancellation_rate
+    target: "< 15%"
+
+integrations:
+  - system: Hotelbeds
+    type: supplier
+    operations: [search, book, cancel]
+
+  - system: Booking.com
+    type: supplier
+    operations: [search, book, cancel]
+
+  - system: Direct Contracts
+    type: supplier
+    operations: [search, book, cancel, modify]
+
+  - system: Stripe
+    type: payment
+    operations: [authorize, capture, refund]

@@ -1,0 +1,340 @@
+name: Order Rules
+display_name: Order Rules / Quy tắc đơn hàng
+description: |
+  Quy tắc vận hành đơn hàng mua bán gia súc/gia cầm.
+  Bao gồm: Tạo đơn, đặt cọc, giao hàng, hoàn thành.
+
+domain: agriculture
+category: orders
+
+rules:
+  # Order Creation Rules
+  - id: BR-ORD-001
+    name: Order Number Generation
+    description: Tự động tạo mã đơn hàng
+    priority: critical
+    condition: order.created = true
+    action: |
+      order.order_code = 'ORD-' +
+        FORMAT(NOW(), 'YYYYMMDD') + '-' +
+        RANDOM_ALPHANUMERIC(6)
+    applies_to: [Order]
+
+  - id: BR-ORD-002
+    name: Order Source Validation
+    description: Đơn hàng phải từ auction win, fixed price, hoặc accepted offer
+    priority: critical
+    condition: |
+      order.order_source IN ('auction', 'fixed_price', 'offer') AND
+      (
+        (order.order_source = 'auction' AND order.auction_id IS NOT NULL) OR
+        (order.order_source = 'fixed_price' AND order.listing_id IS NOT NULL) OR
+        (order.order_source = 'offer' AND order.offer_id IS NOT NULL)
+      )
+    action: reject_if_violated
+    message: "Nguồn đơn hàng không hợp lệ"
+    applies_to: [Order]
+
+  - id: BR-ORD-003
+    name: Livestock Health Check
+    description: Không tạo đơn nếu livestock không healthy
+    priority: critical
+    condition: |
+      listing.livestock.health_status = 'healthy'
+    action: reject_if_violated
+    message: "Gia súc/gia cầm không đủ điều kiện sức khỏe"
+    applies_to: [Order, Listing, Livestock]
+
+  - id: BR-ORD-004
+    name: Farm Verification Required
+    description: Farm phải được xác minh
+    priority: critical
+    condition: |
+      listing.farm.verification_status = 'verified'
+    action: reject_if_violated
+    message: "Trang trại chưa được xác minh"
+    applies_to: [Order, Listing, Farm]
+
+  - id: BR-ORD-005
+    name: Price Snapshot
+    description: Lock giá tại thời điểm tạo đơn
+    priority: critical
+    condition: order.created = true
+    action: |
+      order.price_per_kg = listing.price_per_kg OR auction.final_price / listing.total_weight_kg
+      order.declared_weight_kg = listing.total_weight_kg
+      order.subtotal = order.price_per_kg * order.declared_weight_kg
+    applies_to: [Order]
+
+  # Deposit Rules
+  - id: BR-ORD-010
+    name: Deposit Calculation
+    description: Đặt cọc = 10-20% tổng giá trị
+    priority: high
+    condition: order.created = true
+    action: |
+      deposit_rate = CASE
+        WHEN order.total_amount < 10000000 THEN 0.20
+        WHEN order.total_amount < 50000000 THEN 0.15
+        ELSE 0.10
+      END
+      order.deposit_amount = order.total_amount * deposit_rate
+    applies_to: [Order]
+    config:
+      min_deposit_percent: 10
+      max_deposit_percent: 20
+
+  - id: BR-ORD-011
+    name: Deposit Payment Deadline
+    description: Phải đặt cọc trong 24 giờ
+    priority: high
+    condition: |
+      order.status = 'pending_deposit' AND
+      NOW() - order.created_at > INTERVAL '24 hours'
+    action: |
+      order.status = 'cancelled'
+      order.cancellation_reason = 'Quá hạn đặt cọc'
+      order.cancelled_by = 'system'
+      IF order.order_source = 'auction' THEN
+        transfer_to_second_bidder()
+        penalize_buyer()
+      END
+    applies_to: [Order]
+
+  - id: BR-ORD-012
+    name: Deposit Confirmation
+    description: Chuyển sang deposit_paid khi thanh toán thành công
+    priority: high
+    condition: |
+      payment.status = 'completed' AND
+      payment.payment_type = 'deposit' AND
+      payment.order_id = order.id
+    action: |
+      order.status = 'deposit_paid'
+      order.deposit_status = 'paid'
+      order.deposit_paid_at = NOW()
+      TRIGGER order.deposit_paid
+      notify_seller()
+    applies_to: [Order, Payment]
+
+  # Seller Confirmation Rules
+  - id: BR-ORD-020
+    name: Seller Confirmation Deadline
+    description: Seller phải xác nhận trong 24 giờ sau khi nhận cọc
+    priority: high
+    condition: |
+      order.status = 'deposit_paid' AND
+      NOW() - order.deposit_paid_at > INTERVAL '24 hours'
+    action: |
+      escalate_to_admin()
+      notify_buyer('Seller chưa xác nhận, đang xử lý')
+    applies_to: [Order]
+
+  - id: BR-ORD-021
+    name: Seller Confirmation
+    description: Seller xác nhận đơn hàng
+    priority: high
+    condition: order.status = 'deposit_paid'
+    action: |
+      order.status = 'confirmed'
+      order.confirmed_at = NOW()
+      create_shipment_request()
+      notify_buyer('Đơn hàng đã được xác nhận')
+    applies_to: [Order]
+
+  # Weight Verification Rules
+  - id: BR-ORD-030
+    name: Weight Variance Check
+    description: Kiểm tra chênh lệch cân nặng khi pickup
+    priority: critical
+    condition: shipment.pickup_weight_kg IS NOT NULL
+    action: |
+      variance = ABS(shipment.pickup_weight_kg - order.declared_weight_kg) / order.declared_weight_kg * 100
+      order.weight_variance_percent = variance
+
+      IF variance > 5 THEN
+        order.quality_check_status = 'disputed'
+        create_auto_dispute('weight_discrepancy')
+        ALERT admin
+      ELSE
+        order.actual_weight_kg = shipment.pickup_weight_kg
+        order.final_amount = order.actual_weight_kg * order.price_per_kg
+      END
+    applies_to: [Order, Shipment]
+    config:
+      max_variance_percent: 5
+
+  - id: BR-ORD-031
+    name: Final Amount Calculation
+    description: Tính số tiền cuối cùng dựa trên cân nặng thực
+    priority: high
+    condition: order.actual_weight_kg IS NOT NULL
+    action: |
+      order.final_amount = order.actual_weight_kg * order.price_per_kg + order.shipping_fee - order.deposit_amount
+    applies_to: [Order]
+
+  # Delivery Rules
+  - id: BR-ORD-040
+    name: Delivery Confirmation Window
+    description: Buyer có 2 giờ sau delivery để báo cáo vấn đề
+    priority: high
+    condition: |
+      order.status = 'delivered' AND
+      NOW() - shipment.actual_delivery_at <= INTERVAL '2 hours'
+    action: allow_dispute_creation
+    applies_to: [Order, Shipment]
+
+  - id: BR-ORD-041
+    name: Auto Complete Order
+    description: Tự động hoàn thành sau 48h delivery nếu không có dispute
+    priority: medium
+    condition: |
+      order.status = 'delivered' AND
+      NOW() - shipment.actual_delivery_at > INTERVAL '48 hours' AND
+      NOT EXISTS(SELECT 1 FROM disputes WHERE order_id = order.id AND status NOT IN ('resolved', 'closed'))
+    action: |
+      order.status = 'completed'
+      order.completed_at = NOW()
+      release_escrow_to_seller()
+      TRIGGER order.completed
+    applies_to: [Order]
+
+  # Cancellation Rules
+  - id: BR-ORD-050
+    name: Buyer Cancellation Before Confirm
+    description: Buyer có thể hủy trước khi seller confirm, hoàn cọc
+    priority: high
+    condition: |
+      order.status IN ('pending_deposit', 'deposit_paid') AND
+      cancellation.requested_by = 'buyer'
+    action: |
+      order.status = 'cancelled'
+      order.cancelled_by = 'buyer'
+      IF order.deposit_status = 'paid' THEN
+        refund_deposit()
+      END
+      notify_seller('Buyer đã hủy đơn hàng')
+    applies_to: [Order]
+
+  - id: BR-ORD-051
+    name: Buyer Cancellation After Confirm
+    description: Buyer hủy sau khi seller confirm = Mất cọc
+    priority: critical
+    condition: |
+      order.status IN ('confirmed', 'processing', 'ready_for_pickup') AND
+      cancellation.requested_by = 'buyer'
+    action: |
+      order.status = 'cancelled'
+      order.cancelled_by = 'buyer'
+      order.deposit_status = 'forfeited'
+      transfer_deposit_to_seller(order.deposit_amount * 0.8)
+      platform_fee = order.deposit_amount * 0.2
+      notify_both_parties('Đơn hàng đã hủy, cọc bị mất')
+    applies_to: [Order]
+    config:
+      seller_forfeit_percent: 80
+      platform_forfeit_percent: 20
+
+  - id: BR-ORD-052
+    name: Seller Cancellation
+    description: Seller hủy = Hoàn cọc + Penalty
+    priority: critical
+    condition: |
+      order.status IN ('deposit_paid', 'confirmed', 'processing') AND
+      cancellation.requested_by = 'seller'
+    action: |
+      order.status = 'cancelled'
+      order.cancelled_by = 'seller'
+      refund_deposit()
+      apply_seller_penalty(order.deposit_amount * 0.5)
+      update_seller_rating(-0.5)
+      IF seller.cancellation_count_30d >= 3 THEN
+        suspend_seller()
+      END
+      notify_buyer('Seller đã hủy, đang xử lý hoàn tiền')
+    applies_to: [Order, Farm]
+    config:
+      penalty_percent: 50
+      max_cancellations_per_month: 3
+
+  # Payment Release Rules
+  - id: BR-ORD-060
+    name: Escrow Release
+    description: Giải phóng escrow cho seller sau khi hoàn thành
+    priority: critical
+    condition: |
+      order.status = 'completed' AND
+      payment.escrow = true AND
+      payment.escrow_released = false
+    action: |
+      release_amount = order.final_amount - platform_fee
+      payment.escrow_released = true
+      payment.escrow_released_at = NOW()
+      transfer_to_seller(release_amount)
+      TRIGGER payment.escrow_released
+    applies_to: [Order, Payment]
+
+  - id: BR-ORD-061
+    name: Platform Fee Calculation
+    description: Tính phí sàn
+    priority: high
+    condition: order.created = true
+    action: |
+      fee_rate = CASE
+        WHEN farm.tier = 'premium' THEN 0.02
+        WHEN farm.tier = 'gold' THEN 0.03
+        ELSE 0.05
+      END
+      order.platform_fee = order.subtotal * fee_rate
+      order.total_amount = order.subtotal + order.shipping_fee + order.platform_fee
+    applies_to: [Order, Farm]
+    config:
+      default_fee_percent: 5
+      premium_fee_percent: 2
+      gold_fee_percent: 3
+
+  # Quality Check Rules
+  - id: BR-ORD-070
+    name: Mandatory Quality Check
+    description: Kiểm tra chất lượng bắt buộc với đơn > 50 triệu
+    priority: high
+    condition: order.total_amount > 50000000
+    action: |
+      order.requires_quality_check = true
+      assign_quality_inspector()
+    applies_to: [Order]
+    config:
+      quality_check_threshold: 50000000
+
+  - id: BR-ORD-071
+    name: Quality Check Failed
+    description: Xử lý khi quality check failed
+    priority: critical
+    condition: |
+      quality_check.result = 'failed'
+    action: |
+      order.quality_check_status = 'failed'
+      create_auto_dispute('quality_issue')
+      hold_shipment()
+      notify_both_parties('Kiểm tra chất lượng không đạt')
+    applies_to: [Order, QualityCheck]
+
+validation_order:
+  - BR-ORD-002  # Source validation
+  - BR-ORD-003  # Health check
+  - BR-ORD-004  # Farm verification
+  - BR-ORD-001  # Order number
+  - BR-ORD-005  # Price snapshot
+  - BR-ORD-010  # Deposit calculation
+  - BR-ORD-061  # Platform fee
+
+exceptions:
+  - name: VIPBuyerExtendedPayment
+    description: VIP buyer được gia hạn thanh toán
+    requires: buyer.tier = 'vip'
+    extended_deposit_hours: 48
+
+  - name: PremiumFarmReducedFee
+    description: Farm premium được giảm phí sàn
+    requires: farm.tier = 'premium'
+    fee_percent: 2

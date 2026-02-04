@@ -1,0 +1,469 @@
+name: Coverage Rules
+display_name: Coverage Business Rules
+description: |
+  Business rules for coverage selection, limits, exclusions, and claims.
+  Covers benefit calculations and coverage dependencies.
+
+domain: insurance
+subdomain: policy
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - coverage_selection
+  - coverage_limits
+  - coverage_exclusions
+  - waiting_periods
+  - benefit_calculation
+  - claim_eligibility
+
+rules:
+  # Coverage Selection Rules
+  - id: COV-SEL-001
+    name: Base Coverage Required
+    category: coverage_selection
+    priority: critical
+    description: |
+      Policy must have at least one base coverage.
+    condition:
+      expression: "COUNT(policy.coverages WHERE type = 'base') >= 1"
+    failure_action: reject
+    failure_message: "At least one base coverage is required"
+
+  - id: COV-SEL-002
+    name: Rider Requires Base Coverage
+    category: coverage_selection
+    priority: high
+    description: |
+      Riders can only be attached if base coverage exists.
+    condition:
+      expression: |
+        FOR EACH rider IN selected_riders:
+          IF rider.requires_base_coverage = true
+          THEN EXISTS base_coverage
+    failure_action: reject
+    failure_message: "Rider {rider.name} requires base coverage to be selected"
+
+  - id: COV-SEL-003
+    name: Coverage Compatibility Check
+    category: coverage_selection
+    priority: high
+    description: |
+      Check for incompatible coverage combinations.
+    condition:
+      expression: |
+        FOR EACH coverage IN selected_coverages:
+          NOT EXISTS (
+            coverage.id IN another_coverage.incompatible_coverages
+          )
+    failure_action: reject
+    failure_message: "Coverage {coverage.name} is incompatible with {conflicting.name}"
+
+  - id: COV-SEL-004
+    name: Prerequisite Coverage Check
+    category: coverage_selection
+    priority: high
+    description: |
+      Check prerequisite coverages are selected.
+    condition:
+      expression: |
+        FOR EACH coverage IN selected_coverages:
+          ALL coverage.prerequisite_coverages IN selected_coverages
+    failure_action: reject
+    failure_message: "Coverage {coverage.name} requires {prerequisite.name} to be selected first"
+
+  - id: COV-SEL-005
+    name: Mandatory Coverage Auto-Include
+    category: coverage_selection
+    priority: critical
+    description: |
+      Auto-include mandatory coverages for product.
+    action: auto_include
+    condition:
+      expression: "product.mandatory_coverages"
+    effect:
+      add_coverages: product.mandatory_coverages
+    message: "Mandatory coverages automatically included"
+
+  - id: COV-SEL-006
+    name: Maximum Coverages Per Policy
+    category: coverage_selection
+    priority: medium
+    description: |
+      Limit number of coverages per policy.
+    condition:
+      expression: "COUNT(selected_coverages) <= product.max_coverages"
+    failure_action: reject
+    failure_message: "Maximum of {product.max_coverages} coverages allowed"
+
+  # Coverage Limits Rules
+  - id: COV-LIM-001
+    name: Sum Insured Within Coverage Limits
+    category: coverage_limits
+    priority: high
+    description: |
+      Coverage sum insured must be within defined limits.
+    condition:
+      expression: |
+        FOR EACH coverage IN selected_coverages:
+          coverage.sum_insured >= coverage.min_sum_insured AND
+          coverage.sum_insured <= coverage.max_sum_insured
+    failure_action: adjust
+    adjustment:
+      method: clamp
+      min: coverage.min_sum_insured
+      max: coverage.max_sum_insured
+
+  - id: COV-LIM-002
+    name: Rider Sum Cannot Exceed Base
+    category: coverage_limits
+    priority: high
+    description: |
+      Rider sum insured cannot exceed base policy sum.
+    condition:
+      expression: |
+        FOR EACH rider IN selected_riders:
+          rider.sum_insured <= policy.sum_insured * rider.max_percentage_of_base / 100
+    failure_action: adjust
+    adjustment:
+      field: rider.sum_insured
+      value: "policy.sum_insured * rider.max_percentage_of_base / 100"
+
+  - id: COV-LIM-003
+    name: Annual Limit Per Coverage
+    category: coverage_limits
+    priority: high
+    description: |
+      Enforce annual limits per coverage type.
+    validation:
+      for_each: policy_year_claims
+      expression: "SUM(claims.amount) <= coverage.annual_limit"
+    failure_action: reject_claim
+    failure_message: "Annual limit of {coverage.annual_limit} exceeded for {coverage.name}"
+
+  - id: COV-LIM-004
+    name: Aggregate Lifetime Limit
+    category: coverage_limits
+    priority: high
+    description: |
+      Enforce lifetime limits on coverage.
+    validation:
+      expression: "SUM(all_claims.amount) <= coverage.lifetime_limit"
+    failure_action: reduce_benefit
+    reduction:
+      method: remaining_limit
+      value: "coverage.lifetime_limit - SUM(previous_claims.amount)"
+
+  - id: COV-LIM-005
+    name: Per Occurrence Limit
+    category: coverage_limits
+    priority: high
+    description: |
+      Maximum benefit per single occurrence.
+    validation:
+      expression: "claim.amount <= coverage.per_occurrence_limit"
+    failure_action: cap
+    cap_value: coverage.per_occurrence_limit
+
+  - id: COV-LIM-006
+    name: Sub-Limit Enforcement
+    category: coverage_limits
+    priority: medium
+    description: |
+      Apply sub-limits for specific items.
+    validation:
+      for_each: coverage.sub_limits
+      expression: "claim_item.amount <= sub_limit.limit"
+    failure_action: cap
+    cap_value: sub_limit.limit
+    example:
+      coverage: "hospitalization"
+      sub_limit: "room_and_board"
+      limit: 2000000
+      limit_type: "per_day"
+
+  # Coverage Exclusions Rules
+  - id: COV-EXC-001
+    name: Standard Exclusion Check
+    category: coverage_exclusions
+    priority: critical
+    description: |
+      Verify claim cause is not in standard exclusions.
+    validation:
+      expression: "claim.cause NOT IN coverage.standard_exclusions"
+    failure_action: reject_claim
+    failure_message: "Claim rejected - cause is excluded under standard exclusions"
+
+  - id: COV-EXC-002
+    name: Pre-Existing Condition Exclusion
+    category: coverage_exclusions
+    priority: high
+    description: |
+      Exclude pre-existing conditions within waiting period.
+    validation:
+      expression: |
+        IF claim.condition IN insured.pre_existing_conditions
+        THEN claim.date >= policy.effective_date + pre_existing_waiting_months * 30
+    failure_action: reject_claim
+    failure_message: "Pre-existing condition excluded within waiting period"
+
+  - id: COV-EXC-003
+    name: War and Terrorism Exclusion
+    category: coverage_exclusions
+    priority: critical
+    description: |
+      Exclude losses from war, terrorism, and civil unrest.
+    validation:
+      expression: |
+        claim.cause NOT IN [
+          'war', 'civil_war', 'terrorism', 'riots', 'insurrection',
+          'nuclear', 'biological_weapon', 'chemical_weapon'
+        ]
+    failure_action: reject_claim
+    failure_message: "Claim excluded - war/terrorism exclusion applies"
+
+  - id: COV-EXC-004
+    name: Self-Inflicted Injury Exclusion
+    category: coverage_exclusions
+    priority: critical
+    description: |
+      Exclude self-inflicted injuries and suicide within period.
+    validation:
+      expression: |
+        NOT (claim.cause = 'self_inflicted' OR
+             (claim.cause = 'suicide' AND
+              claim.date < policy.effective_date + 730))
+    failure_action: reject_claim
+    failure_message: "Self-inflicted injury excluded"
+    note: "Suicide exclusion typically for first 2 years"
+
+  - id: COV-EXC-005
+    name: Criminal Activity Exclusion
+    category: coverage_exclusions
+    priority: critical
+    description: |
+      Exclude losses arising from criminal activity.
+    validation:
+      expression: "claim.insured_criminal_activity = false"
+    failure_action: reject_claim
+    failure_message: "Claim excluded - arose from criminal activity"
+
+  - id: COV-EXC-006
+    name: Policy-Specific Exclusion Check
+    category: coverage_exclusions
+    priority: high
+    description: |
+      Check underwriting-applied exclusions.
+    validation:
+      expression: "claim.condition NOT IN policy.underwriting_exclusions"
+    failure_action: reject_claim
+    failure_message: "Condition excluded per policy terms"
+
+  # Waiting Period Rules
+  - id: COV-WAIT-001
+    name: General Waiting Period
+    category: waiting_periods
+    priority: high
+    description: |
+      Apply general waiting period for new policies.
+    validation:
+      expression: "claim.date >= policy.effective_date + coverage.waiting_period_days"
+    failure_action: reject_claim
+    failure_message: "Claim within waiting period of {coverage.waiting_period_days} days"
+
+  - id: COV-WAIT-002
+    name: Illness Waiting Period
+    category: waiting_periods
+    priority: high
+    description: |
+      Longer waiting period for illness claims vs accidents.
+    validation:
+      expression: |
+        IF claim.type = 'illness'
+        THEN claim.date >= policy.effective_date + 30
+    failure_action: reject_claim
+    failure_message: "Illness claims subject to 30-day waiting period"
+    note: "Accidents typically no waiting period"
+
+  - id: COV-WAIT-003
+    name: Maternity Waiting Period
+    category: waiting_periods
+    priority: high
+    description: |
+      Extended waiting period for maternity coverage.
+    validation:
+      expression: |
+        IF claim.type = 'maternity'
+        THEN claim.date >= policy.effective_date + 270
+    failure_action: reject_claim
+    failure_message: "Maternity claims subject to 9-month waiting period"
+
+  - id: COV-WAIT-004
+    name: Critical Illness Waiting Period
+    category: waiting_periods
+    priority: high
+    description: |
+      Waiting period for critical illness diagnosis.
+    validation:
+      expression: |
+        IF coverage.type = 'critical_illness'
+        THEN claim.diagnosis_date >= policy.effective_date + 90
+    failure_action: reject_claim
+    failure_message: "Critical illness subject to 90-day waiting period"
+
+  - id: COV-WAIT-005
+    name: Waiver of Waiting Period on Upgrade
+    category: waiting_periods
+    priority: medium
+    description: |
+      Credit previous waiting period for upgrades.
+    condition:
+      expression: |
+        policy.upgrade_from IS NOT NULL AND
+        previous_policy.waiting_period_completed = true
+    effect:
+      waive: waiting_period
+    message: "Waiting period waived - credited from previous policy"
+
+  # Benefit Calculation Rules
+  - id: COV-BEN-001
+    name: Death Benefit Calculation
+    category: benefit_calculation
+    priority: critical
+    description: |
+      Calculate death benefit payable.
+    condition:
+      expression: "claim.type = 'death'"
+    calculation:
+      base_benefit: coverage.sum_insured
+      additions:
+        - condition: "coverage.type = 'accidental_death'"
+          multiply: 2
+        - condition: "claim.accident_type = 'public_transport'"
+          multiply: 2
+      deductions:
+        - outstanding_loans: policy.loan_balance
+        - outstanding_premiums: policy.outstanding_premiums
+    formula: "base_benefit * multiplier - deductions"
+
+  - id: COV-BEN-002
+    name: Critical Illness Benefit
+    category: benefit_calculation
+    priority: high
+    description: |
+      Calculate critical illness benefit.
+    condition:
+      expression: "claim.type = 'critical_illness'"
+    calculation:
+      schedule:
+        stage_1: "25% of sum_insured"
+        stage_2: "50% of sum_insured"
+        stage_3: "100% of sum_insured"
+      max_payout: "100% of sum_insured less any previous CI payments"
+    note: "Benefit based on severity stage"
+
+  - id: COV-BEN-003
+    name: Hospitalization Per Diem
+    category: benefit_calculation
+    priority: high
+    description: |
+      Calculate daily hospital benefit.
+    condition:
+      expression: "coverage.type = 'hospitalization' AND coverage.benefit_type = 'per_diem'"
+    calculation:
+      daily_benefit: coverage.per_diem_amount
+      max_days: coverage.max_benefit_days
+      formula: "daily_benefit * MIN(actual_days, max_days)"
+
+  - id: COV-BEN-004
+    name: Reimbursement Benefit
+    category: benefit_calculation
+    priority: high
+    description: |
+      Calculate reimbursement benefits.
+    condition:
+      expression: "coverage.benefit_type = 'reimbursement'"
+    calculation:
+      formula: "MIN(actual_expense, coverage_limit) * (1 - copay_percentage/100)"
+      deduct: deductible_amount
+
+  - id: COV-BEN-005
+    name: Disability Benefit Schedule
+    category: benefit_calculation
+    priority: high
+    description: |
+      Calculate disability benefit per schedule.
+    condition:
+      expression: "claim.type = 'disability'"
+    calculation:
+      permanent_total: "100% of sum_insured"
+      permanent_partial:
+        loss_of_one_limb: "50%"
+        loss_of_two_limbs: "100%"
+        loss_of_sight_one_eye: "50%"
+        loss_of_sight_both_eyes: "100%"
+        loss_of_hearing_both_ears: "75%"
+
+  # Claim Eligibility Rules
+  - id: COV-CLM-001
+    name: Policy Active at Loss Date
+    category: claim_eligibility
+    priority: critical
+    description: |
+      Policy must be active when loss occurred.
+    validation:
+      expression: |
+        policy.status = 'active' AND
+        claim.loss_date >= policy.effective_date AND
+        claim.loss_date <= policy.expiry_date
+    failure_action: reject_claim
+    failure_message: "Policy was not active on date of loss"
+
+  - id: COV-CLM-002
+    name: Premium Paid Up to Date
+    category: claim_eligibility
+    priority: high
+    description: |
+      Premiums must be paid for claim eligibility.
+    validation:
+      expression: |
+        policy.premium_status = 'paid' OR
+        claim.loss_date <= policy.premium_paid_to_date + policy.grace_days
+    failure_action: conditional
+    condition_for_pay: "premium arrears settled"
+    failure_message: "Premium arrears must be settled before claim payment"
+
+  - id: COV-CLM-003
+    name: Timely Claim Notification
+    category: claim_eligibility
+    priority: medium
+    description: |
+      Claim must be notified within required timeframe.
+    validation:
+      expression: "claim.notification_date <= claim.loss_date + coverage.notification_period_days"
+    failure_action: warn
+    warning_message: "Late notification may affect claim assessment"
+    note: "Late notification doesn't auto-reject but may affect coverage"
+
+  - id: COV-CLM-004
+    name: Coverage Applies to Claim Type
+    category: claim_eligibility
+    priority: critical
+    description: |
+      Verify coverage covers the claim peril.
+    validation:
+      expression: "claim.peril IN coverage.perils_covered"
+    failure_action: reject_claim
+    failure_message: "Claim type not covered under selected coverage"
+
+  - id: COV-CLM-005
+    name: Insured Person Verification
+    category: claim_eligibility
+    priority: critical
+    description: |
+      Verify claimant is an insured person on policy.
+    validation:
+      expression: "claim.insured_id IN policy.insured_ids"
+    failure_action: reject_claim
+    failure_message: "Claimant is not an insured person on this policy"

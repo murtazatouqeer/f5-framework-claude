@@ -1,0 +1,759 @@
+name: recovery_workflow
+display_name: Recovery Workflow
+description: |
+  Workflow for claims recovery activities including salvage collection,
+  subrogation pursuits, and third-party recoveries.
+
+domain: insurance
+subdomain: claims
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-REC-001
+  name: Claims Recovery
+  description: Manage recovery from salvage, subrogation, and third parties
+  trigger:
+    type: event
+    events:
+      - claim.settled
+      - recovery.identified
+      - settlement.finalized
+
+  sla:
+    recovery_identification: 7_days
+    salvage_disposition: 30_days
+    subrogation_demand: 14_days
+    recovery_collection: 90_days
+
+stages:
+  - id: identify_recovery
+    name: Identify Recovery Opportunity
+    description: Identify and evaluate recovery potential
+    type: semi_automated
+
+    steps:
+      - id: evaluate_salvage
+        name: Evaluate Salvage Potential
+        action: assess_salvage
+        conditions:
+          - total_loss_claim
+          - damaged_property_retained
+          - goods_salvageable
+        estimate:
+          - salvage_value
+          - disposition_method
+
+      - id: evaluate_subrogation
+        name: Evaluate Subrogation Potential
+        action: assess_subrogation
+        conditions:
+          - third_party_liable
+          - third_party_identifiable
+          - third_party_insured
+          - within_statute_of_limitations
+        estimate:
+          - recovery_amount
+          - recovery_probability
+          - third_party_details
+
+      - id: evaluate_contribution
+        name: Evaluate Contribution
+        action: assess_contribution
+        conditions:
+          - co_insurance_applicable
+          - other_insurers_involved
+        identify:
+          - contributing_insurers
+          - contribution_shares
+
+      - id: cost_benefit_analysis
+        name: Cost-Benefit Analysis
+        action: analyze_viability
+        calculate:
+          - expected_recovery
+          - estimated_costs
+          - net_benefit
+          - success_probability
+        rules:
+          - BR-REC-002
+
+      - id: create_recovery_record
+        name: Create Recovery Record
+        action: create_recovery
+        if: recovery_viable
+        generates:
+          - recovery_id
+          - recovery_number
+
+    transitions:
+      - to: salvage_processing
+        condition: salvage_applicable
+      - to: subrogation_processing
+        condition: subrogation_applicable
+      - to: contribution_processing
+        condition: contribution_applicable
+      - to: close_no_recovery
+        condition: no_viable_recovery
+
+  - id: salvage_processing
+    name: Salvage Processing
+    description: Process salvage recovery
+    type: semi_automated
+
+    steps:
+      - id: secure_salvage
+        name: Secure Salvage
+        action: arrange_salvage_security
+        activities:
+          - confirm_location
+          - arrange_storage
+          - secure_access
+
+      - id: appraise_salvage
+        name: Appraise Salvage Value
+        action: get_salvage_valuation
+        methods:
+          - dealer_quotes
+          - auction_estimate
+          - expert_valuation
+
+      - id: determine_disposition
+        name: Determine Disposition Method
+        action: select_disposition
+        options:
+          auction:
+            condition: high_value_salvage
+            process: public_auction
+          direct_sale:
+            condition: specialized_items
+            process: dealer_network
+          scrap:
+            condition: minimal_value
+            process: scrap_dealer
+
+      - id: obtain_title
+        name: Obtain Salvage Title
+        action: process_title_transfer
+        if: vehicle_salvage
+        documents:
+          - title_transfer
+          - salvage_certificate
+
+    transitions:
+      - to: conduct_sale
+        condition: disposition_determined
+
+  - id: conduct_sale
+    name: Conduct Salvage Sale
+    description: Execute salvage sale
+    type: semi_automated
+
+    steps:
+      - id: list_for_sale
+        name: List for Sale
+        action: create_listing
+        include:
+          - salvage_description
+          - photos
+          - condition_report
+          - reserve_price
+
+      - id: manage_auction
+        name: Manage Auction/Sale
+        action: conduct_sale
+        activities:
+          - receive_bids
+          - evaluate_offers
+          - select_buyer
+
+      - id: complete_sale
+        name: Complete Sale
+        action: finalize_sale
+        activities:
+          - confirm_buyer
+          - collect_payment
+          - transfer_ownership
+
+      - id: record_sale
+        name: Record Sale Details
+        action: update_recovery
+        updates:
+          buyer_name: "{{buyer}}"
+          sale_date: "{{date}}"
+          sale_amount: "{{amount}}"
+          recovered_amount: "{{amount}}"
+
+    transitions:
+      - to: allocate_proceeds
+        condition: sale_complete
+
+  - id: subrogation_processing
+    name: Subrogation Processing
+    description: Pursue subrogation recovery
+    type: semi_automated
+
+    steps:
+      - id: gather_evidence
+        name: Gather Subrogation Evidence
+        action: compile_evidence
+        include:
+          - police_report
+          - witness_statements
+          - expert_opinions
+          - photos_videos
+          - claim_documents
+
+      - id: identify_third_party
+        name: Identify Third Party
+        action: research_third_party
+        gather:
+          - name_address
+          - insurance_information
+          - assets_if_uninsured
+
+      - id: calculate_demand
+        name: Calculate Demand Amount
+        action: compute_demand
+        include:
+          - claim_paid
+          - investigation_costs
+          - legal_costs
+          - interest
+
+      - id: send_demand
+        name: Send Demand Letter
+        action: send_demand_letter
+        template: subrogation_demand
+        to: third_party_or_insurer
+        track: delivery_confirmation
+
+      - id: record_demand
+        name: Record Demand
+        action: update_recovery
+        updates:
+          demand_letter_sent: true
+          demand_letter_date: "{{now}}"
+          demand_amount: "{{amount}}"
+
+      - id: set_deadline
+        name: Set Response Deadline
+        action: schedule_deadline
+        deadline: 30_days
+
+    transitions:
+      - to: await_response
+        condition: demand_sent
+
+  - id: await_response
+    name: Await Third Party Response
+    description: Wait for response to demand
+    type: waiting
+    timeout: 30_days
+
+    steps:
+      - id: send_reminders
+        name: Send Reminders
+        action: schedule_reminders
+        schedule:
+          - 14_days: first_reminder
+          - 21_days: second_reminder
+
+      - id: process_response
+        name: Process Response
+        action: on_response_received
+        response_types:
+          - full_acceptance
+          - partial_acceptance
+          - counter_offer
+          - rejection
+          - liability_dispute
+
+      - id: record_response
+        name: Record Response
+        action: update_recovery
+        updates:
+          response_received: true
+          response_date: "{{now}}"
+          settlement_offer: "{{offer}}"
+
+    transitions:
+      - to: process_acceptance
+        condition: response = full_acceptance
+      - to: negotiate_recovery
+        condition: response IN (partial_acceptance, counter_offer)
+      - to: dispute_resolution
+        condition: response IN (rejection, liability_dispute)
+      - to: escalate_no_response
+        condition: timeout
+
+  - id: negotiate_recovery
+    name: Negotiate Recovery
+    description: Negotiate recovery amount
+    type: manual
+
+    steps:
+      - id: evaluate_offer
+        name: Evaluate Offer
+        action: analyze_offer
+        consider:
+          - offer_amount
+          - liability_position
+          - litigation_risk
+          - recovery_costs
+
+      - id: formulate_response
+        name: Formulate Response
+        action: prepare_counter
+        options:
+          - accept_offer
+          - counter_offer
+          - reject_proceed_legal
+
+      - id: send_response
+        name: Send Response
+        action: communicate_response
+        document: negotiation_history
+
+      - id: record_negotiation
+        name: Record Negotiation
+        action: add_negotiation_round
+        capture:
+          - our_position
+          - their_position
+          - notes
+
+    transitions:
+      - to: process_acceptance
+        condition: agreement_reached
+      - to: await_response
+        condition: counter_sent
+      - to: dispute_resolution
+        condition: negotiation_failed
+
+  - id: dispute_resolution
+    name: Dispute Resolution
+    description: Resolve liability or amount disputes
+    type: manual
+
+    steps:
+      - id: assess_options
+        name: Assess Resolution Options
+        action: evaluate_dispute_options
+        options:
+          - mediation
+          - arbitration
+          - litigation
+          - write_off
+
+      - id: cost_benefit_litigation
+        name: Litigation Cost-Benefit
+        action: analyze_litigation_viability
+        consider:
+          - recovery_amount
+          - litigation_costs
+          - success_probability
+          - time_investment
+
+      - id: decide_approach
+        name: Decide Approach
+        action: select_resolution_method
+        factors:
+          - amount_at_stake
+          - strength_of_case
+          - cost_effectiveness
+
+      - id: initiate_proceedings
+        name: Initiate Proceedings
+        action: start_dispute_process
+        if: proceed_with_action
+        trigger:
+          - mediation_request
+          - arbitration_filing
+          - litigation_initiation
+
+    transitions:
+      - to: legal_proceedings
+        condition: litigation_initiated
+      - to: alternative_dispute
+        condition: adr_initiated
+      - to: write_off_recovery
+        condition: write_off_decision
+
+  - id: alternative_dispute
+    name: Alternative Dispute Resolution
+    description: Handle mediation or arbitration
+    type: manual
+
+    steps:
+      - id: arrange_adr
+        name: Arrange ADR
+        action: schedule_proceeding
+        type: mediation_or_arbitration
+
+      - id: prepare_case
+        name: Prepare Case
+        action: compile_case_materials
+        include:
+          - evidence
+          - legal_arguments
+          - damage_calculations
+
+      - id: attend_proceeding
+        name: Attend Proceeding
+        action: participate_in_adr
+        document: outcome
+
+      - id: process_outcome
+        name: Process Outcome
+        action: record_adr_result
+        outcomes:
+          - settlement_reached
+          - award_issued
+          - no_resolution
+
+    transitions:
+      - to: process_acceptance
+        condition: settlement_or_award
+      - to: legal_proceedings
+        condition: no_resolution AND proceed_litigation
+      - to: write_off_recovery
+        condition: no_resolution AND write_off
+
+  - id: legal_proceedings
+    name: Legal Proceedings
+    description: Handle litigation for recovery
+    type: manual
+
+    steps:
+      - id: engage_counsel
+        name: Engage Legal Counsel
+        action: assign_attorney
+        criteria:
+          - jurisdiction
+          - expertise
+          - cost
+
+      - id: file_claim
+        name: File Legal Claim
+        action: initiate_lawsuit
+        creates:
+          - litigation_record
+          - court_filing
+
+      - id: monitor_proceedings
+        name: Monitor Proceedings
+        action: track_litigation
+        milestones:
+          - filing
+          - service
+          - discovery
+          - trial
+          - judgment
+
+      - id: settlement_review
+        name: Review Settlement Opportunities
+        action: evaluate_settlements
+        at_each_stage: true
+
+    transitions:
+      - to: process_acceptance
+        condition: settlement_reached
+      - to: enforce_judgment
+        condition: judgment_obtained
+      - to: write_off_recovery
+        condition: judgment_unfavorable
+
+  - id: enforce_judgment
+    name: Enforce Judgment
+    description: Enforce court judgment
+    type: manual
+
+    steps:
+      - id: assess_collectability
+        name: Assess Collectability
+        action: evaluate_assets
+        target: judgment_debtor
+
+      - id: enforcement_actions
+        name: Take Enforcement Actions
+        action: execute_enforcement
+        methods:
+          - garnishment
+          - asset_seizure
+          - lien_filing
+
+      - id: collect_proceeds
+        name: Collect Proceeds
+        action: process_collection
+        as_received: true
+
+    transitions:
+      - to: allocate_proceeds
+        condition: collection_received
+      - to: write_off_recovery
+        condition: uncollectable
+
+  - id: process_acceptance
+    name: Process Accepted Recovery
+    description: Process agreed recovery
+    type: semi_automated
+
+    steps:
+      - id: document_agreement
+        name: Document Agreement
+        action: record_agreement
+        details:
+          - agreed_amount
+          - payment_terms
+          - conditions
+
+      - id: obtain_release
+        name: Obtain Release if Required
+        action: exchange_releases
+        if: mutual_release_needed
+
+      - id: setup_payment
+        name: Setup Payment Collection
+        action: arrange_collection
+        methods:
+          - single_payment
+          - installment_plan
+
+    transitions:
+      - to: collect_recovery
+        condition: agreement_documented
+
+  - id: collect_recovery
+    name: Collect Recovery
+    description: Collect recovery payments
+    type: semi_automated
+
+    steps:
+      - id: receive_payment
+        name: Receive Payment
+        action: process_receipt
+        capture:
+          - amount
+          - date
+          - method
+          - reference
+
+      - id: record_receipt
+        name: Record Receipt
+        action: add_recovery_receipt
+        update:
+          recovered_amount: "{{total_received}}"
+
+      - id: check_completion
+        name: Check if Complete
+        action: evaluate_completion
+        compare:
+          - agreed_amount
+          - received_amount
+
+      - id: follow_up_outstanding
+        name: Follow Up Outstanding
+        action: pursue_balance
+        if: balance_remaining
+
+    transitions:
+      - to: allocate_proceeds
+        condition: fully_collected
+      - to: collect_recovery
+        condition: partial_collection
+      - to: escalate_non_payment
+        condition: payment_overdue
+
+  - id: contribution_processing
+    name: Contribution Processing
+    description: Process contribution from other insurers
+    type: semi_automated
+
+    steps:
+      - id: identify_insurers
+        name: Identify Contributing Insurers
+        action: research_other_coverage
+        gather:
+          - insurer_names
+          - policy_details
+          - contribution_shares
+
+      - id: calculate_shares
+        name: Calculate Contribution Shares
+        action: compute_shares
+        method:
+          - equal_shares
+          - proportional_limits
+          - independent_liability
+
+      - id: send_contribution_notice
+        name: Send Contribution Notice
+        action: notify_insurers
+        include:
+          - claim_details
+          - share_calculation
+          - supporting_documents
+
+      - id: negotiate_shares
+        name: Negotiate Shares
+        action: resolve_disputes
+        if: share_disputed
+
+      - id: collect_contribution
+        name: Collect Contribution
+        action: receive_contribution
+        track: each_insurer
+
+    transitions:
+      - to: allocate_proceeds
+        condition: contribution_received
+
+  - id: allocate_proceeds
+    name: Allocate Recovery Proceeds
+    description: Allocate recovered amounts
+    type: automated
+
+    steps:
+      - id: deduct_costs
+        name: Deduct Recovery Costs
+        action: calculate_net_recovery
+        formula: |
+          net_recovery = gross_recovery - recovery_costs
+
+      - id: allocate_to_claim
+        name: Allocate to Claim
+        action: credit_claim
+        updates:
+          claim.recovered_amount: "{{net_recovery}}"
+
+      - id: update_financials
+        name: Update Financial Records
+        action: record_recovery_income
+        accounting:
+          - debit_cash
+          - credit_recovery_income
+
+      - id: report_recovery
+        name: Report Recovery
+        action: generate_report
+        for:
+          - management
+          - reinsurance
+
+    transitions:
+      - to: close_recovery
+        condition: fully_allocated
+
+  - id: escalate_no_response
+    name: Escalate No Response
+    description: Escalate when no response received
+    type: manual
+
+    steps:
+      - id: final_demand
+        name: Send Final Demand
+        action: send_final_notice
+        deadline: 14_days
+
+      - id: evaluate_escalation
+        name: Evaluate Escalation Options
+        action: assess_options
+        options:
+          - proceed_litigation
+          - engage_collection
+          - write_off
+
+    transitions:
+      - to: legal_proceedings
+        condition: litigation_approved
+      - to: write_off_recovery
+        condition: write_off_approved
+
+  - id: write_off_recovery
+    name: Write Off Recovery
+    description: Write off unrecoverable amounts
+    type: semi_automated
+
+    steps:
+      - id: document_write_off
+        name: Document Write-Off Reason
+        action: record_write_off
+        required:
+          - reason
+          - supporting_notes
+          - approver
+
+      - id: approve_write_off
+        name: Approve Write-Off
+        action: obtain_approval
+        authority: based_on_amount
+
+      - id: process_write_off
+        name: Process Write-Off
+        action: execute_write_off
+        updates:
+          status: written_off
+          closed_at: "{{now}}"
+
+    transitions:
+      - to: close_recovery
+        condition: write_off_complete
+
+  - id: close_recovery
+    name: Close Recovery
+    description: Close recovery case
+    type: automated
+
+    steps:
+      - id: finalize_record
+        name: Finalize Recovery Record
+        action: update_recovery
+        updates:
+          status: "{{final_status}}"
+          closed_at: "{{now}}"
+
+      - id: calculate_metrics
+        name: Calculate Recovery Metrics
+        action: compute_metrics
+        metrics:
+          - recovery_ratio
+          - net_recovery
+          - roi
+
+      - id: archive_case
+        name: Archive Case
+        action: archive_recovery
+        retention: per_policy
+
+events_emitted:
+  - recovery.identified
+  - recovery.pursuing
+  - recovery.demand_sent
+  - recovery.negotiating
+  - recovery.agreed
+  - recovery.received
+  - recovery.completed
+  - recovery.written_off
+
+metrics:
+  - name: recovery_rate
+    description: Percentage of potential recovered
+    calculation: "(recovered / potential) * 100"
+
+  - name: average_recovery_time
+    description: Average time to complete recovery
+    calculation: "AVG(closed_at - created_at)"
+
+  - name: recovery_roi
+    description: Return on recovery investment
+    calculation: "(net_recovery - costs) / costs"
+
+  - name: salvage_recovery_rate
+    description: Salvage as percentage of claim
+    calculation: "(salvage_recovered / claim_paid) * 100"
+
+  - name: subrogation_success_rate
+    description: Successful subrogation rate
+    calculation: "(successful / attempted) * 100"

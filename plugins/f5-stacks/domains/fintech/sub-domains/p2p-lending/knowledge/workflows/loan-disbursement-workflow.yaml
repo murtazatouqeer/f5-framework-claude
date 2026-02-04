@@ -1,0 +1,565 @@
+name: Loan Disbursement Workflow
+display_name: Loan Disbursement Workflow / Quy trình giải ngân
+description: |
+  Workflow for disbursing loan funds to borrower after successful
+  funding, including fee deduction and schedule generation.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-P2P-DISB
+  name: Loan Disbursement
+  name_vi: Giải ngân khoản vay
+  category: loan_disbursement
+
+  trigger:
+    type: loan_funded
+    event: loan_status_changed_to_funded
+
+  expected_duration:
+    standard: 1_hour
+    with_verification: 4_hours
+    maximum: 24_hours
+
+  actors:
+    - system
+    - operations
+    - borrower
+    - bank_partner
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Initiate Disbursement
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: initiate_disbursement
+    name: Initiate Disbursement
+    name_vi: Khởi tạo giải ngân
+    actor: system
+
+    description: |
+      Begin disbursement process after funding completion.
+
+    pre_checks:
+      - verify_funding_complete
+      - verify_investor_funds_settled
+      - verify_borrower_agreement_signed
+      - verify_bank_details_valid
+
+    actions:
+      - update_loan_status_to_disbursing
+      - generate_disbursement_id
+      - calculate_net_disbursement
+
+    outputs:
+      - disbursement_id
+      - loan_status: disbursing
+      - initiated_at: timestamp
+
+    next_step: calculate_fees
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Calculate and Deduct Fees
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: calculate_fees
+    name: Calculate and Deduct Fees
+    name_vi: Tính và trừ phí
+    actor: system
+
+    description: |
+      Calculate origination fee and net disbursement amount.
+
+    fee_calculation:
+      origination_fee:
+        formula: "loan_amount * origination_rate"
+        rates_by_grade:
+          A: 2.0
+          B: 2.5
+          C: 3.0
+          D: 3.5
+          E: 4.0
+          F: 4.5
+
+      net_disbursement:
+        formula: "loan_amount - origination_fee"
+
+    example:
+      loan_amount: 10000000
+      grade: C
+      origination_rate: 3.0
+      origination_fee: 300000
+      net_disbursement: 9700000
+
+    fee_distribution:
+      platform_share: 100
+      unit: percent
+
+    outputs:
+      - gross_amount
+      - origination_fee
+      - net_disbursement_amount
+
+    next_step: verify_bank_account
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Verify Bank Account
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: verify_bank_account
+    name: Verify Bank Account
+    name_vi: Xác minh tài khoản ngân hàng
+    actor: system
+
+    description: |
+      Verify borrower bank account details before transfer.
+
+    verification_methods:
+      name_matching:
+        compare: account_holder_name
+        to: borrower_legal_name
+        threshold: 90
+
+      micro_deposit:
+        if: first_disbursement
+        amount: random_1000_to_9999
+        verification_window: 24_hours
+
+      bank_api:
+        if: partner_bank_supported
+        method: real_time_verification
+
+    verification_status:
+      - verified: proceed
+      - mismatch: manual_review
+      - failed: request_updated_info
+
+    outputs:
+      - verification_status
+      - verified_account_number
+      - verified_account_name
+
+    next_step:
+      if_verified: generate_schedule
+      if_mismatch: manual_verification
+      if_failed: request_bank_details
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Manual Verification
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: manual_verification
+    name: Manual Account Verification
+    name_vi: Xác minh tài khoản thủ công
+    actor: operations
+    conditional: true
+
+    description: |
+      Manual review for bank account verification issues.
+
+    review_tasks:
+      - verify_name_spelling_variations
+      - check_for_joint_accounts
+      - validate_bank_statements
+      - contact_borrower_if_needed
+
+    decision_options:
+      - approve: proceed_with_disbursement
+      - request_correction: ask_borrower_to_update
+      - reject: cancel_disbursement
+
+    sla:
+      target: 2_hours
+      maximum: 8_hours
+
+    outputs:
+      - manual_verification_result
+      - reviewer_notes
+
+    next_step:
+      if_approved: generate_schedule
+      if_correction: request_bank_details
+      if_rejected: cancel_disbursement
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Request Updated Bank Details
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: request_bank_details
+    name: Request Bank Details
+    name_vi: Yêu cầu thông tin ngân hàng
+    actor: borrower
+    conditional: true
+
+    description: |
+      Request borrower to provide correct bank details.
+
+    notification:
+      channels: [push, email, sms]
+      content: "Please update your bank account details"
+      include: reason_for_request
+
+    borrower_actions:
+      - view_rejection_reason
+      - update_bank_account
+      - upload_bank_statement
+      - submit_for_reverification
+
+    timeout:
+      duration: 48_hours
+      action: pause_disbursement
+      notification: operations
+
+    outputs:
+      - updated_bank_details
+      - resubmission_timestamp
+
+    next_step: verify_bank_account
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Generate Repayment Schedule
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: generate_schedule
+    name: Generate Repayment Schedule
+    name_vi: Tạo lịch trả nợ
+    actor: system
+
+    description: |
+      Generate detailed repayment schedule based on loan terms.
+
+    schedule_parameters:
+      disbursement_date: current_date
+      first_payment_date: "disbursement_date + 30 days"
+      payment_day: same_day_each_month
+      interest_rate: loan_interest_rate
+      term_months: loan_term
+
+    calculation_methods:
+      emi:
+        formula: "P * (r * (1+r)^n) / ((1+r)^n - 1)"
+        description: Equal Monthly Installment
+
+      equal_principal:
+        formula: "(P/n) + (Outstanding * r)"
+        description: Fixed principal, decreasing interest
+
+      bullet:
+        formula: "Interest monthly, Principal at end"
+        max_term: 12_months
+
+    schedule_output:
+      per_installment:
+        - installment_number
+        - due_date
+        - total_amount
+        - principal_component
+        - interest_component
+        - outstanding_after
+
+    outputs:
+      - schedule_id
+      - total_installments
+      - first_due_date
+      - last_due_date
+      - total_repayment
+
+    next_step: execute_transfer
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Execute Bank Transfer
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: execute_transfer
+    name: Execute Bank Transfer
+    name_vi: Thực hiện chuyển khoản
+    actor: system
+
+    description: |
+      Transfer funds to borrower's bank account.
+
+    transfer_details:
+      from: platform_disbursement_account
+      to: borrower_bank_account
+      amount: net_disbursement_amount
+      reference: "LOAN-{loan_number}"
+
+    transfer_methods:
+      instant_transfer:
+        if: same_bank_or_napas_supported
+        timing: immediate
+        fee: 0
+
+      regular_transfer:
+        if: other_banks
+        timing: same_day_or_t1
+        fee: 0
+
+    transfer_validation:
+      pre_transfer:
+        - verify_sufficient_funds
+        - validate_account_format
+        - check_daily_limits
+
+      post_transfer:
+        - confirm_transaction_reference
+        - verify_transfer_status
+
+    outputs:
+      - transfer_reference
+      - transfer_status
+      - transfer_timestamp
+
+    next_step:
+      if_success: confirm_disbursement
+      if_pending: monitor_transfer
+      if_failed: handle_transfer_failure
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Monitor Transfer
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: monitor_transfer
+    name: Monitor Transfer Status
+    name_vi: Theo dõi trạng thái chuyển khoản
+    actor: system
+    conditional: true
+
+    description: |
+      Monitor pending bank transfers until completion.
+
+    monitoring:
+      check_frequency: every_5_minutes
+      max_wait_time: 4_hours
+      status_sources:
+        - bank_api_callback
+        - bank_statement_reconciliation
+        - manual_confirmation
+
+    outputs:
+      - final_transfer_status
+      - confirmation_timestamp
+
+    next_step:
+      if_confirmed: confirm_disbursement
+      if_failed: handle_transfer_failure
+      if_timeout: escalate_to_operations
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Handle Transfer Failure
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: handle_transfer_failure
+    name: Handle Transfer Failure
+    name_vi: Xử lý lỗi chuyển khoản
+    actor: operations
+    conditional: true
+
+    description: |
+      Handle failed bank transfers.
+
+    failure_reasons:
+      - invalid_account_number
+      - account_closed
+      - bank_maintenance
+      - insufficient_platform_funds
+      - daily_limit_exceeded
+
+    resolution_actions:
+      invalid_account:
+        action: request_correct_details
+        next_step: request_bank_details
+
+      bank_issues:
+        action: retry_after_delay
+        retry_delay: 2_hours
+        max_retries: 3
+
+      platform_issues:
+        action: escalate_immediately
+        notification: operations_urgent
+
+    outputs:
+      - failure_reason
+      - resolution_action
+      - next_retry_time
+
+    next_step:
+      if_retry: execute_transfer
+      if_escalated: manual_resolution
+      if_cancelled: cancel_disbursement
+
+  # ---------------------------------------------------------------------------
+  # Step 10: Confirm Disbursement
+  # ---------------------------------------------------------------------------
+  - step: 10
+    id: confirm_disbursement
+    name: Confirm Disbursement
+    name_vi: Xác nhận giải ngân
+    actor: system
+
+    description: |
+      Finalize disbursement and activate loan.
+
+    actions:
+      - update_loan_status_to_active
+      - record_disbursement_date
+      - finalize_repayment_schedule
+      - activate_auto_debit_mandate
+      - generate_loan_contract
+      - distribute_platform_fee
+
+    investor_updates:
+      - update_investment_status_to_active
+      - record_investment_start_date
+      - calculate_first_expected_payment
+
+    outputs:
+      - loan_status: active
+      - disbursement_confirmed_at: timestamp
+      - loan_contract_id
+      - first_payment_due: date
+
+    next_step: send_notifications
+
+  # ---------------------------------------------------------------------------
+  # Step 11: Send Notifications
+  # ---------------------------------------------------------------------------
+  - step: 11
+    id: send_notifications
+    name: Send Notifications
+    name_vi: Gửi thông báo
+    actor: system
+
+    description: |
+      Notify all parties about successful disbursement.
+
+    notifications:
+      to_borrower:
+        channels: [push, email, sms]
+        content:
+          subject: "Your loan has been disbursed!"
+          details:
+            - disbursement_amount
+            - bank_account_credited
+            - first_payment_date
+            - monthly_payment_amount
+        attachments:
+          - loan_contract
+          - repayment_schedule
+
+      to_investors:
+        channels: [push, email]
+        content:
+          subject: "Investment now active"
+          details:
+            - investment_amount
+            - expected_returns
+            - first_payment_date
+            - term_months
+
+    outputs:
+      - borrower_notified: true
+      - investors_notified: count
+
+    next_step: complete
+
+  # ---------------------------------------------------------------------------
+  # Step 12: Cancel Disbursement
+  # ---------------------------------------------------------------------------
+  - step: 12
+    id: cancel_disbursement
+    name: Cancel Disbursement
+    name_vi: Hủy giải ngân
+    actor: system
+    conditional: true
+
+    description: |
+      Cancel disbursement and return funds to investors.
+
+    actions:
+      - update_loan_status_to_cancelled
+      - initiate_investor_refunds
+      - release_platform_fees
+      - notify_all_parties
+      - archive_loan_records
+
+    refund_processing:
+      timing: same_day
+      method: return_to_investor_wallets
+      confirmation: sent_to_each_investor
+
+    outputs:
+      - loan_status: cancelled
+      - refunds_initiated: count
+      - cancellation_reason
+
+    next_step: complete
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  bank_api_error:
+    retries: 3
+    delay: 5_minutes
+    fallback: manual_transfer
+
+  schedule_generation_error:
+    action: regenerate
+    notification: operations
+
+  insufficient_funds:
+    action: pause_and_alert
+    notification: finance_team
+
+# =============================================================================
+# SLA & METRICS
+# =============================================================================
+sla:
+  initiation:
+    target: 5_minutes
+    maximum: 15_minutes
+
+  verification:
+    target: 30_minutes
+    maximum: 4_hours
+
+  transfer:
+    target: 1_hour
+    maximum: 24_hours
+
+  total_process:
+    target: 2_hours
+    maximum: 24_hours
+
+metrics:
+  tracked:
+    - disbursement_success_rate
+    - average_disbursement_time
+    - verification_pass_rate
+    - transfer_failure_rate
+
+  targets:
+    disbursement_success_rate: "> 99%"
+    average_disbursement_time: "< 2 hours"
+    verification_pass_rate: "> 95%"
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_all_transfers: true
+  log_fee_calculations: true
+  log_status_changes: true
+  retention_years: 10

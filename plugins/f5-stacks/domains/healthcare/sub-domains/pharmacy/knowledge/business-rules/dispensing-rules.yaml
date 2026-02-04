@@ -1,0 +1,351 @@
+# Dispensing Rules
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Business rules for prescription dispensing
+
+business_rules:
+  id: dispensing-rules
+  name: Dispensing Rules
+  name_ja: 調剤ルール
+  description: Business rules governing prescription dispensing process
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  categories:
+    - id: prescription_validity
+      name: Prescription Validity
+      description: Rules for valid prescriptions
+      
+    - id: quantity_limits
+      name: Quantity Limits
+      description: Dispensing quantity restrictions
+      
+    - id: refill_rules
+      name: Refill Rules
+      description: Refill authorization and timing
+      
+    - id: substitution
+      name: Generic Substitution
+      description: Generic/therapeutic substitution rules
+      
+    - id: verification
+      name: Verification Requirements
+      description: Pharmacist verification requirements
+
+  rules:
+    # Prescription Validity
+    - id: BR-DIS-001
+      name: Prescription Expiration Check
+      category: prescription_validity
+      severity: critical
+      
+      description: Verify prescription has not expired
+      
+      condition: |
+        prescription.expiration_date >= current_date
+        
+      action: |
+        IF expired:
+          REJECT with "Prescription expired on {expiration_date}"
+          OFFER to contact prescriber for new prescription
+          
+      expiration_rules:
+        non_controlled: "1 year from written date"
+        schedule_II: "State-specific (typically 90 days)"
+        schedule_III_V: "6 months from written date"
+        
+    - id: BR-DIS-002
+      name: Valid Prescriber Verification
+      category: prescription_validity
+      severity: critical
+      
+      description: Verify prescriber is licensed and in good standing
+      
+      condition: |
+        prescriber.npi IS valid AND
+        prescriber.license IS active AND
+        prescriber.state_license COVERS patient.state
+        
+      action: |
+        IF invalid prescriber:
+          REJECT with "Prescriber validation failed"
+          LOG prescriber issue
+          
+    - id: BR-DIS-003
+      name: Patient Identification Verification
+      category: prescription_validity
+      severity: high
+      
+      description: Verify patient identity before dispensing
+      
+      condition: |
+        patient.verified == true AND
+        (patient.id_on_file == true OR pickup_person.relationship verified)
+        
+      action: |
+        IF not verified:
+          REQUIRE ID verification
+          DOCUMENT verification method
+          
+    - id: BR-DIS-004
+      name: Prescription Completeness
+      category: prescription_validity
+      severity: high
+      
+      description: Verify all required prescription elements present
+      
+      required_elements:
+        - Patient name
+        - Patient address (for controlled)
+        - Patient date of birth
+        - Drug name, strength, dosage form
+        - Quantity
+        - Directions for use
+        - Prescriber name and address
+        - Prescriber signature
+        - Date written
+        - Refills authorized
+        - DEA number (for controlled)
+        
+      action: |
+        IF incomplete:
+          FLAG for clarification
+          CONTACT prescriber if needed
+
+    # Quantity Limits
+    - id: BR-DIS-005
+      name: Days Supply Limit
+      category: quantity_limits
+      severity: high
+      
+      description: Enforce maximum days supply limits
+      
+      limits:
+        retail:
+          default: 30
+          maintenance: 90
+          acute: 10
+        mail_order:
+          default: 90
+          maximum: 100
+        controlled:
+          schedule_II: 30
+          schedule_III_V: 30
+          
+      condition: |
+        dispense.days_supply <= applicable_limit
+        
+      action: |
+        IF exceeds limit:
+          REDUCE to maximum allowed
+          NOTIFY patient of change
+          
+    - id: BR-DIS-006
+      name: Quantity Prescribed Validation
+      category: quantity_limits
+      severity: medium
+      
+      description: Validate quantity is reasonable for drug and days supply
+      
+      condition: |
+        quantity <= (max_daily_dose * days_supply * 1.1)
+        
+      action: |
+        IF excessive quantity:
+          ALERT pharmacist
+          REQUIRE verification or prescriber contact
+
+    # Refill Rules
+    - id: BR-DIS-007
+      name: Refill Authorization Check
+      category: refill_rules
+      severity: critical
+      
+      description: Verify refills are authorized
+      
+      condition: |
+        prescription.refills_remaining > 0 OR
+        new_prescription == true
+        
+      action: |
+        IF no refills:
+          REJECT refill
+          OFFER to request refill authorization
+          
+    - id: BR-DIS-008
+      name: Refill Too Soon Check
+      category: refill_rules
+      severity: high
+      
+      description: Prevent early refills
+      
+      calculation: |
+        refill_due_date = last_fill_date + (days_supply * 0.75)
+        
+      condition: |
+        current_date >= refill_due_date OR
+        early_refill_override == true
+        
+      too_soon_thresholds:
+        non_controlled: "75% of days supply used"
+        controlled: "80% of days supply used"
+        insurance_requirement: "Varies by plan"
+        
+      action: |
+        IF too soon:
+          REJECT with "Too soon to refill"
+          DISPLAY refill_due_date
+          ALLOW override with reason (pharmacist)
+          
+      override_reasons:
+        - Vacation supply
+        - Lost/stolen medication
+        - Dosage change
+        - Insurance change
+        - Natural disaster
+        
+    - id: BR-DIS-009
+      name: Controlled Substance Refill Limits
+      category: refill_rules
+      severity: critical
+      
+      description: Enforce refill limits for controlled substances
+      
+      limits:
+        schedule_II: 0
+        schedule_III: 5
+        schedule_IV: 5
+        schedule_V: 5
+        
+      validity_period:
+        schedule_III_V: "6 months from written date"
+        
+      condition: |
+        controlled_refills <= limit AND
+        within_validity_period
+        
+      action: |
+        IF limit exceeded:
+          REJECT - new prescription required
+
+    # Generic Substitution
+    - id: BR-DIS-010
+      name: Generic Substitution Rules
+      category: substitution
+      severity: medium
+      
+      description: Rules for generic drug substitution
+      
+      substitution_allowed:
+        - DAW 0 (no product selection indicated)
+        - DAW 2 (patient requested brand)
+        - DAW 3-9 (various situations)
+        
+      substitution_prohibited:
+        - DAW 1 (substitution not allowed by prescriber)
+        - Narrow therapeutic index drugs (state specific)
+        
+      condition: |
+        prescription.daw_code != "1" AND
+        drug NOT IN narrow_therapeutic_index_list
+        
+      action: |
+        IF substitution prohibited:
+          DISPENSE brand only
+          IF brand not available:
+            CONTACT prescriber
+            
+    - id: BR-DIS-011
+      name: Therapeutic Interchange
+      category: substitution
+      severity: medium
+      
+      description: Rules for therapeutic interchange
+      
+      condition: |
+        therapeutic_interchange_protocol EXISTS AND
+        prescriber_approval ON FILE OR
+        formulary_requirement
+        
+      action: |
+        IF interchange required:
+          FOLLOW approved protocol
+          DOCUMENT interchange
+          NOTIFY prescriber if required
+
+    # Verification Requirements
+    - id: BR-DIS-012
+      name: Pharmacist Final Verification
+      category: verification
+      severity: critical
+      
+      description: Pharmacist must verify all prescriptions before dispensing
+      
+      verification_checks:
+        - Drug/dose/route appropriate
+        - Interactions reviewed
+        - Allergy check completed
+        - Patient profile reviewed
+        - Label accuracy verified
+        - Product matches label
+        - Quantity correct
+        
+      condition: |
+        verified_by IS pharmacist AND
+        verification_datetime IS NOT NULL
+        
+      action: |
+        REQUIRE pharmacist verification before dispense
+        LOG verification details
+        
+    - id: BR-DIS-013
+      name: Patient Counseling Offer
+      category: verification
+      severity: high
+      
+      description: Offer patient counseling per state requirements
+      
+      counseling_required:
+        new_prescription: "Required"
+        refill_with_changes: "Required"
+        routine_refill: "Offer required"
+        
+      counseling_topics:
+        - Name and description of drug
+        - Dosage form, dose, route, duration
+        - Special directions/precautions
+        - Common adverse effects
+        - Storage requirements
+        - Refill information
+        
+      condition: |
+        counseling_offered == true AND
+        (counseling_accepted == true OR counseling_declined_documented)
+        
+      action: |
+        OFFER counseling
+        DOCUMENT patient response
+
+  decision_flow:
+    dispense_authorization:
+      steps:
+        1: Check prescription validity (BR-DIS-001 to BR-DIS-004)
+        2: Verify quantity limits (BR-DIS-005, BR-DIS-006)
+        3: Check refill authorization (BR-DIS-007 to BR-DIS-009)
+        4: Apply substitution rules (BR-DIS-010, BR-DIS-011)
+        5: Complete pharmacist verification (BR-DIS-012)
+        6: Offer patient counseling (BR-DIS-013)
+        7: Authorize dispense
+        
+      failure_handling:
+        critical_failure: "Reject - cannot dispense"
+        high_failure: "Hold for pharmacist review"
+        medium_failure: "Alert and allow override"
+
+  audit:
+    log_all_rule_evaluations: true
+    retention_days: 2555
+    required_documentation:
+      - Rule violations
+      - Override reasons
+      - Verification completions

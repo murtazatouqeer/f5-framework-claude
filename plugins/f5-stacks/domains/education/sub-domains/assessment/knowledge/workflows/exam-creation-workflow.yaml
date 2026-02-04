@@ -1,0 +1,486 @@
+# Exam Creation Workflow
+# F5 Framework v2.0 - Education/Assessment
+# Complete workflow for creating and publishing exams
+
+workflow:
+  id: exam_creation
+  name: Exam Creation Workflow
+  name_ja: 試験作成ワークフロー
+  description: End-to-end workflow for creating, configuring, and publishing exams
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+  
+  trigger:
+    type: manual
+    initiated_by: [examiner, admin]
+    
+  actors:
+    - id: examiner
+      name: Examiner
+      name_ja: 出題者
+      responsibilities:
+        - Create exam content
+        - Configure settings
+        - Review and approve
+        
+    - id: reviewer
+      name: Reviewer
+      name_ja: レビュアー
+      responsibilities:
+        - Review exam content
+        - Validate questions
+        - Approve for publication
+        
+    - id: admin
+      name: Administrator
+      name_ja: 管理者
+      responsibilities:
+        - Final approval
+        - Schedule publication
+        - Manage access
+
+  stages:
+    # ==========================================
+    # Stage 1: Exam Setup
+    # ==========================================
+    - id: setup
+      name: Exam Setup
+      name_ja: 試験設定
+      description: Initial exam configuration
+      
+      steps:
+        - id: create_exam
+          name: Create Exam Record
+          name_ja: 試験レコード作成
+          actor: examiner
+          action:
+            type: create
+            entity: exam
+            required_fields:
+              - title
+              - exam_type
+              - duration_minutes
+          outputs:
+            - exam_id
+            
+        - id: configure_settings
+          name: Configure Exam Settings
+          name_ja: 試験設定の構成
+          actor: examiner
+          action:
+            type: update
+            entity: exam
+            fields:
+              - max_attempts
+              - passing_percentage
+              - question_display
+              - question_order
+              - answer_order
+              - time_limit_enabled
+              - auto_submit_on_timeout
+          validation:
+            rules: [EXR-002, EXR-003]
+            
+        - id: configure_feedback
+          name: Configure Feedback Settings
+          name_ja: フィードバック設定
+          actor: examiner
+          action:
+            type: update
+            entity: exam
+            fields:
+              - show_score
+              - show_answers
+              - show_feedback
+              - show_correct_answers
+              
+        - id: configure_security
+          name: Configure Security
+          name_ja: セキュリティ設定
+          actor: examiner
+          action:
+            type: update
+            entity: exam
+            fields:
+              - access_code_required
+              - browser_lockdown
+              - requires_proctoring
+              - ip_restriction
+          validation:
+            rules: [SEC-001]
+            
+      transition:
+        on_complete: question_selection
+        
+    # ==========================================
+    # Stage 2: Question Selection
+    # ==========================================
+    - id: question_selection
+      name: Question Selection
+      name_ja: 問題選択
+      description: Select or create questions for the exam
+      
+      steps:
+        - id: choose_source
+          name: Choose Question Source
+          name_ja: 問題ソース選択
+          actor: examiner
+          action:
+            type: decision
+            options:
+              - id: fixed
+                label: Select Specific Questions
+                next: select_questions
+              - id: pool_random
+                label: Random from Pool
+                next: configure_pool
+              - id: create_new
+                label: Create New Questions
+                next: create_questions
+                
+        - id: select_questions
+          name: Select Questions
+          name_ja: 問題選択
+          actor: examiner
+          action:
+            type: select_multiple
+            entity: question
+            from: question_bank
+            filters:
+              - status: active
+              - question_bank_id: selected_bank
+            outputs:
+              - selected_question_ids
+              
+        - id: configure_pool
+          name: Configure Question Pool
+          name_ja: 問題プール設定
+          actor: examiner
+          action:
+            type: configure
+            entity: exam_pool
+            fields:
+              - selection_strategy
+              - questions_to_select
+              - difficulty_distribution
+              - category_distribution
+          validation:
+            rules: [SEC-012, SEC-013]
+            
+        - id: create_questions
+          name: Create New Questions
+          name_ja: 新規問題作成
+          actor: examiner
+          action:
+            type: subprocess
+            workflow: question_creation
+            loop: until_sufficient
+            
+        - id: organize_sections
+          name: Organize into Sections
+          name_ja: セクション整理
+          actor: examiner
+          optional: true
+          action:
+            type: organize
+            create_sections: true
+            assign_questions_to_sections: true
+            configure_section_settings:
+              - instructions
+              - time_limit
+              - point_allocation
+              
+        - id: set_question_points
+          name: Set Question Points
+          name_ja: 問題配点設定
+          actor: examiner
+          action:
+            type: bulk_update
+            entity: exam_questions
+            fields:
+              - points
+              - display_order
+          validation:
+            rules: [QSR-040, QSR-041]
+            
+      transition:
+        on_complete: review
+        
+    # ==========================================
+    # Stage 3: Review
+    # ==========================================
+    - id: review
+      name: Content Review
+      name_ja: コンテンツレビュー
+      description: Review exam content before approval
+      
+      steps:
+        - id: self_review
+          name: Self Review
+          name_ja: セルフレビュー
+          actor: examiner
+          action:
+            type: review
+            checklist:
+              - All questions have correct answers
+              - Point totals are correct
+              - Instructions are clear
+              - Time limits are reasonable
+              - Difficulty distribution is balanced
+              
+        - id: preview_exam
+          name: Preview Exam
+          name_ja: 試験プレビュー
+          actor: examiner
+          action:
+            type: preview
+            mode: candidate_view
+            features:
+              - question_navigation
+              - timer_display
+              - submission_flow
+              
+        - id: submit_for_review
+          name: Submit for Review
+          name_ja: レビュー提出
+          actor: examiner
+          action:
+            type: state_change
+            entity: exam
+            from_status: draft
+            to_status: pending_review
+            
+        - id: peer_review
+          name: Peer Review
+          name_ja: ピアレビュー
+          actor: reviewer
+          action:
+            type: review
+            checklist:
+              - Content accuracy
+              - Question clarity
+              - Option quality
+              - Appropriate difficulty
+              - Bias-free language
+            outputs:
+              - review_comments
+              - approval_decision
+              
+        - id: handle_review_result
+          name: Handle Review Result
+          name_ja: レビュー結果処理
+          action:
+            type: decision
+            condition: review_approved
+            on_true: approval
+            on_false: revision
+            
+        - id: revision
+          name: Make Revisions
+          name_ja: 修正
+          actor: examiner
+          action:
+            type: edit
+            address_comments: review_comments
+          transition:
+            next: self_review
+            
+      transition:
+        on_complete: approval
+        
+    # ==========================================
+    # Stage 4: Approval
+    # ==========================================
+    - id: approval
+      name: Final Approval
+      name_ja: 最終承認
+      description: Obtain final approval for publication
+      
+      steps:
+        - id: quality_check
+          name: Quality Check
+          name_ja: 品質チェック
+          actor: system
+          action:
+            type: validate
+            checks:
+              - minimum_questions: 1
+              - valid_passing_criteria: true
+              - all_questions_active: true
+              - consistent_total_points: true
+            validation:
+              rules: [EXR-001, EXR-002]
+              
+        - id: final_approval
+          name: Final Approval
+          name_ja: 最終承認
+          actor: admin
+          action:
+            type: approve
+            requires_confirmation: true
+            approval_notes: optional
+            
+        - id: approval_decision
+          name: Approval Decision
+          name_ja: 承認決定
+          action:
+            type: decision
+            condition: approved
+            on_true: scheduling
+            on_false: review
+            
+      transition:
+        on_complete: scheduling
+        
+    # ==========================================
+    # Stage 5: Scheduling
+    # ==========================================
+    - id: scheduling
+      name: Scheduling
+      name_ja: スケジューリング
+      description: Schedule exam availability
+      
+      steps:
+        - id: create_schedule
+          name: Create Schedule
+          name_ja: スケジュール作成
+          actor: admin
+          action:
+            type: create
+            entity: exam_schedule
+            fields:
+              - available_from
+              - available_until
+              - schedule_type
+              - registration_required
+          validation:
+            rules: [EXR-010, EXR-011, EXR-012]
+            
+        - id: configure_registration
+          name: Configure Registration
+          name_ja: 登録設定
+          actor: admin
+          optional: true
+          condition: schedule.registration_required
+          action:
+            type: configure
+            fields:
+              - registration_opens
+              - registration_closes
+              - total_capacity
+              - waitlist_enabled
+              
+        - id: assign_proctors
+          name: Assign Proctors
+          name_ja: 監督者割り当て
+          actor: admin
+          optional: true
+          condition: exam.requires_proctoring AND schedule.proctoring_required
+          action:
+            type: assign
+            entity: proctor
+            to: exam_schedule
+            
+        - id: configure_notifications
+          name: Configure Notifications
+          name_ja: 通知設定
+          actor: admin
+          action:
+            type: configure
+            entity: notification_settings
+            notifications:
+              - registration_confirmation
+              - exam_reminder
+              - result_notification
+              
+      transition:
+        on_complete: publication
+        
+    # ==========================================
+    # Stage 6: Publication
+    # ==========================================
+    - id: publication
+      name: Publication
+      name_ja: 公開
+      description: Publish exam for candidates
+      
+      steps:
+        - id: pre_publish_check
+          name: Pre-Publish Check
+          name_ja: 公開前チェック
+          actor: system
+          action:
+            type: validate
+            checks:
+              - schedule_configured
+              - questions_finalized
+              - settings_complete
+              - access_configured
+              
+        - id: publish_exam
+          name: Publish Exam
+          name_ja: 試験公開
+          actor: admin
+          action:
+            type: state_change
+            entity: exam
+            from_status: [draft, scheduled]
+            to_status: active
+            set_fields:
+              - published_at: now()
+              
+        - id: notify_stakeholders
+          name: Notify Stakeholders
+          name_ja: 関係者通知
+          actor: system
+          action:
+            type: notify
+            recipients:
+              - examiners
+              - proctors
+              - registered_candidates
+            template: exam_published
+            
+        - id: activate_schedule
+          name: Activate Schedule
+          name_ja: スケジュール有効化
+          actor: system
+          action:
+            type: state_change
+            entity: exam_schedule
+            to_status: scheduled
+            
+  completion:
+    status: published
+    outputs:
+      - exam_id
+      - schedule_id
+      - publication_date
+    notifications:
+      - type: success
+        message: "Exam successfully published"
+        message_ja: "試験が正常に公開されました"
+        
+  error_handling:
+    - stage: quality_check
+      on_failure:
+        action: return_to_review
+        notification: examiner
+        
+    - stage: publish_exam
+      on_failure:
+        action: log_error
+        retry: 3
+        escalate_after: 3
+
+  metrics:
+    tracked:
+      - total_creation_time
+      - review_cycles
+      - questions_created
+      - questions_selected
+    sla:
+      - name: creation_to_publish
+        target_hours: 48
+        warning_hours: 36

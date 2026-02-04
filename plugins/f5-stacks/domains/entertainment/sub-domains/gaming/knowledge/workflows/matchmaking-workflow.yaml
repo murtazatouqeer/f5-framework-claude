@@ -1,0 +1,403 @@
+name: matchmaking-workflow
+display_name: Matchmaking Workflow
+description: |
+  End-to-end workflow for finding and joining multiplayer matches.
+  Covers queue entry, matching, lobby, and game start.
+
+domain: entertainment
+subdomain: gaming
+category: workflows
+version: "1.0.0"
+status: active
+
+trigger:
+  event: player.requests_match
+  conditions:
+    - player.status = 'online'
+    - player.not_in_match
+
+workflow:
+  id: WF-MM-001
+  name: Find Match
+  description: Complete matchmaking flow from queue to game start
+
+  actors:
+    - id: player
+      name: Player
+      type: primary
+    - id: matchmaking_service
+      name: Matchmaking Service
+      type: system
+    - id: game_server
+      name: Game Server
+      type: system
+
+  steps:
+    # ============================================
+    # PHASE 1: QUEUE ENTRY
+    # ============================================
+    - id: step_1
+      name: Queue Request
+      description: Player initiates matchmaking
+      actor: player
+      action: |
+        - Select game mode
+        - Select role preferences (if applicable)
+        - Click "Find Match"
+      next: step_2
+
+    - id: step_2
+      name: Validate Eligibility
+      description: System checks player can queue
+      actor: matchmaking_service
+      action: |
+        CHECK:
+        - Account status = active
+        - Not already in queue or match
+        - Game mode requirements met
+        - Party size valid (if in party)
+        - Rank eligible (if ranked)
+        - No active queue ban
+      validations:
+        - All party members must be eligible
+        - Party must meet mode requirements
+      on_success: step_3
+      on_failure:
+        action: show_error_reason
+        return: player
+
+    - id: step_3
+      name: Enter Queue
+      description: Add player to matchmaking pool
+      actor: matchmaking_service
+      action: |
+        - Create queue entry
+        - Calculate initial MMR range
+        - Assign to region pool
+        - Start queue timer
+        - Return queue status to player
+      outputs:
+        - queue_id
+        - estimated_wait_time
+        - queue_position
+      next: step_4
+
+    # ============================================
+    # PHASE 2: MATCHING
+    # ============================================
+    - id: step_4
+      name: Search for Match
+      description: Algorithm searches for suitable match
+      actor: matchmaking_service
+      action: |
+        WHILE player.in_queue:
+          - Scan matching candidates
+          - Calculate match quality score
+          - Expand range based on wait time
+
+          IF suitable_match_found:
+            GOTO step_5
+
+          IF queue_time > expansion_threshold:
+            Expand MMR range
+            Expand region search
+      timeout:
+        duration: 10 minutes
+        action: notify_long_queue
+      next: step_5
+
+    - id: step_5
+      name: Evaluate Match Quality
+      description: Assess potential match balance
+      actor: matchmaking_service
+      action: |
+        CALCULATE:
+        - Team MMR balance
+        - Party vs party fairness
+        - Role distribution
+        - Latency predictions
+
+        SCORE match quality (0-100)
+
+        IF quality < threshold AND wait_time < 3min:
+          RETURN to step_4 (continue searching)
+        ELSE:
+          PROCEED to match formation
+      decision_point:
+        condition: quality_score >= min_acceptable
+        if_true: step_6
+        if_false: step_4
+
+    - id: step_6
+      name: Form Match
+      description: Create the match with selected players
+      actor: matchmaking_service
+      action: |
+        - Lock all matched players
+        - Remove from queue
+        - Create match record
+        - Assign teams
+        - Select server region
+        - Request game server
+      outputs:
+        - match_id
+        - team_assignments
+        - server_info
+      next: step_7
+
+    # ============================================
+    # PHASE 3: MATCH ACCEPTANCE
+    # ============================================
+    - id: step_7
+      name: Send Match Found
+      description: Notify all players of match
+      actor: matchmaking_service
+      action: |
+        FOR EACH player IN match:
+          - Send "Match Found" notification
+          - Display accept/decline UI
+          - Start acceptance timer (30 seconds)
+      parallel: true
+      next: step_8
+
+    - id: step_8
+      name: Collect Responses
+      description: Wait for all players to accept
+      actor: matchmaking_service
+      action: |
+        WAIT for responses:
+        - Track accepts/declines
+        - Timeout after 30 seconds
+
+        IF all_accepted:
+          GOTO step_10
+        IF any_declined OR timeout:
+          GOTO step_9
+      timeout:
+        duration: 30 seconds
+        action: treat_as_decline
+      decision_point:
+        condition: all_players_accepted
+        if_true: step_10
+        if_false: step_9
+
+    - id: step_9
+      name: Handle Decline/Timeout
+      description: Process failed match acceptance
+      actor: matchmaking_service
+      action: |
+        FOR declining/timeout players:
+          - Apply queue penalty (if applicable)
+          - Log decline reason
+
+        FOR accepting players:
+          - Return to queue with priority
+          - Preserve wait time credit
+
+        - Cancel match
+        - Release server reservation
+      next: step_4
+      notes: Accepting players get queue priority
+
+    # ============================================
+    # PHASE 4: GAME LOBBY
+    # ============================================
+    - id: step_10
+      name: Create Lobby
+      description: Set up pre-game lobby
+      actor: game_server
+      action: |
+        - Initialize game server
+        - Create lobby instance
+        - Configure match settings
+        - Open player connections
+      outputs:
+        - lobby_id
+        - connection_info
+      next: step_11
+
+    - id: step_11
+      name: Connect Players
+      description: Players join the lobby
+      actor: matchmaking_service
+      action: |
+        FOR EACH player:
+          - Send connection details
+          - Monitor connection status
+          - Track load progress
+      parallel: true
+      timeout:
+        duration: 60 seconds
+        action: handle_connection_failure
+      next: step_12
+
+    - id: step_12
+      name: Character/Loadout Selection
+      description: Players make pre-game selections
+      actor: player
+      action: |
+        IF game_has_selection_phase:
+          - Display selection UI
+          - Select character/hero/champion
+          - Select loadout/equipment
+          - Lock selection before timer
+      timeout:
+        duration: varies (30-90 seconds)
+        action: auto_select_default
+      next: step_13
+
+    - id: step_13
+      name: Final Ready Check
+      description: Verify all players ready
+      actor: game_server
+      action: |
+        CHECK:
+        - All players connected
+        - All selections made
+        - Game assets loaded
+
+        IF ready:
+          GOTO step_14
+        IF player_disconnected:
+          Handle based on game rules
+      decision_point:
+        condition: all_ready
+        if_true: step_14
+        if_false: handle_not_ready
+
+    # ============================================
+    # PHASE 5: GAME START
+    # ============================================
+    - id: step_14
+      name: Start Game
+      description: Initialize and start the match
+      actor: game_server
+      action: |
+        - Lock all selections
+        - Initialize game state
+        - Spawn players
+        - Start countdown (3, 2, 1...)
+        - Begin match
+      outputs:
+        - game_session_ids (per player)
+        - match_start_time
+      next: step_15
+
+    - id: step_15
+      name: Game In Progress
+      description: Match is active
+      actor: game_server
+      action: |
+        - Run game loop
+        - Track statistics
+        - Handle events
+        - Monitor for completion
+      next: step_16
+
+    # ============================================
+    # PHASE 6: POST-MATCH
+    # ============================================
+    - id: step_16
+      name: Match Complete
+      description: Process match results
+      actor: game_server
+      action: |
+        - Determine winner
+        - Calculate final scores
+        - Generate match summary
+        - Send results to services
+      outputs:
+        - match_result
+        - player_stats
+        - replay_data
+      next: step_17
+
+    - id: step_17
+      name: Update Rankings
+      description: Apply MMR/rank changes
+      actor: matchmaking_service
+      action: |
+        FOR EACH player:
+          - Calculate MMR change
+          - Apply rank point change
+          - Check for rank promotion/demotion
+          - Update leaderboards
+      parallel: true
+      next: step_18
+
+    - id: step_18
+      name: Distribute Rewards
+      description: Award post-match rewards
+      actor: matchmaking_service
+      action: |
+        FOR EACH player:
+          - Calculate XP earned
+          - Award currency
+          - Progress achievements
+          - Update battle pass
+          - Grant item drops (if any)
+      next: step_19
+
+    - id: step_19
+      name: Show Results Screen
+      description: Display match summary to players
+      actor: game_server
+      action: |
+        - Display scoreboard
+        - Show personal stats
+        - Show rewards earned
+        - Show rank changes
+        - Offer "Play Again" option
+      next: end
+
+  error_handling:
+    - error: player_disconnected_in_queue
+      action: |
+        - Remove from queue
+        - No penalty if before match found
+
+    - error: player_disconnected_in_lobby
+      action: |
+        - Wait 60 seconds for reconnect
+        - If no reconnect: Cancel match, penalty for DC
+        - Return others to queue with priority
+
+    - error: server_failure
+      action: |
+        - Attempt server migration
+        - If failed: Cancel match
+        - No penalty for players
+        - All returned to queue
+
+    - error: game_crash
+      action: |
+        - Attempt recovery
+        - If < 5 min played: Match cancelled, no record
+        - If > 5 min played: Result based on state
+
+  metrics:
+    - name: average_queue_time
+      description: Time from queue to match found
+      target: < 60 seconds
+
+    - name: match_quality_score
+      description: Balance quality of formed matches
+      target: > 80%
+
+    - name: acceptance_rate
+      description: Percentage of found matches accepted
+      target: > 95%
+
+    - name: successful_start_rate
+      description: Matches that successfully start
+      target: > 99%
+
+integrations:
+  - service: matchmaking_engine
+    events: [queue_entry, match_found, match_formed]
+  - service: game_server_manager
+    events: [server_allocated, server_ready]
+  - service: progression_service
+    events: [rewards_calculated, rank_updated]
+  - service: analytics
+    events: [queue_times, match_quality, player_behavior]

@@ -1,0 +1,367 @@
+name: ReceivingWorkflow
+display_name: Receiving Process Workflow
+description: |
+  End-to-end workflow for receiving inbound shipments.
+  Covers appointment scheduling through putaway task creation.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: inbound_order.arrived
+  conditions:
+    - inbound_order.status == 'arrived'
+    - dock_door_available
+
+actors:
+  - role: receiver
+    responsibilities:
+      - Verify shipment documents
+      - Inspect and count items
+      - Record variances and damages
+      - Assign LPNs
+  - role: supervisor
+    responsibilities:
+      - Approve exceptions
+      - Handle over/short variances
+      - Quality hold decisions
+  - role: qc_inspector
+    responsibilities:
+      - Perform quality inspection
+      - Approve or reject lots
+
+steps:
+  - id: step_01
+    name: Check In Truck
+    description: |
+      Verify truck arrival against appointment.
+      Check driver credentials and documentation.
+    actor: receiver
+    actions:
+      - action: verify_appointment
+        input: [appointment_id, trailer_number]
+        output: appointment_confirmed
+      - action: check_documents
+        input: [bill_of_lading, packing_slip]
+        output: documents_verified
+      - action: assign_dock_door
+        input: [warehouse_id, trailer_type]
+        output: dock_door_number
+    validations:
+      - appointment exists and is valid
+      - documents match inbound order
+    outputs:
+      - dock_door_assigned
+      - check_in_time
+    next_step: step_02
+    on_error:
+      - action: notify_supervisor
+        reason: appointment_mismatch
+
+  - id: step_02
+    name: Unload and Stage
+    description: |
+      Unload items to staging area.
+      Organize by PO line for counting.
+    actor: receiver
+    actions:
+      - action: unload_trailer
+        input: [dock_door, staging_area]
+        output: items_staged
+      - action: organize_by_po_line
+        input: [packing_slip]
+        output: staged_organized
+    validations:
+      - staging area available
+      - items safely unloaded
+    outputs:
+      - unload_complete_time
+      - staging_location
+    next_step: step_03
+
+  - id: step_03
+    name: Verify Quantities
+    description: |
+      Count items and compare to packing slip.
+      Record variances.
+    actor: receiver
+    actions:
+      - action: count_items
+        input: [po_lines, staged_items]
+        output: counted_quantities
+      - action: compare_to_expected
+        input: [counted_quantities, expected_quantities]
+        output: variance_report
+      - action: record_variances
+        input: [variance_report]
+        output: variances_documented
+    validations:
+      - all lines counted
+      - variance within tolerance
+    decision:
+      condition: variance_percent > tolerance
+      true_path: step_03a
+      false_path: step_04
+    outputs:
+      - line_items_received
+      - variance_quantities
+
+  - id: step_03a
+    name: Variance Resolution
+    description: |
+      Handle over/short variances.
+      Get supervisor approval for significant variances.
+    actor: supervisor
+    actions:
+      - action: review_variance
+        input: [variance_report]
+        output: variance_reviewed
+      - action: approve_variance
+        input: [variance_reviewed, reason_code]
+        output: variance_approved
+      - action: adjust_receipt
+        input: [variance_approved]
+        output: receipt_adjusted
+    validations:
+      - supervisor approval obtained
+      - reason documented
+    outputs:
+      - variance_disposition
+      - adjustment_record
+    next_step: step_04
+
+  - id: step_04
+    name: Inspect Condition
+    description: |
+      Check items for damage.
+      Segregate damaged items.
+    actor: receiver
+    actions:
+      - action: inspect_items
+        input: [staged_items]
+        output: inspection_results
+      - action: identify_damages
+        input: [inspection_results]
+        output: damaged_items
+      - action: photograph_damages
+        input: [damaged_items]
+        output: damage_photos
+      - action: segregate_damaged
+        input: [damaged_items, damage_zone]
+        output: damaged_segregated
+    validations:
+      - all items inspected
+      - damages documented with photos
+    decision:
+      condition: damaged_quantity > 0
+      true_path: step_04a
+      false_path: step_05
+    outputs:
+      - damaged_quantity
+      - damage_photos
+
+  - id: step_04a
+    name: Damage Processing
+    description: |
+      Process damaged items.
+      Create claims and disposition.
+    actor: supervisor
+    actions:
+      - action: document_damage
+        input: [damaged_items, damage_photos]
+        output: damage_record
+      - action: create_claim
+        input: [damage_record, carrier_info]
+        output: claim_created
+      - action: determine_disposition
+        input: [damaged_items]
+        output: disposition_decision
+    validations:
+      - claim documented
+      - disposition assigned
+    outputs:
+      - damage_claim_id
+      - disposition_action
+    next_step: step_05
+
+  - id: step_05
+    name: Assign LPNs
+    description: |
+      Generate and apply License Plate Numbers.
+      Link LPN to item, quantity, and lot.
+    actor: receiver
+    actions:
+      - action: generate_lpns
+        input: [items_received]
+        output: lpn_list
+      - action: print_lpn_labels
+        input: [lpn_list]
+        output: labels_printed
+      - action: apply_lpn_labels
+        input: [lpn_list, staged_items]
+        output: lpns_applied
+      - action: scan_lpn_confirmation
+        input: [lpn_list]
+        output: lpns_confirmed
+    validations:
+      - each item has unique LPN
+      - LPN scanned and linked
+    outputs:
+      - lpn_assignments
+    next_step: step_06
+
+  - id: step_06
+    name: Capture Lot Information
+    description: |
+      Record lot/batch information for tracked items.
+      Capture expiry dates.
+    actor: receiver
+    conditions:
+      - item.lot_tracking == true
+    actions:
+      - action: record_lot_number
+        input: [lpn, manufacturer_lot]
+        output: lot_recorded
+      - action: record_expiry_date
+        input: [lpn, expiry_date]
+        output: expiry_recorded
+      - action: record_manufacture_date
+        input: [lpn, manufacture_date]
+        output: manufacture_recorded
+    validations:
+      - lot number captured
+      - expiry date valid (future date)
+    outputs:
+      - lot_information
+    next_step: step_07
+
+  - id: step_07
+    name: Quality Check Required?
+    description: |
+      Determine if quality inspection needed.
+      Route to QC or direct to putaway.
+    actor: receiver
+    decision:
+      condition: item.qc_required == true
+      true_path: step_08
+      false_path: step_09
+
+  - id: step_08
+    name: Quality Inspection
+    description: |
+      Perform quality inspection.
+      Approve or reject lot.
+    actor: qc_inspector
+    actions:
+      - action: perform_inspection
+        input: [lpn, inspection_criteria]
+        output: inspection_results
+      - action: record_qc_results
+        input: [inspection_results]
+        output: qc_recorded
+      - action: determine_qc_status
+        input: [inspection_results]
+        output: qc_status
+    validations:
+      - inspection completed per criteria
+      - results documented
+    decision:
+      condition: qc_status == 'passed'
+      true_path: step_09
+      false_path: step_08a
+    outputs:
+      - qc_status
+      - inspection_notes
+
+  - id: step_08a
+    name: QC Failure Handling
+    description: |
+      Handle failed QC inspection.
+      Quarantine or return to vendor.
+    actor: qc_inspector
+    actions:
+      - action: quarantine_inventory
+        input: [lpn, quarantine_zone]
+        output: quarantined
+      - action: create_disposition_request
+        input: [lpn, qc_results]
+        output: disposition_request
+      - action: notify_supplier
+        input: [supplier_id, qc_failure]
+        output: supplier_notified
+    outputs:
+      - quarantine_location
+      - disposition_request_id
+    next_step: step_10
+
+  - id: step_09
+    name: Create Putaway Tasks
+    description: |
+      Generate putaway tasks for received inventory.
+      System suggests optimal locations.
+    actor: receiver
+    actions:
+      - action: determine_putaway_locations
+        input: [lpn_list, item_attributes]
+        output: suggested_locations
+      - action: create_putaway_tasks
+        input: [lpn_list, suggested_locations]
+        output: putaway_tasks_created
+    validations:
+      - valid location for each LPN
+      - tasks created and queued
+    outputs:
+      - putaway_task_ids
+    next_step: step_10
+
+  - id: step_10
+    name: Complete Receipt
+    description: |
+      Finalize receipt record.
+      Update inbound order status.
+    actor: receiver
+    actions:
+      - action: complete_receipt
+        input: [receipt_id]
+        output: receipt_completed
+      - action: update_inbound_order
+        input: [inbound_order_id, receipt_status]
+        output: order_updated
+      - action: notify_stakeholders
+        input: [receipt_summary]
+        output: notifications_sent
+    outputs:
+      - receipt_number
+      - total_received
+      - variance_summary
+    events:
+      - name: receipt.completed
+        payload: [receipt_id, total_units_received, variance]
+
+sla:
+  - name: dock_to_stock
+    description: Time from truck arrival to putaway complete
+    target: "< 4 hours"
+  - name: receiving_throughput
+    description: Units received per labor hour
+    target: "> 100 UPH"
+
+exceptions:
+  - name: no_appointment
+    handling: Hold at gate, contact scheduling
+  - name: document_mismatch
+    handling: Contact supplier, supervisor approval
+  - name: severe_damage
+    handling: Refuse shipment, create incident report
+  - name: qc_failure
+    handling: Quarantine, notify supplier
+
+integrations:
+  - system: TMS
+    purpose: Appointment scheduling
+  - system: ERP
+    purpose: PO validation, inventory updates
+  - system: Supplier Portal
+    purpose: ASN matching, claim submission

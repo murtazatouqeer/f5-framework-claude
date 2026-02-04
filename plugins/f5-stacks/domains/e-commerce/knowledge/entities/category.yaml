@@ -1,0 +1,241 @@
+name: Category
+display_name: Category / Danh mục
+description: |
+  Hierarchical product categories for organizing products in the storefront.
+  Categories can be nested (parent-child) to create a category tree.
+  Example: Electronics > Phones > Smartphones > Android
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the category
+
+  - name: parent_id
+    type: uuid
+    required: false
+    description: Parent category ID (null for root categories)
+
+  - name: name
+    type: string
+    required: true
+    description: Category name
+    validation:
+      min_length: 1
+      max_length: 100
+    example: "Smartphones"
+
+  - name: slug
+    type: string
+    required: true
+    description: URL-friendly category identifier
+    validation:
+      pattern: "^[a-z0-9-]+$"
+      max_length: 100
+    example: "smartphones"
+
+  - name: description
+    type: string
+    required: false
+    description: Category description
+    validation:
+      max_length: 1000
+
+  - name: status
+    type: enum
+    required: true
+    description: Category visibility status
+    validation:
+      values: [active, inactive, archived]
+    default: active
+
+  - name: level
+    type: integer
+    required: true
+    description: Depth level in hierarchy (0 = root)
+    validation:
+      min: 0
+      max: 5
+    default: 0
+
+  - name: path
+    type: string
+    required: true
+    description: Full path from root (materialized path)
+    validation:
+      max_length: 500
+    example: "electronics/phones/smartphones"
+
+  - name: image_url
+    type: string
+    required: false
+    description: Category image URL
+    validation:
+      format: url
+
+  - name: icon
+    type: string
+    required: false
+    description: Icon class or URL
+    validation:
+      max_length: 100
+
+  - name: meta_title
+    type: string
+    required: false
+    description: SEO meta title
+    validation:
+      max_length: 70
+
+  - name: meta_description
+    type: string
+    required: false
+    description: SEO meta description
+    validation:
+      max_length: 160
+
+  - name: position
+    type: integer
+    required: true
+    description: Display order among siblings
+    validation:
+      min: 0
+    default: 0
+
+  - name: is_featured
+    type: boolean
+    required: true
+    description: Show in featured categories
+    default: false
+
+  - name: show_in_menu
+    type: boolean
+    required: true
+    description: Display in navigation menu
+    default: true
+
+  - name: product_count
+    type: integer
+    required: true
+    description: Number of products in this category (cached)
+    validation:
+      min: 0
+    default: 0
+
+  - name: total_product_count
+    type: integer
+    required: true
+    description: Products in this category and all descendants (cached)
+    validation:
+      min: 0
+    default: 0
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: parent
+    type: belongs_to
+    entity: Category
+    required: false
+    description: Parent category
+
+  - name: children
+    type: has_many
+    entity: Category
+    required: false
+    description: Child categories
+
+  - name: products
+    type: many_to_many
+    entity: Product
+    required: false
+    description: Products in this category
+
+  - name: ancestors
+    type: has_many
+    entity: Category
+    required: false
+    description: All parent categories up to root
+
+  - name: descendants
+    type: has_many
+    entity: Category
+    required: false
+    description: All child categories recursively
+
+state_machine:
+  initial: active
+  states:
+    - name: active
+      description: Category is visible on storefront
+    - name: inactive
+      description: Category is hidden but preserved
+    - name: archived
+      description: Category is archived, products reassigned
+  transitions:
+    - from: active
+      to: inactive
+      trigger: deactivate
+      description: Hide category from storefront
+    - from: inactive
+      to: active
+      trigger: activate
+      description: Show category on storefront
+    - from: [active, inactive]
+      to: archived
+      trigger: archive
+      conditions: [no_products_or_reassigned]
+      description: Archive category permanently
+
+indexes:
+  - [slug]
+  - [parent_id]
+  - [status]
+  - [path]
+  - [level]
+  - [position]
+  - [is_featured]
+
+business_rules:
+  - BR-CAT-001: Slug must be unique across all categories
+  - BR-CAT-002: Maximum nesting depth is 5 levels
+  - BR-CAT-003: Category cannot be its own parent (no circular reference)
+  - BR-CAT-004: Path is auto-generated from parent path + slug
+  - BR-CAT-005: Deleting parent requires reassigning or deleting children
+  - BR-CAT-006: product_count updates when products added/removed
+  - BR-CAT-007: total_product_count includes all descendant products
+  - BR-CAT-008: Inactive categories hide all descendant categories
+  - BR-CAT-009: Root categories (parent_id = null) have level = 0
+
+computed_fields:
+  - name: full_name
+    formula: CONCAT(parent.full_name, ' > ', name)
+    description: Full category path as readable string
+
+  - name: breadcrumb
+    formula: ancestors + self
+    description: Array of categories from root to current
+
+events:
+  - name: category.created
+    payload: [id, name, parent_id]
+    description: Fired when a new category is created
+
+  - name: category.moved
+    payload: [id, old_parent_id, new_parent_id]
+    description: Fired when category is moved to new parent
+
+  - name: category.archived
+    payload: [id, name, product_count]
+    description: Fired when category is archived

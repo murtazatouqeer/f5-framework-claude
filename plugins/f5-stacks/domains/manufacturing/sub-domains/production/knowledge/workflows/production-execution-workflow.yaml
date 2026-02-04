@@ -1,0 +1,540 @@
+name: production-execution-workflow
+display_name: Production Execution Workflow
+display_name_vi: Quy trình thực hiện sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: workflow
+
+description: |
+  Detailed workflow for shop floor production execution including
+  operation start, monitoring, output recording, and quality checks.
+
+description_vi: |
+  Quy trình chi tiết thực hiện sản xuất tại xưởng bao gồm
+  bắt đầu công đoạn, giám sát, ghi nhận sản lượng và kiểm tra chất lượng.
+
+trigger:
+  events:
+    - work_order_released
+    - previous_operation_completed
+    - schedule_time_reached
+  conditions:
+    - materials_available = true
+    - machine_available = true
+    - operator_available = true
+
+actors:
+  - id: operator
+    name: Machine Operator
+    name_vi: Công nhân vận hành
+    responsibilities:
+      - Setup machine
+      - Execute production
+      - Record output
+      - Report issues
+
+  - id: lead_operator
+    name: Lead Operator
+    name_vi: Tổ trưởng
+    responsibilities:
+      - Assign work
+      - First article approval
+      - Quality oversight
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Perform inspections
+      - Approve quality holds
+      - Document defects
+
+  - id: supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Monitor floor
+      - Handle escalations
+      - Approve deviations
+
+states:
+  - id: queued
+    name: Queued
+    name_vi: Đang chờ
+    description: Waiting in work center queue
+
+  - id: setup
+    name: Setup
+    name_vi: Cài đặt
+    description: Machine setup in progress
+
+  - id: running
+    name: Running
+    name_vi: Đang chạy
+    description: Production in progress
+
+  - id: inspection
+    name: Inspection
+    name_vi: Đang kiểm tra
+    description: Quality inspection
+
+  - id: paused
+    name: Paused
+    name_vi: Tạm dừng
+    description: Temporarily stopped
+
+  - id: complete
+    name: Complete
+    name_vi: Hoàn thành
+    description: Operation finished
+
+steps:
+  - id: queue_operation
+    name: Queue Operation
+    name_vi: Xếp hàng công đoạn
+    state: queued
+    actor: system
+    actions:
+      - action: add_to_work_center_queue
+        inputs:
+          - operation_id
+          - priority
+          - scheduled_start
+        outputs:
+          - queue_position
+
+      - action: display_on_schedule_board
+        description: Show on shop floor display
+
+      - action: check_prerequisites
+        checks:
+          - previous_operation_complete
+          - materials_staged
+          - tools_available
+
+    transitions:
+      - to: setup
+        condition: operator_starts_setup
+        trigger: operator_action
+
+    next_step: setup_operation
+
+  - id: setup_operation
+    name: Setup Operation
+    name_vi: Cài đặt máy
+    state: setup
+    actor: operator
+    time_tracking: true
+
+    actions:
+      - action: clock_in_setup
+        inputs:
+          - operator_id
+          - machine_id
+          - work_order_id
+          - operation_id
+        outputs:
+          - setup_start_time
+
+      - action: retrieve_setup_instructions
+        outputs:
+          - setup_document
+          - tooling_list
+          - parameter_settings
+
+      - action: perform_machine_setup
+        steps:
+          - mount_tooling
+          - load_program
+          - set_parameters
+          - load_materials
+
+      - action: verify_setup
+        checklist:
+          - tooling_correct
+          - parameters_set
+          - materials_loaded
+          - safety_guards_in_place
+
+      - action: record_setup_complete
+        outputs:
+          - setup_end_time
+          - setup_duration
+
+    validations:
+      - rule: setup_checklist_complete
+        message: Complete all setup checklist items
+
+    transitions:
+      - to: running
+        condition: setup_complete AND first_article_passed
+        trigger: first_article_approval
+
+    next_step: first_article_inspection
+
+  - id: first_article_inspection
+    name: First Article Inspection
+    name_vi: Kiểm tra sản phẩm đầu tiên
+    state: setup
+    actor: quality_inspector
+    mandatory: true
+
+    actions:
+      - action: produce_first_article
+        actor: operator
+        outputs:
+          - first_article_piece
+
+      - action: inspect_first_article
+        inputs:
+          - first_article_piece
+          - inspection_criteria
+        outputs:
+          - inspection_results
+          - measurements
+
+      - action: document_fai
+        outputs:
+          - fai_record
+
+      - action: approve_or_reject
+        decision:
+          pass:
+            action: authorize_production_run
+          fail:
+            action: require_setup_adjustment
+
+    validations:
+      - rule: all_dimensions_within_spec
+        message: All dimensions must be within specification
+
+    transitions:
+      - to: running
+        condition: fai_approved
+        trigger: inspector_approval
+
+      - to: setup
+        condition: fai_rejected
+        trigger: adjustment_required
+
+    next_step: run_production
+
+  - id: run_production
+    name: Run Production
+    name_vi: Chạy sản xuất
+    state: running
+    actor: operator
+    time_tracking: true
+
+    actions:
+      - action: start_production_run
+        inputs:
+          - approved_fai
+        outputs:
+          - run_start_time
+
+      - action: monitor_machine
+        continuous: true
+        monitors:
+          - cycle_time
+          - machine_parameters
+          - quality_indicators
+
+      - action: perform_in_process_checks
+        frequency: per_interval_or_quantity
+        checks:
+          - dimensional_check
+          - visual_inspection
+          - functional_test
+
+      - action: record_production_data
+        data:
+          - pieces_produced
+          - cycle_times
+          - parameter_readings
+
+      - action: handle_abnormalities
+        triggers:
+          - parameter_out_of_range
+          - quality_deviation
+          - machine_alarm
+
+    sub_workflows:
+      - patrol_inspection
+      - downtime_recording
+      - scrap_reporting
+
+    transitions:
+      - to: paused
+        condition: downtime_event
+        trigger: machine_stop
+
+      - to: inspection
+        condition: inspection_required
+        trigger: inspection_point_reached
+
+      - to: complete
+        condition: quantity_complete
+        trigger: target_reached
+
+    next_step: patrol_inspection
+
+  - id: patrol_inspection
+    name: Patrol Inspection
+    name_vi: Kiểm tra tuần tra
+    state: running
+    actor: quality_inspector
+    frequency: hourly_or_per_batch
+
+    actions:
+      - action: select_samples
+        method: random_sampling
+        quantity: per_sampling_plan
+
+      - action: perform_inspection
+        inputs:
+          - samples
+          - inspection_criteria
+        outputs:
+          - inspection_results
+
+      - action: record_results
+        outputs:
+          - patrol_inspection_record
+
+      - action: update_spc_charts
+        outputs:
+          - control_chart_points
+
+      - action: disposition_inspection
+        decision:
+          pass:
+            action: continue_production
+          marginal:
+            action: increase_inspection_frequency
+          fail:
+            action: stop_production_investigate
+
+    validations:
+      - rule: samples_meet_aql
+        message: Sample results must meet AQL requirements
+
+    transitions:
+      - to: running
+        condition: inspection_passed
+
+      - to: paused
+        condition: inspection_failed
+        trigger: quality_hold
+
+  - id: handle_downtime
+    name: Handle Downtime
+    name_vi: Xử lý thời gian chết
+    state: paused
+    actor: operator
+    trigger: production_interruption
+
+    actions:
+      - action: record_downtime_start
+        inputs:
+          - downtime_reason
+          - downtime_category
+        outputs:
+          - downtime_record
+
+      - action: classify_downtime
+        categories:
+          - planned_maintenance
+          - breakdown
+          - changeover
+          - material_wait
+          - operator_wait
+          - quality_hold
+
+      - action: notify_appropriate_party
+        routing:
+          breakdown: maintenance
+          material_wait: warehouse
+          quality_hold: quality
+
+      - action: resolve_issue
+        varies_by: downtime_type
+
+      - action: record_downtime_end
+        outputs:
+          - downtime_duration
+          - resolution_notes
+
+    transitions:
+      - to: running
+        condition: issue_resolved
+        trigger: resume_production
+
+    next_step: record_output
+
+  - id: record_output
+    name: Record Output
+    name_vi: Ghi nhận sản lượng
+    state: running
+    actor: operator
+    frequency: end_of_shift_or_batch
+
+    actions:
+      - action: count_output
+        inputs:
+          - good_quantity
+          - reject_quantity
+          - scrap_quantity
+        validation:
+          - total = good + reject + scrap
+
+      - action: classify_rejects
+        inputs:
+          - reject_quantity
+          - defect_codes
+        outputs:
+          - reject_breakdown
+
+      - action: record_output_transaction
+        outputs:
+          - output_record
+          - lot_assignment
+
+      - action: backflush_materials
+        condition: operation.backflush = true
+        outputs:
+          - material_consumption_records
+
+      - action: move_output
+        to: next_operation_or_inventory
+
+    validations:
+      - rule: output_reconciles_with_input
+        message: Output must reconcile with input materials
+
+    next_step: complete_operation
+
+  - id: complete_operation
+    name: Complete Operation
+    name_vi: Hoàn thành công đoạn
+    state: running
+    actor: operator
+
+    actions:
+      - action: verify_quantity_complete
+        check: reported_quantity >= scheduled_quantity
+
+      - action: final_time_recording
+        outputs:
+          - actual_setup_time
+          - actual_run_time
+          - total_labor_hours
+
+      - action: clean_and_organize
+        description: Clean work area and organize tools
+
+      - action: close_operation
+        outputs:
+          - operation_close_record
+
+      - action: trigger_next_operation
+        condition: next_operation_exists
+
+    validations:
+      - rule: all_output_recorded
+        message: All output must be recorded
+
+      - rule: downtime_accounted
+        message: All downtime must be documented
+
+    transitions:
+      - to: complete
+        condition: closure_verified
+        action: set_complete_timestamp
+
+kpis:
+  - metric: Setup Time vs Standard
+    formula: actual_setup_time / standard_setup_time * 100
+    target: "< 110%"
+
+  - metric: Run Time vs Standard
+    formula: actual_run_time / standard_run_time * 100
+    target: "< 105%"
+
+  - metric: First Pass Yield
+    formula: good_quantity / total_output * 100
+    target: "> 98%"
+
+  - metric: Schedule Adherence
+    formula: operations_on_time / total_operations * 100
+    target: "> 95%"
+
+  - metric: OEE
+    formula: availability * performance * quality
+    target: "> 85%"
+
+real_time_displays:
+  - display: andon_board
+    shows:
+      - current_operation_status
+      - production_count
+      - defect_count
+      - downtime_status
+
+  - display: work_center_queue
+    shows:
+      - queued_operations
+      - priority_sequence
+      - material_status
+
+  - display: supervisor_dashboard
+    shows:
+      - all_work_center_status
+      - alerts_and_exceptions
+      - oee_metrics
+
+notifications:
+  - event: operation_started
+    recipients: [supervisor]
+    message: "Operation {op_id} started on WO {wo_number}"
+
+  - event: first_article_failed
+    recipients: [supervisor, quality]
+    message: "FAI failed on WO {wo_number} Op {op_id}"
+
+  - event: downtime_started
+    recipients: [supervisor]
+    message: "Downtime on {machine}: {reason}"
+
+  - event: quality_alert
+    recipients: [quality, supervisor]
+    message: "Quality issue detected: {description}"
+
+  - event: operation_completed
+    recipients: [planner]
+    message: "Op {op_id} complete: {quantity} good, {reject} reject"
+
+integrations:
+  - system: MES_Core
+    data:
+      - real_time_machine_status
+      - production_counts
+      - cycle_times
+
+  - system: SCADA
+    data:
+      - machine_parameters
+      - alarms
+      - process_data
+
+  - system: QMS
+    data:
+      - inspection_results
+      - spc_data
+      - ncr_records
+
+  - system: CMMS
+    data:
+      - maintenance_requests
+      - downtime_analysis

@@ -1,0 +1,639 @@
+name: Tenant Admin Use Cases
+display_name: Tenant Admin Use Cases / Các trường hợp sử dụng của quản trị viên khách thuê
+description: |
+  Use cases for tenant administrators managing their organization's
+  account, team, billing, and settings.
+
+domain: saas-platform
+actor: tenant_admin
+version: "1.0"
+
+# =============================================================================
+# ACTOR DEFINITION
+# =============================================================================
+actor_definition:
+  name: Tenant Administrator
+  name_vi: Quản trị viên khách thuê
+  roles: [owner, admin, billing_admin]
+  description: |
+    Users with administrative privileges within a tenant organization.
+    Responsible for team management, billing, settings, and security.
+
+# =============================================================================
+# TEAM MANAGEMENT USE CASES
+# =============================================================================
+team_management:
+  # ---------------------------------------------------------------------------
+  # UC-TA-001: Invite Team Member
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-001
+    name: Invite Team Member
+    name_vi: Mời thành viên nhóm
+    priority: high
+    actors: [owner, admin]
+
+    description: |
+      Admin invites a new team member to join the tenant organization.
+
+    preconditions:
+      - "User is authenticated as owner or admin"
+      - "Tenant has available seats or can add seats"
+      - "Invitee email is valid and not already a member"
+
+    main_flow:
+      1: "Admin navigates to Team Settings > Members"
+      2: "Admin clicks 'Invite Member' button"
+      3: "System displays invitation form"
+      4: "Admin enters invitee email address"
+      5: "Admin selects role for new member"
+      6: "Admin optionally assigns to organization/team"
+      7: "Admin clicks 'Send Invitation'"
+      8: "System validates email and seat availability"
+      9: "System creates pending invitation record"
+      10: "System sends invitation email to invitee"
+      11: "System displays success confirmation"
+
+    alternative_flows:
+      bulk_invite:
+        trigger: "Admin selects bulk invite option"
+        steps:
+          - "Admin uploads CSV or enters multiple emails"
+          - "System validates all emails"
+          - "System sends batch invitations"
+          - "System displays summary of sent/failed"
+
+      resend_invitation:
+        trigger: "Pending invitation exists"
+        steps:
+          - "Admin clicks resend for pending invitation"
+          - "System invalidates previous invitation token"
+          - "System sends new invitation email"
+
+    exception_flows:
+      seat_limit_reached:
+        condition: "current_seats >= plan.max_seats"
+        response:
+          - "Display seat limit reached message"
+          - "Offer to add additional seats"
+          - "Show upgrade plan option"
+
+      email_already_member:
+        condition: "Email belongs to existing active member"
+        response:
+          - "Display 'User is already a member' message"
+          - "Show existing member details"
+
+      email_already_invited:
+        condition: "Pending invitation exists for email"
+        response:
+          - "Display 'Invitation already sent' message"
+          - "Offer to resend invitation"
+
+    postconditions:
+      - "Invitation record created with pending status"
+      - "Invitation email sent to invitee"
+      - "Seat reserved for invitee (if seat-based)"
+      - "Audit log entry created"
+
+    business_rules:
+      - "BR-USR-005: One pending invitation per email"
+      - "BR-USR-006: Invitation expires after 7 days"
+      - "BR-SEA-001: Pending invitations count toward seat limit"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-002: Manage Team Member
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-002
+    name: Manage Team Member
+    name_vi: Quản lý thành viên nhóm
+    priority: high
+    actors: [owner, admin]
+
+    description: |
+      Admin modifies team member role, permissions, or status.
+
+    preconditions:
+      - "User is authenticated as owner or admin"
+      - "Target member exists and is not the only owner"
+
+    main_flow:
+      1: "Admin navigates to Team Settings > Members"
+      2: "Admin selects member to manage"
+      3: "System displays member details panel"
+      4: "Admin modifies role, permissions, or status"
+      5: "Admin clicks 'Save Changes'"
+      6: "System validates changes"
+      7: "System applies changes"
+      8: "System sends notification to affected member"
+      9: "System displays success confirmation"
+
+    sub_use_cases:
+      change_role:
+        steps:
+          - "Select new role from dropdown"
+          - "System shows permission changes preview"
+          - "Confirm role change"
+
+      suspend_member:
+        steps:
+          - "Click 'Suspend' action"
+          - "Enter suspension reason"
+          - "System immediately revokes access"
+          - "System notifies member"
+
+      remove_member:
+        steps:
+          - "Click 'Remove' action"
+          - "Confirm removal"
+          - "System reassigns owned resources"
+          - "System removes member"
+
+      transfer_ownership:
+        actors: [owner_only]
+        steps:
+          - "Select 'Transfer Ownership'"
+          - "Choose new owner from admins"
+          - "Confirm with password/MFA"
+          - "System transfers ownership"
+          - "System demotes previous owner to admin"
+
+    exception_flows:
+      cannot_demote_only_owner:
+        condition: "Target is only owner"
+        response: "Display 'Cannot modify only owner' message"
+
+      cannot_remove_self:
+        condition: "Admin tries to remove themselves"
+        response: "Display 'Cannot remove yourself' message"
+
+    postconditions:
+      - "Member record updated"
+      - "Permission changes applied immediately"
+      - "Member notified of changes"
+      - "Audit log entry created"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-003: Manage Roles and Permissions
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-003
+    name: Manage Roles and Permissions
+    name_vi: Quản lý vai trò và quyền
+    priority: medium
+    actors: [owner, admin]
+    tier_required: [professional, enterprise]
+
+    description: |
+      Admin creates custom roles and manages permission assignments.
+
+    preconditions:
+      - "Tenant is on Professional or Enterprise tier"
+      - "User has role management permissions"
+
+    main_flow:
+      1: "Admin navigates to Team Settings > Roles"
+      2: "System displays list of system and custom roles"
+      3: "Admin clicks 'Create Role' or selects existing role"
+      4: "System displays role configuration panel"
+      5: "Admin configures role name and permissions"
+      6: "Admin saves role"
+      7: "System validates role configuration"
+      8: "System saves role and updates affected users"
+
+    postconditions:
+      - "Role created or updated"
+      - "Users with role have updated permissions"
+      - "Audit log entry created"
+
+# =============================================================================
+# BILLING MANAGEMENT USE CASES
+# =============================================================================
+billing_management:
+  # ---------------------------------------------------------------------------
+  # UC-TA-010: View Billing Dashboard
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-010
+    name: View Billing Dashboard
+    name_vi: Xem bảng điều khiển thanh toán
+    priority: high
+    actors: [owner, admin, billing_admin]
+
+    description: |
+      Admin views billing summary, invoices, and usage.
+
+    main_flow:
+      1: "Admin navigates to Billing"
+      2: "System displays billing dashboard"
+      3: "Dashboard shows current plan, next invoice, usage summary"
+      4: "Admin can drill into specific sections"
+
+    displayed_information:
+      current_plan:
+        - plan_name
+        - billing_cycle
+        - price
+        - renewal_date
+
+      usage_summary:
+        - current_period_usage
+        - included_amounts
+        - overage_amounts
+
+      invoices:
+        - recent_invoices_list
+        - payment_status
+        - download_links
+
+      payment_method:
+        - current_method_summary
+        - expiration_warning
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-011: Update Payment Method
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-011
+    name: Update Payment Method
+    name_vi: Cập nhật phương thức thanh toán
+    priority: high
+    actors: [owner, billing_admin]
+
+    description: |
+      Admin adds or updates payment method for subscription billing.
+
+    preconditions:
+      - "User has billing management permissions"
+
+    main_flow:
+      1: "Admin navigates to Billing > Payment Methods"
+      2: "Admin clicks 'Add Payment Method'"
+      3: "System displays secure payment form"
+      4: "Admin enters card details"
+      5: "System tokenizes card via payment processor"
+      6: "System validates card with small authorization"
+      7: "System saves payment method"
+      8: "Admin can set as default"
+
+    payment_method_types:
+      - credit_card
+      - debit_card
+      - ach_bank_account: professional_and_enterprise
+      - wire_transfer: enterprise_only
+
+    exception_flows:
+      card_declined:
+        response:
+          - "Display card declined message"
+          - "Suggest trying different card"
+          - "Offer support contact"
+
+      card_requires_3ds:
+        response:
+          - "Redirect to 3DS verification"
+          - "Complete 3DS flow"
+          - "Return to payment method saved"
+
+    postconditions:
+      - "Payment method saved securely"
+      - "Card tokenized, no raw data stored"
+      - "Audit log entry created"
+
+    business_rules:
+      - "BR-PAY-002: Full card numbers never stored"
+      - "BR-PAY-001: One default payment method per tenant"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-012: Change Subscription Plan
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-012
+    name: Change Subscription Plan
+    name_vi: Thay đổi gói đăng ký
+    priority: high
+    actors: [owner, billing_admin]
+
+    description: |
+      Admin upgrades or downgrades subscription plan.
+
+    preconditions:
+      - "User has billing management permissions"
+      - "Subscription is active"
+
+    main_flow:
+      1: "Admin navigates to Billing > Plan"
+      2: "System displays current plan and available options"
+      3: "Admin selects new plan"
+      4: "System calculates proration and shows preview"
+      5: "Admin reviews changes"
+      6: "Admin confirms plan change"
+      7: "System processes plan change"
+
+    upgrade_flow:
+      - "Proration calculated for remaining period"
+      - "New features available immediately"
+      - "Proration invoice generated if amount > $1"
+
+    downgrade_flow:
+      - "Effective at end of current period"
+      - "Usage compatibility checked"
+      - "Feature loss warnings displayed"
+      - "Confirmation required"
+
+    postconditions:
+      - "Subscription plan updated"
+      - "Proration invoice generated (if applicable)"
+      - "Features updated accordingly"
+      - "Confirmation email sent"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-013: View and Download Invoices
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-013
+    name: View and Download Invoices
+    name_vi: Xem và tải hóa đơn
+    priority: medium
+    actors: [owner, admin, billing_admin]
+
+    description: |
+      Admin views invoice history and downloads invoice PDFs.
+
+    main_flow:
+      1: "Admin navigates to Billing > Invoices"
+      2: "System displays invoice list with filters"
+      3: "Admin can filter by date, status"
+      4: "Admin clicks invoice to view details"
+      5: "Admin can download PDF"
+
+    available_actions:
+      - view_invoice_details
+      - download_pdf
+      - email_invoice_copy
+      - view_payment_history
+
+# =============================================================================
+# SETTINGS MANAGEMENT USE CASES
+# =============================================================================
+settings_management:
+  # ---------------------------------------------------------------------------
+  # UC-TA-020: Configure Tenant Settings
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-020
+    name: Configure Tenant Settings
+    name_vi: Cấu hình cài đặt khách thuê
+    priority: medium
+    actors: [owner, admin]
+
+    description: |
+      Admin configures organization-wide settings.
+
+    settings_categories:
+      general:
+        - organization_name
+        - timezone
+        - date_format
+        - language
+
+      branding:
+        - logo
+        - primary_color
+        - custom_domain: professional_and_enterprise
+
+      notifications:
+        - email_preferences
+        - in_app_notification_settings
+        - webhook_configurations
+
+      security:
+        - password_requirements
+        - session_timeout
+        - mfa_enforcement: professional_and_enterprise
+        - sso_configuration: enterprise
+
+      integrations:
+        - connected_apps
+        - api_key_management
+        - webhook_endpoints
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-021: Manage API Keys
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-021
+    name: Manage API Keys
+    name_vi: Quản lý khóa API
+    priority: medium
+    actors: [owner, admin]
+
+    description: |
+      Admin creates and manages API keys for integrations.
+
+    main_flow:
+      1: "Admin navigates to Settings > API Keys"
+      2: "System displays existing API keys"
+      3: "Admin clicks 'Create API Key'"
+      4: "Admin configures key name and permissions"
+      5: "System generates API key"
+      6: "System displays key once (copy now)"
+      7: "Admin copies and secures key"
+
+    key_management_actions:
+      - create_key
+      - view_usage_stats
+      - rotate_key
+      - revoke_key
+      - set_ip_restrictions: professional_and_enterprise
+
+    postconditions:
+      - "API key created and hashed for storage"
+      - "Full key shown only once"
+      - "Audit log entry created"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-022: Configure SSO
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-022
+    name: Configure SSO
+    name_vi: Cấu hình SSO
+    priority: medium
+    actors: [owner, admin]
+    tier_required: [professional, enterprise]
+
+    description: |
+      Admin configures SAML SSO for the organization.
+
+    preconditions:
+      - "Tenant is on Professional or Enterprise tier"
+      - "User has security settings permissions"
+
+    main_flow:
+      1: "Admin navigates to Settings > Security > SSO"
+      2: "Admin downloads SP metadata"
+      3: "Admin configures IdP with SP metadata"
+      4: "Admin uploads IdP metadata"
+      5: "Admin maps attributes"
+      6: "Admin tests SSO connection"
+      7: "Admin enables SSO"
+
+    configuration_options:
+      enforcement:
+        - optional: "SSO + password allowed"
+        - required: "SSO only"
+        - required_with_bypass: "SSO required, specific users exempted"
+
+      provisioning:
+        - jit_provisioning: "Create users on first SSO login"
+        - scim: "Automated provisioning (Enterprise)"
+
+    postconditions:
+      - "SSO configured and enabled"
+      - "Users can authenticate via IdP"
+      - "Audit log entry created"
+
+# =============================================================================
+# SECURITY MANAGEMENT USE CASES
+# =============================================================================
+security_management:
+  # ---------------------------------------------------------------------------
+  # UC-TA-030: View Audit Logs
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-030
+    name: View Audit Logs
+    name_vi: Xem nhật ký kiểm toán
+    priority: medium
+    actors: [owner, admin]
+
+    description: |
+      Admin reviews audit logs for security and compliance.
+
+    main_flow:
+      1: "Admin navigates to Security > Audit Log"
+      2: "System displays recent audit events"
+      3: "Admin can filter by actor, action, date range"
+      4: "Admin can search within logs"
+      5: "Admin can export logs"
+
+    filter_options:
+      - actor: user, api_key, system
+      - action_category: authentication, billing, data, security
+      - date_range: custom or preset
+      - resource_type: user, subscription, settings
+
+    export_options:
+      - csv
+      - json
+      - pdf_report
+
+    retention_by_tier:
+      free: 30_days
+      starter: 90_days
+      professional: 1_year
+      enterprise: custom
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-031: Manage Security Policies
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-031
+    name: Manage Security Policies
+    name_vi: Quản lý chính sách bảo mật
+    priority: medium
+    actors: [owner, admin]
+    tier_required: [professional, enterprise]
+
+    description: |
+      Admin configures organization security policies.
+
+    configurable_policies:
+      password_policy:
+        - minimum_length
+        - complexity_requirements
+        - expiration_period
+        - history_count
+
+      session_policy:
+        - session_duration
+        - idle_timeout
+        - concurrent_session_limit
+
+      mfa_policy:
+        - mfa_required_for_all
+        - mfa_required_for_admins
+        - allowed_mfa_methods
+
+      access_policy:
+        - ip_allowlist
+        - geo_restrictions
+        - device_trust
+
+    postconditions:
+      - "Security policies updated"
+      - "Affected users notified if required"
+      - "Existing sessions may be invalidated"
+
+# =============================================================================
+# DATA MANAGEMENT USE CASES
+# =============================================================================
+data_management:
+  # ---------------------------------------------------------------------------
+  # UC-TA-040: Export Tenant Data
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-040
+    name: Export Tenant Data
+    name_vi: Xuất dữ liệu khách thuê
+    priority: medium
+    actors: [owner, admin]
+
+    description: |
+      Admin exports organization data for backup or migration.
+
+    main_flow:
+      1: "Admin navigates to Settings > Data > Export"
+      2: "Admin selects data categories to export"
+      3: "Admin selects export format"
+      4: "Admin initiates export"
+      5: "System queues export job"
+      6: "System sends notification when ready"
+      7: "Admin downloads export file"
+
+    export_categories:
+      - users_and_roles
+      - settings_and_configurations
+      - business_data
+      - usage_history
+      - audit_logs
+
+    export_formats:
+      - json
+      - csv
+      - xlsx
+
+    postconditions:
+      - "Export generated securely"
+      - "Download link sent via email"
+      - "Export logged for compliance"
+
+  # ---------------------------------------------------------------------------
+  # UC-TA-041: Request Account Deletion
+  # ---------------------------------------------------------------------------
+  - id: UC-TA-041
+    name: Request Account Deletion
+    name_vi: Yêu cầu xóa tài khoản
+    priority: low
+    actors: [owner]
+
+    description: |
+      Owner requests complete deletion of tenant account and data.
+
+    preconditions:
+      - "User is authenticated as owner"
+      - "Subscription is cancelled or owner cancels now"
+
+    main_flow:
+      1: "Owner navigates to Settings > Account > Delete"
+      2: "System displays deletion consequences"
+      3: "Owner confirms understanding"
+      4: "Owner authenticates with password/MFA"
+      5: "System processes deletion request"
+      6: "System sends confirmation email"
+      7: "Data retention period begins"
+
+    postconditions:
+      - "Deletion scheduled"
+      - "Data retained for recovery period"
+      - "Permanent deletion after retention period"
+      - "Compliance requirements met (GDPR/CCPA)"

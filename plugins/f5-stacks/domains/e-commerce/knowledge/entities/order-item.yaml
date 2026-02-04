@@ -1,0 +1,262 @@
+name: OrderItem
+display_name: Order Item / Mục đơn hàng
+description: |
+  Individual line item in an order.
+  Contains a snapshot of product details at the time of purchase.
+  Prices and product info are locked at order creation for historical accuracy.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the order item
+
+  - name: order_id
+    type: uuid
+    required: true
+    description: Reference to parent order
+
+  - name: product_id
+    type: uuid
+    required: true
+    description: Reference to product (for linking)
+
+  - name: variant_id
+    type: uuid
+    required: false
+    description: Reference to product variant (if applicable)
+
+  - name: sku
+    type: string
+    required: true
+    description: SKU at time of order
+    validation:
+      max_length: 50
+
+  - name: name
+    type: string
+    required: true
+    description: Product name at time of order
+    validation:
+      max_length: 255
+
+  - name: variant_name
+    type: string
+    required: false
+    description: Variant name (e.g., "Blue - Medium")
+    validation:
+      max_length: 255
+
+  - name: image_url
+    type: string
+    required: false
+    description: Product image URL
+    validation:
+      format: url
+
+  - name: quantity
+    type: integer
+    required: true
+    description: Quantity ordered
+    validation:
+      min: 1
+
+  - name: unit_price
+    type: decimal
+    required: true
+    description: Price per unit at time of order
+    validation:
+      min: 0
+
+  - name: original_price
+    type: decimal
+    required: false
+    description: Original price before discount
+    validation:
+      min: 0
+
+  - name: discount_amount
+    type: decimal
+    required: true
+    description: Item-level discount
+    validation:
+      min: 0
+    default: 0
+
+  - name: tax_amount
+    type: decimal
+    required: true
+    description: Tax for this line item
+    validation:
+      min: 0
+    default: 0
+
+  - name: line_total
+    type: decimal
+    required: true
+    description: Line total (quantity * unit_price - discount + tax)
+    validation:
+      min: 0
+
+  - name: cost_price
+    type: decimal
+    required: false
+    description: Cost of goods (for profit calculation)
+    validation:
+      min: 0
+
+  - name: weight
+    type: decimal
+    required: false
+    description: Item weight in grams
+    validation:
+      min: 0
+
+  - name: fulfillment_status
+    type: enum
+    required: true
+    description: Item fulfillment status
+    validation:
+      values: [unfulfilled, fulfilled, shipped, delivered, returned, cancelled]
+    default: unfulfilled
+
+  - name: fulfilled_quantity
+    type: integer
+    required: true
+    description: Quantity fulfilled/shipped
+    validation:
+      min: 0
+    default: 0
+
+  - name: returned_quantity
+    type: integer
+    required: true
+    description: Quantity returned
+    validation:
+      min: 0
+    default: 0
+
+  - name: is_gift
+    type: boolean
+    required: true
+    description: Marked as gift
+    default: false
+
+  - name: gift_message
+    type: string
+    required: false
+    description: Gift message
+    validation:
+      max_length: 500
+
+  - name: notes
+    type: string
+    required: false
+    description: Item-specific notes
+    validation:
+      max_length: 500
+
+  - name: custom_attributes
+    type: json
+    required: false
+    description: Custom attributes (personalization, etc.)
+
+  - name: product_snapshot
+    type: json
+    required: false
+    description: Full product data snapshot at order time
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    required: true
+    description: Parent order
+
+  - name: product
+    type: belongs_to
+    entity: Product
+    required: true
+    description: Associated product
+
+  - name: variant
+    type: belongs_to
+    entity: ProductVariant
+    required: false
+    description: Associated variant
+
+  - name: shipment_items
+    type: has_many
+    entity: ShipmentItem
+    required: false
+    description: Shipment records for this item
+
+  - name: return_items
+    type: has_many
+    entity: ReturnItem
+    required: false
+    description: Return records for this item
+
+indexes:
+  - [order_id]
+  - [product_id]
+  - [variant_id]
+  - [sku]
+  - [fulfillment_status]
+
+business_rules:
+  - BR-ORI-001: line_total = (quantity * unit_price) - discount_amount + tax_amount
+  - BR-ORI-002: Prices are locked at order creation (snapshot)
+  - BR-ORI-003: fulfilled_quantity cannot exceed quantity
+  - BR-ORI-004: returned_quantity cannot exceed fulfilled_quantity
+  - BR-ORI-005: Product snapshot stored for historical reference
+  - BR-ORI-006: Cannot modify after order is shipped
+  - BR-ORI-007: Partial fulfillment supported (fulfilled_quantity < quantity)
+  - BR-ORI-008: Cost price captured for profit reporting
+
+computed_fields:
+  - name: line_total
+    formula: (quantity * unit_price) - discount_amount + tax_amount
+    description: Total price for this line item
+
+  - name: remaining_quantity
+    formula: quantity - fulfilled_quantity
+    description: Quantity not yet fulfilled
+
+  - name: profit
+    formula: line_total - (cost_price * quantity)
+    description: Profit from this line item
+
+  - name: is_fully_fulfilled
+    formula: fulfilled_quantity >= quantity
+    description: Whether item is fully fulfilled
+
+  - name: total_weight
+    formula: weight * quantity
+    description: Total weight for shipping
+
+events:
+  - name: order_item.fulfilled
+    payload: [id, order_id, quantity_fulfilled]
+    description: Fired when item is fulfilled
+
+  - name: order_item.shipped
+    payload: [id, order_id, shipment_id]
+    description: Fired when item is shipped
+
+  - name: order_item.returned
+    payload: [id, order_id, quantity_returned, reason]
+    description: Fired when item is returned

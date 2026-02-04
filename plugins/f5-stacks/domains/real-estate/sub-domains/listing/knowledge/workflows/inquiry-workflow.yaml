@@ -1,0 +1,444 @@
+# Inquiry Workflow
+# F5 Framework v2.0 - Real Estate/Listing
+# Workflow for property inquiry and lead management
+
+workflow:
+  id: inquiry_management
+  name: Inquiry Management Workflow
+  name_ja: 問い合わせ管理ワークフロー
+  name_vi: Quy trình quản lý yêu cầu
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    End-to-end workflow for handling property inquiries from submission
+    through qualification to conversion or closure.
+
+  actors:
+    - id: seeker
+      name: Property Seeker
+      permissions: [submit_inquiry, view_responses]
+    - id: agent
+      name: Real Estate Agent
+      permissions: [respond, qualify, schedule_viewing, close_inquiry]
+    - id: system
+      name: Automated System
+      permissions: [notify, score, assign, escalate]
+
+  triggers:
+    - type: user_action
+      action: submit_inquiry
+      actor: seeker
+    - type: api_call
+      endpoint: POST /api/inquiries
+
+  # Workflow States
+  states:
+    - id: submitted
+      name: Submitted
+      type: start
+
+    - id: spam_check
+      name: Spam Check
+      description: Automated spam detection
+
+    - id: new
+      name: New
+      description: Awaiting agent response
+
+    - id: contacted
+      name: Contacted
+      description: Agent has responded
+
+    - id: qualifying
+      name: Qualifying
+      description: Lead qualification in progress
+
+    - id: qualified
+      name: Qualified
+      description: Lead is qualified
+
+    - id: viewing_scheduled
+      name: Viewing Scheduled
+      description: Property viewing scheduled
+
+    - id: post_viewing
+      name: Post Viewing
+      description: After viewing follow-up
+
+    - id: negotiating
+      name: Negotiating
+      description: Price/terms negotiation
+
+    - id: converted
+      name: Converted
+      type: end
+      description: Successful conversion
+
+    - id: lost
+      name: Lost
+      type: end
+      description: Did not convert
+
+    - id: spam
+      name: Spam
+      type: end
+      description: Marked as spam
+
+  # Workflow Steps
+  steps:
+    - id: step_1
+      name: Submit Inquiry
+      state: submitted
+      actor: seeker
+      actions:
+        - action: capture_inquiry_details
+          fields:
+            - seeker_name (required)
+            - seeker_phone (required)
+            - seeker_email
+            - inquiry_type
+            - message (required)
+            - preferred_contact_method
+        - action: capture_context
+          auto: true
+          data:
+            - listing_id
+            - property_id
+            - source
+            - utm_parameters
+            - device_info
+      ui:
+        screen: inquiry_form
+        components:
+          - contact_form
+          - inquiry_type_selector
+          - message_textarea
+          - contact_preference
+      transitions:
+        - to: spam_check
+          condition: inquiry_submitted
+
+    - id: step_2
+      name: Spam Detection
+      state: spam_check
+      actor: system
+      actions:
+        - action: check_blacklist
+        - action: analyze_patterns
+        - action: calculate_spam_score
+        - action: check_rate_limits
+      auto_transition: true
+      transitions:
+        - to: spam
+          condition: spam_score >= 0.8
+          action: block_and_log
+        - to: new
+          condition: spam_score < 0.8
+
+    - id: step_3
+      name: Process New Inquiry
+      state: new
+      actor: system
+      parallel_actions:
+        - action: assign_to_agent
+          logic: |
+            IF listing.agent_id THEN
+              assign(listing.agent_id)
+            ELSIF listing.agency_id THEN
+              round_robin_assign(listing.agency_id)
+            ELSE
+              assign_duty_agent()
+            END
+        - action: calculate_lead_score
+        - action: set_priority
+        - action: send_auto_acknowledgment
+          to: seeker
+          template: inquiry_received
+        - action: notify_agent
+          template: new_inquiry_alert
+          channels: [push, email, sms]
+      sla:
+        response_target: |
+          CASE priority
+            WHEN 'urgent' THEN 30 minutes
+            WHEN 'high' THEN 2 hours
+            WHEN 'medium' THEN 8 hours
+            ELSE 24 hours
+          END
+      monitoring:
+        - check_response_time
+        - escalate_if_overdue
+      transitions:
+        - to: contacted
+          condition: agent_responds
+        - to: lost
+          condition: no_response_after_escalation
+
+    - id: step_4
+      name: Initial Contact
+      state: contacted
+      actor: agent
+      actions:
+        - action: log_response
+          required: true
+        - action: start_qualification
+      ui:
+        screen: inquiry_detail
+        components:
+          - seeker_info
+          - listing_preview
+          - communication_panel
+          - response_templates
+          - call_button
+      system_actions:
+        - action: track_first_response
+        - action: update_agent_metrics
+      transitions:
+        - to: qualifying
+          condition: start_qualification
+        - to: lost
+          condition: seeker_unresponsive
+          after: 3 follow_up_attempts
+
+    - id: step_5
+      name: Lead Qualification
+      state: qualifying
+      actor: agent
+      actions:
+        - action: gather_requirements
+          questions:
+            - budget_range
+            - purchase_timeline
+            - financing_status
+            - property_requirements
+            - decision_makers
+        - action: assess_fit
+        - action: update_lead_score
+      ui:
+        screen: qualification_form
+        components:
+          - qualification_checklist
+          - budget_input
+          - timeline_selector
+          - notes_field
+      transitions:
+        - to: qualified
+          condition: meets_qualification_criteria
+        - to: lost
+          condition: does_not_qualify
+          action: record_disqualification_reason
+
+    - id: step_6
+      name: Qualified Lead
+      state: qualified
+      actor: agent
+      actions:
+        - action: propose_viewing
+        - action: send_additional_listings
+          optional: true
+        - action: schedule_viewing
+          next: viewing_scheduled
+      ui:
+        screen: qualified_lead
+        components:
+          - seeker_profile
+          - matching_listings
+          - schedule_viewing_button
+          - communication_panel
+      transitions:
+        - to: viewing_scheduled
+          condition: viewing_accepted
+        - to: negotiating
+          condition: ready_to_offer_without_viewing
+        - to: lost
+          condition: seeker_loses_interest
+
+    - id: step_7
+      name: Viewing Scheduled
+      state: viewing_scheduled
+      actor: agent
+      triggers_workflow: viewing_workflow
+      actions:
+        - action: confirm_viewing
+        - action: send_reminders
+          schedule: [1_day_before, 2_hours_before]
+        - action: prepare_property
+      transitions:
+        - to: post_viewing
+          condition: viewing_completed
+        - to: qualified
+          condition: viewing_cancelled_by_seeker
+        - to: lost
+          condition: no_show
+
+    - id: step_8
+      name: Post Viewing Follow-up
+      state: post_viewing
+      actor: agent
+      actions:
+        - action: collect_feedback
+        - action: assess_interest_level
+        - action: address_concerns
+        - action: propose_next_steps
+      ui:
+        screen: post_viewing
+        components:
+          - viewing_feedback_form
+          - interest_level_selector
+          - follow_up_scheduler
+          - offer_preparation
+      transitions:
+        - to: viewing_scheduled
+          condition: wants_another_viewing
+        - to: negotiating
+          condition: ready_to_negotiate
+        - to: qualified
+          condition: needs_more_time
+          action: schedule_follow_up
+        - to: lost
+          condition: not_interested
+          action: record_lost_reason
+
+    - id: step_9
+      name: Negotiation
+      state: negotiating
+      actor: agent
+      actions:
+        - action: facilitate_offer
+        - action: negotiate_terms
+        - action: coordinate_with_owner
+        - action: prepare_documents
+      ui:
+        screen: negotiation
+        components:
+          - offer_form
+          - counter_offer_display
+          - term_negotiation
+          - document_checklist
+      transitions:
+        - to: converted
+          condition: offer_accepted
+        - to: lost
+          condition: negotiation_failed
+
+    - id: step_10
+      name: Conversion
+      state: converted
+      actor: system
+      actions:
+        - action: record_conversion
+          data:
+            - conversion_type
+            - final_price
+            - conversion_date
+        - action: update_listing_status
+        - action: update_metrics
+        - action: trigger_transaction_workflow
+          optional: true
+        - action: request_review
+          from: seeker
+          delay: 7_days
+      notifications:
+        - recipient: agent
+          template: conversion_celebration
+        - recipient: seeker
+          template: thank_you_for_choosing
+
+    - id: step_11
+      name: Lost Lead
+      state: lost
+      actor: agent
+      actions:
+        - action: record_lost_reason
+          required: true
+        - action: add_to_nurture_list
+          condition: lost_reason NOT IN ('spam', 'fake', 'wrong_number')
+        - action: update_analytics
+      nurture_actions:
+        - action: add_to_drip_campaign
+          condition: has_email
+        - action: schedule_recontact
+          delay: 30_days
+          condition: lost_reason = 'timing'
+
+  # Escalation Rules
+  escalation:
+    - trigger: no_response
+      after: sla_target * 0.5
+      action: send_reminder_to_agent
+
+    - trigger: no_response
+      after: sla_target
+      action: escalate_to_manager
+
+    - trigger: no_response
+      after: sla_target * 2
+      action: reassign_inquiry
+
+  # Follow-up Automation
+  automation:
+    follow_up_sequences:
+      - name: new_inquiry_no_response
+        trigger: state = 'new' AND no_response_after_24h
+        sequence:
+          - day_1: email_reminder
+          - day_2: sms_reminder
+          - day_3: escalate
+
+      - name: qualified_nurture
+        trigger: state = 'qualified' AND no_activity_7_days
+        sequence:
+          - week_1: send_similar_listings
+          - week_2: market_update_email
+          - week_4: check_in_call
+
+      - name: lost_reactivation
+        trigger: state = 'lost' AND lost_reason = 'timing'
+        sequence:
+          - month_1: market_update
+          - month_3: new_listings_alert
+          - month_6: re-engagement_offer
+
+  # Notifications
+  notifications:
+    - event: new_inquiry
+      recipients: [agent]
+      channels: [push, email, sms]
+      urgency: high
+      template: new_inquiry_notification
+
+    - event: response_overdue
+      recipients: [agent, manager]
+      channels: [push, email]
+      template: response_overdue_alert
+
+    - event: inquiry_converted
+      recipients: [agent, agency_admin]
+      channels: [email]
+      template: conversion_notification
+
+    - event: seeker_acknowledgment
+      recipients: [seeker]
+      channels: [email, sms]
+      template: inquiry_received
+
+  # Metrics & Analytics
+  metrics:
+    track:
+      - response_time
+      - qualification_rate
+      - viewing_rate
+      - conversion_rate
+      - lost_reasons
+      - time_to_conversion
+      - lead_score_accuracy
+
+  # Integration Points
+  integrations:
+    - crm_sync
+    - email_tracking
+    - call_tracking
+    - sms_gateway
+    - calendar_integration

@@ -1,0 +1,493 @@
+name: Staking
+display_name: Staking / Đặt cọc
+description: |
+  Cryptocurrency staking position representing locked assets
+  earning rewards through proof-of-stake or DeFi mechanisms.
+
+domain: fintech
+sub_domain: crypto
+entity_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique staking position identifier
+
+  # Business Identifier
+  staking_id:
+    type: string
+    max_length: 20
+    unique: true
+    indexed: true
+    pattern: "STK-[A-Z0-9]{8}"
+    description: Human-readable staking ID
+    example: "STK-X1Y2Z3W4"
+
+  # References
+  user_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: User who is staking
+    reference: users.id
+
+  wallet_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Source wallet
+    reference: wallets.id
+
+  asset_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Asset being staked
+    reference: crypto_assets.id
+
+  staking_product_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Staking product/pool
+    reference: staking_products.id
+
+  # Staking Type
+  staking_type:
+    type: enum
+    required: true
+    values:
+      - flexible
+      - locked
+      - defi
+      - eth2
+      - pos
+    description: Type of staking
+    definition:
+      flexible: No lock period, withdraw anytime
+      locked: Fixed lock period with higher rewards
+      defi: DeFi protocol staking
+      eth2: Ethereum 2.0 validator staking
+      pos: Native proof-of-stake
+
+  # Status
+  status:
+    type: enum
+    required: true
+    values:
+      - pending
+      - active
+      - unstaking
+      - completed
+      - cancelled
+    default: pending
+    indexed: true
+    description: Staking position status
+    definition:
+      pending: Awaiting activation
+      active: Currently earning rewards
+      unstaking: In unbonding period
+      completed: Fully unstaked and withdrawn
+      cancelled: Cancelled before activation
+
+  # Amounts
+  staked_amount:
+    type: decimal
+    precision: 28
+    scale: 8
+    required: true
+    description: Amount staked
+
+  current_value:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Current value including rewards
+
+  rewards_earned:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Total rewards earned
+
+  rewards_claimed:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Rewards already claimed
+
+  pending_rewards:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Unclaimed rewards
+
+  # Reward Configuration
+  apy:
+    type: decimal
+    precision: 8
+    scale: 4
+    description: Annual percentage yield at time of staking
+    example: "5.25%"
+
+  reward_asset_id:
+    type: uuid
+    description: Asset in which rewards are paid
+    reference: crypto_assets.id
+
+  reward_frequency:
+    type: enum
+    values:
+      - realtime
+      - hourly
+      - daily
+      - weekly
+      - end_of_term
+    default: daily
+    description: How often rewards are calculated
+
+  auto_restake:
+    type: boolean
+    default: false
+    description: Automatically restake rewards
+
+  # Lock Period
+  lock_period_days:
+    type: integer
+    description: Lock duration in days
+    example: 30
+
+  is_locked:
+    type: boolean
+    calculated: true
+    description: Whether position is currently locked
+
+  unlock_date:
+    type: timestamp
+    description: When locked period ends
+
+  # Unstaking
+  unstaking_period_days:
+    type: integer
+    description: Days required to unstake
+    example: 7
+
+  unstaking_started_at:
+    type: timestamp
+    description: When unstaking was initiated
+
+  unstaking_completes_at:
+    type: timestamp
+    description: When unstaking completes
+
+  # Early Withdrawal
+  early_withdrawal_allowed:
+    type: boolean
+    default: false
+    description: Can withdraw before unlock
+
+  early_withdrawal_penalty:
+    type: decimal
+    precision: 5
+    scale: 4
+    description: Penalty for early withdrawal (0.10 = 10%)
+
+  # Validator Information (for PoS)
+  validator_address:
+    type: string
+    max_length: 200
+    description: Validator/node address
+
+  validator_name:
+    type: string
+    max_length: 100
+    description: Validator name
+
+  delegation_tx_hash:
+    type: string
+    max_length: 100
+    description: On-chain delegation transaction
+
+  # Timestamps
+  created_at:
+    type: timestamp
+    auto_generate: true
+    description: When position was created
+
+  activated_at:
+    type: timestamp
+    description: When staking became active
+
+  last_reward_at:
+    type: timestamp
+    description: Last reward distribution
+
+  completed_at:
+    type: timestamp
+    description: When position was closed
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending
+  transitions:
+    pending:
+      - to: active
+        event: activate
+        actions:
+          - lock_balance
+          - start_reward_accrual
+          - record_apy
+
+      - to: cancelled
+        event: cancel
+        conditions:
+          - user_request
+          - before_activation
+        actions:
+          - refund_balance
+          - notify_user
+
+    active:
+      - to: active
+        event: claim_rewards
+        conditions:
+          - rewards_available
+        actions:
+          - transfer_rewards
+          - reset_pending_rewards
+
+      - to: unstaking
+        event: initiate_unstake
+        conditions:
+          - not_locked OR lock_expired
+        actions:
+          - stop_reward_accrual
+          - start_unbonding_timer
+
+      - to: active
+        event: early_withdraw
+        conditions:
+          - early_withdrawal_allowed
+        actions:
+          - calculate_penalty
+          - apply_penalty
+          - unlock_remaining
+
+    unstaking:
+      - to: completed
+        event: unstaking_complete
+        conditions:
+          - unbonding_period_elapsed
+        actions:
+          - unlock_balance
+          - transfer_final_rewards
+          - notify_user
+
+    completed:
+      terminal: true
+
+    cancelled:
+      terminal: true
+
+# =============================================================================
+# STAKING PRODUCTS
+# =============================================================================
+staking_products:
+  description: Pre-defined staking products/pools
+
+  example_products:
+    - name: ETH Flexible Staking
+      asset: ETH
+      type: flexible
+      apy_range: "3.0% - 4.5%"
+      min_amount: 0.01
+      lock_period: 0
+      unstaking_period: 0
+
+    - name: ETH 30-Day Locked
+      asset: ETH
+      type: locked
+      apy: "5.5%"
+      min_amount: 0.1
+      lock_period: 30
+      unstaking_period: 0
+
+    - name: ETH 90-Day Locked
+      asset: ETH
+      type: locked
+      apy: "7.0%"
+      min_amount: 0.5
+      lock_period: 90
+      unstaking_period: 0
+
+    - name: SOL Staking
+      asset: SOL
+      type: pos
+      apy_range: "6.0% - 8.0%"
+      min_amount: 1
+      lock_period: 0
+      unstaking_period: 3
+
+    - name: ETH 2.0 Staking
+      asset: ETH
+      type: eth2
+      apy_range: "4.0% - 5.0%"
+      min_amount: 32
+      lock_period: until_withdrawals
+      note: "Locked until ETH 2.0 withdrawals enabled"
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  user:
+    type: belongs_to
+    entity: User
+    foreign_key: user_id
+
+  wallet:
+    type: belongs_to
+    entity: Wallet
+    foreign_key: wallet_id
+
+  asset:
+    type: belongs_to
+    entity: CryptoAsset
+    foreign_key: asset_id
+
+  reward_asset:
+    type: belongs_to
+    entity: CryptoAsset
+    foreign_key: reward_asset_id
+
+  reward_history:
+    type: has_many
+    entity: StakingReward
+    foreign_key: staking_id
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_staking_user
+    columns: [user_id]
+
+  - name: idx_staking_user_status
+    columns: [user_id, status]
+
+  - name: idx_staking_asset
+    columns: [asset_id]
+
+  - name: idx_staking_active
+    columns: [status, last_reward_at]
+    condition: "status = 'active'"
+
+  - name: idx_staking_unstaking
+    columns: [unstaking_completes_at]
+    condition: "status = 'unstaking'"
+
+# =============================================================================
+# REWARD CALCULATION
+# =============================================================================
+reward_calculation:
+  description: How staking rewards are calculated
+
+  formulas:
+    daily_reward:
+      formula: staked_amount * (apy / 365)
+      description: Simple daily reward based on APY
+
+    compound_reward:
+      formula: staked_amount * ((1 + apy/365)^days - 1)
+      description: Compound interest over period
+
+    variable_apy:
+      description: |
+        APY varies based on total staked in pool.
+        Higher participation = lower individual APY.
+      formula: base_apy * (1 - utilization_factor)
+
+  distribution_methods:
+    pro_rata:
+      description: Proportional to stake amount
+      formula: pool_rewards * (user_stake / total_staked)
+
+    time_weighted:
+      description: Weighted by staking duration
+      formula: pool_rewards * (user_stake * duration) / total_weighted_stake
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-STK-001
+    name: Minimum Stake
+    name_vi: Đặt cọc tối thiểu
+    description: Stake must meet minimum amount per product
+    enforcement: validation
+
+  - id: BR-STK-002
+    name: Lock Period Enforcement
+    name_vi: Thực thi thời gian khóa
+    description: Cannot unstake during lock period unless penalty accepted
+    enforcement: state_machine
+
+  - id: BR-STK-003
+    name: Reward Accrual
+    name_vi: Tích lũy phần thưởng
+    description: Rewards accrue from activation, not creation
+    enforcement: application_logic
+
+  - id: BR-STK-004
+    name: Unbonding Period
+    name_vi: Thời gian hủy ràng buộc
+    description: Must wait unbonding period after initiating unstake
+    enforcement: state_machine
+
+  - id: BR-STK-005
+    name: Balance Sufficiency
+    name_vi: Đủ số dư
+    description: Available balance must cover staking amount
+    enforcement: validation
+
+# =============================================================================
+# VALIDATIONS
+# =============================================================================
+validations:
+  staked_amount:
+    - rule: numericality
+      greater_than: 0
+      message: Staked amount must be positive
+
+    - rule: minimum_amount
+      depends_on: staking_product_id
+      message: Amount below minimum for this product
+
+  auto_restake:
+    - rule: compatibility
+      valid_when: reward_asset_id == asset_id
+      message: Auto-restake only available when reward asset matches stake asset
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  log_all_operations: true
+  sensitive_fields: []
+  retention_years: 10

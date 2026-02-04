@@ -1,0 +1,433 @@
+# Enrollment Business Rules
+# F5 Framework v2.0 - Education/LMS
+# Rules governing course enrollment
+
+business_rules:
+  id: enrollment-rules
+  name: Enrollment Rules
+  name_ja: 登録ルール
+  description: Business rules for course enrollment management
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  rules:
+    # Prerequisites Check
+    - id: BR-ENR-001
+      name: Prerequisites Check
+      name_ja: 前提条件チェック
+      description: Verify learner has completed required prerequisite courses
+      category: eligibility
+      priority: critical
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: course.prerequisites
+          operator: is_not_empty
+        - field: learner.completions
+          operator: must_include
+          value: course.prerequisites
+          
+      actions:
+        on_pass:
+          - allow_enrollment
+        on_fail:
+          - reject_enrollment
+          - message:
+              key: enrollment.prerequisites_not_met
+              params:
+                missing_courses: "{{missing_prerequisites}}"
+                
+      exceptions:
+        - condition: learner.is_admin
+          action: allow_enrollment
+        - condition: enrollment.override_approved
+          action: allow_enrollment
+          
+      compliance:
+        - standard: SCORM
+          requirement: completion_status_tracking
+
+    # Enrollment Capacity
+    - id: BR-ENR-002
+      name: Enrollment Capacity
+      name_ja: 登録定員
+      description: Ensure course does not exceed maximum enrollment capacity
+      category: capacity
+      priority: high
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: course.max_students
+          operator: is_not_null
+        - field: course.active_enrollments_count
+          operator: less_than
+          value: course.max_students
+          
+      actions:
+        on_pass:
+          - allow_enrollment
+        on_fail:
+          - add_to_waitlist
+          - notify_learner:
+              template: waitlist_notification
+          - message:
+              key: enrollment.capacity_reached
+              params:
+                waitlist_position: "{{waitlist_position}}"
+                
+      exceptions:
+        - condition: enrollment.is_override
+          action: allow_enrollment
+          requires_approval: true
+          
+    # Enrollment Period
+    - id: BR-ENR-010
+      name: Enrollment Period Validation
+      name_ja: 登録期間検証
+      description: Verify enrollment is within allowed period
+      category: timing
+      priority: high
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: course.enrollment_start_date
+          operator: is_null_or_past
+        - field: course.enrollment_end_date
+          operator: is_null_or_future
+          
+      actions:
+        on_pass:
+          - continue_enrollment_process
+        on_fail:
+          - reject_enrollment
+          - message:
+              key: enrollment.outside_period
+              params:
+                enrollment_start: "{{course.enrollment_start_date}}"
+                enrollment_end: "{{course.enrollment_end_date}}"
+                
+      validations:
+        - type: date_range
+          start: course.enrollment_start_date
+          end: course.enrollment_end_date
+          
+    # Duplicate Enrollment Prevention
+    - id: BR-ENR-020
+      name: Duplicate Enrollment Prevention
+      name_ja: 重複登録防止
+      description: Prevent learner from enrolling in same course twice
+      category: validation
+      priority: critical
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: existing_enrollment
+          operator: not_exists
+          where:
+            learner_id: "{{learner.id}}"
+            course_id: "{{course.id}}"
+            status:
+              not_in: [completed, dropped, refunded, expired]
+              
+      actions:
+        on_pass:
+          - allow_enrollment
+        on_fail:
+          - reject_enrollment
+          - message:
+              key: enrollment.already_enrolled
+              
+      exceptions:
+        - condition: course.allows_re_enrollment
+          additional_check: previous_enrollment.status == 'completed'
+          action: allow_enrollment
+          creates_new_record: true
+          
+    # Payment Required
+    - id: BR-ENR-030
+      name: Payment Required
+      name_ja: 支払い必須
+      description: Ensure payment is completed for paid courses
+      category: payment
+      priority: critical
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: course.price
+          operator: greater_than
+          value: 0
+        - field: payment.status
+          operator: equals
+          value: completed
+          
+      actions:
+        on_pass:
+          - activate_enrollment
+        on_fail:
+          - create_pending_enrollment
+          - redirect_to_payment
+          - message:
+              key: enrollment.payment_required
+              params:
+                amount: "{{course.price}}"
+                currency: "{{course.currency}}"
+                
+      exceptions:
+        - condition: enrollment.is_scholarship
+          action: activate_enrollment
+        - condition: enrollment.is_corporate
+          action: activate_enrollment_with_invoicing
+        - condition: course.has_trial_period
+          action: activate_trial_enrollment
+          
+      payment_integration:
+        providers: [stripe, paypal, corporate_billing]
+        refund_policy: course.refund_policy
+        
+    # Seat Allocation (B2B)
+    - id: BR-ENR-040
+      name: Seat Allocation
+      name_ja: シート割り当て
+      description: Allocate corporate seat for B2B enrollments
+      category: b2b
+      priority: high
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        conditions:
+          - enrollment.is_corporate == true
+          
+      conditions:
+        - field: organization.available_seats
+          operator: greater_than
+          value: 0
+        - field: seat_assignment.is_valid
+          operator: equals
+          value: true
+          
+      actions:
+        on_pass:
+          - allocate_seat
+          - decrement_available_seats
+          - activate_enrollment
+        on_fail:
+          - reject_enrollment
+          - notify_organization_admin
+          - message:
+              key: enrollment.no_seats_available
+              
+      seat_management:
+        auto_release_on:
+          - enrollment_dropped
+          - enrollment_expired
+          - enrollment_refunded
+        transfer_allowed: true
+        reassignment_cooldown: 24h
+        
+    # Age Restriction (COPPA)
+    - id: BR-ENR-050
+      name: Age Restriction Compliance
+      name_ja: 年齢制限コンプライアンス
+      description: Enforce age restrictions for course access
+      category: compliance
+      priority: critical
+      
+      trigger:
+        event: enrollment_requested
+        entity: enrollment
+        conditions:
+          - course.minimum_age != null
+          
+      conditions:
+        - field: learner.age
+          operator: greater_than_or_equal
+          value: course.minimum_age
+          
+      actions:
+        on_pass:
+          - allow_enrollment
+        on_fail:
+          - reject_enrollment
+          - message:
+              key: enrollment.age_restriction
+              params:
+                minimum_age: "{{course.minimum_age}}"
+                
+      compliance:
+        - standard: COPPA
+          requirement: parental_consent_under_13
+        - standard: GDPR
+          requirement: age_verification
+          
+      exceptions:
+        - condition: parental_consent.is_verified
+          applies_to: age < 13
+          action: allow_enrollment_with_restrictions
+          
+    # Cohort Assignment
+    - id: BR-ENR-060
+      name: Cohort Assignment
+      name_ja: コホート割り当て
+      description: Assign learner to appropriate cohort
+      category: organization
+      priority: medium
+      
+      trigger:
+        event: enrollment_activated
+        entity: enrollment
+        conditions:
+          - course.delivery_mode in ['instructor_led', 'cohort_based']
+          
+      conditions:
+        - field: cohort.available_slots
+          operator: greater_than
+          value: 0
+        - field: cohort.status
+          operator: equals
+          value: accepting_enrollment
+          
+      actions:
+        on_pass:
+          - assign_to_cohort
+          - update_enrollment:
+              cohort_id: "{{selected_cohort.id}}"
+        on_fail:
+          - assign_to_waitlist
+          - notify_learner:
+              template: cohort_waitlist
+              
+      selection_criteria:
+        - preferred_cohort_id
+        - learner_timezone_match
+        - earliest_start_date
+        - available_capacity
+        
+    # Enrollment Expiration
+    - id: BR-ENR-070
+      name: Enrollment Expiration
+      name_ja: 登録有効期限
+      description: Set and enforce enrollment expiration
+      category: access
+      priority: high
+      
+      trigger:
+        event: enrollment_activated
+        entity: enrollment
+        
+      conditions:
+        - field: course.access_duration_days
+          operator: is_not_null
+          
+      actions:
+        - calculate_expiration:
+            formula: "enrollment.activated_at + course.access_duration_days"
+        - set_expiration:
+            field: enrollment.expires_at
+        - schedule_notification:
+            template: expiration_warning
+            timing:
+              - days_before: 30
+              - days_before: 7
+              - days_before: 1
+              
+      on_expiration:
+        - update_status: expired
+        - revoke_access
+        - archive_progress
+        - offer_extension: true
+        
+    # Group Enrollment
+    - id: BR-ENR-080
+      name: Group Enrollment Processing
+      name_ja: グループ登録処理
+      description: Handle bulk enrollment for groups
+      category: b2b
+      priority: medium
+      
+      trigger:
+        event: group_enrollment_requested
+        entity: enrollment
+        
+      conditions:
+        - field: group.member_count
+          operator: less_than_or_equal
+          value: organization.available_seats
+        - field: group.members
+          operator: all_meet_prerequisites
+          
+      actions:
+        on_pass:
+          - create_enrollments:
+              for_each: group.members
+          - allocate_seats:
+              count: group.member_count
+          - notify_members:
+              template: group_enrollment_confirmation
+        on_fail:
+          - partial_enrollment:
+              eligible_members_only: true
+          - notify_admin:
+              template: partial_enrollment_report
+              
+      group_management:
+        max_group_size: 100
+        allow_partial: true
+        notification_to_manager: true
+
+  validation_rules:
+    enrollment_request:
+      required_fields:
+        - learner_id
+        - course_id
+      optional_fields:
+        - cohort_id
+        - organization_id
+        - assigned_by
+        - coupon_code
+        
+    corporate_enrollment:
+      required_fields:
+        - organization_id
+        - assigned_by
+      validation:
+        - seat_available
+        - assignment_authorized
+
+  error_codes:
+    ENR-001: "Prerequisites not met"
+    ENR-002: "Course at capacity"
+    ENR-003: "Enrollment period closed"
+    ENR-004: "Already enrolled"
+    ENR-005: "Payment required"
+    ENR-006: "No seats available"
+    ENR-007: "Age restriction"
+    ENR-008: "Cohort full"
+    ENR-009: "Enrollment expired"
+    ENR-010: "Group size exceeds limit"
+
+  audit:
+    enabled: true
+    log_events:
+      - enrollment_created
+      - enrollment_activated
+      - enrollment_rejected
+      - enrollment_expired
+      - seat_allocated
+      - seat_released

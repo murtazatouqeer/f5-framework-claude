@@ -1,0 +1,540 @@
+name: inventory-count-workflow
+display_name: Inventory Count Workflow
+display_name_vi: Quy trình kiểm kê kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Workflow for physical inventory counting including cycle counts,
+  annual counts, and spot checks. Covers planning, execution,
+  variance analysis, and adjustment posting.
+
+workflow_type: sequential
+triggers:
+  - Scheduled cycle count
+  - Annual inventory
+  - Discrepancy investigation
+  - Audit requirement
+  - Material movement anomaly
+
+participants:
+  - role: count_planner
+    description: Inventory analyst/planner
+  - role: count_supervisor
+    description: Count team supervisor
+  - role: counter
+    description: Physical counter
+  - role: verifier
+    description: Count verifier/auditor
+  - role: approver
+    description: Adjustment approver
+  - role: finance
+    description: Finance representative
+
+stages:
+  # ============================================
+  # STAGE 1: PLANNING
+  # ============================================
+  - id: planning
+    name: Count Planning
+    name_vi: Lập kế hoạch kiểm kê
+    sequence: 1
+    description: Plan and prepare for inventory count
+
+    steps:
+      - id: determine_scope
+        name: Determine Count Scope
+        actor: count_planner
+        description: Define what will be counted
+        scope_types:
+          full_count:
+            description: All inventory in warehouse
+            frequency: Annual
+            use_case: Year-end inventory
+          cycle_count:
+            description: Subset of inventory
+            frequency: Continuous
+            use_case: Regular accuracy maintenance
+          abc_count:
+            description: Based on ABC classification
+            frequency: A=Monthly, B=Quarterly, C=Semi-annual
+            use_case: Value-based prioritization
+          spot_count:
+            description: Specific items/locations
+            frequency: As needed
+            use_case: Discrepancy investigation
+        selection_criteria:
+          - Last count date
+          - ABC classification
+          - Transaction frequency
+          - Value
+          - Variance history
+        outputs:
+          - Count scope definition
+
+      - id: schedule_count
+        name: Schedule Count
+        actor: count_planner
+        description: Set count date and resources
+        scheduling_considerations:
+          - Minimize business disruption
+          - Staff availability
+          - Stock movement patterns
+          - Accounting calendar
+        resource_planning:
+          - Counter assignments
+          - Equipment needs
+          - Time estimates
+        outputs:
+          - Count schedule
+          - Resource assignments
+
+      - id: prepare_count_documents
+        name: Prepare Count Documents
+        actor: system
+        description: Generate count sheets
+        document_types:
+          count_sheet:
+            - Location
+            - Material
+            - System quantity (unless blind)
+            - Count fields
+          location_list:
+            - All locations in scope
+            - Empty location flags
+        count_modes:
+          blind: System quantity hidden
+          guided: System quantity shown
+        outputs:
+          - Count documents
+
+      - id: notify_participants
+        name: Notify Participants
+        actor: count_planner
+        description: Inform all stakeholders
+        notifications:
+          - Counters: Assignment and schedule
+          - Warehouse: Movement restrictions
+          - Production: Impact awareness
+          - Finance: Audit participation
+        outputs:
+          - Notifications sent
+
+  # ============================================
+  # STAGE 2: PREPARATION
+  # ============================================
+  - id: preparation
+    name: Count Preparation
+    name_vi: Chuẩn bị kiểm kê
+    sequence: 2
+    description: Prepare warehouse for counting
+
+    steps:
+      - id: freeze_inventory
+        name: Freeze Inventory
+        actor: count_supervisor
+        description: Stop or control stock movements
+        freeze_options:
+          full_freeze:
+            - No receipts or issues
+            - Used for annual count
+          partial_freeze:
+            - Count zones frozen sequentially
+            - Business continues elsewhere
+          no_freeze:
+            - Real-time adjustment
+            - Used for cycle counts
+        documentation:
+          - Freeze start time
+          - In-transit cutoff
+          - Pending transactions
+        outputs:
+          - Frozen inventory status
+
+      - id: clear_staging
+        name: Clear Staging Areas
+        actor: count_supervisor
+        description: Ensure no unprocessed materials
+        actions:
+          - Process pending receipts
+          - Complete pending putaways
+          - Clear staging areas
+          - Document exceptions
+        outputs:
+          - Clean staging areas
+
+      - id: organize_inventory
+        name: Organize Inventory
+        actor: source_warehouse
+        description: Prepare physical inventory
+        actions:
+          - Ensure proper labeling
+          - Organize bins
+          - Consolidate partial units
+          - Flag damaged items
+        outputs:
+          - Organized inventory
+
+      - id: brief_counters
+        name: Brief Counters
+        actor: count_supervisor
+        description: Train and brief count team
+        briefing_topics:
+          - Count procedures
+          - Count sheet usage
+          - UoM verification
+          - Exception handling
+          - Safety procedures
+        outputs:
+          - Trained count team
+
+  # ============================================
+  # STAGE 3: COUNTING
+  # ============================================
+  - id: counting
+    name: Physical Counting
+    name_vi: Kiểm đếm thực tế
+    sequence: 3
+    description: Execute physical count
+
+    steps:
+      - id: first_count
+        name: First Count
+        actor: counter
+        description: Initial physical count
+        process:
+          - Go to assigned location
+          - Identify material
+          - Count physical quantity
+          - Record on count sheet
+          - Move to next location
+        counting_methods:
+          piece_count: Count individual items
+          case_count: Count cases × units/case
+          weight_count: Weigh and calculate
+          volume_measure: Measure liquid levels
+        validation:
+          - UoM correct
+          - Count complete (no partial)
+          - Legible recording
+        outputs:
+          - First count results
+
+      - id: enter_counts
+        name: Enter Count Results
+        actor: counter
+        description: Record counts in system
+        data_entry:
+          - Location
+          - Material
+          - Counted quantity
+          - Batch/serial (if applicable)
+          - Counter ID
+        validation:
+          - Required fields complete
+          - Quantity format valid
+        outputs:
+          - Recorded counts
+
+      - id: identify_variances
+        name: Identify Variances
+        actor: system
+        description: Compare count to system
+        calculation: |
+          Variance = Counted_Qty - System_Qty
+          Variance_% = (Variance / System_Qty) × 100
+        flags:
+          recount_required: Variance > threshold
+          investigate: Large variance
+          approve_required: Any variance
+        outputs:
+          - Variance report
+
+      - id: recount
+        name: Recount
+        actor: verifier
+        description: Second count for variances
+        conditions:
+          - Variance exceeds threshold
+          - Different counter required
+        process:
+          - Recount items with variance
+          - Investigate discrepancy
+          - Document findings
+        outcomes:
+          matches_first: Accept first count
+          matches_system: System correct
+          new_count: Different result
+        outputs:
+          - Verified count
+
+  # ============================================
+  # STAGE 4: ANALYSIS
+  # ============================================
+  - id: analysis
+    name: Variance Analysis
+    name_vi: Phân tích chênh lệch
+    sequence: 4
+    description: Analyze count variances
+
+    steps:
+      - id: review_variances
+        name: Review Variances
+        actor: count_supervisor
+        description: Analyze all variances
+        analysis_dimensions:
+          by_location: Identify problem areas
+          by_material: Identify problem SKUs
+          by_value: Prioritize investigation
+          by_type: Over vs under
+        investigation_areas:
+          - Transaction errors
+          - Unrecorded movements
+          - Theft/shrinkage
+          - Damaged goods
+          - UoM errors
+          - Counting errors
+        outputs:
+          - Variance analysis report
+
+      - id: root_cause_investigation
+        name: Root Cause Investigation
+        actor: count_supervisor
+        description: Investigate significant variances
+        investigation_steps:
+          - Review transaction history
+          - Check pending transactions
+          - Interview personnel
+          - Physical re-verification
+          - Document evidence
+        common_causes:
+          - Unrecorded scrap
+          - Unreported damage
+          - Picking errors
+          - Receipt errors
+          - System errors
+          - Theft
+        outputs:
+          - Root cause findings
+
+      - id: document_findings
+        name: Document Findings
+        actor: count_supervisor
+        description: Record investigation results
+        documentation:
+          - Variance explanation
+          - Supporting evidence
+          - Recommended action
+          - Preventive measures
+        outputs:
+          - Investigation documentation
+
+  # ============================================
+  # STAGE 5: ADJUSTMENT
+  # ============================================
+  - id: adjustment
+    name: Adjustment Processing
+    name_vi: Xử lý điều chỉnh
+    sequence: 5
+    description: Process inventory adjustments
+
+    steps:
+      - id: prepare_adjustments
+        name: Prepare Adjustments
+        actor: count_supervisor
+        description: Prepare adjustment entries
+        adjustment_data:
+          - Material
+          - Location
+          - Adjustment quantity (+/-)
+          - Batch/serial
+          - Reason code
+          - Value impact
+        grouping:
+          - By approval level
+          - By reason code
+          - By value
+        outputs:
+          - Adjustment proposals
+
+      - id: approval_routing
+        name: Approval Routing
+        actor: system
+        description: Route for approval based on value
+        approval_matrix:
+          - value: "< 1,000,000 VND"
+            approver: Supervisor
+          - value: "1-5,000,000 VND"
+            approver: Manager
+          - value: "5-20,000,000 VND"
+            approver: Director
+          - value: "> 20,000,000 VND"
+            approver: Finance Director
+        outputs:
+          - Approval routing
+
+      - id: approve_adjustments
+        name: Approve Adjustments
+        actor: approver
+        description: Review and approve adjustments
+        review_elements:
+          - Variance explanation
+          - Investigation findings
+          - Supporting evidence
+          - Value impact
+        decisions:
+          approve: Proceed with posting
+          reject: Return for re-investigation
+          partial: Approve some, reject others
+        outputs:
+          - Approved adjustments
+
+      - id: post_adjustments
+        name: Post Adjustments
+        actor: count_supervisor
+        description: Post approved adjustments
+        transactions:
+          increase:
+            type: "Positive adjustment"
+            movement_type: "561"
+          decrease:
+            type: "Negative adjustment"
+            movement_type: "562"
+        accounting:
+          - Debit/Credit inventory
+          - Offset to variance account
+        outputs:
+          - Posted adjustments
+          - Adjustment documents
+
+  # ============================================
+  # STAGE 6: COMPLETION
+  # ============================================
+  - id: completion
+    name: Count Completion
+    name_vi: Hoàn tất kiểm kê
+    sequence: 6
+    description: Complete count and report
+
+    steps:
+      - id: unfreeze_inventory
+        name: Unfreeze Inventory
+        actor: count_supervisor
+        description: Release inventory freeze
+        actions:
+          - Remove movement blocks
+          - Resume normal operations
+          - Process held transactions
+        outputs:
+          - Normal operations resumed
+
+      - id: generate_reports
+        name: Generate Reports
+        actor: system
+        description: Create count reports
+        reports:
+          count_summary:
+            - Total locations counted
+            - Total items counted
+            - Variance summary
+            - Adjustment summary
+          accuracy_report:
+            - Location accuracy %
+            - Item accuracy %
+            - Value accuracy %
+          trend_report:
+            - Comparison to prior counts
+            - Problem area trends
+        outputs:
+          - Count reports
+
+      - id: update_metrics
+        name: Update Metrics
+        actor: system
+        description: Update inventory accuracy metrics
+        metrics_updated:
+          - Inventory accuracy rate
+          - Location accuracy rate
+          - Value accuracy rate
+          - Cycle count compliance
+        last_count_tracking:
+          - Update last count date
+          - Reset count cycle
+        outputs:
+          - Updated metrics
+
+      - id: corrective_actions
+        name: Implement Corrective Actions
+        actor: count_planner
+        description: Address identified issues
+        actions:
+          - Process improvements
+          - Training needs
+          - System corrections
+          - Procedure updates
+        tracking:
+          - Action items
+          - Responsible parties
+          - Due dates
+          - Follow-up
+        outputs:
+          - Corrective action plan
+
+process_metrics:
+  - name: Inventory Accuracy
+    formula: (Accurate_Counts / Total_Counts) × 100
+    target: "> 99%"
+
+  - name: Location Accuracy
+    formula: (Accurate_Locations / Total_Locations) × 100
+    target: "> 99%"
+
+  - name: Value Accuracy
+    formula: ABS(System_Value - Actual_Value) / System_Value
+    target: "< 1%"
+
+  - name: Count Cycle Compliance
+    formula: (Counts_Completed_On_Time / Counts_Scheduled) × 100
+    target: "> 95%"
+
+  - name: Adjustment Value
+    formula: SUM(ABS(Adjustment_Values))
+    target: "< 0.5% of inventory value"
+
+count_frequencies:
+  abc_classification:
+    A_class:
+      frequency: Monthly
+      percentage_of_value: 80%
+      percentage_of_items: 20%
+    B_class:
+      frequency: Quarterly
+      percentage_of_value: 15%
+      percentage_of_items: 30%
+    C_class:
+      frequency: Semi-annual
+      percentage_of_value: 5%
+      percentage_of_items: 50%
+
+  annual_count:
+    timing: Fiscal year end
+    duration: 2-3 days
+    freeze: Full warehouse freeze
+
+variance_thresholds:
+  recount_required:
+    percentage: "> 2%"
+    absolute: "> 10 units"
+  investigation_required:
+    percentage: "> 5%"
+    absolute: "> 50 units"
+    value: "> 1,000,000 VND"
+
+integrations:
+  - system: WMS
+    integration_points: [count_generation, location_management, RF_counting]
+  - system: ERP
+    integration_points: [adjustment_posting, GL_integration]
+  - system: Audit
+    integration_points: [count_documentation, variance_reporting]

@@ -1,0 +1,600 @@
+# Revocation Workflow
+# F5 Framework v2.0 - Education/Certification
+# Workflow for certificate and badge revocation
+
+workflow:
+  id: revocation
+  name: Credential Revocation Workflow
+  name_ja: 資格取消ワークフロー
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    Workflow for revoking certificates and badges due to violations,
+    fraud, or other grounds, including appeal process and reinstatement.
+
+  triggers:
+    - id: violation_reported
+      name: Violation Reported
+      description: Ethics or conduct violation reported
+      event: revocation.violation.reported
+      automatic: false
+      
+    - id: fraud_detected
+      name: Fraud Detected
+      description: System detects fraudulent activity
+      event: revocation.fraud.detected
+      automatic: true
+      
+    - id: holder_request
+      name: Holder Requested
+      description: Holder voluntarily surrenders credential
+      event: revocation.holder.request
+      automatic: false
+      
+    - id: program_discontinued
+      name: Program Discontinued
+      description: Certification program discontinued
+      event: revocation.program.discontinued
+      automatic: true
+
+  actors:
+    - id: reporter
+      name: Reporter
+      description: Person reporting the violation
+      
+    - id: investigator
+      name: Investigator
+      description: Staff investigating the case
+      
+    - id: review_board
+      name: Review Board
+      description: Committee making revocation decisions
+      
+    - id: holder
+      name: Credential Holder
+      description: Person whose credential may be revoked
+      
+    - id: admin
+      name: Certification Admin
+      description: Administrative personnel
+      
+    - id: legal
+      name: Legal Counsel
+      description: Legal review for complex cases
+
+  states:
+    - id: initiated
+      name: Initiated
+      name_ja: 開始済み
+      description: Revocation process started
+      
+    - id: under_investigation
+      name: Under Investigation
+      name_ja: 調査中
+      description: Case being investigated
+      
+    - id: holder_notified
+      name: Holder Notified
+      name_ja: 保有者通知済み
+      description: Holder informed of potential revocation
+      
+    - id: response_pending
+      name: Response Pending
+      name_ja: 回答待ち
+      description: Awaiting holder response
+      
+    - id: review_board_review
+      name: Review Board Review
+      name_ja: 審査委員会レビュー
+      description: Committee reviewing case
+      
+    - id: legal_review
+      name: Legal Review
+      name_ja: 法務レビュー
+      description: Legal counsel reviewing
+      
+    - id: decision_made
+      name: Decision Made
+      name_ja: 決定済み
+      description: Revocation decision finalized
+      
+    - id: revoked
+      name: Revoked
+      name_ja: 取消済み
+      description: Credential has been revoked
+      
+    - id: appeal_filed
+      name: Appeal Filed
+      name_ja: 控訴提出
+      description: Holder has filed appeal
+      
+    - id: appeal_review
+      name: Appeal Review
+      name_ja: 控訴審査
+      description: Appeal under review
+      
+    - id: appeal_decided
+      name: Appeal Decided
+      name_ja: 控訴決定
+      description: Appeal decision made
+      
+    - id: reinstated
+      name: Reinstated
+      name_ja: 復帰済み
+      description: Credential reinstated after appeal
+      
+    - id: closed
+      name: Closed
+      name_ja: 終了
+      description: Case closed
+
+  transitions:
+    - from: initiated
+      to: under_investigation
+      trigger: investigation_started
+      action: assign_investigator
+      
+    - from: initiated
+      to: revoked
+      condition: "reason = 'holder_request' OR reason = 'program_discontinued'"
+      action: immediate_revocation
+      
+    - from: under_investigation
+      to: holder_notified
+      trigger: evidence_collected
+      action: notify_holder
+      
+    - from: under_investigation
+      to: closed
+      condition: "evidence_insufficient"
+      action: close_case
+      
+    - from: holder_notified
+      to: response_pending
+      trigger: notification_sent
+      action: await_response
+      
+    - from: response_pending
+      to: review_board_review
+      trigger: response_received OR response_timeout
+      action: submit_to_board
+      
+    - from: review_board_review
+      to: legal_review
+      condition: "requires_legal = true"
+      action: request_legal_review
+      
+    - from: review_board_review
+      to: decision_made
+      trigger: board_decision
+      action: record_decision
+      
+    - from: legal_review
+      to: decision_made
+      trigger: legal_clearance
+      action: record_decision
+      
+    - from: decision_made
+      to: revoked
+      condition: "decision = 'revoke'"
+      action: execute_revocation
+      
+    - from: decision_made
+      to: closed
+      condition: "decision = 'no_action'"
+      action: close_case
+      
+    - from: revoked
+      to: appeal_filed
+      trigger: holder_appeals
+      condition: "within_appeal_window"
+      action: open_appeal
+      
+    - from: revoked
+      to: closed
+      trigger: appeal_window_expired
+      action: finalize_revocation
+      
+    - from: appeal_filed
+      to: appeal_review
+      trigger: appeal_accepted
+      action: review_appeal
+      
+    - from: appeal_review
+      to: appeal_decided
+      trigger: appeal_decision
+      action: record_appeal_decision
+      
+    - from: appeal_decided
+      to: reinstated
+      condition: "appeal_result = 'granted'"
+      action: reinstate_credential
+      
+    - from: appeal_decided
+      to: closed
+      condition: "appeal_result = 'denied'"
+      action: uphold_revocation
+      
+    - from: reinstated
+      to: closed
+      trigger: reinstatement_complete
+      action: close_case
+
+  steps:
+    - step: 1
+      name: Initiate Revocation Case
+      name_ja: 取消案件開始
+      actor: system
+      state: initiated
+      
+      input_variants:
+        violation_report:
+          reporter_info: required
+          credential_id: required
+          violation_type: required
+          evidence: recommended
+          
+        fraud_detection:
+          detection_method: system
+          credential_id: required
+          fraud_indicators: required
+          
+        holder_request:
+          holder_id: required
+          credential_id: required
+          reason: optional
+          
+        program_discontinued:
+          program_id: required
+          effective_date: required
+          
+      actions:
+        - create_revocation_record
+        - capture_credential_snapshot
+        - determine_processing_path
+        
+      reason_codes:
+        - REV-001: Ethics violation
+        - REV-002: Fraud or misrepresentation
+        - REV-003: Criminal conviction
+        - REV-004: Exam cheating
+        - REV-005: Credential sharing/misuse
+        - REV-006: Holder request
+        - REV-007: Program discontinued
+        - REV-008: Employer request with cause
+        - REV-009: Death of holder
+        - REV-010: Legal/court order
+        
+      outputs:
+        - revocation_id
+        - reason_code
+        - processing_path
+        
+    - step: 2
+      name: Investigate Case
+      name_ja: 案件調査
+      actor: investigator
+      state: under_investigation
+      condition: "processing_path = 'standard'"
+      
+      investigation_activities:
+        - gather_evidence:
+            sources:
+              - original_report
+              - credential_records
+              - exam_records
+              - ceu_records
+              - previous_complaints
+              
+        - verify_claims:
+            methods:
+              - document_review
+              - witness_interviews
+              - system_log_analysis
+              
+        - assess_severity:
+            factors:
+              - intentionality
+              - impact
+              - repeat_offense
+              - self_disclosure
+              
+      evidence_documentation:
+        required:
+          - evidence_summary
+          - supporting_documents
+          - investigator_assessment
+        optional:
+          - witness_statements
+          - system_logs
+          
+      timeout:
+        duration_days: 30
+        action: escalate_to_admin
+        
+      outputs:
+        - investigation_report
+        - evidence_package
+        - severity_assessment
+        - recommendation
+        
+    - step: 3
+      name: Notify Holder
+      name_ja: 保有者通知
+      actor: system
+      state: holder_notified
+      
+      notification_content:
+        - allegation_summary
+        - evidence_overview
+        - potential_consequences
+        - response_options
+        - response_deadline
+        - due_process_rights
+        
+      delivery_methods:
+        primary: certified_email
+        secondary: registered_mail
+        
+      response_options:
+        - provide_written_response
+        - request_hearing
+        - acknowledge_violation
+        - surrender_credential
+        
+      response_deadline:
+        days: 14
+        extension_available: true
+        max_extension_days: 14
+        
+      outputs:
+        - notification_sent_at
+        - notification_method
+        - response_deadline
+        
+    - step: 4
+      name: Review Board Evaluation
+      name_ja: 審査委員会評価
+      actor: review_board
+      state: review_board_review
+      
+      board_composition:
+        minimum_members: 3
+        quorum: majority
+        conflict_check: required
+        
+      review_materials:
+        - investigation_report
+        - holder_response
+        - evidence_package
+        - credential_history
+        - mitigating_factors
+        
+      decision_options:
+        - no_action:
+            reason: "Insufficient evidence or allegation unfounded"
+            
+        - warning:
+            reason: "Minor violation, first offense"
+            action: "Issue warning, maintain credential"
+            
+        - suspension:
+            reason: "Significant violation requiring remediation"
+            duration: "specified period"
+            conditions: "requirements for reinstatement"
+            
+        - revocation:
+            reason: "Serious violation warranting permanent removal"
+            
+      voting:
+        method: majority_vote
+        record_individual_votes: true
+        
+      outputs:
+        - board_decision
+        - decision_rationale
+        - conditions_if_applicable
+        
+    - step: 5
+      name: Legal Review
+      name_ja: 法務レビュー
+      actor: legal
+      state: legal_review
+      condition: "requires_legal = true"
+      
+      triggers_for_legal:
+        - criminal_allegations
+        - potential_litigation
+        - regulatory_implications
+        - high_profile_case
+        - complex_evidence
+        
+      legal_assessment:
+        - liability_review
+        - documentation_adequacy
+        - process_compliance
+        - recommendation
+        
+      outputs:
+        - legal_clearance: boolean
+        - legal_recommendations
+        - risk_assessment
+        
+    - step: 6
+      name: Execute Revocation
+      name_ja: 取消実行
+      actor: system
+      state: revoked
+      condition: "decision = 'revoke'"
+      
+      revocation_actions:
+        - update_credential_status:
+            certificate.status: revoked
+            badge.status: revoked
+            
+        - set_revocation_details:
+            revoked_at: NOW()
+            reason_code: from_decision
+            is_public_reason: per_policy
+            
+        - update_verification:
+            public_verification: "Shows revoked status"
+            
+        - blockchain_update:
+            condition: "credential.blockchain_enabled"
+            action: "Add revocation record"
+            
+        - notify_parties:
+            - holder
+            - original_issuer
+            - regulatory_bodies_if_required
+            
+      public_disclosure:
+        default: minimal
+        full_disclosure:
+          condition: "public_safety_concern"
+          content: "Name and reason"
+          
+      appeal_window:
+        starts: revocation_effective_date
+        duration_days: 30
+        
+      outputs:
+        - revocation_effective_date
+        - appeal_deadline
+        - notification_records
+        
+    - step: 7
+      name: Process Appeal
+      name_ja: 控訴処理
+      actor: review_board
+      state: appeal_review
+      condition: "appeal_filed AND within_appeal_window"
+      
+      appeal_requirements:
+        - written_appeal_statement
+        - grounds_for_appeal:
+            - procedural_error
+            - new_evidence
+            - disproportionate_penalty
+        - supporting_documentation
+        - filing_fee_if_applicable
+        
+      appeal_review_process:
+        - verify_appeal_eligibility
+        - review_new_evidence
+        - reconsider_original_decision
+        - conduct_appeal_hearing_if_requested
+        
+      appeal_outcomes:
+        - granted:
+            action: reinstate_credential
+            conditions: possible
+            
+        - partially_granted:
+            action: reduce_penalty
+            
+        - denied:
+            action: uphold_original_decision
+            
+      outputs:
+        - appeal_decision
+        - decision_rationale
+        - effective_actions
+        
+    - step: 8
+      name: Reinstate Credential
+      name_ja: 資格復帰
+      actor: system
+      state: reinstated
+      condition: "appeal_result = 'granted'"
+      
+      reinstatement_actions:
+        - restore_credential_status:
+            status: active
+            
+        - update_revocation_record:
+            reinstated: true
+            reinstated_at: NOW()
+            
+        - restore_verification:
+            public_verification: "Shows active status"
+            
+        - blockchain_update:
+            condition: "credential.blockchain_enabled"
+            action: "Add reinstatement record"
+            
+        - notify_holder:
+            template: reinstatement_notification
+            
+      conditions_if_applicable:
+        - probationary_period
+        - additional_training
+        - monitoring_requirements
+        
+      outputs:
+        - reinstatement_effective_date
+        - conditions_applied
+        - notification_sent
+        
+    - step: 9
+      name: Close Case
+      name_ja: 案件終了
+      actor: system
+      state: closed
+      
+      closing_actions:
+        - finalize_all_records
+        - archive_case_documents
+        - update_holder_history
+        - generate_case_summary
+        
+      record_retention:
+        revocation_records: "permanent"
+        investigation_files: "10 years"
+        appeal_records: "10 years"
+        
+      outputs:
+        - case_closure_date
+        - final_disposition
+        - retention_schedule
+
+  error_handling:
+    - error: notification_delivery_failed
+      action: try_alternative_method
+      max_retries: 3
+      
+    - error: board_quorum_not_met
+      action: reschedule_meeting
+      
+    - error: appeal_deadline_dispute
+      action: refer_to_admin
+      
+    - error: blockchain_update_failed
+      action: queue_for_retry
+      continue_process: true
+
+  metrics:
+    - name: investigation_time
+      description: Time from initiation to decision
+      target: "< 60 days"
+      
+    - name: appeal_rate
+      description: Percentage of revocations appealed
+      target: "< 20%"
+      
+    - name: appeal_success_rate
+      description: Percentage of appeals granted
+      track: true
+      
+    - name: reinstatement_rate
+      description: Percentage of revocations reinstated
+      track: true
+
+  audit:
+    enabled: true
+    track_all_steps: true
+    track_all_decisions: true
+    retention_years: permanent

@@ -1,0 +1,450 @@
+# Dispute Entity - Chargeback and dispute records
+# Domain: fintech/payment
+# Purpose: Tracks chargebacks and payment disputes
+
+name: Dispute
+display_name: Dispute
+description: |
+  Represents a chargeback or payment dispute initiated by a cardholder
+  through their issuing bank. Merchants can respond with evidence to
+  contest the dispute.
+
+  Vietnamese: Đại diện cho chargeback hoặc tranh chấp thanh toán do chủ thẻ
+  khởi tạo qua ngân hàng phát hành. Merchant có thể phản hồi bằng bằng chứng.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: dispute_id
+    type: string
+    required: true
+    description: External ID (DIS-XXXXXXXX)
+    validation:
+      pattern: "^DIS-[A-Z0-9]{8}$"
+
+  - name: payment_id
+    type: uuid
+    required: true
+    description: Disputed payment
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant receiving dispute
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Disputed amount (Số tiền tranh chấp)
+    validation:
+      min: 1
+
+  - name: currency
+    type: string
+    required: true
+    description: Currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Dispute status (Trạng thái)
+    validation:
+      values: [warning_needs_response, warning_under_review, warning_closed, needs_response, under_review, won, lost]
+
+  # Reason
+  - name: reason
+    type: enum
+    required: true
+    description: Dispute reason category (Lý do)
+    validation:
+      values: [fraudulent, duplicate, product_not_received, product_unacceptable, subscription_cancelled, credit_not_processed, general, unrecognized]
+
+  - name: reason_details
+    type: string
+    required: false
+    description: Detailed reason from card network
+    validation:
+      max: 1000
+
+  # Network Information
+  - name: network_reason_code
+    type: string
+    required: false
+    description: Card network specific reason code
+    validation:
+      max: 20
+
+  - name: network_dispute_id
+    type: string
+    required: false
+    description: Dispute ID from card network
+    validation:
+      max: 100
+
+  - name: card_network
+    type: enum
+    required: false
+    description: Card network
+    validation:
+      values: [visa, mastercard, jcb, amex, unionpay]
+
+  # Evidence
+  - name: evidence
+    type: json
+    required: false
+    description: |
+      Submitted evidence:
+      {
+        "customer_communication": "...",
+        "receipt": "file_url",
+        "shipping_documentation": "file_url",
+        "service_documentation": "...",
+        "customer_signature": "file_url",
+        "billing_address": "...",
+        "uncategorized_text": "..."
+      }
+
+  - name: evidence_submitted
+    type: boolean
+    required: true
+    description: Whether evidence has been submitted
+    default: false
+
+  - name: evidence_submitted_at
+    type: timestamp
+    required: false
+    description: When evidence was submitted
+
+  # Deadlines
+  - name: evidence_due_by
+    type: timestamp
+    required: true
+    description: Deadline for evidence submission (Hạn nộp bằng chứng)
+
+  - name: respond_by
+    type: timestamp
+    required: false
+    description: Deadline to respond (may differ from evidence)
+
+  # Outcome
+  - name: outcome
+    type: enum
+    required: false
+    description: Final outcome
+    validation:
+      values: [won, lost, pending]
+
+  - name: outcome_reason
+    type: string
+    required: false
+    description: Reason for outcome
+    validation:
+      max: 500
+
+  # Financial Impact
+  - name: is_refundable
+    type: boolean
+    required: true
+    description: Can be resolved by refund
+    default: true
+
+  - name: balance_transaction_id
+    type: uuid
+    required: false
+    description: Balance transaction for debit
+
+  - name: dispute_fee
+    type: decimal
+    required: true
+    description: Fee charged for dispute
+    validation:
+      min: 0
+
+  - name: fee_refunded
+    type: boolean
+    required: true
+    description: Whether fee was refunded (if won)
+    default: false
+
+  # Early Resolution
+  - name: is_early_fraud_warning
+    type: boolean
+    required: true
+    description: Early fraud warning (not full dispute)
+    default: false
+
+  - name: early_resolution_attempted
+    type: boolean
+    required: true
+    description: Attempted early resolution
+    default: false
+
+  # Settlement
+  - name: settlement_id
+    type: uuid
+    required: false
+    description: Settlement that includes this dispute
+
+  # Metadata
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  - name: internal_notes
+    type: string
+    required: false
+    description: Internal notes
+    validation:
+      max: 2000
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: When dispute was received
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: resolved_at
+    type: timestamp
+    required: false
+    description: When dispute was resolved
+
+relationships:
+  - name: payment
+    type: belongs_to
+    entity: Payment
+    required: true
+    description: Disputed payment
+
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant
+
+  - name: settlement
+    type: belongs_to
+    entity: Settlement
+    required: false
+    description: Settlement batch
+
+state_machine:
+  initial: needs_response
+  states:
+    - name: warning_needs_response
+      description: Early warning, needs response (Cảnh báo sớm, cần phản hồi)
+    - name: warning_under_review
+      description: Early warning under review (Cảnh báo đang xem xét)
+    - name: warning_closed
+      description: Early warning closed (Cảnh báo đã đóng)
+    - name: needs_response
+      description: Full dispute, needs merchant response (Cần phản hồi)
+    - name: under_review
+      description: Evidence under review (Đang xem xét)
+    - name: won
+      description: Merchant won dispute (Merchant thắng)
+    - name: lost
+      description: Merchant lost dispute (Merchant thua)
+
+  transitions:
+    - from: warning_needs_response
+      to: warning_under_review
+      trigger: submit_response
+      description: Respond to early warning
+
+    - from: warning_needs_response
+      to: warning_closed
+      trigger: expire
+      description: Warning expired
+
+    - from: warning_under_review
+      to: warning_closed
+      trigger: resolve
+      description: Warning resolved
+
+    - from: warning_under_review
+      to: needs_response
+      trigger: escalate
+      description: Escalated to full dispute
+
+    - from: needs_response
+      to: under_review
+      trigger: submit_evidence
+      description: Evidence submitted
+
+    - from: needs_response
+      to: lost
+      trigger: accept
+      description: Accept dispute (no contest)
+
+    - from: needs_response
+      to: lost
+      trigger: expire
+      description: Evidence deadline expired
+
+    - from: under_review
+      to: won
+      trigger: win
+      description: Merchant wins
+
+    - from: under_review
+      to: lost
+      trigger: lose
+      description: Merchant loses
+
+indexes:
+  - [dispute_id]
+  - [payment_id]
+  - [merchant_id, status]
+  - [evidence_due_by]
+  - [status]
+  - [settlement_id]
+
+events:
+  - name: dispute.created
+    description: Dispute received
+    payload: [id, dispute_id, payment_id, amount, reason, evidence_due_by]
+
+  - name: dispute.response_needed
+    description: Merchant needs to respond
+    payload: [id, dispute_id, evidence_due_by, days_remaining]
+
+  - name: dispute.evidence_submitted
+    description: Evidence submitted
+    payload: [id, dispute_id, evidence_submitted_at]
+
+  - name: dispute.won
+    description: Merchant won dispute
+    payload: [id, dispute_id, amount, fee_refunded]
+
+  - name: dispute.lost
+    description: Merchant lost dispute
+    payload: [id, dispute_id, amount, reason]
+
+  - name: dispute.warning_received
+    description: Early fraud warning received
+    payload: [id, dispute_id, payment_id]
+
+business_rules:
+  - id: BR-DIS-001
+    description: Evidence must be submitted before deadline
+    rule: |
+      IF evidence_submitted = false AND now() > evidence_due_by
+      THEN status = 'lost' (automatic)
+    vietnamese: Bằng chứng phải nộp trước hạn
+
+  - id: BR-DIS-002
+    description: Lost disputes debit merchant balance
+    rule: |
+      IF outcome = 'lost'
+      THEN debit_merchant(amount + dispute_fee)
+    vietnamese: Dispute thua sẽ trừ tiền merchant
+
+  - id: BR-DIS-003
+    description: Won disputes return funds and fee
+    rule: |
+      IF outcome = 'won'
+      THEN credit_merchant(amount)
+           AND refund_dispute_fee()
+    vietnamese: Dispute thắng hoàn lại tiền và phí
+
+  - id: BR-DIS-004
+    description: Early warning can be resolved by proactive refund
+    rule: |
+      IF is_early_fraud_warning = true
+      THEN can_resolve_with_refund = true
+    vietnamese: Cảnh báo sớm có thể giải quyết bằng hoàn tiền chủ động
+
+  - id: BR-DIS-005
+    description: Dispute rate monitoring
+    rule: |
+      IF merchant.dispute_rate > 0.9% (monthly)
+      THEN flag_for_review()
+      IF merchant.dispute_rate > 1.0%
+      THEN consider_suspension()
+    vietnamese: Theo dõi tỷ lệ dispute
+
+  - id: BR-DIS-006
+    description: Typical dispute timeline
+    rule: |
+      evidence_due: 7-21 days from creation
+      review_period: 60-75 days
+      final_decision: up to 90 days
+    vietnamese: Timeline dispute tiêu chuẩn
+
+api_endpoints:
+  - method: GET
+    path: /v1/disputes
+    description: List disputes
+
+  - method: GET
+    path: /v1/disputes/{id}
+    description: Get dispute details
+
+  - method: POST
+    path: /v1/disputes/{id}/respond
+    description: Submit evidence response
+
+  - method: POST
+    path: /v1/disputes/{id}/accept
+    description: Accept dispute (no contest)
+
+  - method: GET
+    path: /v1/merchants/{merchant_id}/disputes
+    description: List merchant disputes
+
+evidence_guidelines:
+  fraudulent:
+    recommended:
+      - Customer signature or ID verification
+      - AVS/CVV match proof
+      - Device fingerprint
+      - Customer communication showing recognition
+
+  product_not_received:
+    recommended:
+      - Shipping tracking with delivery confirmation
+      - Signed delivery receipt
+      - Customer communication acknowledging receipt
+
+  product_unacceptable:
+    recommended:
+      - Product description from website
+      - Return policy
+      - Customer communication
+      - Evidence product matches description
+
+  duplicate:
+    recommended:
+      - Proof transactions are different purchases
+      - Separate order IDs and descriptions
+
+  subscription_cancelled:
+    recommended:
+      - Cancellation policy
+      - Evidence of active subscription at charge time
+      - Communication showing cancellation request timing
+
+security_considerations:
+  - Encrypt evidence files at rest
+  - Audit log for all dispute actions
+  - Alert merchants before deadline
+  - Monitor for dispute patterns
+  - Secure transmission of evidence

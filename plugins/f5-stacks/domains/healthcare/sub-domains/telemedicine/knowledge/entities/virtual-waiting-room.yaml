@@ -1,0 +1,259 @@
+# VirtualWaitingRoom Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Patient queue management for telehealth visits
+
+entity:
+  id: virtual-waiting-room
+  name: VirtualWaitingRoom
+  name_ja: 仮想待合室
+  description: Virtual waiting room for managing patient queue before provider admission
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: provider_id
+      type: uuid
+      required: true
+      unique: true
+      indexed: true
+      foreign_key: provider.id
+      description: Provider owning this waiting room
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - open
+        - closed
+        - paused
+        - break
+      required: true
+      default: closed
+      indexed: true
+      description: Waiting room status
+
+    # Capacity
+    - name: max_patients
+      type: integer
+      required: true
+      default: 10
+      validation:
+        min: 1
+        max: 50
+      description: Maximum patients in queue
+
+    - name: current_count
+      type: integer
+      required: true
+      default: 0
+      description: Current patients waiting
+
+    - name: queue
+      type: jsonb
+      default: "[]"
+      description: |
+        Patient queue array:
+        [{
+          patient_id: uuid,
+          visit_id: uuid,
+          position: int,
+          checked_in_at: datetime,
+          estimated_wait_minutes: int,
+          status: "waiting|ready|admitted|removed",
+          priority: "normal|urgent",
+          notes: string,
+          device_check_passed: bool,
+          consent_verified: bool
+        }]
+
+    # Settings
+    - name: auto_admit
+      type: boolean
+      default: false
+      description: Automatically admit when provider ready
+
+    - name: auto_admit_delay_seconds
+      type: integer
+      default: 10
+      description: Delay before auto-admit
+
+    - name: waiting_room_message
+      type: text
+      nullable: true
+      max_length: 500
+      description: Custom message shown to waiting patients
+
+    - name: waiting_room_media_url
+      type: string
+      nullable: true
+      description: Educational video/content URL
+
+    - name: notify_patient_before_minutes
+      type: integer
+      default: 2
+      description: Alert patient before their turn
+
+    - name: show_estimated_wait
+      type: boolean
+      default: true
+      description: Show wait time to patients
+
+    - name: show_queue_position
+      type: boolean
+      default: true
+      description: Show position in queue
+
+    # Timing Configuration
+    - name: average_visit_duration_minutes
+      type: integer
+      default: 15
+      description: For wait time estimation
+
+    - name: buffer_between_visits_minutes
+      type: integer
+      default: 5
+      description: Buffer time between visits
+
+    # Office Hours
+    - name: office_hours
+      type: jsonb
+      nullable: true
+      description: |
+        Weekly schedule:
+        {
+          monday: {open: "09:00", close: "17:00"},
+          tuesday: {open: "09:00", close: "17:00"},
+          ...
+        }
+
+    - name: timezone
+      type: string
+      default: "America/New_York"
+      description: Provider's timezone
+
+    # Statistics
+    - name: patients_seen_today
+      type: integer
+      default: 0
+      description: Patients admitted today
+
+    - name: average_wait_today_minutes
+      type: integer
+      nullable: true
+      description: Average wait time today
+
+    - name: no_shows_today
+      type: integer
+      default: 0
+      description: No-shows today
+
+    # Timestamps
+    - name: opened_at
+      type: datetime
+      nullable: true
+      description: When room was opened
+
+    - name: last_activity_at
+      type: datetime
+      nullable: true
+      description: Last queue activity
+
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: datetime
+      required: true
+      default: now()
+      on_update: now()
+
+  relationships:
+    - name: provider
+      type: belongs_to
+      entity: provider
+      foreign_key: provider_id
+      description: Provider owner
+
+    - name: visits_in_queue
+      type: has_many
+      entity: tele_visit
+      through: queue
+      description: Visits currently in queue
+
+  computed_fields:
+    - name: is_full
+      expression: current_count >= max_patients
+      type: boolean
+      description: Queue at capacity
+
+    - name: estimated_wait_for_new_patient
+      expression: current_count * average_visit_duration_minutes
+      type: integer
+      description: Estimated wait for new patient
+
+    - name: is_within_office_hours
+      expression: check_office_hours(office_hours, timezone, now())
+      type: boolean
+      description: Currently within office hours
+
+  methods:
+    - name: add_to_queue
+      parameters:
+        - patient_id: uuid
+        - visit_id: uuid
+        - priority: string
+      returns: queue_position
+      description: Add patient to waiting room queue
+
+    - name: remove_from_queue
+      parameters:
+        - patient_id: uuid
+        - reason: string
+      returns: boolean
+      description: Remove patient from queue
+
+    - name: admit_next
+      returns: visit_id
+      description: Admit next patient in queue
+
+    - name: reorder_queue
+      parameters:
+        - patient_id: uuid
+        - new_position: integer
+      returns: boolean
+      description: Change patient's position
+
+    - name: update_estimates
+      description: Recalculate wait times for all
+
+  validations:
+    - name: queue_capacity
+      rule: current_count <= max_patients
+      message: Queue capacity exceeded
+
+    - name: positive_wait_config
+      rule: notify_patient_before_minutes > 0
+      message: Notification time must be positive
+
+  indexes:
+    - name: idx_waitingroom_provider
+      columns: [provider_id]
+      unique: true
+      
+    - name: idx_waitingroom_status
+      columns: [status]
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - queue
+    retention_days: 90

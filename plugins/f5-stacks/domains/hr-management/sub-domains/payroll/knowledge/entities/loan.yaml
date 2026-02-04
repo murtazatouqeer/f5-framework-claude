@@ -1,0 +1,514 @@
+name: loan
+display_name: Employee Loan
+description: |
+  Employee loans and salary advances with repayment tracking,
+  including emergency loans, housing loans, and education loans.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Loan
+  table_name: employee_loans
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: loan_number
+      type: string
+      length: 20
+      unique: true
+      format: "LOAN-{YYYY}-{NNNNNN}"
+
+    - name: employee_id
+      type: uuid
+      required: true
+
+    # Loan Details
+    - name: loan_type
+      type: enum
+      values: [salary_advance, emergency, personal, housing, education, medical, other]
+      required: true
+
+    - name: loan_name
+      type: string
+      length: 200
+      required: true
+
+    - name: description
+      type: text
+
+    - name: purpose
+      type: text
+      description: Reason for loan request
+
+    # Principal
+    - name: requested_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    - name: approved_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: disbursed_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Interest
+    - name: is_interest_bearing
+      type: boolean
+      default: false
+
+    - name: interest_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Annual interest rate percentage
+
+    - name: interest_type
+      type: enum
+      values: [none, simple, compound]
+      default: none
+
+    - name: total_interest
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Repayment Terms
+    - name: repayment_method
+      type: enum
+      values: [salary_deduction, bank_transfer, cash]
+      default: salary_deduction
+
+    - name: repayment_frequency
+      type: enum
+      values: [monthly, bi_weekly, weekly, one_time]
+      default: monthly
+
+    - name: installment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Fixed installment amount
+
+    - name: installment_count
+      type: integer
+      description: Total number of installments
+
+    - name: max_deduction_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 30
+      description: Max % of net salary for deduction
+
+    # Dates
+    - name: request_date
+      type: date
+      required: true
+
+    - name: approval_date
+      type: date
+
+    - name: disbursement_date
+      type: date
+
+    - name: first_deduction_date
+      type: date
+
+    - name: last_deduction_date
+      type: date
+
+    - name: expected_completion_date
+      type: date
+
+    - name: actual_completion_date
+      type: date
+
+    # Balance Tracking
+    - name: total_repayable
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Principal + Interest
+
+    - name: amount_repaid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: outstanding_balance
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: installments_paid
+      type: integer
+      default: 0
+
+    - name: installments_remaining
+      type: integer
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, pending_approval, approved, disbursed, repaying, completed, defaulted, cancelled, written_off]
+      default: draft
+
+    # Approval
+    - name: requested_by
+      type: uuid
+
+    - name: approved_by
+      type: uuid
+
+    - name: approval_notes
+      type: text
+
+    - name: rejection_reason
+      type: text
+
+    # Guarantor (if required)
+    - name: requires_guarantor
+      type: boolean
+      default: false
+
+    - name: guarantor_employee_id
+      type: uuid
+
+    - name: guarantor_approved
+      type: boolean
+      default: false
+
+    # Collateral (if required)
+    - name: requires_collateral
+      type: boolean
+      default: false
+
+    - name: collateral_description
+      type: text
+
+    - name: collateral_value
+      type: decimal
+      precision: 15
+      scale: 2
+
+    # Default Management
+    - name: missed_payments
+      type: integer
+      default: 0
+
+    - name: is_delinquent
+      type: boolean
+      default: false
+
+    - name: delinquent_since
+      type: date
+
+    - name: penalty_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Termination Handling
+    - name: on_termination
+      type: enum
+      values: [deduct_from_final, convert_to_receivable, write_off]
+      default: deduct_from_final
+
+    # Documents
+    - name: supporting_documents
+      type: jsonb
+      description: Attached documents
+      example: |
+        [
+          {"name": "Medical bill", "url": "/docs/loan_001_med.pdf"},
+          {"name": "Approval form", "url": "/docs/loan_001_form.pdf"}
+        ]
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: guarantor
+      type: belongs_to
+      entity: Employee
+      foreign_key: guarantor_employee_id
+
+    - name: approver
+      type: belongs_to
+      entity: User
+      foreign_key: approved_by
+
+    - name: repayments
+      type: has_many
+      entity: LoanRepayment
+      foreign_key: loan_id
+
+    - name: deductions
+      type: has_many
+      entity: Deduction
+      foreign_key: source_id
+      condition: "source_type = 'loan'"
+
+  indexes:
+    - columns: [loan_number]
+      unique: true
+    - columns: [employee_id, status]
+    - columns: [loan_type]
+    - columns: [status]
+    - columns: [disbursement_date]
+    - columns: [expected_completion_date]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending_approval
+        action: submit
+        guards: [within_policy_limits, documents_attached]
+        triggers: [notify_approvers]
+
+      - from: pending_approval
+        to: approved
+        action: approve
+        guards: [approver_authorized, budget_available]
+        triggers: [notify_employee, calculate_schedule]
+
+      - from: pending_approval
+        to: draft
+        action: return
+        triggers: [notify_requester]
+
+      - from: approved
+        to: disbursed
+        action: disburse
+        guards: [disbursement_confirmed]
+        triggers: [record_disbursement, schedule_deductions]
+
+      - from: disbursed
+        to: repaying
+        action: start_repayment
+        guards: [first_deduction_made]
+        triggers: [update_balance]
+
+      - from: repaying
+        to: completed
+        action: complete
+        guards: [balance_zero]
+        triggers: [close_loan, notify_employee]
+
+      - from: repaying
+        to: defaulted
+        action: default
+        guards: [missed_payment_threshold]
+        triggers: [notify_hr, escalate]
+
+      - from: [draft, pending_approval, approved]
+        to: cancelled
+        action: cancel
+        triggers: [log_cancellation]
+
+      - from: [defaulted, repaying]
+        to: written_off
+        action: write_off
+        guards: [write_off_approved]
+        triggers: [record_loss, update_employee_record]
+
+  loan_types:
+    salary_advance:
+      name: Tạm ứng lương
+      max_amount: "1 month salary"
+      max_repayment: "3 months"
+      interest_bearing: false
+      requires_guarantor: false
+      requires_collateral: false
+      approval_level: direct_manager
+      eligibility:
+        min_service: 3_months
+        max_active_loans: 1
+
+    emergency:
+      name: Vay khẩn cấp
+      max_amount: "3 months salary"
+      max_repayment: "12 months"
+      interest_bearing: false
+      requires_guarantor: false
+      requires_collateral: false
+      approval_level: hr_manager
+      eligibility:
+        min_service: 6_months
+        max_active_loans: 1
+        valid_reasons: [medical, family_emergency, natural_disaster]
+
+    personal:
+      name: Vay cá nhân
+      max_amount: "6 months salary"
+      max_repayment: "24 months"
+      interest_bearing: optional
+      requires_guarantor: conditional
+      requires_collateral: false
+      approval_level: hr_director
+      eligibility:
+        min_service: 12_months
+        max_active_loans: 2
+
+    housing:
+      name: Hỗ trợ nhà ở
+      max_amount: "12 months salary"
+      max_repayment: "60 months"
+      interest_bearing: true
+      interest_rate: "0-5%"
+      requires_guarantor: true
+      requires_collateral: conditional
+      approval_level: ceo
+      eligibility:
+        min_service: 24_months
+        permanent_employee: true
+
+    education:
+      name: Hỗ trợ học tập
+      max_amount: "varies"
+      max_repayment: "36 months"
+      interest_bearing: false
+      requires_guarantor: false
+      requires_collateral: false
+      approval_level: hr_manager
+      eligibility:
+        min_service: 12_months
+        education_purpose: work_related
+
+  repayment_schedule:
+    calculation_methods:
+      equal_installments:
+        formula: "total_repayable / installment_count"
+        description: "Fixed monthly payments"
+
+      salary_percentage:
+        formula: "net_salary * percentage"
+        description: "Deduct % of each salary"
+
+      graduated:
+        formula: "starts_low_increases"
+        description: "Lower initial payments"
+
+  default_policy:
+    missed_payment_threshold: 3
+    grace_period_days: 7
+    penalty_rate: 0  # Usually no penalty for employee loans
+    escalation_path:
+      - level: 1
+        missed_payments: 1
+        action: reminder_email
+
+      - level: 2
+        missed_payments: 2
+        action: manager_notification
+
+      - level: 3
+        missed_payments: 3
+        action: hr_intervention
+
+  validations:
+    - field: requested_amount
+      rule: positive
+      message: "Loan amount must be positive"
+
+    - field: installment_amount
+      rule: lte
+      compare_to: "net_salary * (max_deduction_percentage / 100)"
+      message: "Installment exceeds maximum deduction limit"
+
+    - field: approved_amount
+      rule: lte
+      compare_to: requested_amount
+      message: "Approved amount cannot exceed requested amount"
+
+  computed_fields:
+    - name: total_repayable
+      formula: "approved_amount + total_interest"
+
+    - name: outstanding_balance
+      formula: "total_repayable - amount_repaid"
+
+    - name: installments_remaining
+      formula: "installment_count - installments_paid"
+
+    - name: total_interest
+      formula: |
+        IF interest_type = 'simple' THEN
+          approved_amount * (interest_rate / 100) * (installment_count / 12)
+        ELSE 0
+        END
+
+  hooks:
+    on_approve:
+      - calculate_repayment_schedule
+      - reserve_budget
+      - create_repayment_records
+
+    on_disburse:
+      - record_disbursement
+      - schedule_first_deduction
+      - notify_finance
+
+    on_repayment:
+      - update_balance
+      - check_completion
+      - update_deduction_status
+
+    on_terminate_employee:
+      - calculate_outstanding
+      - apply_termination_policy
+      - adjust_final_settlement
+
+  audit:
+    track:
+      - status
+      - approved_amount
+      - outstanding_balance
+      - approved_by
+
+    retention: 10_years
+
+compliance:
+  - standard: Vietnam_Labor_Code
+    article: Article_101
+    requirement: Wage deduction regulations
+  - standard: Company_Policy
+    requirement: Employee loan policy

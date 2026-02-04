@@ -1,0 +1,454 @@
+name: payment
+display_name: Payment
+display_name_vi: Thanh toán
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Payment transaction record for booking payments,
+  refunds, and adjustments.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: booking_id
+    type: uuid
+    foreign_key: booking.id
+    required: true
+
+  - name: payment_reference
+    type: string
+    unique: true
+    description: Internal payment reference
+
+  - name: gateway_reference
+    type: string
+    nullable: true
+    description: Payment gateway transaction ID
+
+  - name: gateway_authorization
+    type: string
+    nullable: true
+    description: Authorization code
+
+  # Type & Status
+  - name: payment_type
+    type: enum
+    values: [payment, refund, chargeback, adjustment, deposit, balance]
+    required: true
+
+  - name: status
+    type: enum
+    values: [pending, processing, completed, failed, cancelled, refunded]
+    default: pending
+
+  - name: failure_reason
+    type: string
+    nullable: true
+
+  - name: failure_code
+    type: string
+    nullable: true
+
+  # Amount
+  - name: amount
+    type: decimal
+    precision: 12
+    scale: 2
+    required: true
+    description: Transaction amount (positive for payment, negative for refund)
+
+  - name: currency
+    type: string
+    length: 3
+    required: true
+
+  - name: original_amount
+    type: decimal
+    precision: 12
+    scale: 2
+    nullable: true
+    description: Original currency amount if converted
+
+  - name: original_currency
+    type: string
+    length: 3
+    nullable: true
+
+  - name: exchange_rate
+    type: decimal
+    precision: 12
+    scale: 6
+    nullable: true
+
+  # Payment Method
+  - name: payment_method
+    type: enum
+    values: [credit_card, debit_card, bank_transfer, paypal, apple_pay, google_pay, alipay, wechat, crypto, voucher, agency_credit]
+    required: true
+
+  - name: payment_method_detail
+    type: object
+    properties:
+      card_type:
+        type: string
+      card_brand:
+        type: string
+      last_four:
+        type: string
+      expiry_month:
+        type: integer
+      expiry_year:
+        type: integer
+      cardholder_name:
+        type: string
+      bank_name:
+        type: string
+      account_last_four:
+        type: string
+
+  # Card Details (tokenized/masked)
+  - name: card_token
+    type: string
+    nullable: true
+    description: Tokenized card for future use
+
+  - name: card_fingerprint
+    type: string
+    nullable: true
+    description: Card fingerprint for fraud detection
+
+  # Billing Information
+  - name: billing_name
+    type: string
+
+  - name: billing_email
+    type: email
+
+  - name: billing_phone
+    type: string
+    nullable: true
+
+  - name: billing_address
+    type: object
+    nullable: true
+    properties:
+      line1:
+        type: string
+      line2:
+        type: string
+      city:
+        type: string
+      state:
+        type: string
+      postal_code:
+        type: string
+      country:
+        type: string
+
+  # 3D Secure
+  - name: three_ds_required
+    type: boolean
+    default: false
+
+  - name: three_ds_status
+    type: enum
+    values: [not_required, challenge, authenticated, failed]
+    nullable: true
+
+  - name: three_ds_version
+    type: string
+    nullable: true
+
+  # Installments
+  - name: installments
+    type: integer
+    default: 1
+
+  - name: installment_plan
+    type: object
+    nullable: true
+    properties:
+      plan_id:
+        type: string
+      monthly_amount:
+        type: decimal
+      total_amount:
+        type: decimal
+      interest_rate:
+        type: decimal
+
+  # Gateway Information
+  - name: payment_gateway
+    type: string
+    description: e.g., Stripe, Adyen, PayPal
+
+  - name: gateway_response
+    type: object
+    nullable: true
+    description: Full gateway response (sanitized)
+
+  - name: gateway_fees
+    type: decimal
+    precision: 8
+    scale: 2
+    nullable: true
+
+  # Refund Details (for refund type)
+  - name: original_payment_id
+    type: uuid
+    nullable: true
+    description: Reference to original payment if refund
+
+  - name: refund_reason
+    type: string
+    nullable: true
+
+  - name: refund_type
+    type: enum
+    values: [full, partial, cancellation, chargeback]
+    nullable: true
+
+  # Risk & Fraud
+  - name: risk_score
+    type: integer
+    nullable: true
+    description: Fraud risk score 0-100
+
+  - name: risk_level
+    type: enum
+    values: [low, medium, high]
+    nullable: true
+
+  - name: fraud_checks
+    type: array
+    nullable: true
+    items:
+      type: object
+      properties:
+        check_name:
+          type: string
+        result:
+          type: string
+        score:
+          type: integer
+
+  - name: ip_address
+    type: string
+    nullable: true
+
+  - name: device_fingerprint
+    type: string
+    nullable: true
+
+  # Reconciliation
+  - name: settlement_status
+    type: enum
+    values: [pending, settled, disputed]
+    default: pending
+
+  - name: settlement_date
+    type: date
+    nullable: true
+
+  - name: settlement_reference
+    type: string
+    nullable: true
+
+  # Timestamps
+  - name: initiated_at
+    type: timestamp
+    auto_set: true
+
+  - name: completed_at
+    type: timestamp
+    nullable: true
+
+  - name: failed_at
+    type: timestamp
+    nullable: true
+
+  - name: refunded_at
+    type: timestamp
+    nullable: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: amount != 0
+    message: Amount cannot be zero
+
+  - rule: |
+      payment_type = 'refund' IMPLIES original_payment_id IS NOT NULL
+    message: Refund must reference original payment
+
+  - rule: |
+      status = 'failed' IMPLIES failure_reason IS NOT NULL
+    message: Failed payments must have failure reason
+
+relationships:
+  - name: booking
+    type: belongs_to
+    entity: booking
+    foreign_key: booking_id
+
+  - name: original_payment
+    type: belongs_to
+    entity: payment
+    foreign_key: original_payment_id
+    optional: true
+
+  - name: refunds
+    type: has_many
+    entity: payment
+    foreign_key: original_payment_id
+
+indexes:
+  - name: idx_payment_booking
+    columns: [booking_id]
+
+  - name: idx_payment_reference
+    columns: [payment_reference]
+    unique: true
+
+  - name: idx_payment_gateway_ref
+    columns: [gateway_reference]
+
+  - name: idx_payment_status
+    columns: [status]
+
+  - name: idx_payment_date
+    columns: [initiated_at]
+
+  - name: idx_payment_settlement
+    columns: [settlement_status, settlement_date]
+
+state_machine:
+  initial: pending
+  states:
+    pending:
+      transitions:
+        - to: processing
+          event: payment_initiated
+        - to: cancelled
+          event: payment_cancelled
+
+    processing:
+      transitions:
+        - to: completed
+          event: payment_successful
+        - to: failed
+          event: payment_failed
+
+    completed:
+      transitions:
+        - to: refunded
+          event: refund_processed
+
+    failed:
+      transitions:
+        - to: processing
+          event: payment_retried
+
+    cancelled:
+      final: true
+
+    refunded:
+      final: true
+
+computed_fields:
+  - name: is_successful
+    formula: status = 'completed'
+
+  - name: is_refundable
+    formula: |
+      status = 'completed' AND
+      payment_type = 'payment' AND
+      initiated_at > NOW() - INTERVAL 180 DAY
+
+  - name: net_amount
+    formula: amount - COALESCE(gateway_fees, 0)
+
+  - name: display_method
+    formula: |
+      CASE payment_method
+        WHEN 'credit_card' THEN CONCAT(payment_method_detail.card_brand, ' ', payment_method_detail.last_four)
+        WHEN 'paypal' THEN 'PayPal'
+        ELSE payment_method
+      END
+
+business_rules:
+  - id: BR-PAY-001
+    name: PCI Compliance
+    rule: |
+      - Never store full card numbers
+      - Use tokenization for recurring
+      - Encrypt all card data in transit
+      - Mask card numbers in logs
+
+  - id: BR-PAY-002
+    name: 3D Secure
+    rule: |
+      3D Secure required for:
+      - International cards
+      - High-value transactions (>$500)
+      - High-risk countries
+      - New customers
+
+  - id: BR-PAY-003
+    name: Refund Policy
+    rule: |
+      - Refund to original payment method
+      - Partial refunds allowed
+      - Process within 5-10 business days
+      - Original payment must be settled
+
+  - id: BR-PAY-004
+    name: Currency Handling
+    rule: |
+      - Charge in booking currency
+      - Display user's currency if different
+      - Lock exchange rate at booking
+      - Refund at original rate
+
+events:
+  - name: payment.initiated
+    payload:
+      - id
+      - booking_id
+      - amount
+      - payment_method
+
+  - name: payment.completed
+    payload:
+      - id
+      - booking_id
+      - amount
+      - gateway_reference
+
+  - name: payment.failed
+    payload:
+      - id
+      - booking_id
+      - failure_reason
+      - failure_code
+
+  - name: payment.refunded
+    payload:
+      - id
+      - booking_id
+      - refund_amount
+      - original_payment_id
+
+  - name: payment.chargeback_received
+    payload:
+      - id
+      - booking_id
+      - amount
+      - reason

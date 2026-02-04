@@ -1,0 +1,439 @@
+# Refill Workflow
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Workflow for processing prescription refills
+
+workflow:
+  id: refill-workflow
+  name: Prescription Refill Processing
+  name_ja: リフィル処理ワークフロー
+  description: Workflow for handling prescription refill requests
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - patient_refill_request
+      - ivr_refill_request
+      - mobile_app_refill
+      - automatic_refill_due
+      - prescriber_authorized_refill
+
+  actors:
+    - id: patient
+      role: Patient
+      description: Requests refill through various channels
+      
+    - id: pharmacy_tech
+      role: Pharmacy Technician
+      description: Processes refill requests
+      
+    - id: pharmacist
+      role: Pharmacist
+      description: Reviews clinical concerns, contacts prescriber
+      
+    - id: system
+      role: Pharmacy System
+      description: Automated processing and validation
+      
+    - id: prescriber
+      role: Prescriber/Office
+      description: Authorizes new prescriptions when needed
+
+  preconditions:
+    - Original prescription on file
+    - Patient profile active
+    - Pharmacy system operational
+
+  overview:
+    description: |
+      Refill workflow handles all incoming refill requests from multiple channels,
+      validates eligibility, processes insurance, and routes to fill queue.
+      Handles special cases like refills too soon, no refills remaining,
+      and expired prescriptions.
+
+  refill_channels:
+    phone_ivr:
+      description: "Automated phone system"
+      data_capture: "Rx number, patient verification"
+    mobile_app:
+      description: "Pharmacy mobile application"
+      data_capture: "Full prescription details, patient authentication"
+    website:
+      description: "Online patient portal"
+      data_capture: "Rx selection, delivery preference"
+    in_store:
+      description: "Counter request"
+      data_capture: "Patient presents Rx label"
+    automatic:
+      description: "Auto-refill program"
+      data_capture: "System-generated based on schedule"
+
+  steps:
+    # Receive Refill Request
+    - step: 1
+      id: receive_request
+      name: Receive Refill Request
+      actor: system
+      description: Capture and validate refill request
+      
+      request_processing:
+        identification:
+          - Rx number
+          - Patient name/DOB
+          - Phone number verification
+        validation:
+          - Rx number exists
+          - Patient matches
+          - Active prescription
+          
+      channel_handling:
+        ivr:
+          verification: "Last 4 phone digits + DOB"
+          capture: "Rx number spoken or keypad"
+        mobile:
+          verification: "Biometric or password"
+          capture: "Prescription selection from list"
+        web:
+          verification: "Login credentials"
+          capture: "Cart/selection system"
+        auto_refill:
+          verification: "Pre-authorized"
+          capture: "Schedule-based trigger"
+          
+      database_operations:
+        - CREATE refill_request
+        - SET status = 'received'
+        - LOG request_channel, request_datetime
+        
+      next_step: 2
+
+    # Eligibility Check
+    - step: 2
+      id: eligibility_check
+      name: Check Refill Eligibility
+      actor: system
+      description: Validate prescription can be refilled
+      
+      eligibility_criteria:
+        refills_remaining:
+          check: "refills_remaining > 0"
+          fail_action: "Route to prescriber request"
+        prescription_valid:
+          check: "expiration_date > current_date"
+          fail_action: "Route to prescriber request"
+        not_too_soon:
+          check: "days_since_last_fill >= (days_supply * 0.75)"
+          fail_action: "Display next fill date or request override"
+        controlled_limits:
+          check: "C-II no refills, C-III-V within limits"
+          fail_action: "Route appropriately"
+          
+      eligibility_outcomes:
+        eligible:
+          action: Continue to step 3
+        refills_exhausted:
+          action: Route to step 6 (prescriber request)
+        rx_expired:
+          action: Route to step 6 (prescriber request)
+        too_soon:
+          action: Route to step 4 (too soon handling)
+        controlled_no_refills:
+          action: Notify patient, prescriber contact needed
+          
+      database_operations:
+        - UPDATE refill_request with eligibility_result
+        - LOG eligibility_check_datetime
+        
+      next_step: 3 or 4 or 6 (based on result)
+
+    # Insurance Verification
+    - step: 3
+      id: insurance_verification
+      name: Verify Insurance Coverage
+      actor: system
+      description: Check insurance eligibility and coverage
+      
+      verification_process:
+        eligibility_check:
+          - Submit E1 eligibility transaction
+          - Verify coverage active
+          - Check formulary status
+        test_claim:
+          - Submit test claim for pricing
+          - Capture copay amount
+          - Note any rejections
+          
+      coverage_outcomes:
+        covered:
+          display: "Copay $XX.XX"
+          action: Continue processing
+        pa_required:
+          display: "Prior authorization needed"
+          action: Route to PA workflow
+        quantity_limit:
+          display: "Quantity limit applies"
+          action: Adjust quantity or request override
+        not_covered:
+          display: "Not covered - cash price $XX.XX"
+          action: Offer alternatives
+          
+      database_operations:
+        - STORE insurance_response
+        - UPDATE estimated_copay
+        
+      next_step: 5 (queue for fill)
+
+    # Refill Too Soon Handling
+    - step: 4
+      id: too_soon_handling
+      name: Handle Refill Too Soon
+      actor: system
+      description: Process early refill requests
+      
+      too_soon_calculation:
+        standard: "75% of days supply consumed"
+        vacation: "May allow earlier with override"
+        lost_medication: "Documented loss, police report"
+        therapy_change: "Prescriber authorized change"
+        
+      patient_options:
+        wait:
+          action: "Schedule for next available date"
+          notification: "Auto-notify when ready"
+        override_request:
+          action: "Submit with override code"
+          codes:
+            "03": "Vacation supply"
+            "04": "Lost prescription"
+            "05": "Therapy change"
+        cash_pay:
+          action: "Pay cash, bypass insurance timing"
+          
+      automatic_scheduling:
+        enabled: true
+        method: "Add to scheduled fills queue"
+        notification: "SMS/email when ready"
+        
+      database_operations:
+        - UPDATE refill_request with too_soon_reason
+        - SET scheduled_fill_date if waiting
+        - LOG override_code if applicable
+        
+      next_step: 3 (if override) or hold until scheduled
+
+    # Queue for Filling
+    - step: 5
+      id: queue_for_fill
+      name: Queue for Filling
+      actor: system
+      description: Add to fill queue with appropriate priority
+      
+      queue_processing:
+        create_dispense:
+          - Create dispense record
+          - Link to original prescription
+          - Decrement refills remaining
+        priority_assignment:
+          stat: "Patient waiting, urgent"
+          auto_refill: "Standard queue"
+          pickup_scheduled: "Time-based priority"
+        promise_time:
+          - Calculate based on queue depth
+          - Consider patient preference
+          - Factor in complexity
+          
+      patient_notification:
+        confirmation:
+          method: "SMS, email, or app notification"
+          content: "Refill request received"
+        ready_notification:
+          method: "Preferred contact method"
+          content: "Prescription ready for pickup/delivery"
+          
+      database_operations:
+        - CREATE dispense record
+        - UPDATE prescription.refills_remaining -= 1
+        - SET dispense.status = 'pending_fill'
+        - CREATE fill_queue_entry
+        - UPDATE refill_request.status = 'queued'
+        
+      next_step: Exit to dispensing-workflow
+
+    # Request New Prescription
+    - step: 6
+      id: request_prescription
+      name: Request New Prescription
+      actor: pharmacy_tech
+      description: Contact prescriber for new prescription
+      
+      request_scenarios:
+        refills_exhausted:
+          action: "Send refill authorization request"
+          urgency: "Standard unless patient needs urgently"
+        prescription_expired:
+          action: "Request new prescription"
+          documentation: "Include patient history"
+        controlled_schedule_II:
+          action: "Inform patient new Rx needed"
+          restriction: "Cannot request C-II refills"
+          
+      prescriber_contact:
+        electronic:
+          method: "Surescripts RefillRequest"
+          preferred: true
+        fax:
+          method: "Fax refill request form"
+          documentation: "Include patient info, medication, last fill"
+        phone:
+          method: "Call prescriber office"
+          for: "Urgent requests"
+          
+      tracking:
+        - Log request sent
+        - Set follow-up reminder
+        - Track response
+        
+      database_operations:
+        - CREATE refill_authorization_request
+        - SET status = 'pending_prescriber'
+        - LOG contact_method, contact_datetime
+        
+      next_step: 7 (await response)
+
+    # Await Prescriber Response
+    - step: 7
+      id: await_response
+      name: Await Prescriber Response
+      actor: system
+      description: Monitor for prescriber response
+      
+      response_types:
+        approved:
+          action: "Create new prescription, process refill"
+          next_step: Back to step 2
+        denied:
+          action: "Notify patient, document reason"
+          next_step: Complete (denied)
+        modified:
+          action: "Review changes, process as new Rx"
+          next_step: Pharmacist review
+        no_response:
+          action: "Follow up per schedule"
+          timeline: "24h, 48h, 72h escalation"
+          
+      follow_up_schedule:
+        24_hours: "Second request if no response"
+        48_hours: "Phone call to office"
+        72_hours: "Notify patient, suggest alternatives"
+        
+      database_operations:
+        - UPDATE refill_authorization_request with response
+        - LOG response_datetime, response_type
+        
+      next_step: Based on response
+
+    # Patient Notification
+    - step: 8
+      id: patient_notification
+      name: Notify Patient of Status
+      actor: system
+      description: Keep patient informed throughout process
+      
+      notification_triggers:
+        request_received:
+          content: "We received your refill request for [Drug Name]"
+          timing: "Immediately"
+        processing:
+          content: "Your refill is being processed"
+          timing: "After eligibility confirmed"
+        ready:
+          content: "Your prescription is ready for pickup"
+          timing: "After pharmacist verification"
+        issue:
+          content: "We need to contact you about your refill"
+          timing: "When problem identified"
+        prescriber_contacted:
+          content: "We're contacting your doctor for approval"
+          timing: "When requesting new Rx"
+          
+      notification_methods:
+        sms: "Short text message"
+        email: "Detailed email with options"
+        push: "Mobile app notification"
+        ivr: "Automated callback"
+        
+      database_operations:
+        - LOG notification_sent
+        - TRACK delivery_status
+        
+      next_step: Continue with workflow
+
+  completion:
+    status: refill_processed
+    outputs:
+      - refill_request_record
+      - dispense_record (if filled)
+      - patient_notifications
+      - prescriber_contact_log (if applicable)
+
+  alternate_flows:
+    auto_refill_program:
+      description: "Enrolled patients get automatic refills"
+      trigger: Schedule-based
+      process:
+        - System identifies eligible auto-refills
+        - Submit through standard workflow
+        - Notify patient when ready
+        
+    delivery_refills:
+      description: "Refills with delivery request"
+      additional_steps:
+        - Verify delivery address
+        - Calculate shipping time
+        - Adjust promise time
+        - Route to delivery queue
+
+  error_handling:
+    invalid_rx_number:
+      action: "Prompt for re-entry, offer lookup by patient"
+      
+    patient_mismatch:
+      action: "Security flag, verify identity"
+      
+    system_unavailable:
+      action: "Queue request for later processing, notify staff"
+      
+    insurance_down:
+      action: "Process later or offer cash price"
+
+  auto_refill_program:
+    enrollment:
+      eligible_medications:
+        - Maintenance medications
+        - Non-controlled substances
+        - Regular fill patterns
+      patient_consent: Required
+      
+    scheduling:
+      calculation: "days_supply - 3 to 5 days buffer"
+      adjustments: "Based on patient pickup patterns"
+      
+    safeguards:
+      - Patient can skip any refill
+      - Maximum of 3 pending auto-refills
+      - Annual re-enrollment confirmation
+
+  metrics:
+    track:
+      - refill_request_volume
+      - channel_distribution
+      - time_to_ready
+      - auto_refill_adoption
+      - prescriber_response_time
+      - patient_satisfaction
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555
+    hipaa_compliant: true

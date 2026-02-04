@@ -1,0 +1,354 @@
+name: Order Lifecycle Workflow
+display_name: Order Lifecycle / Vòng đời đơn hàng
+description: |
+  Complete order lifecycle from creation to completion or cancellation.
+  Manages order states, status transitions, and related business processes.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: order.created
+    source: Checkout
+    condition: order.id IS NOT NULL
+
+actors:
+  - name: Customer
+    role: primary
+    description: Order owner
+  - name: Admin
+    role: operator
+    description: Store administrator
+  - name: Warehouse
+    role: fulfillment
+    description: Fulfillment team
+  - name: System
+    role: automated
+    description: Automated processes
+
+states:
+  - name: pending
+    description: Order created, awaiting payment confirmation
+    entry_actions:
+      - Set payment timeout timer (24 hours)
+      - Reserve inventory
+    allowed_transitions: [confirmed, cancelled]
+    timeout:
+      duration: 24 hours
+      action: auto_cancel
+
+  - name: confirmed
+    description: Payment confirmed, ready for processing
+    entry_actions:
+      - Cancel payment timeout
+      - Send confirmation email
+      - Notify warehouse
+    allowed_transitions: [processing, cancelled]
+
+  - name: processing
+    description: Order being prepared for shipment
+    entry_actions:
+      - Deduct inventory
+      - Generate pick list
+      - Assign to warehouse team
+    allowed_transitions: [shipped, cancelled]
+
+  - name: shipped
+    description: Order handed to carrier
+    entry_actions:
+      - Update inventory committed to shipped
+      - Send shipping notification
+      - Start delivery tracking
+    allowed_transitions: [delivered]
+
+  - name: delivered
+    description: Order delivered to customer
+    entry_actions:
+      - Send delivery confirmation
+      - Start return window timer
+      - Request review (delayed)
+    allowed_transitions: [completed, returned]
+    timeout:
+      duration: 7 days
+      action: auto_complete
+
+  - name: completed
+    description: Order finalized (past return window)
+    entry_actions:
+      - Award loyalty points
+      - Update customer metrics
+      - Close order
+    allowed_transitions: []
+
+  - name: cancelled
+    description: Order cancelled
+    entry_actions:
+      - Release inventory
+      - Process refund if paid
+      - Send cancellation email
+    allowed_transitions: []
+
+  - name: returned
+    description: Order returned by customer
+    entry_actions:
+      - Link to return request
+      - Update order metrics
+    allowed_transitions: [completed]
+
+transitions:
+  - from: pending
+    to: confirmed
+    name: confirm
+    trigger: payment_completed
+    conditions:
+      - payment.status IN ('authorized', 'captured')
+      - stock_still_available
+    actions:
+      - order.status = 'confirmed'
+      - order.confirmed_at = NOW()
+      - order.payment_status = 'paid' OR 'authorized'
+      - TRIGGER order.confirmed
+    validations:
+      - rule: BR-ORD-040
+        description: Payment required for confirmation
+
+  - from: pending
+    to: cancelled
+    name: cancel_pending
+    trigger: manual OR timeout
+    conditions:
+      - order.status = 'pending'
+    actions:
+      - order.status = 'cancelled'
+      - order.cancelled_at = NOW()
+      - order.cancelled_by = actor
+      - order.cancellation_reason = reason
+      - release_inventory()
+      - void_payment_if_authorized()
+      - TRIGGER order.cancelled
+    validations:
+      - rule: BR-ORD-032
+        description: Cancellation reason required
+
+  - from: confirmed
+    to: processing
+    name: start_processing
+    trigger: manual OR auto
+    conditions:
+      - order.status = 'confirmed'
+      - inventory_allocated
+    actions:
+      - order.status = 'processing'
+      - order.processing_at = NOW()
+      - deduct_inventory()
+      - generate_pick_list()
+      - notify_warehouse()
+      - TRIGGER order.processing
+    validations:
+      - rule: BR-ORD-041
+        description: Must be confirmed first
+
+  - from: confirmed
+    to: cancelled
+    name: cancel_confirmed
+    trigger: manual
+    conditions:
+      - order.status = 'confirmed'
+    actions:
+      - order.status = 'cancelled'
+      - order.cancelled_at = NOW()
+      - release_inventory()
+      - initiate_refund()
+      - TRIGGER order.cancelled
+    validations:
+      - rule: BR-ORD-030
+        description: Customer can cancel before shipping
+
+  - from: processing
+    to: shipped
+    name: ship
+    trigger: manual
+    conditions:
+      - order.status = 'processing'
+      - tracking_number IS NOT NULL
+      - carrier IS NOT NULL
+    actions:
+      - order.status = 'shipped'
+      - order.shipped_at = NOW()
+      - order.tracking_number = tracking_number
+      - order.carrier = carrier
+      - create_shipment_record()
+      - send_shipping_notification()
+      - TRIGGER order.shipped
+    validations:
+      - rule: BR-ORD-042
+        description: Tracking number required
+
+  - from: processing
+    to: cancelled
+    name: cancel_processing
+    trigger: manual
+    conditions:
+      - order.status = 'processing'
+      - not_yet_shipped
+    actions:
+      - order.status = 'cancelled'
+      - order.cancelled_at = NOW()
+      - restore_inventory()
+      - initiate_refund()
+      - TRIGGER order.cancelled
+    validations:
+      - rule: BR-ORD-030
+        description: Can cancel before shipping
+
+  - from: shipped
+    to: delivered
+    name: deliver
+    trigger: carrier_webhook OR manual
+    conditions:
+      - order.status = 'shipped'
+      - delivery_confirmed
+    actions:
+      - order.status = 'delivered'
+      - order.delivered_at = NOW()
+      - send_delivery_confirmation()
+      - schedule_review_request(delay=3_days)
+      - TRIGGER order.delivered
+
+  - from: delivered
+    to: completed
+    name: complete
+    trigger: auto OR manual
+    conditions:
+      - order.status = 'delivered'
+      - return_window_expired OR manually_completed
+      - no_active_returns
+    actions:
+      - order.status = 'completed'
+      - order.completed_at = NOW()
+      - award_loyalty_points()
+      - update_customer_metrics()
+      - TRIGGER order.completed
+    validations:
+      - rule: BR-ORD-043
+        description: Auto complete after 7 days
+
+  - from: delivered
+    to: returned
+    name: initiate_return
+    trigger: manual
+    conditions:
+      - order.status = 'delivered'
+      - within_return_window
+    actions:
+      - order.status = 'returned'
+      - create_return_request()
+      - TRIGGER order.return_initiated
+    validations:
+      - rule: BR-ORD-062
+        description: Within return window
+
+  - from: returned
+    to: completed
+    name: close_after_return
+    trigger: auto
+    conditions:
+      - all_returns_processed
+    actions:
+      - order.status = 'completed'
+      - order.completed_at = NOW()
+      - finalize_order_metrics()
+
+workflows:
+  - id: payment_timeout
+    name: Payment Timeout Handler
+    description: Auto-cancel unpaid orders
+    trigger: scheduled
+    schedule: every 1 hour
+    steps:
+      - Find pending orders older than 24 hours
+      - For each order, execute cancel_pending transition
+      - Log timeout cancellation
+      - Send payment expired email
+
+  - id: auto_completion
+    name: Auto Completion Handler
+    description: Auto-complete delivered orders
+    trigger: scheduled
+    schedule: every 6 hours
+    steps:
+      - Find delivered orders older than 7 days
+      - Check no active return requests
+      - Execute complete transition
+      - Award loyalty points
+
+  - id: fulfillment_assignment
+    name: Fulfillment Assignment
+    description: Auto-assign orders to warehouse
+    trigger: order.confirmed
+    steps:
+      - Determine optimal warehouse
+      - Create fulfillment task
+      - Assign to warehouse team
+      - Set fulfillment SLA
+
+notifications:
+  - event: order.confirmed
+    recipient: customer
+    channels: [email, sms]
+    template: order_confirmed
+    variables: [order_number, items, total, estimated_delivery]
+
+  - event: order.shipped
+    recipient: customer
+    channels: [email, sms, push]
+    template: order_shipped
+    variables: [order_number, tracking_number, carrier, tracking_url]
+
+  - event: order.delivered
+    recipient: customer
+    channels: [email, push]
+    template: order_delivered
+    variables: [order_number, delivered_at]
+
+  - event: order.cancelled
+    recipient: customer
+    channels: [email]
+    template: order_cancelled
+    variables: [order_number, cancellation_reason, refund_status]
+
+  - event: order.processing
+    recipient: warehouse
+    channels: [internal]
+    template: new_fulfillment_task
+    variables: [order_number, items, priority]
+
+metrics:
+  - name: order_fulfillment_time
+    description: Time from confirmed to shipped
+    calculation: shipped_at - confirmed_at
+
+  - name: order_delivery_time
+    description: Time from shipped to delivered
+    calculation: delivered_at - shipped_at
+
+  - name: cancellation_rate
+    description: Percentage of orders cancelled
+    calculation: cancelled_orders / total_orders * 100
+
+  - name: return_rate
+    description: Percentage of orders returned
+    calculation: returned_orders / delivered_orders * 100
+
+sla:
+  - state: confirmed
+    target: Start processing within 4 hours
+    escalation: Notify manager if exceeded
+
+  - state: processing
+    target: Ship within 24 hours
+    escalation: Priority flag if exceeded
+
+  - state: shipped
+    target: Deliver within carrier SLA
+    escalation: Customer service follow-up if delayed

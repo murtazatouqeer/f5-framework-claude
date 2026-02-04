@@ -1,0 +1,642 @@
+name: download_management_workflow
+display_name: Download Management Workflow
+description: |
+  Workflow for managing offline content downloads including
+  initiation, DRM licensing, progress tracking, and expiration.
+
+domain: entertainment
+subdomain: streaming
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-STR-005
+trigger:
+  events:
+    - download_request
+    - download_status_change
+    - license_event
+  source: download_service
+
+participants:
+  roles:
+    - viewer
+    - system
+
+  systems:
+    - download_service
+    - drm_service
+    - cdn_service
+    - storage_service
+    - notification_service
+    - subscription_service
+
+stages:
+  - id: DM-001
+    name: Download Request Validation
+    description: Validate download request eligibility
+    actor: system
+
+    inputs:
+      - user_id
+      - profile_id
+      - content_id
+      - device_info
+      - quality_preference
+
+    activities:
+      - id: DM-001-A
+        name: Check Subscription
+        type: automated
+        action: Verify download entitlement
+        validations:
+          - subscription_active
+          - plan_allows_downloads
+          - downloads_remaining > 0
+
+      - id: DM-001-B
+        name: Check Content Rights
+        type: automated
+        action: Verify content downloadable
+        validations:
+          - content.is_downloadable
+          - license.download_allowed
+          - territory_allowed
+
+      - id: DM-001-C
+        name: Validate Device
+        type: automated
+        action: Check device eligibility
+        validations:
+          - device_type_supported
+          - device_registered
+          - storage_available
+
+      - id: DM-001-D
+        name: Check Existing Downloads
+        type: automated
+        action: Check for duplicate
+        logic: |
+          IF content already downloaded
+          AND not expired
+          THEN block_duplicate
+          ELSE proceed
+
+    outputs:
+      - validation_result
+      - download_quota_remaining
+
+    sla: 500_ms
+    decision_point:
+      valid: DM-002
+      invalid: end_with_error
+    next_stage: DM-002
+
+  - id: DM-002
+    name: Download Preparation
+    description: Prepare content for download
+    actor: system
+
+    inputs:
+      - content_id
+      - quality_preference
+      - device_capabilities
+
+    activities:
+      - id: DM-002-A
+        name: Select Quality Level
+        type: automated
+        action: Determine download quality
+        selection:
+          user_preference: requested_quality
+          device_cap: device_max_quality
+          subscription_cap: plan_max_quality
+          final: min(user, device, subscription)
+
+      - id: DM-002-B
+        name: Calculate File Size
+        type: automated
+        action: Estimate download size
+        factors:
+          - quality_level
+          - duration
+          - audio_tracks_count
+          - subtitle_count
+
+      - id: DM-002-C
+        name: Verify Storage
+        type: automated
+        action: Check available storage
+        validation:
+          required: estimated_size * 1.1
+          available: device_free_space
+
+      - id: DM-002-D
+        name: Generate Download URLs
+        type: automated
+        action: Get signed download URLs
+        urls:
+          - video_segments
+          - audio_tracks
+          - subtitle_files
+        expiry: 24_hours
+
+      - id: DM-002-E
+        name: Create Download Record
+        type: automated
+        action: Initialize download in database
+        record:
+          - download_id
+          - content_id
+          - profile_id
+          - device_id
+          - quality
+          - estimated_size
+          - status: queued
+
+    outputs:
+      - download_id
+      - download_urls
+      - estimated_size
+
+    sla: 2_seconds
+    next_stage: DM-003
+
+  - id: DM-003
+    name: DRM License Acquisition
+    description: Acquire offline DRM license
+    actor: system
+
+    inputs:
+      - download_id
+      - device_info
+
+    activities:
+      - id: DM-003-A
+        name: Request Offline License
+        type: automated
+        action: Generate offline license request
+        parameters:
+          - content_key_id
+          - device_certificate
+          - offline_mode: true
+          - duration: 30_days
+
+      - id: DM-003-B
+        name: Validate Security Level
+        type: automated
+        action: Verify device security
+        requirements:
+          SD: L3_minimum
+          HD: L2_minimum
+          4K: L1_required
+
+      - id: DM-003-C
+        name: Issue License
+        type: automated
+        action: Generate DRM license
+        license_params:
+          - content_keys
+          - playback_duration: 48_hours
+          - rental_duration: 30_days
+          - output_restrictions
+
+      - id: DM-003-D
+        name: Store License
+        type: automated
+        action: Persist license on device
+        storage:
+          location: secure_storage
+          binding: device_specific
+
+    outputs:
+      - license_id
+      - license_expiry
+
+    sla: 3_seconds
+    decision_point:
+      success: DM-004
+      failure: DM-003-retry
+    next_stage: DM-004
+
+  - id: DM-004
+    name: Download Execution
+    description: Execute content download
+    actor: system
+
+    inputs:
+      - download_id
+      - download_urls
+
+    activities:
+      - id: DM-004-A
+        name: Start Download
+        type: automated
+        action: Begin downloading content
+        method: background_transfer
+        priority: user_initiated
+
+      - id: DM-004-B
+        name: Download Video Segments
+        type: automated
+        action: Download encrypted video
+        strategy:
+          - parallel_connections: 4
+          - retry_on_failure: true
+          - resume_capable: true
+
+      - id: DM-004-C
+        name: Download Audio Tracks
+        type: automated
+        action: Download selected audio
+        tracks:
+          - primary_language
+          - additional_if_selected
+
+      - id: DM-004-D
+        name: Download Subtitles
+        type: automated
+        action: Download subtitle files
+        formats:
+          - vtt
+          - cc_if_available
+
+      - id: DM-004-E
+        name: Track Progress
+        type: automated
+        action: Monitor and report progress
+        updates:
+          - bytes_downloaded
+          - progress_percent
+          - estimated_time
+        frequency: every_1_percent
+
+      - id: DM-004-F
+        name: Handle Interruptions
+        type: automated
+        action: Manage download interruptions
+        scenarios:
+          network_loss:
+            - pause_download
+            - resume_on_reconnect
+          app_background:
+            - continue_if_allowed
+            - pause_if_restricted
+          low_storage:
+            - pause_download
+            - notify_user
+
+    outputs:
+      - download_progress
+      - downloaded_files
+
+    sla: varies_by_size
+    parallel_execution: true
+    next_stage: DM-005
+
+  - id: DM-005
+    name: Download Completion
+    description: Finalize completed download
+    actor: system
+
+    inputs:
+      - download_id
+      - downloaded_files
+
+    activities:
+      - id: DM-005-A
+        name: Verify Integrity
+        type: automated
+        action: Check file integrity
+        validations:
+          - checksum_verification
+          - complete_segments
+          - drm_validity
+
+      - id: DM-005-B
+        name: Assemble Content
+        type: automated
+        action: Finalize downloadable content
+        assembly:
+          - combine_segments
+          - index_chapters
+          - link_audio_subtitle
+
+      - id: DM-005-C
+        name: Set Expiration
+        type: automated
+        action: Configure download expiry
+        expiration:
+          - download_expires: start + 30_days
+          - playback_expires: first_play + 48_hours
+
+      - id: DM-005-D
+        name: Update Download Record
+        type: automated
+        action: Mark download complete
+        updates:
+          - status: completed
+          - completed_at: now
+          - file_size_actual
+          - storage_path
+
+      - id: DM-005-E
+        name: Update Quota
+        type: automated
+        action: Decrement download count
+        updates:
+          - downloads_used: +1
+          - storage_used: +file_size
+
+      - id: DM-005-F
+        name: Notify User
+        type: automated
+        action: Send completion notification
+        notification:
+          - push: download_ready
+          - in_app: available_offline
+
+    outputs:
+      - completed_download
+      - notification_sent
+
+    sla: 30_seconds
+    next_stage: complete
+
+  # ============================================
+  # Download Lifecycle Management
+  # ============================================
+  - id: DM-010
+    name: Offline Playback
+    description: Handle offline content playback
+    actor: viewer
+    trigger: playback_request_offline
+
+    inputs:
+      - download_id
+      - device_info
+
+    activities:
+      - id: DM-010-A
+        name: Verify Download Valid
+        type: automated
+        action: Check download validity
+        checks:
+          - not_expired
+          - license_valid
+          - files_intact
+
+      - id: DM-010-B
+        name: Initialize Offline Playback
+        type: automated
+        action: Set up offline player
+        config:
+          - local_files
+          - cached_license
+          - offline_mode: true
+
+      - id: DM-010-C
+        name: Start Playback Timer
+        type: automated
+        action: Begin 48-hour window
+        condition: if_first_playback
+
+      - id: DM-010-D
+        name: Track Offline Progress
+        type: automated
+        action: Save progress locally
+        sync: when_online
+
+    outputs:
+      - playback_session
+
+    sla: 1_second
+    next_stage: complete
+
+  - id: DM-011
+    name: License Renewal
+    description: Renew expiring offline license
+    actor: system
+    trigger: scheduled_or_manual
+
+    inputs:
+      - download_id
+      - current_license
+
+    activities:
+      - id: DM-011-A
+        name: Check Renewal Eligibility
+        type: automated
+        action: Verify can renew
+        checks:
+          - subscription_active
+          - content_still_available
+          - license_renewable
+
+      - id: DM-011-B
+        name: Request New License
+        type: automated
+        action: Acquire fresh license
+        requires: internet_connection
+
+      - id: DM-011-C
+        name: Update License
+        type: automated
+        action: Replace old license
+        updates:
+          - new_license_id
+          - new_expiry_date
+
+      - id: DM-011-D
+        name: Extend Download Expiry
+        type: automated
+        action: Reset download expiration
+        new_expiry: now + 30_days
+
+    outputs:
+      - renewed_license
+
+    sla: 5_seconds
+    decision_point:
+      success: complete
+      failure: notify_user
+    next_stage: complete
+
+  - id: DM-012
+    name: Download Expiration
+    description: Handle expired downloads
+    actor: system
+    trigger: expiration_check
+
+    inputs:
+      - download_id
+
+    activities:
+      - id: DM-012-A
+        name: Check Expiration
+        type: automated
+        action: Determine expiration status
+        checks:
+          - download_expiry_date
+          - playback_window_expiry
+          - license_expiry
+
+      - id: DM-012-B
+        name: Send Warning
+        type: automated
+        action: Notify before expiration
+        timing:
+          - 3_days_before
+          - 1_day_before
+          - same_day
+
+      - id: DM-012-C
+        name: Expire Download
+        type: automated
+        action: Mark as expired
+        updates:
+          - status: expired
+          - expired_at: now
+
+      - id: DM-012-D
+        name: Revoke License
+        type: automated
+        action: Invalidate offline license
+        clears: local_license
+
+      - id: DM-012-E
+        name: Clean Up Files
+        type: automated
+        action: Remove downloaded content
+        deletes:
+          - video_files
+          - audio_files
+          - subtitle_files
+        updates:
+          - storage_freed
+
+      - id: DM-012-F
+        name: Update Quota
+        type: automated
+        action: Restore download count
+        updates:
+          - downloads_used: -1
+          - storage_used: -file_size
+
+    outputs:
+      - expired_download
+      - freed_storage
+
+    sla: async
+    next_stage: complete
+
+  - id: DM-013
+    name: Manual Deletion
+    description: User-initiated download removal
+    actor: viewer
+
+    inputs:
+      - download_id
+      - user_confirmation
+
+    activities:
+      - id: DM-013-A
+        name: Confirm Deletion
+        type: manual
+        action: User confirms delete
+        warning: content_will_be_removed
+
+      - id: DM-013-B
+        name: Delete Files
+        type: automated
+        action: Remove all download files
+        deletes:
+          - video_segments
+          - audio_tracks
+          - subtitles
+          - license
+
+      - id: DM-013-C
+        name: Update Records
+        type: automated
+        action: Update download status
+        updates:
+          - status: deleted
+          - deleted_at: now
+
+      - id: DM-013-D
+        name: Restore Quota
+        type: automated
+        action: Free up download slot
+        updates:
+          - downloads_used: -1
+
+    outputs:
+      - deleted_download
+
+    sla: immediate
+    next_stage: complete
+
+completion_criteria:
+  download:
+    - files_complete
+    - license_acquired
+    - integrity_verified
+
+  expiration:
+    - files_deleted
+    - license_revoked
+    - quota_restored
+
+exception_handling:
+  storage_full:
+    action: notify_user
+    message: insufficient_storage
+    suggestion: delete_other_downloads
+
+  license_failure:
+    action: retry
+    max_retries: 3
+    fallback: notify_user
+
+  network_error:
+    action: pause_and_queue
+    resume: on_network_available
+
+  content_unavailable:
+    action: cancel_download
+    notification: content_no_longer_available
+
+smart_downloads:
+  enabled: true
+  features:
+    auto_download_next:
+      enabled: true
+      episodes_ahead: 3
+      wifi_only: true
+
+    auto_delete_watched:
+      enabled: true
+      delay_hours: 24
+
+    predictive_downloads:
+      enabled: false
+      confidence_threshold: 0.8
+
+metrics:
+  - name: download_success_rate
+    target: "> 98%"
+
+  - name: average_download_speed
+    target: "> 5 Mbps"
+
+  - name: offline_playback_success_rate
+    target: "> 99%"
+
+  - name: license_renewal_success_rate
+    target: "> 95%"
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

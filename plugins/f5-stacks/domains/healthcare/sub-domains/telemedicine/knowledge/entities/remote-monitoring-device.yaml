@@ -1,0 +1,365 @@
+# RemoteMonitoringDevice Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Connected health device management for RPM
+
+entity:
+  id: remote-monitoring-device
+  name: RemoteMonitoringDevice
+  name_ja: 遠隔監視デバイス
+  description: Connected health devices for remote patient monitoring (RPM)
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: device_id
+      type: string
+      format: "RMD-{XXXX}"
+      unique: true
+      indexed: true
+      description: Human-readable device ID
+
+    - name: patient_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: patient.id
+      description: Patient using this device
+
+    # Device Information
+    - name: device_type
+      type: enum
+      values:
+        - blood_pressure_monitor
+        - glucose_meter
+        - pulse_oximeter
+        - weight_scale
+        - thermometer
+        - ecg_monitor
+        - spirometer
+        - activity_tracker
+        - continuous_glucose_monitor
+        - heart_rate_monitor
+        - sleep_tracker
+      required: true
+      indexed: true
+      description: Type of monitoring device
+
+    - name: device_category
+      type: enum
+      values:
+        - vital_signs
+        - metabolic
+        - cardiac
+        - respiratory
+        - activity
+        - sleep
+      required: true
+      description: Device category
+
+    - name: device_manufacturer
+      type: string
+      required: true
+      description: Device manufacturer
+
+    - name: device_model
+      type: string
+      required: true
+      description: Device model name
+
+    - name: device_serial
+      type: string
+      required: true
+      unique: true
+      description: Device serial number
+
+    - name: firmware_version
+      type: string
+      nullable: true
+      description: Current firmware version
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - pending_setup
+        - active
+        - inactive
+        - disconnected
+        - low_battery
+        - error
+        - recalled
+        - decommissioned
+      required: true
+      default: pending_setup
+      indexed: true
+      description: Device status
+
+    - name: activation_date
+      type: date
+      nullable: true
+      description: When device was activated
+
+    - name: last_sync_at
+      type: datetime
+      nullable: true
+      indexed: true
+      description: Last successful sync
+
+    - name: next_expected_sync_at
+      type: datetime
+      nullable: true
+      description: Expected next sync time
+
+    # Connection
+    - name: connection_type
+      type: enum
+      values:
+        - bluetooth
+        - wifi
+        - cellular
+        - usb
+        - nfc
+        - hub
+      required: true
+      description: How device connects
+
+    - name: requires_hub
+      type: boolean
+      default: false
+      description: Requires intermediate hub
+
+    - name: hub_device_id
+      type: uuid
+      nullable: true
+      foreign_key: remote_monitoring_device.id
+      description: Associated hub device
+
+    # Integration
+    - name: integration_type
+      type: enum
+      values:
+        - direct_api
+        - hub_api
+        - health_platform
+        - manual_entry
+      required: true
+      description: Integration method
+
+    - name: integration_platform
+      type: enum
+      values:
+        - apple_healthkit
+        - google_fit
+        - fitbit
+        - withings
+        - dexcom
+        - livongo
+        - omron_connect
+        - true_metrix
+        - custom
+      nullable: true
+      description: Health platform integration
+
+    - name: api_device_id
+      type: string
+      nullable: true
+      description: Device ID in external API
+
+    - name: api_credentials
+      type: jsonb
+      nullable: true
+      encrypted: true
+      description: API credentials (encrypted)
+
+    # Battery
+    - name: battery_type
+      type: enum
+      values:
+        - rechargeable
+        - replaceable
+        - not_applicable
+      default: rechargeable
+      description: Battery type
+
+    - name: battery_level
+      type: integer
+      nullable: true
+      validation:
+        min: 0
+        max: 100
+      description: Current battery percentage
+
+    - name: low_battery_threshold
+      type: integer
+      default: 20
+      description: Alert when below this level
+
+    # Configuration
+    - name: measurement_frequency
+      type: string
+      nullable: true
+      description: How often to measure (e.g., "2x daily")
+
+    - name: measurement_schedule
+      type: jsonb
+      nullable: true
+      description: |
+        Scheduled measurement times:
+        [{time: "08:00", days: ["mon","tue","wed","thu","fri"]}]
+
+    - name: alert_thresholds
+      type: jsonb
+      nullable: true
+      description: |
+        Alert thresholds:
+        {
+          high: {value: 180, unit: "mg/dL"},
+          low: {value: 70, unit: "mg/dL"}
+        }
+
+    # Statistics
+    - name: total_readings
+      type: integer
+      default: 0
+      description: Total readings from device
+
+    - name: readings_last_30_days
+      type: integer
+      default: 0
+      description: Readings in last 30 days
+
+    - name: compliance_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+      description: Measurement compliance percentage
+
+    # Assigned Care Team
+    - name: assigned_provider_id
+      type: uuid
+      nullable: true
+      foreign_key: provider.id
+      description: Provider monitoring this device
+
+    - name: care_program_id
+      type: uuid
+      nullable: true
+      foreign_key: care_program.id
+      description: RPM program enrollment
+
+    # Timestamps
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: datetime
+      required: true
+      default: now()
+      on_update: now()
+
+    - name: decommissioned_at
+      type: datetime
+      nullable: true
+      description: When device was decommissioned
+
+  relationships:
+    - name: patient
+      type: belongs_to
+      entity: patient
+      foreign_key: patient_id
+
+    - name: hub
+      type: belongs_to
+      entity: remote_monitoring_device
+      foreign_key: hub_device_id
+
+    - name: readings
+      type: has_many
+      entity: vital_reading
+      foreign_key: device_id
+
+    - name: assigned_provider
+      type: belongs_to
+      entity: provider
+      foreign_key: assigned_provider_id
+
+  state_machine:
+    field: status
+    initial: pending_setup
+    transitions:
+      - from: pending_setup
+        to: active
+        trigger: device_paired
+        action: set_activation_date
+        
+      - from: active
+        to: disconnected
+        trigger: sync_failed
+        guard: last_sync_at < now() - interval '24 hours'
+        
+      - from: disconnected
+        to: active
+        trigger: reconnected
+        
+      - from: active
+        to: low_battery
+        trigger: battery_low
+        guard: battery_level < low_battery_threshold
+        
+      - from: low_battery
+        to: active
+        trigger: battery_charged
+        
+      - from: [active, disconnected, low_battery]
+        to: error
+        trigger: device_error
+        
+      - from: error
+        to: active
+        trigger: error_resolved
+        
+      - from: any
+        to: recalled
+        trigger: manufacturer_recall
+        
+      - from: [active, disconnected, error, recalled]
+        to: decommissioned
+        trigger: decommission
+        action: set_decommissioned_at
+
+  indexes:
+    - name: idx_rmd_patient
+      columns: [patient_id, device_type]
+      
+    - name: idx_rmd_status
+      columns: [status, last_sync_at]
+      
+    - name: idx_rmd_serial
+      columns: [device_serial]
+      unique: true
+
+  validations:
+    - name: hub_if_required
+      rule: requires_hub == false OR hub_device_id IS NOT NULL
+      message: Hub device required for this device type
+
+    - name: valid_battery
+      rule: battery_level IS NULL OR (battery_level >= 0 AND battery_level <= 100)
+      message: Battery level must be 0-100
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - patient_id
+      - alert_thresholds
+    retention_days: 2555

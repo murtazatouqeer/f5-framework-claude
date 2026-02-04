@@ -1,0 +1,345 @@
+name: Payment
+display_name: Payment / Thanh toán
+description: |
+  Giao dịch thanh toán cho đơn hàng.
+  Hỗ trợ: Đặt cọc, thanh toán cuối, hoàn tiền.
+
+domain: agriculture
+category: financial
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: payment_code
+    type: string
+    required: true
+    validation:
+      pattern: "^PAY-[0-9]{8}-[A-Z0-9]{8}$"
+    example: "PAY-20241201-ABCD1234"
+
+  - name: order_id
+    type: uuid
+    required: true
+
+  - name: payer_id
+    type: uuid
+    required: true
+    description: Người thanh toán
+
+  - name: payee_id
+    type: uuid
+    required: false
+    description: Người nhận (seller/platform)
+
+  - name: payment_type
+    type: enum
+    required: true
+    description: Loại thanh toán
+    validation:
+      values: [
+        deposit,              # Đặt cọc
+        final_payment,        # Thanh toán cuối
+        full_payment,         # Thanh toán full
+        refund,               # Hoàn tiền
+        compensation,         # Bồi thường
+        platform_fee,         # Phí sàn
+        penalty               # Phạt
+      ]
+
+  - name: payment_method
+    type: enum
+    required: true
+    validation:
+      values: [
+        bank_transfer,
+        vnpay,
+        momo,
+        zalopay,
+        cash_on_delivery,
+        wallet
+      ]
+
+  - name: amount
+    type: decimal
+    required: true
+    description: Số tiền
+    validation:
+      min: 0
+
+  - name: currency
+    type: string
+    required: true
+    default: "VND"
+
+  - name: fee
+    type: decimal
+    required: false
+    default: 0
+    description: Phí giao dịch
+
+  - name: net_amount
+    type: decimal
+    required: true
+    description: Số tiền thực nhận (amount - fee)
+
+  # Gateway info
+  - name: gateway
+    type: string
+    required: false
+    description: Payment gateway sử dụng
+
+  - name: gateway_transaction_id
+    type: string
+    required: false
+    description: Mã giao dịch từ gateway
+
+  - name: gateway_response
+    type: object
+    required: false
+    description: Response đầy đủ từ gateway
+
+  # Bank info
+  - name: bank_code
+    type: string
+    required: false
+
+  - name: bank_account
+    type: string
+    required: false
+
+  - name: bank_name
+    type: string
+    required: false
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [
+        pending,
+        processing,
+        authorized,
+        captured,
+        completed,
+        failed,
+        cancelled,
+        refunded,
+        disputed
+      ]
+    default: pending
+
+  - name: failure_reason
+    type: string
+    required: false
+
+  - name: failure_code
+    type: string
+    required: false
+
+  # Retry info
+  - name: retry_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: max_retries
+    type: integer
+    required: true
+    default: 3
+
+  - name: next_retry_at
+    type: timestamp
+    required: false
+
+  # Escrow
+  - name: escrow
+    type: boolean
+    required: true
+    default: true
+    description: Giữ tiền escrow cho đến khi hoàn thành
+
+  - name: escrow_released
+    type: boolean
+    required: false
+    default: false
+
+  - name: escrow_released_at
+    type: timestamp
+    required: false
+
+  - name: escrow_release_to
+    type: uuid
+    required: false
+    description: User nhận khi release
+
+  # Refund info (for refund type)
+  - name: original_payment_id
+    type: uuid
+    required: false
+    description: Payment gốc (cho refund)
+
+  - name: refund_reason
+    type: text
+    required: false
+
+  # Verification
+  - name: verified
+    type: boolean
+    required: false
+    default: false
+
+  - name: verified_by
+    type: uuid
+    required: false
+
+  - name: verified_at
+    type: timestamp
+    required: false
+
+  # Timestamps
+  - name: initiated_at
+    type: timestamp
+    required: true
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  - name: failed_at
+    type: timestamp
+    required: false
+
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Thời hạn thanh toán
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    required: true
+
+  - name: payer
+    type: belongs_to
+    entity: User
+    required: true
+
+  - name: payee
+    type: belongs_to
+    entity: User
+    required: false
+
+  - name: original_payment
+    type: belongs_to
+    entity: Payment
+    required: false
+
+  - name: refunds
+    type: has_many
+    entity: Payment
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Chờ thanh toán
+    - name: processing
+      description: Đang xử lý
+    - name: authorized
+      description: Đã authorize (chưa capture)
+    - name: captured
+      description: Đã capture (escrow)
+    - name: completed
+      description: Hoàn thành
+    - name: failed
+      description: Thất bại
+    - name: cancelled
+      description: Đã hủy
+    - name: refunded
+      description: Đã hoàn tiền
+    - name: disputed
+      description: Đang tranh chấp
+  transitions:
+    - from: pending
+      to: processing
+      trigger: initiate
+      actions: [call_gateway]
+    - from: processing
+      to: authorized
+      trigger: authorize
+      conditions: [gateway_approved]
+    - from: processing
+      to: captured
+      trigger: capture
+      conditions: [gateway_approved]
+      actions: [hold_in_escrow]
+    - from: authorized
+      to: captured
+      trigger: capture
+      actions: [hold_in_escrow]
+    - from: captured
+      to: completed
+      trigger: release
+      actions: [release_escrow, notify_payee]
+    - from: [pending, processing]
+      to: failed
+      trigger: fail
+      actions: [notify_payer, schedule_retry]
+    - from: [pending, processing, authorized]
+      to: cancelled
+      trigger: cancel
+      actions: [notify_payer]
+    - from: completed
+      to: refunded
+      trigger: refund
+      actions: [create_refund_payment, notify_payer]
+    - from: any
+      to: disputed
+      trigger: dispute
+      actions: [hold_escrow, notify_admin]
+
+indexes:
+  - [payment_code]
+  - [order_id]
+  - [payer_id]
+  - [status]
+  - [payment_type]
+  - [gateway_transaction_id]
+  - [created_at]
+
+computed_fields:
+  - name: is_expired
+    formula: expires_at IS NOT NULL AND NOW() > expires_at
+    description: Đã hết hạn thanh toán chưa
+
+business_rules:
+  - BR-PAY-001: Deposit = 10-20% order amount
+  - BR-PAY-002: Escrow release sau 48h delivery nếu không có dispute
+  - BR-PAY-003: Payment expires sau 24h
+  - BR-PAY-004: Max 3 retries cho failed payment
+  - BR-PAY-005: Refund trong vòng 7-14 ngày làm việc
+  - BR-PAY-006: Platform fee = 2-5% order amount
+
+events:
+  - name: payment.initiated
+    payload: [id, payment_code, order_id, amount]
+  - name: payment.completed
+    payload: [id, amount, gateway_transaction_id]
+  - name: payment.failed
+    payload: [id, failure_reason, retry_count]
+  - name: payment.refunded
+    payload: [id, refund_amount, original_payment_id]
+  - name: payment.escrow_released
+    payload: [id, amount, released_to]

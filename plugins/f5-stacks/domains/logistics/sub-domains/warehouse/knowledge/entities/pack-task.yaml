@@ -1,0 +1,297 @@
+name: PackTask
+display_name: Pack Task
+description: |
+  Task to pack picked items into shipping containers/cartons.
+  Supports single-order packing, multi-order packing, and gift wrapping.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: task_number
+    type: string
+    required: true
+    validation:
+      pattern: "^PACK-[0-9]{8}-[0-9]{4}$"
+    example: "PACK-20241201-0001"
+
+  - name: outbound_order_id
+    type: uuid
+    required: true
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: worker_id
+    type: uuid
+    required: false
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, assigned, in_progress, completed, cancelled]
+    default: pending
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, urgent]
+    default: medium
+
+  # Pack Station
+  - name: pack_station_id
+    type: uuid
+    required: false
+    description: Assigned packing station
+
+  # Source
+  - name: source_lpn
+    type: string
+    required: true
+    description: Tote/container from picking
+
+  - name: source_location_id
+    type: uuid
+    required: false
+
+  # Pack Details
+  - name: pack_type
+    type: enum
+    required: true
+    validation:
+      values: [single_order, multi_order, bulk, kit]
+    default: single_order
+
+  - name: items_to_pack
+    type: array
+    required: true
+    description: Items in source container
+    example:
+      - item_id: "uuid"
+        sku: "SKU-001"
+        quantity: 5
+        picked_lpn: "LPN-123"
+
+  - name: total_items
+    type: integer
+    required: true
+    default: 0
+
+  - name: items_packed
+    type: integer
+    required: true
+    default: 0
+
+  # Cartons/Packaging
+  - name: cartons
+    type: array
+    required: false
+    description: Shipping cartons created
+    example:
+      - carton_id: "CTN-001"
+        carton_type: "small_box"
+        dimensions: { length: 30, width: 20, height: 15 }
+        weight_kg: 2.5
+        tracking_number: "1Z999AA10123456784"
+        items: []
+
+  - name: total_cartons
+    type: integer
+    required: true
+    default: 0
+
+  - name: packaging_type
+    type: enum
+    required: true
+    validation:
+      values: [box, envelope, padded_envelope, poly_bag, custom]
+    default: box
+
+  # Special Requirements
+  - name: gift_wrap
+    type: boolean
+    required: true
+    default: false
+
+  - name: gift_message
+    type: text
+    required: false
+
+  - name: fragile
+    type: boolean
+    required: true
+    default: false
+
+  - name: hazmat
+    type: boolean
+    required: true
+    default: false
+
+  - name: cold_pack_required
+    type: boolean
+    required: true
+    default: false
+
+  # Labels & Documents
+  - name: shipping_label_printed
+    type: boolean
+    required: true
+    default: false
+
+  - name: packing_slip_printed
+    type: boolean
+    required: true
+    default: false
+
+  - name: customs_docs_printed
+    type: boolean
+    required: true
+    default: false
+
+  # Verification
+  - name: weight_verified
+    type: boolean
+    required: true
+    default: false
+
+  - name: actual_weight_kg
+    type: decimal
+    required: false
+
+  - name: expected_weight_kg
+    type: decimal
+    required: false
+
+  - name: weight_variance_kg
+    type: decimal
+    required: false
+
+  - name: photo_captured
+    type: boolean
+    required: true
+    default: false
+
+  - name: photo_url
+    type: string
+    required: false
+
+  # Execution
+  - name: assigned_at
+    type: timestamp
+    required: false
+
+  - name: started_at
+    type: timestamp
+    required: false
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  # Performance
+  - name: pack_time_seconds
+    type: integer
+    required: false
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: outbound_order
+    type: belongs_to
+    entity: OutboundOrder
+    required: true
+
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: worker
+    type: belongs_to
+    entity: WarehouseWorker
+    required: false
+
+  - name: source_location
+    type: belongs_to
+    entity: Location
+    required: false
+
+  - name: shipment
+    type: has_one
+    entity: Shipment
+
+indexes:
+  - [task_number]
+  - [warehouse_id, status]
+  - [worker_id, status]
+  - [outbound_order_id]
+  - [pack_station_id]
+
+computed_fields:
+  - name: pack_progress
+    formula: (items_packed / total_items) * 100
+  - name: weight_variance_percent
+    formula: ((actual_weight_kg - expected_weight_kg) / expected_weight_kg) * 100
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Task created, not assigned
+    - name: assigned
+      description: Assigned to worker/station
+    - name: in_progress
+      description: Packing in progress
+    - name: completed
+      description: All items packed
+    - name: cancelled
+      description: Task cancelled
+  transitions:
+    - from: pending
+      to: assigned
+      trigger: assign
+    - from: assigned
+      to: in_progress
+      trigger: start
+    - from: in_progress
+      to: completed
+      trigger: complete
+      conditions: [items_packed == total_items, shipping_label_printed]
+      actions: [create_shipment, print_documents]
+    - from: [pending, assigned]
+      to: cancelled
+      trigger: cancel
+
+business_rules:
+  - BR-PACK-001: All items must be scanned and verified
+  - BR-PACK-002: Weight variance > 5% requires supervisor review
+  - BR-PACK-003: Fragile items require padding/protection
+  - BR-PACK-004: Hazmat items follow special packaging rules
+
+events:
+  - name: pack.started
+    payload: [id, pack_station_id, total_items]
+  - name: pack.completed
+    payload: [id, total_cartons, pack_time_seconds]
+  - name: pack.label_printed
+    payload: [id, tracking_numbers]

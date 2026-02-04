@@ -1,0 +1,680 @@
+name: Cancellation
+display_name: Policy Cancellation
+description: |
+  Policy cancellation record with refund calculations.
+  Tracks surrender values, refunds, and termination details.
+
+domain: insurance
+subdomain: policy
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: cancellations
+  primary_key: id
+  indexes:
+    - columns: [policy_id]
+    - columns: [cancellation_number]
+      unique: true
+    - columns: [status]
+    - columns: [cancellation_date]
+    - columns: [cancellation_type]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: cancellation_number
+    type: string
+    description: Cancellation reference
+    pattern: "CAN-[A-Z0-9]{8}"
+    example: "CAN-2024A001"
+    required: true
+    unique: true
+
+  - name: policy_id
+    type: uuid
+    description: Policy being cancelled
+    required: true
+
+  - name: policy_number
+    type: string
+    description: Policy reference
+
+  # Type
+  - name: cancellation_type
+    type: enum
+    description: Type of cancellation
+    values:
+      - surrender
+      - free_look
+      - non_payment_lapse
+      - insurer_cancellation
+      - death
+      - maturity
+      - conversion
+      - replacement
+      - fraud
+      - mutual_agreement
+    required: true
+
+  - name: initiated_by
+    type: enum
+    description: Who initiated
+    values:
+      - policyholder
+      - insurer
+      - regulator
+      - system
+    required: true
+
+  # Status
+  - name: status
+    type: enum
+    description: Cancellation status
+    values:
+      - requested
+      - pending_documents
+      - under_review
+      - pending_approval
+      - approved
+      - processing_refund
+      - completed
+      - rejected
+      - withdrawn
+    default: requested
+
+  # Dates
+  - name: request_date
+    type: date
+    description: When requested
+    required: true
+
+  - name: effective_date
+    type: date
+    description: Cancellation effective date
+    required: true
+
+  - name: policy_inception_date
+    type: date
+    description: Original policy start
+
+  - name: policy_months_in_force
+    type: integer
+    description: Months policy was active
+    computed: "months between inception and effective_date"
+
+  - name: processing_date
+    type: date
+    description: When processed
+
+  - name: completion_date
+    type: date
+    description: When completed
+
+  # Reason
+  - name: reason_code
+    type: string
+    description: Cancellation reason code
+
+  - name: reason
+    type: text
+    description: Cancellation reason
+    required: true
+
+  - name: detailed_reason
+    type: text
+    description: Additional details
+
+  - name: retention_attempted
+    type: boolean
+    description: Retention efforts made
+    default: false
+
+  - name: retention_offer
+    type: object
+    description: Retention offer details
+    properties:
+      offered:
+        type: boolean
+      discount_percent:
+        type: decimal
+      special_terms:
+        type: string
+      customer_response:
+        type: string
+
+  # Financial - Policy values
+  - name: total_premiums_paid
+    type: decimal
+    description: Total premiums received
+    precision: 15
+    scale: 2
+
+  - name: sum_insured
+    type: decimal
+    description: Policy sum insured
+    precision: 15
+    scale: 2
+
+  - name: cash_value
+    type: decimal
+    description: Cash value (if applicable)
+    precision: 15
+    scale: 2
+
+  - name: surrender_value
+    type: decimal
+    description: Surrender value
+    precision: 15
+    scale: 2
+
+  - name: surrender_charges
+    type: decimal
+    description: Surrender charges/penalties
+    precision: 12
+    scale: 2
+
+  - name: surrender_charge_percent
+    type: decimal
+    description: Surrender charge rate
+    precision: 5
+    scale: 2
+
+  # Refund calculation
+  - name: refund_method
+    type: enum
+    description: Refund calculation method
+    values:
+      - short_rate
+      - pro_rata
+      - flat
+      - none
+    default: pro_rata
+
+  - name: earned_premium
+    type: decimal
+    description: Premium for covered period
+    precision: 12
+    scale: 2
+
+  - name: unearned_premium
+    type: decimal
+    description: Premium to be refunded
+    precision: 12
+    scale: 2
+
+  - name: short_rate_factor
+    type: decimal
+    description: Short rate penalty factor
+    precision: 5
+    scale: 4
+
+  - name: cancellation_fee
+    type: decimal
+    description: Processing fee
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: administrative_charges
+    type: decimal
+    description: Admin charges
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: policy_loan_balance
+    type: decimal
+    description: Outstanding loan amount
+    precision: 15
+    scale: 2
+    default: 0
+
+  - name: loan_interest_due
+    type: decimal
+    description: Loan interest owing
+    precision: 12
+    scale: 2
+    default: 0
+
+  # Net amounts
+  - name: gross_refund_amount
+    type: decimal
+    description: Before deductions
+    precision: 15
+    scale: 2
+
+  - name: deductions
+    type: array
+    description: All deductions
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        amount:
+          type: decimal
+        description:
+          type: string
+
+  - name: total_deductions
+    type: decimal
+    description: Total deductions
+    precision: 12
+    scale: 2
+
+  - name: net_refund_amount
+    type: decimal
+    description: Final refund amount
+    precision: 15
+    scale: 2
+    computed: "gross_refund_amount - total_deductions"
+
+  - name: refund_currency
+    type: string
+    description: Refund currency
+    default: "VND"
+
+  # Claims consideration
+  - name: pending_claims
+    type: boolean
+    description: Has pending claims
+    default: false
+
+  - name: pending_claims_amount
+    type: decimal
+    description: Pending claims value
+    precision: 15
+    scale: 2
+
+  - name: claims_paid_ytd
+    type: decimal
+    description: Claims paid this year
+    precision: 15
+    scale: 2
+
+  - name: claims_adjustment
+    type: decimal
+    description: Claims-related adjustment
+    precision: 12
+    scale: 2
+
+  # Payment details
+  - name: payment_status
+    type: enum
+    description: Refund payment status
+    values:
+      - pending
+      - processing
+      - paid
+      - failed
+      - not_applicable
+    default: pending
+
+  - name: payment_method
+    type: enum
+    description: Refund payment method
+    values:
+      - bank_transfer
+      - cheque
+      - original_method
+      - cash
+
+  - name: payment_date
+    type: date
+    description: When refund paid
+
+  - name: payment_reference
+    type: string
+    description: Payment reference
+
+  - name: bank_details
+    type: object
+    description: Refund bank account
+    properties:
+      bank_name:
+        type: string
+      account_number:
+        type: string
+      account_holder:
+        type: string
+      swift_code:
+        type: string
+
+  # Free look period
+  - name: is_free_look
+    type: boolean
+    description: Within free look period
+    default: false
+
+  - name: free_look_days_used
+    type: integer
+    description: Days since inception
+
+  - name: free_look_period_days
+    type: integer
+    description: Free look period length
+    default: 15
+
+  - name: free_look_refund_amount
+    type: decimal
+    description: Full refund for free look
+    precision: 15
+    scale: 2
+
+  # Documents
+  - name: required_documents
+    type: array
+    description: Documents needed
+    items:
+      type: object
+      properties:
+        document_type:
+          type: string
+        is_mandatory:
+          type: boolean
+        status:
+          type: enum
+          values: [pending, received, verified]
+
+  - name: supporting_documents
+    type: array
+    description: Uploaded documents
+    items:
+      type: object
+      properties:
+        document_type:
+          type: string
+        file_name:
+          type: string
+        file_url:
+          type: string
+        uploaded_at:
+          type: timestamp
+
+  - name: cancellation_letter_url
+    type: string
+    description: Cancellation letter PDF
+    format: uri
+
+  - name: settlement_letter_url
+    type: string
+    description: Settlement statement PDF
+    format: uri
+
+  # Signatures
+  - name: policyholder_signature
+    type: object
+    description: Policyholder signature
+    properties:
+      required:
+        type: boolean
+      signed:
+        type: boolean
+      signed_at:
+        type: timestamp
+      signature_url:
+        type: string
+
+  - name: witness_signature
+    type: object
+    description: Witness signature
+    properties:
+      required:
+        type: boolean
+      name:
+        type: string
+      signed:
+        type: boolean
+      signed_at:
+        type: timestamp
+
+  # Approval
+  - name: requires_approval
+    type: boolean
+    description: Needs approval
+    default: true
+
+  - name: approval_level
+    type: enum
+    description: Approval authority
+    values:
+      - auto
+      - supervisor
+      - manager
+      - executive
+    default: supervisor
+
+  - name: approved_by
+    type: uuid
+    description: Approver
+
+  - name: approved_at
+    type: timestamp
+    description: Approval time
+
+  - name: rejection_reason
+    type: text
+    description: Why rejected
+
+  # Agent impact
+  - name: agent_id
+    type: uuid
+    description: Servicing agent
+
+  - name: commission_clawback
+    type: boolean
+    description: Clawback required
+    default: false
+
+  - name: clawback_amount
+    type: decimal
+    description: Commission to recover
+    precision: 12
+    scale: 2
+
+  - name: clawback_processed
+    type: boolean
+    description: Clawback completed
+    default: false
+
+  # Reinsurance
+  - name: reinsurance_adjustment
+    type: boolean
+    description: RI adjustment needed
+    default: false
+
+  - name: reinsurance_refund
+    type: decimal
+    description: RI premium refund
+    precision: 12
+    scale: 2
+
+  # Notifications
+  - name: policyholder_notified
+    type: boolean
+    description: Customer notified
+    default: false
+
+  - name: notification_date
+    type: date
+    description: Notification date
+
+  - name: notification_method
+    type: string
+    description: How notified
+
+  # Notes
+  - name: internal_notes
+    type: text
+    description: Internal notes
+
+  - name: customer_notes
+    type: text
+    description: Notes for customer
+
+  # Processing
+  - name: processed_by
+    type: uuid
+    description: Processor
+
+  - name: verified_by
+    type: uuid
+    description: Verifier
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: policy
+    type: belongs_to
+    entity: Policy
+    foreign_key: policy_id
+
+  - name: agent
+    type: belongs_to
+    entity: Agent
+    foreign_key: agent_id
+
+  - name: approver
+    type: belongs_to
+    entity: User
+    foreign_key: approved_by
+
+state_machine:
+  initial: requested
+  states:
+    - name: requested
+      description: Cancellation requested
+    - name: pending_documents
+      description: Awaiting documents
+    - name: under_review
+      description: Under review
+    - name: pending_approval
+      description: Awaiting approval
+    - name: approved
+      description: Approved
+    - name: processing_refund
+      description: Processing refund
+    - name: completed
+      description: Completed
+    - name: rejected
+      description: Rejected
+    - name: withdrawn
+      description: Withdrawn by customer
+
+  transitions:
+    - from: requested
+      to: pending_documents
+      event: request_documents
+
+    - from: requested
+      to: under_review
+      event: documents_complete
+
+    - from: pending_documents
+      to: under_review
+      event: documents_received
+
+    - from: under_review
+      to: pending_approval
+      event: review_complete
+
+    - from: under_review
+      to: rejected
+      event: reject
+
+    - from: pending_approval
+      to: approved
+      event: approve
+
+    - from: pending_approval
+      to: rejected
+      event: reject
+
+    - from: approved
+      to: processing_refund
+      event: process_refund
+
+    - from: processing_refund
+      to: completed
+      event: refund_complete
+
+    - from: approved
+      to: completed
+      event: complete
+      condition: no_refund_required
+
+    - from: [requested, pending_documents, under_review]
+      to: withdrawn
+      event: withdraw
+
+business_rules:
+  - rule: BR-CAN-001
+    description: Free look full refund
+    validation: IF is_free_look = true THEN net_refund_amount = total_premiums_paid
+
+  - rule: BR-CAN-002
+    description: Pending claims block completion
+    validation: IF pending_claims = true THEN status != 'completed'
+
+  - rule: BR-CAN-003
+    description: Surrender value calculation
+    validation: surrender_value = cash_value - surrender_charges
+
+  - rule: BR-CAN-004
+    description: Loan balance deducted from refund
+    validation: net_refund = gross_refund - policy_loan_balance - loan_interest_due
+
+events:
+  - name: cancellation.requested
+    payload: [cancellation_id, policy_id, cancellation_type]
+
+  - name: cancellation.approved
+    payload: [cancellation_id, approved_by, net_refund_amount]
+
+  - name: cancellation.rejected
+    payload: [cancellation_id, rejection_reason]
+
+  - name: cancellation.refund_processed
+    payload: [cancellation_id, refund_amount, payment_reference]
+
+  - name: cancellation.completed
+    payload: [cancellation_id, effective_date, net_refund_amount]
+
+api_endpoints:
+  - method: POST
+    path: /cancellations
+    description: Request cancellation
+
+  - method: GET
+    path: /cancellations/{id}
+    description: Get cancellation details
+
+  - method: POST
+    path: /cancellations/{id}/calculate
+    description: Calculate refund
+
+  - method: POST
+    path: /cancellations/{id}/approve
+    description: Approve cancellation
+
+  - method: POST
+    path: /cancellations/{id}/process-refund
+    description: Process refund
+
+  - method: POST
+    path: /cancellations/{id}/complete
+    description: Complete cancellation

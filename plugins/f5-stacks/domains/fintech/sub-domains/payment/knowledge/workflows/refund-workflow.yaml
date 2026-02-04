@@ -1,0 +1,402 @@
+# Refund Workflow
+# Domain: fintech/payment
+# Purpose: Complete refund processing from request to completion
+
+name: Refund Processing
+display_name: Refund Processing Workflow
+description: |
+  Complete workflow for processing refunds including validation,
+  fraud check, processor submission, and balance updates.
+
+  Vietnamese: Quy trình hoàn chỉnh xử lý hoàn tiền bao gồm xác thực,
+  kiểm tra gian lận, gửi processor và cập nhật số dư.
+
+domain: fintech
+sub_domain: payment
+category: workflow
+version: "1.0.0"
+
+workflow:
+  id: WF-REF-001
+  name: refund_processing
+  trigger: api_request | merchant_dashboard | support_request
+
+  steps:
+    # ============ STEP 1: CREATE REFUND REQUEST ============
+    - id: create_refund_request
+      name: Create Refund Request
+      description: Initialize refund request
+      vietnamese: Khởi tạo yêu cầu hoàn tiền
+      type: action
+      input:
+        - payment_id
+        - amount (optional, full if not specified)
+        - reason
+        - reason_details (optional)
+        - requested_by
+        - metadata
+      actions:
+        - validate_payment_exists(payment_id)
+        - validate_requester_authorization()
+        - generate_refund_id()
+        - create_refund_record(status: pending)
+      output:
+        - refund_id
+        - status: pending
+      on_success: goto: validate_refund
+      on_failure: return_error
+      timeout: 5s
+
+    # ============ STEP 2: VALIDATE REFUND ============
+    - id: validate_refund
+      name: Validate Refund
+      description: Validate refund eligibility and amount
+      vietnamese: Xác thực tính hợp lệ và số tiền hoàn
+      type: action
+      input:
+        - refund
+        - original_payment
+      validations:
+        - id: check_payment_status
+          rule: original_payment.status IN ['succeeded', 'partially_refunded']
+          error: PAYMENT_NOT_REFUNDABLE
+
+        - id: check_refund_amount
+          rule: |
+            requested_amount <= (original_payment.captured_amount - original_payment.refunded_amount)
+          error: REFUND_AMOUNT_EXCEEDS_AVAILABLE
+
+        - id: check_refund_window
+          rule: |
+            original_payment.captured_at + refund_window > now()
+          parameters:
+            refund_window_card: 180 days
+            refund_window_bank: 90 days
+            refund_window_ewallet: 30 days
+          error: REFUND_WINDOW_EXPIRED
+
+        - id: check_merchant_balance
+          rule: |
+            merchant.available_balance >= refund_amount
+            OR merchant.allow_negative_balance = true
+          error: INSUFFICIENT_MERCHANT_BALANCE
+
+      output:
+        - validation_result
+        - refundable_amount
+      decision:
+        - if: validation_failed
+          goto: reject_refund
+        - else: goto: check_refund_fraud
+
+    # ============ STEP 3: FRAUD CHECK ============
+    - id: check_refund_fraud
+      name: Check Refund Fraud
+      description: Detect potential refund abuse
+      vietnamese: Phát hiện lạm dụng hoàn tiền tiềm năng
+      type: action
+      input:
+        - refund
+        - original_payment
+        - customer_history
+      checks:
+        - id: refund_velocity
+          rule: customer_refunds_last_30_days <= threshold
+          threshold: 5
+          risk_score_impact: +20
+
+        - id: refund_ratio
+          rule: customer_refund_ratio <= threshold
+          threshold: 0.3  # 30%
+          risk_score_impact: +25
+
+        - id: suspicious_pattern
+          patterns:
+            - full_refund_after_partial_delivery
+            - repeated_refunds_same_merchant
+            - refund_after_dispute_closed
+          risk_score_impact: +30
+
+        - id: fraudulent_reason
+          rule: |
+            IF reason = 'fraudulent' AND !is_reported_fraud
+            THEN flag_for_review
+      output:
+        - fraud_risk_score
+        - fraud_flags
+      decision:
+        - if: fraud_risk_score > 80
+          goto: manual_review_refund
+        - if: fraud_risk_score > 50
+          goto: merchant_approval_required
+        - else: goto: process_refund
+
+    # ============ STEP 4: MANUAL REVIEW (IF NEEDED) ============
+    - id: manual_review_refund
+      name: Manual Review
+      description: Queue for manual fraud review
+      vietnamese: Đưa vào hàng đợi xem xét gian lận
+      type: manual_action
+      actor: fraud_team
+      input:
+        - refund
+        - fraud_flags
+        - customer_history
+      actions:
+        - create_review_case()
+        - notify_fraud_team()
+        - update_refund_status(under_review)
+      sla: 4 hours
+      output:
+        - review_decision
+        - review_notes
+      decision:
+        - if: approved
+          goto: process_refund
+        - if: rejected
+          goto: reject_refund
+
+    # ============ STEP 4B: MERCHANT APPROVAL (IF NEEDED) ============
+    - id: merchant_approval_required
+      name: Merchant Approval
+      description: Request merchant approval for suspicious refund
+      vietnamese: Yêu cầu merchant phê duyệt hoàn tiền đáng ngờ
+      type: manual_action
+      actor: merchant
+      condition: fraud_risk_score BETWEEN 50 AND 80
+      input:
+        - refund
+        - fraud_indicators
+      actions:
+        - send_approval_request(merchant)
+        - update_refund_status(pending_approval)
+        - set_approval_deadline(24 hours)
+      timeout: 24 hours
+      on_timeout: auto_approve_if_configured
+      output:
+        - approval_decision
+      decision:
+        - if: approved
+          goto: process_refund
+        - if: rejected
+          goto: reject_refund
+
+    # ============ STEP 5: PROCESS REFUND ============
+    - id: process_refund
+      name: Process Refund
+      description: Submit refund to payment processor
+      vietnamese: Gửi hoàn tiền đến bộ xử lý thanh toán
+      type: action
+      input:
+        - refund
+        - original_payment
+      actions:
+        - update_refund_status(processing)
+        - build_refund_request()
+        - send_to_processor(original_payment.processor_id)
+        - process_response()
+      output:
+        - processor_refund_id
+        - processor_status
+      retry:
+        max_attempts: 3
+        backoff: exponential
+        retry_on: [timeout, connection_error, processor_error]
+      decision:
+        - if: succeeded
+          goto: update_balances
+        - if: failed
+          goto: refund_failed
+
+    # ============ STEP 6: UPDATE BALANCES ============
+    - id: update_balances
+      name: Update Balances
+      description: Update merchant and customer balances
+      vietnamese: Cập nhật số dư merchant và khách hàng
+      type: action
+      input:
+        - refund
+        - original_payment
+      actions:
+        - debit_merchant_balance(refund.amount)
+        - update_payment_refunded_amount()
+        - update_payment_status_if_fully_refunded()
+        - create_balance_transaction(type: refund)
+        - generate_refund_receipt()
+      output:
+        - new_merchant_balance
+        - payment_status
+        - receipt_number
+
+    # ============ STEP 7: NOTIFY PARTIES ============
+    - id: notify_parties
+      name: Notify Parties
+      description: Send notifications to all parties
+      vietnamese: Gửi thông báo đến tất cả các bên
+      type: async_action
+      parallel_actions:
+        - notify_customer:
+            - send_email(refund_confirmation)
+            - send_sms_if_enabled()
+
+        - notify_merchant:
+            - send_webhook(refund.succeeded)
+            - update_dashboard()
+
+        - update_settlement:
+            - add_refund_to_settlement_batch()
+      output:
+        - notifications_sent
+
+    # ============ STEP 8: COMPLETE REFUND ============
+    - id: complete_refund
+      name: Complete Refund
+      description: Mark refund as complete
+      vietnamese: Đánh dấu hoàn tiền hoàn tất
+      type: action
+      input:
+        - refund
+      actions:
+        - update_refund_status(succeeded)
+        - set_completed_at(now())
+        - calculate_estimated_arrival()
+      output:
+        - refund_id
+        - status: succeeded
+        - completed_at
+        - estimated_arrival
+
+    # ============ ERROR HANDLING ============
+    - id: reject_refund
+      name: Reject Refund
+      description: Reject refund request
+      vietnamese: Từ chối yêu cầu hoàn tiền
+      type: action
+      input:
+        - refund
+        - rejection_reason
+      actions:
+        - update_refund_status(cancelled)
+        - set_rejection_reason()
+        - send_webhook(refund.rejected)
+        - notify_requester(rejection_reason)
+      output:
+        - status: cancelled
+        - failure_reason
+
+    - id: refund_failed
+      name: Handle Failed Refund
+      description: Handle processor failure
+      vietnamese: Xử lý lỗi processor
+      type: action
+      input:
+        - refund
+        - failure_details
+      actions:
+        - log_failure_details()
+        - update_refund_status(failed)
+        - send_webhook(refund.failed)
+        - alert_operations_team()
+        - schedule_retry_if_eligible()
+      output:
+        - status: failed
+        - failure_code
+        - failure_message
+        - retry_scheduled
+
+# ============ REFUND TIMING ============
+timing:
+  card_refund:
+    processing_time: "1-2 business days"
+    customer_visibility: "5-10 business days"
+    note: "Depends on issuing bank processing time"
+
+  bank_transfer_refund:
+    processing_time: "1 business day"
+    customer_visibility: "1-3 business days"
+
+  ewallet_refund:
+    processing_time: "Instant to 1 hour"
+    customer_visibility: "Instant"
+
+# ============ STATE MACHINE ============
+state_machine:
+  states:
+    - pending
+    - under_review
+    - pending_approval
+    - processing
+    - succeeded
+    - failed
+    - cancelled
+
+  transitions:
+    - from: pending
+      to: under_review
+      event: flagged_for_review
+
+    - from: pending
+      to: pending_approval
+      event: merchant_approval_required
+
+    - from: pending
+      to: processing
+      event: validation_passed
+
+    - from: under_review
+      to: processing
+      event: review_approved
+
+    - from: under_review
+      to: cancelled
+      event: review_rejected
+
+    - from: pending_approval
+      to: processing
+      event: merchant_approved
+
+    - from: pending_approval
+      to: cancelled
+      event: merchant_rejected
+
+    - from: processing
+      to: succeeded
+      event: processor_confirmed
+
+    - from: processing
+      to: failed
+      event: processor_failed
+
+    - from: pending
+      to: cancelled
+      event: cancelled_by_requester
+
+# ============ ERROR CODES ============
+error_codes:
+  - code: PAYMENT_NOT_REFUNDABLE
+    message: This payment cannot be refunded
+  - code: REFUND_AMOUNT_EXCEEDS_AVAILABLE
+    message: Refund amount exceeds available balance
+  - code: REFUND_WINDOW_EXPIRED
+    message: Refund window has expired
+  - code: INSUFFICIENT_MERCHANT_BALANCE
+    message: Merchant has insufficient balance
+  - code: REFUND_ALREADY_PROCESSED
+    message: A refund is already being processed
+  - code: PROCESSOR_REFUND_FAILED
+    message: Payment processor could not process refund
+
+# ============ MONITORING ============
+monitoring:
+  metrics:
+    - refund_success_rate
+    - average_processing_time
+    - refund_to_payment_ratio
+    - fraud_flag_rate
+    - manual_review_rate
+
+  alerts:
+    - refund_ratio_above: 10%
+    - processing_time_above: 24h
+    - fraud_flag_rate_above: 5%
+    - failure_rate_above: 2%

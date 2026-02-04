@@ -1,0 +1,199 @@
+name: Receipt
+display_name: Receipt / Receiving Record
+description: |
+  Record of goods received against an inbound order.
+  Captures quantities, conditions, and quality information.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: receipt_number
+    type: string
+    required: true
+    validation:
+      pattern: "^RCV-[0-9]{8}-[0-9]{3}$"
+    example: "RCV-20241201-001"
+
+  - name: inbound_order_id
+    type: uuid
+    required: true
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [in_progress, completed, closed]
+    default: in_progress
+
+  - name: receipt_date
+    type: timestamp
+    required: true
+
+  # Receiving Details
+  - name: dock_door
+    type: string
+    required: false
+
+  - name: received_by
+    type: uuid
+    required: true
+    description: Worker who received
+
+  - name: receiving_location_id
+    type: uuid
+    required: false
+    description: Staging location
+
+  # Line Items
+  - name: line_items
+    type: array
+    required: true
+    description: Items received
+    example:
+      - item_id: "uuid"
+        sku: "SKU-001"
+        quantity_received: 100
+        lpn_assigned: "LPN-A1B2C3D4E5"
+        location_received: "RECV-01"
+        lot_number: "LOT-001"
+        expiry_date: "2025-12-31"
+        condition: "good"
+        unit_cost: 10.50
+
+  - name: total_lines_received
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_units_received
+    type: integer
+    required: true
+    default: 0
+
+  # Quality
+  - name: qc_required
+    type: boolean
+    required: true
+    default: false
+
+  - name: qc_status
+    type: enum
+    required: false
+    validation:
+      values: [pending, passed, failed, partial]
+
+  - name: qc_completed_at
+    type: timestamp
+    required: false
+
+  - name: qc_notes
+    type: text
+    required: false
+
+  # Damaged/Rejected
+  - name: damaged_quantity
+    type: integer
+    required: true
+    default: 0
+
+  - name: damaged_reason
+    type: text
+    required: false
+
+  - name: rejected_quantity
+    type: integer
+    required: true
+    default: 0
+
+  - name: rejection_reason
+    type: text
+    required: false
+
+  # Documents
+  - name: packing_slip_verified
+    type: boolean
+    required: true
+    default: false
+
+  - name: photos
+    type: array
+    required: false
+    description: Photos of received goods
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: started_at
+    type: timestamp
+    required: true
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: inbound_order
+    type: belongs_to
+    entity: InboundOrder
+    required: true
+
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: receiver
+    type: belongs_to
+    entity: WarehouseWorker
+    required: true
+
+  - name: putaway_tasks
+    type: has_many
+    entity: PutawayTask
+
+indexes:
+  - [receipt_number]
+  - [inbound_order_id]
+  - [warehouse_id, receipt_date]
+  - [status]
+
+computed_fields:
+  - name: variance_quantity
+    formula: total_units_received - expected_quantity
+  - name: damage_rate
+    formula: (damaged_quantity / total_units_received) * 100
+
+business_rules:
+  - BR-RCV-001: Each received item must have LPN assigned
+  - BR-RCV-002: QC required items held until inspection
+  - BR-RCV-003: Damaged goods segregated to damage zone
+  - BR-RCV-004: Receipt cannot exceed order quantity + tolerance
+
+events:
+  - name: receipt.started
+    payload: [id, inbound_order_id, dock_door]
+  - name: receipt.completed
+    payload: [id, total_units_received, variance]
+  - name: receipt.qc_completed
+    payload: [id, qc_status]

@@ -1,0 +1,915 @@
+name: claim
+display_name: Insurance Claim
+description: |
+  Core claim entity representing an insurance claim request.
+  Tracks the entire lifecycle from FNOL to settlement and closure.
+
+domain: insurance
+subdomain: claims
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique claim identifier
+
+    - name: claim_number
+      type: string
+      format: "CLM-{YYYYMMDD}-{NNNNNN}"
+      unique: true
+      description: Human-readable claim reference
+      example: "CLM-20241215-000001"
+
+    - name: fnol_id
+      type: uuid
+      foreign_key: fnol.id
+      description: Link to First Notice of Loss
+
+    - name: policy_id
+      type: uuid
+      foreign_key: policy.id
+      required: true
+      description: Associated policy
+
+    - name: policy_number
+      type: string
+      description: Policy number at time of claim
+
+  status:
+    - name: status
+      type: enum
+      values:
+        - reported
+        - registered
+        - under_assessment
+        - pending_documents
+        - pending_survey
+        - pending_medical
+        - fraud_investigation
+        - approved
+        - partially_approved
+        - denied
+        - settled
+        - closed
+        - reopened
+        - withdrawn
+      default: reported
+      description: Current claim status
+
+    - name: sub_status
+      type: string
+      description: Detailed status information
+
+    - name: claim_stage
+      type: enum
+      values:
+        - intake
+        - validation
+        - assessment
+        - decision
+        - settlement
+        - payment
+        - closure
+      description: High-level processing stage
+
+  classification:
+    - name: claim_type
+      type: enum
+      values:
+        - death
+        - disability
+        - critical_illness
+        - hospitalization
+        - personal_accident
+        - motor_own_damage
+        - motor_theft
+        - motor_third_party
+        - property_fire
+        - property_theft
+        - property_natural
+        - travel_medical
+        - travel_cancellation
+        - liability
+      required: true
+      description: Type of claim
+
+    - name: claim_category
+      type: enum
+      values:
+        - life
+        - health
+        - motor
+        - property
+        - travel
+        - liability
+      description: Claim category
+
+    - name: complexity
+      type: enum
+      values:
+        - simple
+        - moderate
+        - complex
+        - catastrophic
+      description: Claim complexity level
+
+    - name: priority
+      type: enum
+      values:
+        - low
+        - medium
+        - high
+        - urgent
+      default: medium
+      description: Processing priority
+
+  incident:
+    - name: incident_date
+      type: date
+      required: true
+      description: Date of loss/incident
+
+    - name: incident_time
+      type: time
+      description: Time of incident
+
+    - name: reported_date
+      type: datetime
+      required: true
+      description: Date claim was reported
+
+    - name: notification_delay_days
+      type: integer
+      computed: true
+      formula: "reported_date - incident_date"
+      description: Days between incident and notification
+
+    - name: incident_location
+      type: object
+      properties:
+        address: string
+        city: string
+        province: string
+        country: string
+        postal_code: string
+        latitude: decimal
+        longitude: decimal
+      description: Location of incident
+
+    - name: incident_description
+      type: text
+      required: true
+      description: Detailed description of incident
+
+    - name: cause_of_loss
+      type: enum
+      values:
+        - accident
+        - illness
+        - natural_disaster
+        - fire
+        - theft
+        - vandalism
+        - collision
+        - flood
+        - earthquake
+        - storm
+        - riot
+        - terrorism
+        - other
+      description: Primary cause of loss
+
+    - name: cause_details
+      type: text
+      description: Additional cause information
+
+  parties:
+    - name: claimant_id
+      type: uuid
+      foreign_key: claimant.id
+      required: true
+      description: Person making the claim
+
+    - name: insured_id
+      type: uuid
+      foreign_key: insured.id
+      description: Person/property covered
+
+    - name: third_parties
+      type: array
+      items:
+        type: object
+        properties:
+          name: string
+          contact: string
+          role: enum[injured, witness, at_fault, other]
+          details: text
+      description: Third parties involved
+
+  coverage:
+    - name: coverage_ids
+      type: array
+      items: uuid
+      description: Applicable coverage IDs
+
+    - name: policy_coverage_snapshot
+      type: object
+      description: Coverage details at time of loss
+      properties:
+        sum_insured: decimal
+        deductible: decimal
+        coverage_type: string
+        limits: object
+        exclusions: array
+
+    - name: coverage_verified
+      type: boolean
+      default: false
+      description: Coverage confirmation status
+
+    - name: coverage_verification_notes
+      type: text
+      description: Coverage verification details
+
+  amounts:
+    - name: claimed_amount
+      type: decimal
+      precision: 2
+      required: true
+      description: Amount claimed by claimant
+
+    - name: claimed_currency
+      type: string
+      default: VND
+      description: Currency of claim
+
+    - name: assessed_amount
+      type: decimal
+      precision: 2
+      description: Amount after assessment
+
+    - name: approved_amount
+      type: decimal
+      precision: 2
+      description: Amount approved for payment
+
+    - name: paid_amount
+      type: decimal
+      precision: 2
+      default: 0
+      description: Total amount paid
+
+    - name: outstanding_amount
+      type: decimal
+      precision: 2
+      computed: true
+      formula: "approved_amount - paid_amount"
+      description: Amount still to be paid
+
+    - name: deductible_amount
+      type: decimal
+      precision: 2
+      description: Deductible applied
+
+    - name: net_claim_amount
+      type: decimal
+      precision: 2
+      computed: true
+      formula: "approved_amount - deductible_amount"
+      description: Net amount after deductible
+
+  reserve:
+    - name: initial_reserve
+      type: decimal
+      precision: 2
+      description: Initial reserve set
+
+    - name: current_reserve
+      type: decimal
+      precision: 2
+      description: Current reserve amount
+
+    - name: reserve_category
+      type: enum
+      values:
+        - indemnity
+        - expense
+        - combined
+      description: Reserve type
+
+    - name: reserve_history
+      type: array
+      items:
+        type: object
+        properties:
+          date: datetime
+          previous_amount: decimal
+          new_amount: decimal
+          reason: string
+          changed_by: uuid
+      description: Reserve adjustment history
+
+  assignment:
+    - name: assigned_handler_id
+      type: uuid
+      foreign_key: user.id
+      description: Assigned claims handler
+
+    - name: assigned_handler_name
+      type: string
+      description: Handler name for display
+
+    - name: assigned_team
+      type: string
+      description: Claims team handling case
+
+    - name: assigned_at
+      type: datetime
+      description: Assignment date
+
+    - name: sla_due_date
+      type: datetime
+      description: SLA deadline
+
+    - name: sla_status
+      type: enum
+      values:
+        - within_sla
+        - at_risk
+        - breached
+      computed: true
+      description: SLA compliance status
+
+  fraud:
+    - name: fraud_score
+      type: integer
+      min: 0
+      max: 100
+      description: Fraud probability score
+
+    - name: fraud_flags
+      type: array
+      items: string
+      description: Active fraud indicators
+
+    - name: fraud_status
+      type: enum
+      values:
+        - not_checked
+        - cleared
+        - low_risk
+        - medium_risk
+        - high_risk
+        - under_investigation
+        - confirmed_fraud
+      default: not_checked
+      description: Fraud assessment status
+
+    - name: siu_referral
+      type: boolean
+      default: false
+      description: Referred to Special Investigation Unit
+
+    - name: siu_referral_date
+      type: datetime
+      description: Date of SIU referral
+
+  recovery:
+    - name: salvage_applicable
+      type: boolean
+      default: false
+      description: Salvage recovery possible
+
+    - name: salvage_value
+      type: decimal
+      precision: 2
+      description: Estimated salvage value
+
+    - name: salvage_recovered
+      type: decimal
+      precision: 2
+      description: Actual salvage recovered
+
+    - name: subrogation_applicable
+      type: boolean
+      default: false
+      description: Subrogation possible
+
+    - name: subrogation_potential
+      type: decimal
+      precision: 2
+      description: Potential recovery from third party
+
+    - name: subrogation_recovered
+      type: decimal
+      precision: 2
+      description: Actual subrogation recovered
+
+    - name: total_recovery
+      type: decimal
+      precision: 2
+      computed: true
+      formula: "salvage_recovered + subrogation_recovered"
+      description: Total recovery amount
+
+  decision:
+    - name: decision
+      type: enum
+      values:
+        - pending
+        - approve_full
+        - approve_partial
+        - deny
+        - ex_gratia
+        - refer
+      description: Claim decision
+
+    - name: decision_reason
+      type: text
+      description: Reason for decision
+
+    - name: decision_date
+      type: datetime
+      description: Date of decision
+
+    - name: decision_by
+      type: uuid
+      foreign_key: user.id
+      description: Decision maker
+
+    - name: denial_reason
+      type: enum
+      values:
+        - not_covered
+        - exclusion_applies
+        - policy_lapsed
+        - late_notification
+        - fraud
+        - insufficient_documentation
+        - pre_existing_condition
+        - waiting_period
+        - other
+      description: Reason for denial
+
+    - name: denial_details
+      type: text
+      description: Detailed denial explanation
+
+  documents:
+    - name: required_documents
+      type: array
+      items: string
+      description: List of required documents
+
+    - name: received_documents
+      type: array
+      items: uuid
+      description: Document IDs received
+
+    - name: pending_documents
+      type: array
+      items: string
+      description: Documents still needed
+
+    - name: documents_complete
+      type: boolean
+      default: false
+      description: All documents received
+
+  timeline:
+    - name: created_at
+      type: datetime
+      auto: true
+      description: Record creation timestamp
+
+    - name: registered_at
+      type: datetime
+      description: Claim registration date
+
+    - name: assessed_at
+      type: datetime
+      description: Assessment completion date
+
+    - name: approved_at
+      type: datetime
+      description: Approval date
+
+    - name: settled_at
+      type: datetime
+      description: Settlement date
+
+    - name: closed_at
+      type: datetime
+      description: Closure date
+
+    - name: reopened_at
+      type: datetime
+      description: Reopening date
+
+    - name: updated_at
+      type: datetime
+      auto: true
+      on_update: true
+      description: Last update timestamp
+
+    - name: cycle_time_days
+      type: integer
+      computed: true
+      description: Days from registration to closure
+
+  audit:
+    - name: created_by
+      type: uuid
+      foreign_key: user.id
+      description: Creator
+
+    - name: updated_by
+      type: uuid
+      foreign_key: user.id
+      description: Last updater
+
+    - name: status_history
+      type: array
+      items:
+        type: object
+        properties:
+          status: string
+          changed_at: datetime
+          changed_by: uuid
+          notes: text
+      description: Status change history
+
+    - name: notes
+      type: array
+      items:
+        type: object
+        properties:
+          date: datetime
+          author: uuid
+          content: text
+          type: enum[internal, external, system]
+      description: Claim notes
+
+relationships:
+  - name: policy
+    type: belongs_to
+    entity: policy
+    foreign_key: policy_id
+    description: Associated policy
+
+  - name: fnol
+    type: belongs_to
+    entity: fnol
+    foreign_key: fnol_id
+    description: Source FNOL record
+
+  - name: claimant
+    type: belongs_to
+    entity: claimant
+    foreign_key: claimant_id
+    description: Primary claimant
+
+  - name: claim_items
+    type: has_many
+    entity: claim_item
+    foreign_key: claim_id
+    description: Claim line items
+
+  - name: assessments
+    type: has_many
+    entity: assessment
+    foreign_key: claim_id
+    description: Assessment records
+
+  - name: settlements
+    type: has_many
+    entity: settlement
+    foreign_key: claim_id
+    description: Settlement records
+
+  - name: payments
+    type: has_many
+    entity: payment
+    foreign_key: claim_id
+    description: Payment records
+
+  - name: reserves
+    type: has_many
+    entity: reserve
+    foreign_key: claim_id
+    description: Reserve records
+
+  - name: documents
+    type: has_many
+    entity: claim_document
+    foreign_key: claim_id
+    description: Claim documents
+
+  - name: fraud_indicators
+    type: has_many
+    entity: fraud_indicator
+    foreign_key: claim_id
+    description: Fraud flags
+
+  - name: recoveries
+    type: has_many
+    entity: recovery
+    foreign_key: claim_id
+    description: Recovery records
+
+  - name: litigation
+    type: has_one
+    entity: litigation
+    foreign_key: claim_id
+    description: Legal case if any
+
+state_machine:
+  initial_state: reported
+
+  states:
+    - reported:
+        description: Claim initially reported
+        allowed_transitions: [registered, withdrawn]
+
+    - registered:
+        description: Claim formally registered
+        allowed_transitions: [under_assessment, pending_documents, withdrawn]
+
+    - pending_documents:
+        description: Awaiting required documents
+        allowed_transitions: [under_assessment, withdrawn]
+
+    - under_assessment:
+        description: Claim being assessed
+        allowed_transitions: [pending_survey, pending_medical, fraud_investigation, approved, partially_approved, denied]
+
+    - pending_survey:
+        description: Awaiting surveyor report
+        allowed_transitions: [under_assessment]
+
+    - pending_medical:
+        description: Awaiting medical report
+        allowed_transitions: [under_assessment]
+
+    - fraud_investigation:
+        description: Under fraud investigation
+        allowed_transitions: [approved, denied]
+
+    - approved:
+        description: Claim fully approved
+        allowed_transitions: [settled]
+
+    - partially_approved:
+        description: Claim partially approved
+        allowed_transitions: [settled]
+
+    - denied:
+        description: Claim denied
+        allowed_transitions: [closed, under_assessment]
+
+    - settled:
+        description: Settlement completed
+        allowed_transitions: [closed]
+
+    - closed:
+        description: Claim closed
+        allowed_transitions: [reopened]
+        final: true
+
+    - reopened:
+        description: Closed claim reopened
+        allowed_transitions: [under_assessment]
+
+    - withdrawn:
+        description: Claim withdrawn by claimant
+        final: true
+
+  transitions:
+    - name: register
+      from: reported
+      to: registered
+      action: validate_and_register
+
+    - name: request_documents
+      from: [registered, under_assessment]
+      to: pending_documents
+      action: send_document_request
+
+    - name: receive_documents
+      from: pending_documents
+      to: under_assessment
+      condition: "documents_complete = true"
+
+    - name: assign_survey
+      from: under_assessment
+      to: pending_survey
+      action: create_survey_request
+
+    - name: receive_survey
+      from: pending_survey
+      to: under_assessment
+      action: process_survey_report
+
+    - name: request_medical
+      from: under_assessment
+      to: pending_medical
+      action: create_medical_request
+
+    - name: receive_medical
+      from: pending_medical
+      to: under_assessment
+      action: process_medical_report
+
+    - name: refer_fraud
+      from: under_assessment
+      to: fraud_investigation
+      condition: "fraud_score > 60"
+      action: refer_to_siu
+
+    - name: approve
+      from: [under_assessment, fraud_investigation]
+      to: approved
+      action: create_settlement
+
+    - name: approve_partial
+      from: [under_assessment, fraud_investigation]
+      to: partially_approved
+      action: create_settlement
+
+    - name: deny
+      from: [under_assessment, fraud_investigation]
+      to: denied
+      action: create_denial_letter
+
+    - name: settle
+      from: [approved, partially_approved]
+      to: settled
+      action: complete_settlement
+
+    - name: close
+      from: [settled, denied]
+      to: closed
+      action: finalize_claim
+
+    - name: reopen
+      from: closed
+      to: reopened
+      action: create_reopen_record
+
+    - name: withdraw
+      from: [reported, registered, pending_documents]
+      to: withdrawn
+      action: record_withdrawal
+
+business_rules:
+  - rule: BR-CLM-001
+    name: Policy active at loss
+    condition: "policy.status = 'active' OR policy.in_grace_period = true"
+    at_event: incident_date
+    error_message: "Policy was not active at time of loss"
+
+  - rule: BR-CLM-002
+    name: Timely notification
+    condition: "notification_delay_days <= notification_limit"
+    notification_limit: 30
+    warning_message: "Late notification may affect claim"
+
+  - rule: BR-CLM-003
+    name: Coverage verification required
+    condition: "coverage_verified = true"
+    before_status: approved
+    error_message: "Coverage must be verified before approval"
+
+  - rule: BR-CLM-004
+    name: Reserve must be set
+    condition: "current_reserve > 0"
+    before_status: under_assessment
+    error_message: "Reserve must be set before assessment"
+
+  - rule: BR-CLM-005
+    name: Documents complete for approval
+    condition: "documents_complete = true"
+    before_status: approved
+    error_message: "All documents must be received"
+
+events:
+  - name: claim.reported
+    description: New claim reported
+    payload: [claim_id, claim_number, policy_id, claim_type]
+
+  - name: claim.registered
+    description: Claim formally registered
+    payload: [claim_id, assigned_handler_id]
+
+  - name: claim.documents_received
+    description: Documents uploaded
+    payload: [claim_id, document_ids]
+
+  - name: claim.assessment_started
+    description: Assessment begun
+    payload: [claim_id, assessor_id]
+
+  - name: claim.survey_requested
+    description: Surveyor assigned
+    payload: [claim_id, surveyor_id]
+
+  - name: claim.fraud_flagged
+    description: Fraud indicators detected
+    payload: [claim_id, fraud_score, fraud_flags]
+
+  - name: claim.approved
+    description: Claim approved
+    payload: [claim_id, approved_amount, decision_by]
+
+  - name: claim.denied
+    description: Claim denied
+    payload: [claim_id, denial_reason, decision_by]
+
+  - name: claim.settled
+    description: Settlement completed
+    payload: [claim_id, settlement_amount]
+
+  - name: claim.closed
+    description: Claim closed
+    payload: [claim_id, final_paid_amount]
+
+  - name: claim.reopened
+    description: Claim reopened
+    payload: [claim_id, reopen_reason]
+
+api_endpoints:
+  - method: POST
+    path: /claims
+    description: Report new claim
+    request_body: ClaimCreateRequest
+    response: ClaimResponse
+
+  - method: GET
+    path: /claims
+    description: List claims
+    query_params: [status, policy_id, handler_id, from_date, to_date]
+    response: ClaimListResponse
+
+  - method: GET
+    path: /claims/{id}
+    description: Get claim details
+    response: ClaimDetailResponse
+
+  - method: PUT
+    path: /claims/{id}
+    description: Update claim
+    request_body: ClaimUpdateRequest
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/register
+    description: Register claim
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/assess
+    description: Start assessment
+    response: AssessmentResponse
+
+  - method: POST
+    path: /claims/{id}/approve
+    description: Approve claim
+    request_body: ApprovalRequest
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/deny
+    description: Deny claim
+    request_body: DenialRequest
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/settle
+    description: Settle claim
+    response: SettlementResponse
+
+  - method: POST
+    path: /claims/{id}/close
+    description: Close claim
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/reopen
+    description: Reopen claim
+    request_body: ReopenRequest
+    response: ClaimResponse
+
+  - method: POST
+    path: /claims/{id}/documents
+    description: Upload documents
+    request_body: DocumentUploadRequest
+    response: DocumentResponse
+
+  - method: GET
+    path: /claims/{id}/history
+    description: Get claim history
+    response: ClaimHistoryResponse

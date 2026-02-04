@@ -1,0 +1,335 @@
+name: WarehouseWorkerUseCases
+display_name: Warehouse Worker Use Cases
+description: |
+  Use cases for warehouse floor workers (associates).
+  Covers daily operational tasks from clock-in to clock-out.
+
+domain: logistics
+subdomain: warehouse
+category: use-cases
+version: "1.0.0"
+
+actor:
+  name: Warehouse Worker
+  type: primary
+  description: |
+    Floor-level warehouse associate responsible for executing
+    picking, packing, putaway, and inventory tasks.
+  synonyms:
+    - Associate
+    - Picker
+    - Packer
+    - Receiver
+    - Material Handler
+
+use_cases:
+  # Time & Attendance
+  - id: UC-WW-001
+    name: Clock In for Shift
+    description: Worker starts shift and becomes available for task assignment
+    preconditions:
+      - Worker has active employment status
+      - Worker is scheduled for current shift
+    trigger: Worker arrives at warehouse
+    main_flow:
+      - Worker scans badge at time clock
+      - System validates worker identity
+      - System records clock-in time
+      - System assigns RF device to worker
+      - System displays first task or task queue
+    postconditions:
+      - Worker is_clocked_in = true
+      - Worker is_available = true
+      - Clock-in time recorded
+    alternative_flows:
+      - name: Badge Not Recognized
+        trigger: Badge scan fails
+        steps:
+          - Display error message
+          - Prompt for manual entry
+          - Notify supervisor if repeated failures
+    business_rules:
+      - Cannot clock in more than 15 minutes early
+      - Must clock in within 5 minutes of shift start
+
+  - id: UC-WW-002
+    name: Take Break
+    description: Worker takes scheduled or unscheduled break
+    preconditions:
+      - Worker is clocked in
+      - No critical task in progress
+    trigger: Worker requests break
+    main_flow:
+      - Worker selects break type on device
+      - System pauses current task if any
+      - System records break start time
+      - Worker takes break
+      - Worker ends break on device
+      - System records break end and calculates duration
+    postconditions:
+      - Break time recorded
+      - Worker resumes availability
+    business_rules:
+      - Minimum 30-minute lunch break required
+      - Two 15-minute breaks per 8-hour shift
+
+  # Receiving
+  - id: UC-WW-003
+    name: Receive Inbound Shipment
+    description: Worker unloads and receives items from inbound delivery
+    preconditions:
+      - Inbound order exists in system
+      - Truck arrived and checked in
+      - Dock door assigned
+    trigger: Supervisor assigns receiving task
+    main_flow:
+      - Worker receives task on RF device
+      - Worker travels to assigned dock door
+      - Worker unloads items to staging area
+      - Worker scans packing slip barcode
+      - For each line item:
+        - Worker counts quantity
+        - Worker scans item barcode
+        - Worker enters received quantity
+        - Worker notes any damage
+      - Worker generates LPNs for received items
+      - Worker confirms receipt complete
+    postconditions:
+      - Receipt record created
+      - LPNs assigned to items
+      - Putaway tasks created
+    exceptions:
+      - Damaged items documented and segregated
+      - Quantity variance flagged for supervisor
+
+  - id: UC-WW-004
+    name: Assign LPN to Received Items
+    description: Worker assigns License Plate Numbers during receiving
+    preconditions:
+      - Items physically received
+      - Receipt in progress
+    trigger: During receiving workflow
+    main_flow:
+      - Worker selects item to label
+      - System generates unique LPN
+      - Worker prints LPN label
+      - Worker applies label to pallet/carton
+      - Worker scans LPN to confirm application
+      - If lot-tracked:
+        - Worker enters lot number
+        - Worker enters expiry date
+    postconditions:
+      - LPN linked to item, quantity, lot
+      - LPN visible in inventory
+
+  # Putaway
+  - id: UC-WW-005
+    name: Execute Putaway Task
+    description: Worker moves received inventory from staging to storage
+    preconditions:
+      - Putaway task assigned
+      - LPN exists at staging location
+    trigger: Task appears on RF device
+    main_flow:
+      - Worker receives putaway task
+      - Worker obtains required equipment
+      - Worker travels to staging location
+      - Worker scans LPN to confirm pickup
+      - Worker travels to destination location
+      - Worker scans destination location
+      - Worker places inventory in location
+      - Worker confirms putaway complete
+    postconditions:
+      - Inventory location updated
+      - Task marked complete
+    alternative_flows:
+      - name: Location Full
+        steps:
+          - System suggests alternate location
+          - Worker confirms or requests another
+          - Supervisor approval if needed
+
+  # Picking
+  - id: UC-WW-006
+    name: Execute Pick Task
+    description: Worker picks items for outbound order
+    preconditions:
+      - Order allocated
+      - Pick task assigned
+      - Inventory available at location
+    trigger: Pick task assigned to worker
+    main_flow:
+      - Worker receives pick task on device
+      - Worker obtains pick container/cart
+      - Worker navigates to pick location
+      - Worker scans location barcode
+      - Worker scans item barcode
+      - Worker picks required quantity
+      - Worker places in container
+      - Worker confirms quantity picked
+      - Repeat for remaining picks
+      - Worker delivers to packing/staging
+    postconditions:
+      - Inventory decremented
+      - Pick task complete
+      - Items staged for packing
+    exceptions:
+      - Short pick: Record reason, notify supervisor
+
+  - id: UC-WW-007
+    name: Report Short Pick
+    description: Worker reports insufficient inventory at pick location
+    preconditions:
+      - Pick task in progress
+      - Actual quantity less than requested
+    trigger: Worker cannot fulfill full quantity
+    main_flow:
+      - Worker indicates short pick on device
+      - Worker enters actual quantity available
+      - Worker selects short reason from list
+      - Worker confirms remaining quantity (if any)
+      - System records short pick
+      - System attempts reallocation
+      - If reallocation found:
+        - New pick task created
+      - Else:
+        - Backorder created or order shorted
+    postconditions:
+      - Short pick recorded
+      - Cycle count triggered for location
+
+  # Packing
+  - id: UC-WW-008
+    name: Pack Order
+    description: Worker packs picked items for shipping
+    preconditions:
+      - All items picked
+      - Items at pack station
+    trigger: Pack task assigned
+    main_flow:
+      - Worker scans source container
+      - System displays order details
+      - Worker scans each item for verification
+      - Worker selects appropriate box size
+      - Worker adds packing materials
+      - Worker adds packing slip
+      - Worker seals package
+      - Worker weighs package
+      - Worker prints shipping label
+      - Worker applies label
+      - Worker scans to confirm
+    postconditions:
+      - Package ready for shipping
+      - Order status = packed
+    exceptions:
+      - Item mismatch: Investigate and resolve
+      - Weight variance: Supervisor review
+
+  # Inventory
+  - id: UC-WW-009
+    name: Perform Cycle Count
+    description: Worker counts inventory at specified location
+    preconditions:
+      - Cycle count assigned
+      - Location available for counting
+    trigger: Cycle count task assigned
+    main_flow:
+      - Worker receives count task
+      - Worker travels to location
+      - Worker scans location barcode
+      - System locks location from other activity
+      - Worker physically counts items
+      - For each item type:
+        - Worker scans item barcode
+        - Worker enters counted quantity
+      - Worker submits count
+      - System compares to expected
+      - If variance:
+        - Recount may be required
+      - Worker releases location
+    postconditions:
+      - Count recorded
+      - Variance flagged if exists
+    business_rules:
+      - Blind count: Worker doesn't see expected quantity
+
+  - id: UC-WW-010
+    name: Transfer Inventory
+    description: Worker moves inventory between locations
+    preconditions:
+      - Transfer task assigned
+      - Inventory at source location
+    trigger: Replenishment or location optimization task
+    main_flow:
+      - Worker receives transfer task
+      - Worker travels to source location
+      - Worker scans source location
+      - Worker scans LPN
+      - Worker picks up inventory
+      - Worker travels to destination
+      - Worker scans destination location
+      - Worker places inventory
+      - Worker confirms transfer
+    postconditions:
+      - Inventory at new location
+      - Transfer recorded
+
+  # Equipment
+  - id: UC-WW-011
+    name: Report Equipment Issue
+    description: Worker reports malfunctioning equipment
+    preconditions:
+      - Worker using warehouse equipment
+    trigger: Equipment malfunction or safety issue
+    main_flow:
+      - Worker stops using equipment
+      - Worker selects report issue on device
+      - Worker identifies equipment (scan or select)
+      - Worker selects issue type
+      - Worker enters description
+      - Worker submits report
+      - System notifies maintenance
+      - Worker requests replacement equipment
+    postconditions:
+      - Maintenance ticket created
+      - Equipment flagged for service
+    business_rules:
+      - Safety issues stop work immediately
+
+  # End of Shift
+  - id: UC-WW-012
+    name: Clock Out
+    description: Worker ends shift
+    preconditions:
+      - Worker is clocked in
+      - All tasks completed or reassigned
+    trigger: End of shift
+    main_flow:
+      - Worker completes current task
+      - Worker returns equipment
+      - Worker logs out of RF device
+      - Worker scans badge at time clock
+      - System records clock-out time
+      - System calculates hours worked
+    postconditions:
+      - Worker clocked out
+      - Hours recorded
+      - Equipment returned
+
+device_interactions:
+  - name: RF Scanner
+    usage: Primary device for all scanning and task execution
+  - name: Label Printer
+    usage: Print LPN labels and location labels
+  - name: Forklift Terminal
+    usage: Mounted device for forklift operators
+
+performance_expectations:
+  - metric: Picks per hour
+    target: "> 100 units"
+  - metric: Putaways per hour
+    target: "> 25 LPNs"
+  - metric: Packs per hour
+    target: "> 40 orders"
+  - metric: Accuracy rate
+    target: "> 99.5%"

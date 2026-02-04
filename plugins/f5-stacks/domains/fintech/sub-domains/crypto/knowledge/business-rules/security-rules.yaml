@@ -1,0 +1,525 @@
+name: SecurityRules
+display_name: Security Business Rules / Quy tắc bảo mật
+description: |
+  Business rules governing platform security including authentication,
+  access control, fraud prevention, and incident response.
+
+domain: fintech
+sub_domain: crypto
+rule_category: security
+version: "1.0"
+status: active
+
+# =============================================================================
+# AUTHENTICATION RULES
+# =============================================================================
+authentication:
+  - id: SR-001
+    name: Password Requirements
+    name_vi: Yêu cầu mật khẩu
+    description: Password complexity requirements
+    severity: error
+    enforcement: validation
+    requirements:
+      min_length: 8
+      max_length: 128
+      require_uppercase: true
+      require_lowercase: true
+      require_number: true
+      require_special: false
+      forbidden_patterns:
+        - username
+        - email_prefix
+        - common_passwords_list
+    message: Password does not meet requirements
+
+  - id: SR-002
+    name: Login Rate Limiting
+    name_vi: Giới hạn tốc độ đăng nhập
+    description: Limit failed login attempts
+    severity: critical
+    enforcement: rate_limiting
+    limits:
+      per_account: 5 attempts / 15 minutes
+      per_ip: 20 attempts / 15 minutes
+    lockout:
+      duration: 30 minutes
+      escalation: Double duration each time
+    action: Lock account, notify user
+    message: Too many failed attempts. Account locked.
+
+  - id: SR-003
+    name: Session Management
+    name_vi: Quản lý phiên
+    description: Session timeout and management rules
+    severity: warning
+    enforcement: application_logic
+    session_timeout:
+      idle: 30 minutes
+      absolute: 24 hours
+    concurrent_sessions: 5
+    action_on_excess: Terminate oldest session
+
+  - id: SR-004
+    name: Device Trust
+    name_vi: Tin cậy thiết bị
+    description: New device requires additional verification
+    severity: warning
+    enforcement: application_logic
+    detection:
+      - device_fingerprint
+      - ip_geolocation
+      - user_agent
+    verification:
+      - email_confirmation
+      - 2fa_required
+    trust_duration: 90 days
+
+  - id: SR-005
+    name: IP Whitelist for API
+    name_vi: Danh sách IP cho API
+    description: API access restricted to whitelisted IPs
+    severity: error
+    enforcement: application_logic
+    applies_to: API keys with IP restriction enabled
+    message: API access denied from this IP address
+
+# =============================================================================
+# TWO-FACTOR AUTHENTICATION
+# =============================================================================
+two_factor:
+  - id: SR-010
+    name: 2FA Requirement
+    name_vi: Yêu cầu 2FA
+    description: 2FA required for sensitive operations
+    severity: critical
+    enforcement: application_logic
+    required_for:
+      - withdrawal
+      - api_key_creation
+      - security_settings_change
+      - password_change
+      - email_change
+    optional_for:
+      - login
+      - trading
+
+  - id: SR-011
+    name: 2FA Methods
+    name_vi: Phương thức 2FA
+    description: Supported 2FA methods and priorities
+    severity: info
+    enforcement: application_logic
+    methods:
+      - name: authenticator
+        priority: 1
+        strength: high
+        backup: true
+      - name: hardware_key
+        priority: 1
+        strength: very_high
+        backup: false
+      - name: sms
+        priority: 2
+        strength: medium
+        backup: true
+      - name: email
+        priority: 3
+        strength: low
+        backup: true
+
+  - id: SR-012
+    name: 2FA Backup Codes
+    name_vi: Mã dự phòng 2FA
+    description: Backup codes for 2FA recovery
+    severity: warning
+    enforcement: application_logic
+    codes_count: 10
+    single_use: true
+    regeneration: Requires identity verification
+    warning: Alert when 3 codes remaining
+
+  - id: SR-013
+    name: 2FA Reset Process
+    name_vi: Quy trình đặt lại 2FA
+    description: Process to reset 2FA for locked users
+    severity: critical
+    enforcement: manual_process
+    requirements:
+      - identity_document
+      - selfie_with_document
+      - account_activity_verification
+      - video_call (high-value accounts)
+    waiting_period: 72 hours
+    notification: Email to all associated addresses
+
+# =============================================================================
+# API SECURITY
+# =============================================================================
+api_security:
+  - id: SR-020
+    name: API Key Management
+    name_vi: Quản lý khóa API
+    description: Rules for API key creation and usage
+    severity: critical
+    enforcement: application_logic
+    limits:
+      max_keys_per_user: 30
+      key_expiry: optional (1-365 days)
+    permissions:
+      - read_only
+      - spot_trading
+      - margin_trading
+      - withdrawal
+
+  - id: SR-021
+    name: API Key Permissions
+    name_vi: Quyền khóa API
+    description: Granular permission control for API keys
+    severity: error
+    enforcement: application_logic
+    principle: Least privilege
+    default_permissions: read_only
+    withdrawal_permission:
+      requires: Additional verification
+      optional: IP whitelist required
+
+  - id: SR-022
+    name: API Rate Limiting
+    name_vi: Giới hạn tốc độ API
+    description: Rate limits for API endpoints
+    severity: warning
+    enforcement: rate_limiting
+    limits:
+      general: 1200 requests / minute
+      trading: 10 orders / second
+      websocket: 5 connections / IP
+    response: 429 Too Many Requests
+    headers:
+      - X-RateLimit-Limit
+      - X-RateLimit-Remaining
+      - X-RateLimit-Reset
+
+  - id: SR-023
+    name: API Signature Verification
+    name_vi: Xác minh chữ ký API
+    description: All API requests must be signed
+    severity: critical
+    enforcement: application_logic
+    algorithm: HMAC-SHA256
+    timestamp_window: 5000 ms
+    replay_prevention: true
+
+# =============================================================================
+# FRAUD PREVENTION
+# =============================================================================
+fraud_prevention:
+  - id: SR-030
+    name: Unusual Activity Detection
+    name_vi: Phát hiện hoạt động bất thường
+    description: Detect and flag unusual account activity
+    severity: warning
+    enforcement: machine_learning
+    indicators:
+      - login_from_new_country
+      - rapid_balance_changes
+      - unusual_trading_patterns
+      - multiple_withdrawal_attempts
+      - api_key_created_then_withdrawal
+    action: Flag for review, optional hold
+
+  - id: SR-031
+    name: Account Takeover Prevention
+    name_vi: Ngăn chiếm đoạt tài khoản
+    description: Detect potential account takeover
+    severity: critical
+    enforcement: application_logic
+    triggers:
+      - password_changed
+      - 2fa_disabled
+      - email_changed
+      - phone_changed
+    response:
+      - Notify all contact methods
+      - 24-hour withdrawal hold
+      - Require additional verification
+
+  - id: SR-032
+    name: Wash Trading Detection
+    name_vi: Phát hiện giao dịch rửa
+    description: Detect and prevent wash trading
+    severity: error
+    enforcement: application_logic
+    detection:
+      - Self-trade patterns across accounts
+      - Coordinated trading with linked accounts
+      - Artificial volume creation
+    action: Flag accounts, investigate, possible ban
+
+  - id: SR-033
+    name: Phishing Protection
+    name_vi: Bảo vệ chống lừa đảo
+    description: Protect users from phishing attacks
+    severity: warning
+    enforcement: application_logic
+    measures:
+      - Anti-phishing code in emails
+      - Login notification emails
+      - Official domain verification
+      - Browser extension support
+
+# =============================================================================
+# COLD STORAGE SECURITY
+# =============================================================================
+cold_storage:
+  - id: SR-040
+    name: Hot Wallet Limit
+    name_vi: Giới hạn ví nóng
+    description: Maximum funds in hot wallet
+    severity: critical
+    enforcement: treasury_management
+    limit: 5% of total assets per currency
+    excess_action: Auto-transfer to cold storage
+    frequency: Hourly check
+
+  - id: SR-041
+    name: Cold Wallet Access
+    name_vi: Truy cập ví lạnh
+    description: Cold wallet access requires multi-sig
+    severity: critical
+    enforcement: multisig
+    requirements:
+      signers: 5 of 7
+      time_delay: 48 hours
+      notification: All signers
+    documentation: Full audit trail
+
+  - id: SR-042
+    name: Reserve Proof
+    name_vi: Bằng chứng dự trữ
+    description: Regular proof of reserves publication
+    severity: info
+    enforcement: scheduled
+    frequency: Monthly
+    method: Merkle tree proof
+    verification: Third-party audit
+
+# =============================================================================
+# INCIDENT RESPONSE
+# =============================================================================
+incident_response:
+  - id: SR-050
+    name: Security Incident Classification
+    name_vi: Phân loại sự cố bảo mật
+    description: Classify security incidents by severity
+    severity: critical
+    enforcement: process
+    levels:
+      - name: P1 Critical
+        examples: [active breach, funds at risk]
+        response_time: Immediate
+        notification: CEO, CTO, Security team
+      - name: P2 High
+        examples: [potential breach, vulnerability exploited]
+        response_time: 1 hour
+        notification: Security team, Engineering leads
+      - name: P3 Medium
+        examples: [suspicious activity, minor vulnerability]
+        response_time: 4 hours
+        notification: Security team
+      - name: P4 Low
+        examples: [policy violation, informational]
+        response_time: 24 hours
+        notification: Security team
+
+  - id: SR-051
+    name: Breach Response
+    name_vi: Phản ứng vi phạm
+    description: Steps to take in case of security breach
+    severity: critical
+    enforcement: process
+    steps:
+      1: Contain - Isolate affected systems
+      2: Assess - Determine scope and impact
+      3: Notify - Alert stakeholders and authorities
+      4: Remediate - Fix vulnerabilities
+      5: Recover - Restore services safely
+      6: Review - Post-incident analysis
+    documentation: Incident report required
+
+  - id: SR-052
+    name: Emergency Shutdown
+    name_vi: Tắt khẩn cấp
+    description: Ability to halt all operations
+    severity: critical
+    enforcement: kill_switch
+    triggers:
+      - Confirmed security breach
+      - Significant fund loss detected
+      - Critical vulnerability discovered
+    actions:
+      - Halt all trading
+      - Block all withdrawals
+      - Disable API access
+      - Enable read-only mode
+    authorization: 2 of 3 executives
+
+# =============================================================================
+# ACCESS CONTROL
+# =============================================================================
+access_control:
+  - id: SR-060
+    name: Role-Based Access Control
+    name_vi: Kiểm soát truy cập theo vai trò
+    description: Access permissions based on roles
+    severity: critical
+    enforcement: application_logic
+    principle: Least privilege
+    roles:
+      - user: Standard customer access
+      - vip: Enhanced limits
+      - market_maker: Special trading access
+      - support: Read customer data
+      - admin: Full access with audit
+    review: Quarterly access review
+
+  - id: SR-061
+    name: Admin Access Logging
+    name_vi: Ghi nhật ký truy cập admin
+    description: All admin actions must be logged
+    severity: critical
+    enforcement: application_logic
+    logged_fields:
+      - admin_user_id
+      - action
+      - target_resource
+      - timestamp
+      - ip_address
+      - result
+    retention: 7 years
+
+  - id: SR-062
+    name: Separation of Duties
+    name_vi: Phân tách nhiệm vụ
+    description: Critical operations require multiple approvals
+    severity: critical
+    enforcement: workflow
+    requires_dual_control:
+      - cold_wallet_access
+      - large_withdrawal_approval
+      - fee_structure_changes
+      - trading_pair_listing
+      - user_balance_adjustment
+
+# =============================================================================
+# DATA SECURITY
+# =============================================================================
+data_security:
+  - id: SR-070
+    name: Encryption at Rest
+    name_vi: Mã hóa khi lưu trữ
+    description: Sensitive data encrypted at rest
+    severity: critical
+    enforcement: infrastructure
+    encrypted:
+      - private_keys
+      - api_secrets
+      - personal_data
+      - passwords
+    algorithm: AES-256-GCM
+    key_management: HSM
+
+  - id: SR-071
+    name: Encryption in Transit
+    name_vi: Mã hóa khi truyền
+    description: All data encrypted in transit
+    severity: critical
+    enforcement: infrastructure
+    protocols:
+      - TLS 1.3 (preferred)
+      - TLS 1.2 (minimum)
+    certificate: EV SSL
+    hsts: enabled
+
+  - id: SR-072
+    name: PII Protection
+    name_vi: Bảo vệ thông tin cá nhân
+    description: Personal information protection
+    severity: critical
+    enforcement: application_logic
+    protected_fields:
+      - full_name
+      - date_of_birth
+      - address
+      - phone_number
+      - identity_documents
+    access: Need-to-know basis
+    masking: Show partial data only
+
+# =============================================================================
+# SECURITY MONITORING
+# =============================================================================
+monitoring:
+  - id: SR-080
+    name: Real-Time Alerting
+    name_vi: Cảnh báo thời gian thực
+    description: Real-time security event monitoring
+    severity: critical
+    enforcement: siem
+    monitored_events:
+      - failed_logins
+      - privilege_escalation
+      - unusual_api_activity
+      - withdrawal_anomalies
+      - system_changes
+    response: PagerDuty integration
+
+  - id: SR-081
+    name: Security Audit Logging
+    name_vi: Ghi nhật ký kiểm toán bảo mật
+    description: Comprehensive security audit logs
+    severity: critical
+    enforcement: application_logic
+    retention: 7 years
+    tamper_proof: Write-once storage
+    events:
+      - authentication
+      - authorization
+      - data_access
+      - configuration_changes
+      - security_events
+
+  - id: SR-082
+    name: Vulnerability Scanning
+    name_vi: Quét lỗ hổng
+    description: Regular vulnerability assessments
+    severity: warning
+    enforcement: scheduled
+    frequency:
+      automated: Weekly
+      penetration_test: Quarterly
+      third_party_audit: Annually
+    remediation_sla:
+      critical: 24 hours
+      high: 7 days
+      medium: 30 days
+      low: 90 days
+
+# =============================================================================
+# VALIDATION SUMMARY
+# =============================================================================
+validation_summary:
+  authentication:
+    - SR-001  # Password
+    - SR-002  # Rate limiting
+    - SR-004  # Device trust
+
+  authorization:
+    - SR-010  # 2FA requirement
+    - SR-020  # API key management
+    - SR-060  # RBAC
+
+  monitoring:
+    - SR-080  # Alerting
+    - SR-081  # Audit logging
+    - SR-082  # Scanning

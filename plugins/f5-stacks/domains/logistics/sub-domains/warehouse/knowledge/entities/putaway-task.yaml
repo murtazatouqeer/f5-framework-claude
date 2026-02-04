@@ -1,0 +1,226 @@
+name: PutawayTask
+display_name: Putaway Task
+description: |
+  Task to move received inventory from staging to storage location.
+  Supports directed, system-suggested, and user-selected putaway.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: task_number
+    type: string
+    required: true
+    validation:
+      pattern: "^PUT-[0-9]{8}-[0-9]{4}$"
+    example: "PUT-20241201-0001"
+
+  - name: receipt_id
+    type: uuid
+    required: true
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: worker_id
+    type: uuid
+    required: false
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, assigned, in_progress, completed, cancelled]
+    default: pending
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, urgent]
+    default: medium
+
+  # Putaway Details
+  - name: from_location_id
+    type: uuid
+    required: true
+    description: Staging location
+
+  - name: to_location_id
+    type: uuid
+    required: true
+    description: Target storage location
+
+  - name: suggested_location_id
+    type: uuid
+    required: false
+    description: System suggested location
+
+  - name: item_id
+    type: uuid
+    required: true
+
+  - name: quantity
+    type: integer
+    required: true
+
+  - name: lpn
+    type: string
+    required: true
+
+  - name: lot_number
+    type: string
+    required: false
+
+  - name: expiry_date
+    type: date
+    required: false
+
+  # Strategy
+  - name: putaway_strategy
+    type: enum
+    required: true
+    validation:
+      values: [directed, system_suggested, user_selected, consolidate, cross_dock]
+    default: directed
+
+  - name: consolidation_target
+    type: uuid
+    required: false
+    description: Existing inventory to consolidate with
+
+  # Equipment
+  - name: equipment_required
+    type: enum
+    required: false
+    validation:
+      values: [none, pallet_jack, forklift, reach_truck, order_picker]
+
+  # Execution
+  - name: assigned_at
+    type: timestamp
+    required: false
+
+  - name: started_at
+    type: timestamp
+    required: false
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  - name: actual_location_id
+    type: uuid
+    required: false
+    description: Where item was actually placed
+
+  # Performance
+  - name: travel_distance_m
+    type: decimal
+    required: false
+
+  - name: task_time_seconds
+    type: integer
+    required: false
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: receipt
+    type: belongs_to
+    entity: Receipt
+    required: true
+
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: worker
+    type: belongs_to
+    entity: WarehouseWorker
+    required: false
+
+  - name: from_location
+    type: belongs_to
+    entity: Location
+    required: true
+
+  - name: to_location
+    type: belongs_to
+    entity: Location
+    required: true
+
+  - name: item
+    type: belongs_to
+    entity: Item
+    required: true
+
+indexes:
+  - [task_number]
+  - [warehouse_id, status]
+  - [worker_id, status]
+  - [receipt_id]
+  - [priority]
+
+computed_fields:
+  - name: duration_minutes
+    formula: (completed_at - started_at) / 60
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Task created, not assigned
+    - name: assigned
+      description: Assigned to worker
+    - name: in_progress
+      description: Worker executing task
+    - name: completed
+      description: Item put away
+    - name: cancelled
+      description: Task cancelled
+  transitions:
+    - from: pending
+      to: assigned
+      trigger: assign
+    - from: assigned
+      to: in_progress
+      trigger: start
+    - from: in_progress
+      to: completed
+      trigger: complete
+      actions: [update_inventory_location]
+    - from: [pending, assigned]
+      to: cancelled
+      trigger: cancel
+
+business_rules:
+  - BR-PUT-001: Target location must match item storage requirements
+  - BR-PUT-002: Forklift tasks only assigned to certified workers
+  - BR-PUT-003: Cross-dock items bypass storage putaway
+  - BR-PUT-004: Consolidate with same item/lot when possible
+
+events:
+  - name: putaway.assigned
+    payload: [id, worker_id, to_location_id]
+  - name: putaway.completed
+    payload: [id, actual_location_id, task_time_seconds]

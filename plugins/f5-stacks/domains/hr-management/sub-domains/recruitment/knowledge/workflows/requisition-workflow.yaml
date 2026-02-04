@@ -1,0 +1,364 @@
+name: requisition-workflow
+display_name: Job Requisition Workflow
+description: |
+  End-to-end workflow for creating, approving, and managing job requisitions
+  from initial request through position filled or cancelled.
+
+domain: hr-management
+subdomain: recruitment
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-REQ-001
+  name: job_requisition_lifecycle
+  trigger: requisition_created
+
+  participants:
+    - role: hiring_manager
+      responsibilities:
+        - create_requisition
+        - define_requirements
+        - review_candidates
+        - make_hiring_decision
+
+    - role: department_head
+      responsibilities:
+        - approve_requisition
+        - validate_budget
+
+    - role: hr_partner
+      responsibilities:
+        - review_requisition
+        - ensure_compliance
+        - coordinate_process
+
+    - role: compensation_team
+      responsibilities:
+        - validate_salary_range
+        - approve_exceptions
+
+    - role: recruiter
+      responsibilities:
+        - source_candidates
+        - manage_pipeline
+        - coordinate_interviews
+
+    - role: finance
+      responsibilities:
+        - budget_approval
+        - headcount_verification
+
+  states:
+    - id: draft
+      name: Draft
+      description: Requisition being created
+      entry_actions:
+        - initialize_requisition
+        - set_created_timestamp
+      allowed_transitions: [submit]
+
+    - id: pending_approval
+      name: Pending Approval
+      description: Awaiting necessary approvals
+      entry_actions:
+        - create_approval_tasks
+        - notify_approvers
+      timeout:
+        duration: 72h
+        action: escalate
+      allowed_transitions: [approve, reject, cancel]
+
+    - id: approved
+      name: Approved
+      description: All approvals received
+      entry_actions:
+        - mark_approved
+        - notify_hiring_manager
+        - assign_recruiter
+      allowed_transitions: [open, cancel]
+
+    - id: open
+      name: Open
+      description: Actively recruiting
+      entry_actions:
+        - create_job_postings
+        - notify_talent_pool
+        - start_sourcing
+      allowed_transitions: [on_hold, filled, cancelled]
+
+    - id: on_hold
+      name: On Hold
+      description: Temporarily paused
+      entry_actions:
+        - pause_postings
+        - notify_candidates
+        - notify_recruiter
+      allowed_transitions: [open, cancelled]
+
+    - id: filled
+      name: Filled
+      description: Position has been filled
+      entry_actions:
+        - close_postings
+        - dispose_candidates
+        - update_headcount
+        - trigger_onboarding
+      terminal: true
+
+    - id: cancelled
+      name: Cancelled
+      description: Requisition cancelled
+      entry_actions:
+        - close_postings
+        - notify_candidates
+        - notify_recruiter
+        - log_cancellation_reason
+      terminal: true
+
+  transitions:
+    - id: submit
+      from: draft
+      to: pending_approval
+      trigger: manual
+      actor: hiring_manager
+      guards:
+        - all_required_fields_completed
+        - job_description_meets_requirements
+      actions:
+        - validate_requisition
+        - determine_approval_chain
+        - create_approval_workflow
+
+    - id: approve
+      from: pending_approval
+      to: approved
+      trigger: all_approvals_received
+      actions:
+        - mark_all_approvals_complete
+        - notify_hiring_manager
+        - log_approval_chain
+
+    - id: reject
+      from: pending_approval
+      to: draft
+      trigger: any_rejection
+      actor: approver
+      actions:
+        - capture_rejection_reason
+        - notify_hiring_manager
+        - reset_approvals
+
+    - id: open_requisition
+      from: approved
+      to: open
+      trigger: manual
+      actor: [hiring_manager, recruiter]
+      guards:
+        - recruiter_assigned
+      actions:
+        - set_open_date
+        - auto_post_to_channels
+
+    - id: hold_requisition
+      from: open
+      to: on_hold
+      trigger: manual
+      actor: [hiring_manager, hr_partner]
+      guards:
+        - hold_reason_provided
+      actions:
+        - capture_hold_reason
+        - pause_active_postings
+        - notify_active_candidates
+
+    - id: resume_requisition
+      from: on_hold
+      to: open
+      trigger: manual
+      actor: [hiring_manager, hr_partner]
+      actions:
+        - resume_postings
+        - notify_recruiter
+        - notify_candidates_on_hold
+
+    - id: fill_requisition
+      from: open
+      to: filled
+      trigger: offer_accepted
+      actions:
+        - mark_filled
+        - calculate_time_to_fill
+        - trigger_silver_medalist_process
+        - close_related_postings
+
+    - id: cancel_requisition
+      from: [pending_approval, approved, open, on_hold]
+      to: cancelled
+      trigger: manual
+      actor: [hiring_manager, hr_partner]
+      guards:
+        - cancellation_reason_provided
+        - no_accepted_offers
+      actions:
+        - capture_cancellation_reason
+        - close_postings
+        - dispose_all_candidates
+        - notify_stakeholders
+
+  approval_subprocess:
+    id: SUB-REQ-APPROVAL
+    name: Requisition Approval Chain
+
+    steps:
+      - step: 1
+        name: hiring_manager_review
+        actor: hiring_manager
+        action: self_review
+        auto_approve: true
+
+      - step: 2
+        name: budget_validation
+        actor: system
+        action: validate_budget
+        auto_approve: if_within_budget
+
+      - step: 3
+        name: department_head_approval
+        actor: department_head
+        action: approve_or_reject
+        timeout: 48h
+        escalation: skip_level_manager
+        condition: always
+
+      - step: 4
+        name: hr_review
+        actor: hr_partner
+        action: compliance_review
+        timeout: 24h
+        condition: always
+
+      - step: 5
+        name: compensation_review
+        actor: compensation_team
+        action: validate_salary_range
+        timeout: 24h
+        condition: salary_above_threshold
+
+      - step: 6
+        name: executive_approval
+        actor: executive
+        action: approve_or_reject
+        timeout: 48h
+        condition: executive_level_position
+
+    completion:
+      all_approvals_received:
+        action: transition_to_approved
+      any_rejection:
+        action: return_to_draft
+        notify: hiring_manager
+
+  notifications:
+    - event: requisition_submitted
+      recipients: [approvers]
+      template: requisition_pending_approval
+      channel: [email, slack]
+
+    - event: requisition_approved
+      recipients: [hiring_manager, recruiter]
+      template: requisition_approved
+      channel: [email, slack]
+
+    - event: requisition_rejected
+      recipients: [hiring_manager]
+      template: requisition_rejected
+      channel: [email]
+      include: rejection_reason
+
+    - event: approval_reminder
+      recipients: [pending_approver]
+      template: approval_reminder
+      channel: [email, slack]
+      timing: 24h_before_timeout
+
+    - event: requisition_on_hold
+      recipients: [recruiter, active_candidates]
+      template: requisition_on_hold
+      channel: [email]
+
+    - event: requisition_filled
+      recipients: [hiring_manager, recruiter, hr_partner]
+      template: requisition_filled
+      channel: [email, slack]
+
+  integrations:
+    - system: hris
+      events:
+        - headcount_validation
+        - department_budget_check
+        - position_creation
+
+    - system: job_boards
+      events:
+        - auto_post_on_open
+        - close_on_filled
+
+    - system: calendar
+      events:
+        - interview_scheduling
+
+    - system: finance
+      events:
+        - budget_approval
+        - cost_center_validation
+
+  metrics:
+    - name: time_to_approval
+      calculation: approved_date - submit_date
+      target: "< 72 hours"
+
+    - name: approval_cycle_time
+      calculation: time_per_approval_step
+      target: "< 24 hours per step"
+
+    - name: requisition_throughput
+      calculation: requisitions_approved / time_period
+
+    - name: cancellation_rate
+      calculation: cancelled / (filled + cancelled)
+      alert_threshold: "> 15%"
+
+  sla:
+    approval:
+      target: 72 hours
+      warning: 48 hours
+      critical: 96 hours
+
+    time_to_post:
+      target: 24 hours from approval
+      warning: 48 hours
+      critical: 72 hours
+
+  audit:
+    track:
+      - all_state_transitions
+      - all_approvals
+      - all_rejections
+      - all_modifications
+
+    retention: 7 years
+
+  exception_handling:
+    - exception: approver_unavailable
+      action: auto_delegate
+      to: backup_approver
+
+    - exception: budget_exceeded
+      action: escalate
+      to: finance_director
+
+    - exception: compliance_issue
+      action: hold_and_notify
+      to: hr_director

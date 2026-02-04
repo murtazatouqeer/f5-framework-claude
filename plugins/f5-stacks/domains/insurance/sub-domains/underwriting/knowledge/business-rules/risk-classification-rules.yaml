@@ -1,0 +1,545 @@
+name: risk_classification_rules
+display_name: Risk Classification Rules
+description: |
+  Business rules governing how applicant risk factors are evaluated,
+  scored, and combined to determine risk classification for underwriting.
+
+domain: insurance
+subdomain: underwriting
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - risk_scoring
+  - classification_thresholds
+  - combined_impairments
+  - age_adjustments
+  - special_classifications
+
+rules:
+  # Risk Scoring Rules
+  - id: BR-RCL-001
+    name: Base Risk Score Calculation
+    category: risk_scoring
+    description: |
+      Calculate base risk score by aggregating weighted scores from
+      all risk factor categories.
+    priority: critical
+
+    formula: |
+      Base_Score = Σ(Category_Score × Category_Weight)
+
+      Where:
+        Medical_Weight = 0.40
+        Lifestyle_Weight = 0.20
+        Occupation_Weight = 0.15
+        Financial_Weight = 0.10
+        Family_History_Weight = 0.10
+        Geographic_Weight = 0.05
+
+    inputs:
+      - name: medical_score
+        type: decimal
+        range: "0-100"
+      - name: lifestyle_score
+        type: decimal
+        range: "0-100"
+      - name: occupation_score
+        type: decimal
+        range: "0-100"
+      - name: financial_score
+        type: decimal
+        range: "0-100"
+      - name: family_history_score
+        type: decimal
+        range: "0-100"
+      - name: geographic_score
+        type: decimal
+        range: "0-100"
+
+    output:
+      name: base_risk_score
+      type: decimal
+      range: "0-100"
+
+    examples:
+      - scenario: Standard healthy applicant
+        inputs:
+          medical_score: 10
+          lifestyle_score: 5
+          occupation_score: 0
+          financial_score: 5
+          family_history_score: 10
+          geographic_score: 0
+        calculation: "(10×0.40) + (5×0.20) + (0×0.15) + (5×0.10) + (10×0.10) + (0×0.05)"
+        result: 6.5
+        classification: preferred
+
+  - id: BR-RCL-002
+    name: Medical Risk Scoring
+    category: risk_scoring
+    description: |
+      Score medical risk based on current health conditions,
+      medical history, and examination results.
+    priority: critical
+
+    scoring_components:
+      current_conditions:
+        weight: 0.50
+        factors:
+          - name: chronic_diseases
+            severity_multiplier:
+              controlled: 1.0
+              uncontrolled: 2.0
+              severe: 3.0
+          - name: recent_surgeries
+            time_decay:
+              less_than_1_year: 2.0
+              1_to_3_years: 1.5
+              3_to_5_years: 1.0
+              over_5_years: 0.5
+
+      medical_history:
+        weight: 0.30
+        lookback_years: 10
+        factors:
+          - hospitalizations
+          - major_surgeries
+          - cancer_history
+          - mental_health
+
+      exam_results:
+        weight: 0.20
+        components:
+          - bmi_deviation
+          - blood_pressure
+          - lab_abnormalities
+          - ecg_findings
+
+  - id: BR-RCL-003
+    name: Lifestyle Risk Scoring
+    category: risk_scoring
+    description: |
+      Score lifestyle risk based on smoking, alcohol, activities,
+      and other behavioral factors.
+    priority: high
+
+    scoring_table:
+      smoking:
+        never: 0
+        former_over_5_years: 5
+        former_1_to_5_years: 15
+        former_less_than_1_year: 25
+        current_light: 30
+        current_moderate: 40
+        current_heavy: 50
+
+      alcohol:
+        none: 0
+        social: 0
+        moderate: 5
+        heavy: 25
+        very_heavy: 50
+
+      hazardous_activities:
+        none: 0
+        occasional: 10
+        regular: 25
+        professional: 40
+
+      substance_use:
+        never: 0
+        former_recovered: 20
+        current: 100  # auto-decline
+
+  - id: BR-RCL-004
+    name: Occupation Risk Scoring
+    category: risk_scoring
+    description: |
+      Score occupation risk based on job classification
+      and specific occupational hazards.
+    priority: high
+
+    class_scores:
+      class_1: 0
+      class_2: 10
+      class_3: 20
+      class_4: 35
+      class_5: 50
+      declined: 100
+
+    modifiers:
+      travel_frequency:
+        domestic_only: 0
+        international_occasional: 5
+        international_frequent: 10
+        hazardous_destinations: 20
+
+      work_environment:
+        office: 0
+        outdoor: 5
+        industrial: 10
+        hazardous_materials: 20
+
+  # Classification Threshold Rules
+  - id: BR-RCL-010
+    name: Risk Classification Thresholds
+    category: classification_thresholds
+    description: |
+      Determine risk classification based on final adjusted score.
+    priority: critical
+
+    thresholds:
+      preferred:
+        min_score: 0
+        max_score: 10
+        premium_rate: standard
+        auto_accept: true
+        conditions:
+          - no_medical_loading
+          - no_exclusions
+          - age_under_45
+          - non_smoker
+
+      standard:
+        min_score: 11
+        max_score: 30
+        premium_rate: standard
+        auto_accept: true
+        conditions: []
+
+      substandard_1:
+        min_score: 31
+        max_score: 45
+        premium_rate: "+25%"
+        auto_accept: false
+        authority_required: underwriter
+
+      substandard_2:
+        min_score: 46
+        max_score: 60
+        premium_rate: "+50%"
+        auto_accept: false
+        authority_required: senior_underwriter
+
+      substandard_3:
+        min_score: 61
+        max_score: 75
+        premium_rate: "+75%"
+        auto_accept: false
+        authority_required: chief_underwriter
+
+      substandard_4:
+        min_score: 76
+        max_score: 85
+        premium_rate: "+100%"
+        auto_accept: false
+        authority_required: committee
+
+      decline:
+        min_score: 86
+        max_score: 100
+        premium_rate: null
+        auto_accept: false
+        authority_required: committee
+
+      postpone:
+        trigger: temporary_condition
+        review_period: "3-24 months"
+        conditions:
+          - recent_surgery
+          - acute_illness
+          - pending_diagnosis
+          - incomplete_treatment
+
+  - id: BR-RCL-011
+    name: Auto-Decline Triggers
+    category: classification_thresholds
+    description: |
+      Conditions that automatically trigger decline regardless of score.
+    priority: critical
+
+    triggers:
+      medical:
+        - active_cancer
+        - aids_hiv_positive
+        - organ_transplant_waiting
+        - active_drug_addiction
+        - severe_mental_illness_uncontrolled
+        - terminal_illness
+        - dialysis_dependent
+
+      lifestyle:
+        - current_substance_abuse
+        - professional_extreme_sports
+        - criminal_conviction_recent
+
+      financial:
+        - bankruptcy_active
+        - fraud_history
+        - money_laundering_suspected
+
+      coverage:
+        - sum_exceeds_maximum
+        - insurable_interest_absent
+        - misrepresentation_material
+
+  # Combined Impairments Rules
+  - id: BR-RCL-020
+    name: Multiple Impairment Combination
+    category: combined_impairments
+    description: |
+      Rules for combining multiple risk factors that may have
+      synergistic or offsetting effects.
+    priority: high
+
+    combination_methods:
+      additive:
+        description: Simple addition of loadings
+        use_when:
+          - independent_conditions
+          - different_body_systems
+        example: "Back condition + Eye condition"
+
+      multiplicative:
+        description: Loadings multiply for synergistic risks
+        use_when:
+          - related_conditions
+          - compounding_risks
+        formula: "(1 + Loading1) × (1 + Loading2) - 1"
+        example: "Diabetes + Hypertension"
+        typical_multiplier: 1.25
+
+      maximum:
+        description: Take highest loading only
+        use_when:
+          - overlapping_conditions
+          - one_condition_dominates
+        example: "Mild obesity + Severe diabetes"
+
+      synergistic:
+        description: Extra loading for dangerous combinations
+        combinations:
+          - conditions: [diabetes, hypertension]
+            extra_loading: 25
+          - conditions: [smoking, coronary_disease]
+            extra_loading: 50
+          - conditions: [obesity, sleep_apnea]
+            extra_loading: 25
+          - conditions: [diabetes, coronary_disease]
+            extra_loading: 75
+
+  - id: BR-RCL-021
+    name: Maximum Combined Loading Cap
+    category: combined_impairments
+    description: |
+      Cap total combined loadings at maximum acceptable level.
+    priority: high
+
+    caps:
+      standard_limit: 200
+      committee_approved: 300
+      reinsurer_approved: 400
+
+    actions_at_cap:
+      - consider_exclusions_instead
+      - consider_reduced_coverage
+      - consider_decline
+      - refer_to_reinsurer
+
+  - id: BR-RCL-022
+    name: Offsetting Factors
+    category: combined_impairments
+    description: |
+      Positive factors that can offset negative risk scores.
+    priority: medium
+
+    offsetting_factors:
+      lifestyle_positive:
+        regular_exercise:
+          reduction: 5
+          verification: self_declaration
+        healthy_bmi:
+          reduction: 5
+          range: "18.5-24.9"
+        non_smoker_premium:
+          reduction: 10
+          duration: "never or >5 years"
+
+      medical_positive:
+        well_controlled_condition:
+          reduction: 10
+          verification: medical_report
+        successful_treatment:
+          reduction: "varies"
+          review_period: "2-5 years"
+
+      maximum_offset: 20
+
+  # Age Adjustment Rules
+  - id: BR-RCL-030
+    name: Age-Based Score Adjustments
+    category: age_adjustments
+    description: |
+      Adjust risk scores based on applicant age and
+      condition progression expectations.
+    priority: high
+
+    adjustments:
+      young_applicants:
+        age_range: "18-35"
+        adjustment: -5
+        rationale: Better recovery, lower baseline risk
+        exceptions:
+          - congenital_conditions
+          - juvenile_onset_diseases
+
+      middle_aged:
+        age_range: "36-50"
+        adjustment: 0
+        rationale: Standard baseline
+
+      older_applicants:
+        age_range: "51-60"
+        adjustment: +5
+        rationale: Higher baseline risk
+
+      senior_applicants:
+        age_range: "61-65"
+        adjustment: +10
+        rationale: Significantly higher baseline
+
+      elderly:
+        age_range: "66+"
+        adjustment: +15
+        rationale: Maximum age loading
+        note: May have coverage restrictions
+
+  - id: BR-RCL-031
+    name: Age-Condition Interaction
+    category: age_adjustments
+    description: |
+      Additional adjustments when age and condition interact.
+    priority: medium
+
+    interactions:
+      early_onset_diabetes:
+        age_below: 40
+        extra_loading: 25
+        rationale: Longer exposure period
+
+      late_onset_hypertension:
+        age_above: 55
+        loading_reduction: 10
+        rationale: Age-appropriate finding
+
+      young_smoker:
+        age_below: 30
+        extra_loading: 15
+        rationale: Cessation less likely
+
+  # Special Classification Rules
+  - id: BR-RCL-040
+    name: Preferred Plus Classification
+    category: special_classifications
+    description: |
+      Elite classification for exceptionally healthy applicants.
+    priority: medium
+
+    criteria:
+      age_range: "18-45"
+      bmi_range: "18.5-27.0"
+      blood_pressure_max: "130/85"
+      smoking_status: never
+      family_history: negative
+      hazardous_activities: none
+      occupation_class: 1
+      medical_history: clean
+      cholesterol_ratio: "<5.0"
+
+    benefits:
+      premium_discount: 15
+      underwriting: auto_accept
+
+    verification:
+      full_medical_exam: required
+      lab_tests: comprehensive
+
+  - id: BR-RCL-041
+    name: Guaranteed Issue Classification
+    category: special_classifications
+    description: |
+      Simplified issue for group or specific products.
+    priority: medium
+
+    eligibility:
+      product_types:
+        - group_life
+        - credit_life
+        - mortgage_reducing
+
+      sum_limits:
+        group_life: 500000000  # 500M VND
+        credit_life: 1000000000  # 1B VND
+
+      conditions:
+        - actively_at_work
+        - not_hospitalized_currently
+        - not_disabled
+
+    exclusions_apply:
+      pre_existing: 12_months
+      suicide: 24_months
+
+  - id: BR-RCL-042
+    name: Temporary Rating Classification
+    category: special_classifications
+    description: |
+      Temporary loadings for recoverable conditions.
+    priority: medium
+
+    applicable_conditions:
+      recent_surgery:
+        review_period: "12-24 months"
+        initial_loading: "+50-100%"
+        reduction_schedule: annual
+
+      recovering_illness:
+        review_period: "6-12 months"
+        initial_loading: "+25-75%"
+        evidence_required: medical_clearance
+
+      weight_loss_surgery:
+        review_period: "24 months"
+        initial_loading: "+50%"
+        condition: stable_weight_achieved
+
+    review_process:
+      automatic_reminder: true
+      applicant_request: allowed
+      evidence_required: updated_medical
+
+validation_rules:
+  - rule: Score must be between 0 and 100
+    action: cap_at_boundaries
+
+  - rule: Classification must match score range
+    action: recalculate_if_mismatch
+
+  - rule: Auto-decline triggers override score
+    action: set_decline_regardless
+
+  - rule: Combined loadings respect caps
+    action: apply_cap_or_escalate
+
+audit_requirements:
+  - All classification decisions must be documented
+  - Score breakdown must be available for review
+  - Override decisions require supervisor approval
+  - Random audits of 10% of standard acceptances
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

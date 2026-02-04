@@ -1,0 +1,618 @@
+# Completion Workflow
+# F5 Framework v2.0 - Education/LMS
+# End-to-end workflow for course completion and certification
+
+workflow:
+  id: completion-workflow
+  name: Completion Workflow
+  name_ja: 完了ワークフロー
+  description: Complete workflow for course completion, certification, and post-completion
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  actors:
+    primary:
+      - learner
+    supporting:
+      - instructor
+      - course_admin
+      - certification_authority
+    system:
+      - completion_validator
+      - certificate_generator
+      - analytics_service
+
+  triggers:
+    - event: all_requirements_met
+      source: progress_tracker
+    - event: final_assessment_passed
+      source: grading_system
+    - event: completion_requested
+      source: learner_action
+
+  states:
+    requirements_met:
+      description: All completion requirements satisfied
+      name_ja: 要件充足
+      
+    pending_review:
+      description: Awaiting instructor review
+      name_ja: レビュー待ち
+      
+    processing:
+      description: Generating completion records
+      name_ja: 処理中
+      
+    certificate_generated:
+      description: Certificate created
+      name_ja: 証明書生成済み
+      
+    completed:
+      description: Course fully completed
+      name_ja: 完了
+      
+    failed:
+      description: Did not meet requirements
+      name_ja: 不合格
+
+  stages:
+    # Stage 1: Requirements Validation
+    - id: requirements_validation
+      name: Requirements Validation
+      name_ja: 要件検証
+      state: requirements_met
+      
+      steps:
+        - id: check_progress
+          name: Check Progress Requirements
+          actor: system
+          action: validate_progress
+          checks:
+            - all_required_modules_completed
+            - minimum_progress_threshold_met
+            - required_lessons_completed
+          outputs:
+            - progress_status
+            - missing_items
+            
+        - id: check_assessments
+          name: Check Assessment Requirements
+          actor: system
+          action: validate_assessments
+          checks:
+            - all_required_quizzes_passed
+            - final_exam_passed (if required)
+            - assignments_submitted_and_graded
+          outputs:
+            - assessment_status
+            - grade_summary
+            
+        - id: check_participation
+          name: Check Participation Requirements
+          actor: system
+          action: validate_participation
+          conditional: course.requires_participation
+          checks:
+            - discussion_posts_minimum_met
+            - live_session_attendance_met
+            - peer_reviews_completed
+          outputs:
+            - participation_status
+            
+        - id: check_time_requirements
+          name: Check Time Requirements
+          actor: system
+          action: validate_time
+          conditional: course.has_time_requirements
+          checks:
+            - minimum_seat_time_met
+            - within_enrollment_period
+          outputs:
+            - time_status
+            
+      completion_criteria:
+        all_checks_passed:
+          - progress_status: passed
+          - assessment_status: passed
+          - participation_status: passed (if required)
+          - time_status: passed (if required)
+
+    # Stage 2: Final Grade Calculation
+    - id: grade_calculation
+      name: Final Grade Calculation
+      name_ja: 最終成績計算
+      state: processing
+      
+      steps:
+        - id: calculate_components
+          name: Calculate Grade Components
+          actor: system
+          action: calculate_grades
+          components:
+            - quizzes:
+                weight: course.quiz_weight
+                calculation: average
+            - assignments:
+                weight: course.assignment_weight
+                calculation: weighted_average
+            - final_exam:
+                weight: course.final_exam_weight
+                calculation: single_score
+            - participation:
+                weight: course.participation_weight
+                calculation: formula
+                
+        - id: apply_curve
+          name: Apply Grade Curve
+          actor: system
+          action: apply_curve
+          conditional: course.curve_enabled
+          method: course.curve_method
+          
+        - id: determine_final_grade
+          name: Determine Final Grade
+          actor: system
+          action: calculate_final
+          outputs:
+            - numeric_grade
+            - letter_grade
+            - pass_fail_status
+            - percentile_rank
+            
+        - id: verify_passing
+          name: Verify Passing Status
+          actor: system
+          action: check_passing
+          conditions:
+            - numeric_grade >= course.passing_grade
+          outputs:
+            - is_passing
+            - grade_status
+            
+      completion_criteria:
+        required:
+          - final_grade_calculated
+          - passing_status_determined
+
+    # Stage 3: Instructor Review (Optional)
+    - id: instructor_review
+      name: Instructor Review
+      name_ja: 講師レビュー
+      state: pending_review
+      conditional: course.requires_completion_review
+      
+      steps:
+        - id: review_request
+          name: Request Instructor Review
+          actor: system
+          action: create_review_task
+          includes:
+            - learner_performance_summary
+            - assessment_results
+            - participation_data
+            
+        - id: instructor_evaluates
+          name: Instructor Evaluates
+          actor: instructor
+          action: review_completion
+          checklist:
+            - verify_work_quality
+            - confirm_no_integrity_issues
+            - check_special_requirements
+          outputs:
+            - review_decision
+            - feedback_notes
+            
+        - id: approve_completion
+          name: Approve Completion
+          actor: instructor
+          action: approve
+          conditional: review_passed
+          triggers:
+            - proceed_to_certification
+            
+        - id: request_remediation
+          name: Request Remediation
+          actor: instructor
+          action: request_changes
+          conditional: review_not_passed
+          outputs:
+            - remediation_requirements
+            - deadline
+            
+      completion_criteria:
+        approved:
+          - instructor_approved
+        needs_work:
+          - remediation_required
+
+    # Stage 4: Completion Recording
+    - id: completion_recording
+      name: Completion Recording
+      name_ja: 完了記録
+      state: processing
+      
+      steps:
+        - id: create_completion_record
+          name: Create Completion Record
+          actor: system
+          action: create_completion
+          data:
+            - learner_id
+            - course_id
+            - completion_date
+            - final_grade
+            - time_to_complete
+            - assessments_summary
+            
+        - id: update_enrollment
+          name: Update Enrollment Status
+          actor: system
+          action: update_enrollment
+          updates:
+            - status: completed
+            - completed_at: now
+            - final_grade: calculated_grade
+            
+        - id: update_learner_profile
+          name: Update Learner Profile
+          actor: system
+          action: update_profile
+          updates:
+            - courses_completed: increment
+            - total_learning_hours: add
+            - skills_acquired: append
+            - achievements: append
+            
+        - id: log_completion
+          name: Log Completion Event
+          actor: system
+          action: log_event
+          event: course_completed
+          data:
+            - learner_id
+            - course_id
+            - completion_details
+            
+      completion_criteria:
+        required:
+          - completion_record_created
+          - enrollment_updated
+          - profile_updated
+
+    # Stage 5: Certificate Generation
+    - id: certificate_generation
+      name: Certificate Generation
+      name_ja: 証明書生成
+      state: certificate_generated
+      conditional: course.certificate_enabled AND grade_status == passed
+      
+      steps:
+        - id: prepare_certificate_data
+          name: Prepare Certificate Data
+          actor: system
+          action: prepare_data
+          collects:
+            - learner_name
+            - course_title
+            - completion_date
+            - grade (if displayed)
+            - instructor_name
+            - accreditation_info
+            
+        - id: generate_credential_id
+          name: Generate Credential ID
+          actor: system
+          action: generate_id
+          format: "{org}-{course}-{learner}-{date}-{hash}"
+          ensures: unique_globally
+          
+        - id: render_certificate
+          name: Render Certificate
+          actor: system
+          action: render
+          template: course.certificate_template
+          outputs:
+            - pdf_certificate
+            - png_preview
+            - verification_qr
+            
+        - id: sign_certificate
+          name: Sign Certificate
+          actor: system
+          action: digital_sign
+          method: asymmetric_signature
+          includes:
+            - issuer_signature
+            - timestamp
+            - hash_verification
+            
+        - id: store_certificate
+          name: Store Certificate
+          actor: system
+          action: store
+          storage:
+            - secure_document_store
+            - blockchain (if enabled)
+          outputs:
+            - certificate_url
+            - verification_url
+            
+      completion_criteria:
+        required:
+          - certificate_rendered
+          - certificate_signed
+          - certificate_stored
+
+    # Stage 6: Credits & Badges
+    - id: credits_badges
+      name: Credits & Badges Award
+      name_ja: 単位とバッジ付与
+      state: processing
+      
+      steps:
+        - id: award_ceu_credits
+          name: Award CEU/CPD Credits
+          actor: system
+          action: award_credits
+          conditional: course.ceu_credits > 0
+          outputs:
+            - credits_awarded
+            - transcript_entry
+            
+        - id: award_completion_badge
+          name: Award Completion Badge
+          actor: system
+          action: award_badge
+          badge: course.completion_badge
+          
+        - id: award_skill_badges
+          name: Award Skill Badges
+          actor: system
+          action: award_skills
+          conditional: course.skill_badges.any
+          based_on:
+            - skills_demonstrated
+            - assessment_performance
+            
+        - id: award_xp
+          name: Award XP Points
+          actor: system
+          action: award_xp
+          base: course.completion_xp
+          bonuses:
+            - high_grade: "+20%"
+            - early_completion: "+10%"
+            - streak_maintained: "+streak_days * 5"
+            
+        - id: check_level_up
+          name: Check Level Up
+          actor: system
+          action: check_level
+          triggers_if:
+            - new_xp_total >= next_level_threshold
+            
+      completion_criteria:
+        required:
+          - badges_awarded
+          - xp_awarded
+
+    # Stage 7: Notifications & Sharing
+    - id: notifications_sharing
+      name: Notifications & Sharing
+      name_ja: 通知と共有
+      state: completed
+      
+      steps:
+        - id: notify_learner
+          name: Notify Learner
+          actor: system
+          action: send_notification
+          channels: [email, push, in_app]
+          template: course_completion
+          includes:
+            - congratulations_message
+            - certificate_link
+            - grade_summary
+            - next_steps
+            
+        - id: notify_instructor
+          name: Notify Instructor
+          actor: system
+          action: notify_instructor
+          conditional: instructor.completion_notifications
+          template: student_completed
+          
+        - id: notify_manager
+          name: Notify Manager
+          actor: system
+          action: notify_manager
+          conditional: enrollment.is_corporate
+          template: team_member_completed
+          includes:
+            - completion_summary
+            - grade
+            - time_spent
+            
+        - id: enable_social_sharing
+          name: Enable Social Sharing
+          actor: system
+          action: prepare_sharing
+          platforms:
+            - linkedin:
+                type: certification
+                data: certificate_info
+            - twitter:
+                type: achievement
+            - facebook:
+                type: achievement
+                
+        - id: learner_shares
+          name: Learner Shares Achievement
+          actor: learner
+          action: share_optional
+          platforms: enabled_platforms
+          
+      completion_criteria:
+        required:
+          - learner_notified
+        optional:
+          - shared_on_social
+
+    # Stage 8: Post-Completion
+    - id: post_completion
+      name: Post-Completion Experience
+      name_ja: 完了後体験
+      state: completed
+      
+      steps:
+        - id: request_feedback
+          name: Request Course Feedback
+          actor: system
+          action: request_feedback
+          survey:
+            - overall_rating
+            - instructor_rating
+            - content_quality
+            - recommendations
+          incentive: bonus_xp
+          
+        - id: recommend_next
+          name: Recommend Next Courses
+          actor: system
+          action: recommend_courses
+          based_on:
+            - completed_course
+            - learner_interests
+            - skill_gaps
+            - learning_path
+            
+        - id: learning_path_update
+          name: Update Learning Path
+          actor: system
+          action: update_path
+          conditional: part_of_learning_path
+          actions:
+            - mark_course_complete
+            - unlock_next_course
+            - check_path_completion
+            
+        - id: alumni_access
+          name: Grant Alumni Access
+          actor: system
+          action: configure_alumni
+          conditional: course.alumni_access_enabled
+          access:
+            - course_materials: read_only
+            - discussions: full_access
+            - updates: notifications
+            - community: join
+            
+      completion_criteria:
+        optional:
+          - feedback_submitted
+          - next_course_enrolled
+
+  transitions:
+    - from: requirements_met
+      to: processing
+      trigger: validation_passed
+      condition: no_instructor_review_required
+      
+    - from: requirements_met
+      to: pending_review
+      trigger: validation_passed
+      condition: instructor_review_required
+      
+    - from: requirements_met
+      to: failed
+      trigger: validation_failed
+      
+    - from: pending_review
+      to: processing
+      trigger: instructor_approved
+      
+    - from: pending_review
+      to: requirements_met
+      trigger: remediation_requested
+      
+    - from: processing
+      to: certificate_generated
+      trigger: certificate_created
+      condition: certificate_enabled
+      
+    - from: processing
+      to: completed
+      trigger: records_created
+      condition: no_certificate
+      
+    - from: certificate_generated
+      to: completed
+      trigger: all_processing_complete
+
+  notifications:
+    completion_approaching:
+      trigger: progress >= 90%
+      template: almost_there
+      
+    completion_confirmed:
+      recipients: [learner]
+      template: congratulations
+      include:
+        - certificate_link
+        - grade_summary
+        - achievements_earned
+        
+    certificate_ready:
+      recipients: [learner]
+      template: certificate_available
+      attachments: [certificate_pdf]
+      
+    feedback_request:
+      trigger: 24h_after_completion
+      recipients: [learner]
+      template: feedback_request
+      
+    credits_awarded:
+      recipients: [learner]
+      template: credits_notification
+      conditional: has_ceu_credits
+
+  failure_handling:
+    requirements_not_met:
+      actions:
+        - identify_missing_requirements
+        - notify_learner
+        - offer_guidance
+      options:
+        - continue_learning
+        - request_extension
+        - drop_course
+        
+    grade_below_passing:
+      actions:
+        - notify_learner
+        - offer_retry_options
+      options:
+        - retake_assessments
+        - audit_completion
+        - withdraw
+
+  analytics:
+    track:
+      - completion_rate
+      - average_time_to_complete
+      - grade_distribution
+      - certificate_claim_rate
+      - feedback_submission_rate
+      - social_share_rate
+      - re_enrollment_rate
+      
+  compliance:
+    - standard: SCORM
+      data: completion_status, score
+    - standard: xAPI
+      statements: [completed, earned, achieved]
+    - standard: accreditation
+      records: seat_time, grade, completion_date

@@ -1,0 +1,724 @@
+name: Card Transaction Authorization Workflow
+display_name: Card Transaction Authorization / Quy trình cấp phép giao dịch thẻ
+description: |
+  Real-time workflow for authorizing card transactions including
+  POS, ATM, online, and contactless transactions with fraud detection.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-CARD-AUTH
+  name: Card Transaction Authorization
+  name_vi: Cấp phép giao dịch thẻ
+  category: real_time_processing
+
+  trigger:
+    type: external_request
+    source: card_network | acquirer
+    protocol: ISO8583
+
+  sla:
+    total_response_time: 3_seconds
+    target_response_time: 500_milliseconds
+    availability: 99.99%
+
+  transaction_types:
+    purchase:
+      channels: [pos, online, contactless, mobile_wallet]
+
+    cash_withdrawal:
+      channels: [atm, cashback]
+
+    balance_inquiry:
+      channels: [atm, online]
+
+    pre_authorization:
+      channels: [hotel, car_rental, gas_station]
+
+    refund:
+      channels: [pos, online]
+
+  actors:
+    - card_network
+    - authorization_engine
+    - fraud_engine
+    - account_system
+
+# =============================================================================
+# AUTHORIZATION FLOW
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Receive Authorization Request
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: receive_request
+    name: Receive Authorization Request
+    name_vi: Nhận yêu cầu cấp phép
+    actor: system
+    latency_budget: 10ms
+
+    description: |
+      Receive and parse authorization request from card network.
+
+    incoming_data:
+      iso8583_fields:
+        - pan: field_2
+        - processing_code: field_3
+        - amount: field_4
+        - transmission_datetime: field_7
+        - stan: field_11
+        - local_time: field_12
+        - local_date: field_13
+        - expiry_date: field_14
+        - pos_entry_mode: field_22
+        - card_sequence: field_23
+        - pos_condition: field_25
+        - acquiring_institution: field_32
+        - terminal_id: field_41
+        - merchant_id: field_42
+        - merchant_name_location: field_43
+        - cvv: field_44
+        - pin_block: field_52
+        - mcc: field_18
+        - currency: field_49
+
+    parsing:
+      - decode_iso8583_message
+      - extract_pan_from_track2
+      - decode_pin_block
+      - parse_chip_data
+
+    outputs:
+      - parsed_request
+      - request_id
+      - timestamp
+
+    next_step: validate_card
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Validate Card
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: validate_card
+    name: Validate Card
+    name_vi: Xác thực thẻ
+    actor: system
+    latency_budget: 50ms
+
+    description: |
+      Validate card exists, is active, and not blocked.
+
+    validations:
+      card_lookup:
+        by: pan_hash
+        check:
+          - card_exists
+          - card_not_expired
+          - card_status: active
+
+        decline_codes:
+          not_found: "14 - Invalid card number"
+          expired: "54 - Expired card"
+          blocked: "62 - Restricted card"
+          cancelled: "62 - Restricted card"
+
+      expiry_validation:
+        compare: request.expiry_date vs card.expiry_date
+        decline_code: "54 - Expired card"
+
+      cvv_validation:
+        for: [online, moto]
+        method: hsm_verification
+        decline_code: "82 - Incorrect CVV"
+
+      pin_validation:
+        for: [atm, chip_and_pin]
+        method: hsm_pin_verify
+        attempts_tracking: true
+        max_attempts: 3
+        decline_code: "55 - Incorrect PIN"
+        lockout_code: "75 - PIN tries exceeded"
+
+    outputs:
+      - card_validated: boolean
+      - card_details
+      - linked_account
+      - decline_reason  # if failed
+
+    next_step:
+      if_valid: check_restrictions
+      if_invalid: decline_transaction
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Check Restrictions
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: check_restrictions
+    name: Check Card Restrictions
+    name_vi: Kiểm tra hạn chế thẻ
+    actor: system
+    latency_budget: 30ms
+
+    description: |
+      Check card feature toggles and restrictions.
+
+    restriction_checks:
+      channel_enabled:
+        atm:
+          check: card.atm_enabled
+          decline: "57 - Transaction not allowed"
+
+        online:
+          check: card.online_enabled
+          decline: "57 - Transaction not allowed"
+
+        contactless:
+          check: card.contactless_enabled
+          decline: "57 - Transaction not allowed"
+
+        international:
+          check: card.international_enabled AND country != 'VN'
+          decline: "62 - Restricted card"
+
+      mcc_blocking:
+        blocked_categories:
+          - "7995": gambling
+          - "5993": tobacco (if minor)
+          - custom: customer_blocked_mcc
+        decline: "57 - Transaction not allowed"
+
+      merchant_blocking:
+        check: merchant_id NOT IN customer.blocked_merchants
+        decline: "57 - Transaction not allowed"
+
+      country_restrictions:
+        high_risk_countries:
+          action: enhanced_verification OR decline
+        blocked_countries:
+          action: decline
+          decline: "62 - Restricted card"
+
+    outputs:
+      - restrictions_passed: boolean
+      - restriction_violated  # if failed
+
+    next_step:
+      if_passed: check_limits
+      if_failed: decline_transaction
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Check Limits
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: check_limits
+    name: Check Transaction Limits
+    name_vi: Kiểm tra hạn mức
+    actor: system
+    latency_budget: 50ms
+
+    description: |
+      Validate transaction against all applicable limits.
+
+    limit_checks:
+      per_transaction:
+        debit:
+          atm: 10000000
+          pos: 50000000
+          online: 20000000
+          contactless_no_pin: 1000000
+
+        credit:
+          based_on: credit_limit
+
+        decline: "61 - Exceeds limit"
+
+      daily_limits:
+        atm_total: card.daily_atm_limit
+        pos_total: card.daily_pos_limit
+        online_total: card.daily_online_limit
+        all_transactions: card.daily_total_limit
+        decline: "65 - Exceeds daily limit"
+
+      monthly_limits:
+        check: card.monthly_limit
+        decline: "65 - Exceeds monthly limit"
+
+      contactless_cumulative:
+        max_without_pin: 5000000
+        max_transactions_without_pin: 5
+        action_when_exceeded: require_pin
+        decline: "55 - PIN required"
+
+      velocity_limits:
+        same_merchant:
+          max_transactions: 3
+          time_window: 10_minutes
+
+        rapid_succession:
+          max_transactions: 5
+          time_window: 5_minutes
+
+        action: enhanced_verification
+
+    balance_check:
+      for: debit_cards
+      formula: |
+        available = account.balance - account.hold - account.minimum + account.overdraft
+        required = transaction.amount
+        check: available >= required
+      decline: "51 - Insufficient funds"
+
+    credit_check:
+      for: credit_cards
+      formula: |
+        available_credit = credit_limit - current_balance - pending_auth
+        required = transaction.amount
+        check: available_credit >= required
+      decline: "51 - Insufficient credit"
+
+    outputs:
+      - limits_passed: boolean
+      - limit_violated  # if failed
+      - available_balance
+
+    next_step:
+      if_passed: fraud_screening
+      if_failed: decline_transaction
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Fraud Screening
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: fraud_screening
+    name: Real-Time Fraud Screening
+    name_vi: Sàng lọc gian lận thời gian thực
+    actor: fraud_engine
+    latency_budget: 100ms
+
+    description: |
+      Real-time fraud detection and risk scoring.
+
+    screening_inputs:
+      transaction_data:
+        - amount
+        - merchant
+        - location
+        - channel
+        - time
+
+      card_data:
+        - card_age
+        - usage_history
+        - average_transaction
+
+      customer_data:
+        - typical_locations
+        - spending_patterns
+        - device_fingerprint
+
+      external_data:
+        - ip_geolocation
+        - device_reputation
+        - merchant_risk_score
+
+    fraud_rules:
+      rule_based:
+        - impossible_travel
+        - unusual_amount
+        - unusual_merchant
+        - unusual_time
+        - unusual_country
+        - first_use_overseas
+
+      ml_based:
+        model: real_time_fraud_model
+        features: transaction_features
+        output: fraud_probability
+
+    risk_scoring:
+      calculation: |
+        rule_score = sum(triggered_rule_weights)
+        ml_score = ml_model.predict(features)
+        final_score = weighted_average(rule_score, ml_score)
+
+      thresholds:
+        low: 0-30
+        medium: 31-70
+        high: 71-90
+        critical: 91-100
+
+    actions_by_score:
+      low:
+        decision: approve
+        monitoring: standard
+
+      medium:
+        decision: approve
+        monitoring: enhanced
+        alert: fraud_dashboard
+
+      high:
+        decision: step_up_or_decline
+        action: request_3ds_if_online
+        action_pos: decline_and_alert
+
+      critical:
+        decision: decline
+        action: immediate_card_block
+        alert: fraud_team
+        notification: customer
+
+    outputs:
+      - fraud_score
+      - fraud_decision: approve | step_up | decline
+      - triggered_rules: []
+
+    next_step:
+      if_approve: authorize_transaction
+      if_step_up: step_up_authentication
+      if_decline: decline_transaction
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Step-Up Authentication (3D Secure)
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: step_up_authentication
+    name: Step-Up Authentication
+    name_vi: Xác thực nâng cao
+    actor: customer
+    conditional: true
+    latency_budget: 60_seconds
+
+    description: |
+      Additional authentication for high-risk transactions.
+
+    condition: |
+      transaction.channel = 'online'
+      AND (fraud_decision = 'step_up' OR merchant.requires_3ds)
+
+    authentication_methods:
+      3ds_2_0:
+        preferred: true
+        frictionless:
+          eligible: low_risk_after_rba
+          result: immediate_approval
+
+        challenge:
+          methods:
+            - otp_sms
+            - otp_push
+            - biometric
+          timeout: 5_minutes
+
+      3ds_1_0:
+        fallback: true
+        method: password_or_otp
+
+    rba_factors:
+      low_risk_indicators:
+        - trusted_merchant
+        - trusted_device
+        - typical_amount
+        - typical_location
+
+      high_risk_indicators:
+        - new_device
+        - new_merchant
+        - high_amount
+        - unusual_time
+
+    outputs:
+      - authentication_result: success | failed | timeout
+      - authentication_method
+      - eci_value
+
+    next_step:
+      if_success: authorize_transaction
+      if_failed: decline_transaction
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Authorize Transaction
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: authorize_transaction
+    name: Authorize Transaction
+    name_vi: Cấp phép giao dịch
+    actor: system
+    latency_budget: 50ms
+
+    description: |
+      Approve transaction and place hold on funds.
+
+    actions:
+      generate_auth_code:
+        format: 6_alphanumeric
+        unique: per_day
+
+      place_hold:
+        for: debit_cards
+        action: |
+          account.hold_amount += transaction.amount
+          account.available_balance -= transaction.amount
+
+        hold_expiry:
+          purchase: 7_days
+          pre_auth: 30_days
+
+      reserve_credit:
+        for: credit_cards
+        action: |
+          card.pending_auth += transaction.amount
+          card.available_credit -= transaction.amount
+
+      create_auth_record:
+        data:
+          - auth_id
+          - auth_code
+          - card_id
+          - amount
+          - merchant
+          - timestamp
+          - expiry
+          - status: authorized
+
+      update_accumulators:
+        - daily_used
+        - monthly_used
+        - contactless_cumulative
+
+    outputs:
+      - authorization_code
+      - auth_id
+      - response_code: "00 - Approved"
+
+    next_step: send_response
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Decline Transaction
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: decline_transaction
+    name: Decline Transaction
+    name_vi: Từ chối giao dịch
+    actor: system
+    conditional: true
+    latency_budget: 20ms
+
+    description: |
+      Decline transaction with appropriate response code.
+
+    response_codes:
+      insufficient_funds: "51"
+      invalid_card: "14"
+      expired_card: "54"
+      incorrect_pin: "55"
+      pin_tries_exceeded: "75"
+      exceeds_limit: "61"
+      restricted_card: "62"
+      transaction_not_allowed: "57"
+      suspected_fraud: "59"
+      invalid_cvv: "82"
+      system_error: "96"
+
+    actions:
+      log_decline:
+        data:
+          - decline_reason
+          - response_code
+          - timestamp
+          - transaction_details
+
+      fraud_decline_actions:
+        if: decline_reason = fraud
+        actions:
+          - alert_fraud_team
+          - consider_card_block
+          - notify_customer
+
+      pin_failure_actions:
+        if: decline_reason = incorrect_pin
+        actions:
+          - increment_pin_tries
+          - check_lockout_threshold
+
+    outputs:
+      - response_code
+      - decline_reason
+
+    next_step: send_response
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Send Response
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: send_response
+    name: Send Response
+    name_vi: Gửi phản hồi
+    actor: system
+    latency_budget: 10ms
+
+    description: |
+      Send authorization response to card network.
+
+    response_format:
+      iso8583:
+        message_type: "0110"
+        fields:
+          - response_code: field_39
+          - authorization_code: field_38
+          - available_balance: field_54  # optional
+          - additional_data: field_48
+
+    actions:
+      construct_response:
+        - set_response_code
+        - set_auth_code_if_approved
+        - set_balance_if_requested
+
+      send_to_network:
+        protocol: tcp_ip
+        timeout: 1_second
+
+      log_response:
+        data:
+          - request_id
+          - response_code
+          - response_time
+
+    outputs:
+      - response_sent: boolean
+      - total_processing_time
+
+    next_step: post_authorization
+
+  # ---------------------------------------------------------------------------
+  # Step 10: Post-Authorization
+  # ---------------------------------------------------------------------------
+  - step: 10
+    id: post_authorization
+    name: Post-Authorization Processing
+    name_vi: Xử lý sau cấp phép
+    actor: system
+    async: true
+
+    description: |
+      Async processing after response sent.
+
+    actions:
+      customer_notification:
+        for: approved_transactions
+        channels: [push, sms]
+        content: |
+          Transaction: {amount}
+          At: {merchant}
+          Balance: {available_balance}
+
+      declined_notification:
+        for: declined_fraud_suspected
+        channels: [push]
+        content: |
+          Transaction declined for security
+          Call us if this was you
+
+      analytics_events:
+        - transaction_authorized
+        - transaction_declined
+        - fraud_detected
+
+      monitoring_update:
+        - update_customer_profile
+        - update_fraud_models
+        - update_merchant_scores
+
+# =============================================================================
+# REVERSAL HANDLING
+# =============================================================================
+reversal_flow:
+  triggers:
+    - timeout_reversal: no_response_from_network
+    - customer_dispute: before_clearing
+    - merchant_reversal: cancelled_transaction
+    - system_error: partial_processing
+
+  process:
+    - validate_original_auth
+    - release_hold
+    - update_accumulators
+    - log_reversal
+    - notify_if_customer_facing
+
+  response_codes:
+    successful_reversal: "00"
+    original_not_found: "12"
+    already_reversed: "12"
+
+# =============================================================================
+# CLEARING AND SETTLEMENT
+# =============================================================================
+clearing_flow:
+  description: |
+    Batch process for clearing authorized transactions.
+
+  timing:
+    domestic: T+1
+    international: T+2
+
+  matching:
+    - match_presentment_to_auth
+    - validate_amount_match
+    - handle_partial_presentment
+    - handle_over_presentment
+
+  settlement:
+    - convert_hold_to_debit
+    - update_statement
+    - calculate_interchange
+
+# =============================================================================
+# PERFORMANCE REQUIREMENTS
+# =============================================================================
+performance:
+  latency:
+    p50: 100ms
+    p95: 300ms
+    p99: 500ms
+    max: 3000ms
+
+  throughput:
+    peak_tps: 5000
+    sustained_tps: 2000
+
+  availability:
+    target: 99.99%
+    max_downtime_per_month: 4.3_minutes
+
+# =============================================================================
+# IMPLEMENTATION NOTES
+# =============================================================================
+implementation_notes:
+  integrations:
+    - Card network switches (Visa, Mastercard)
+    - HSM for cryptographic operations
+    - Fraud detection engine
+    - Core banking for balance
+    - 3D Secure ACS
+    - Real-time notifications
+
+  high_availability:
+    - Active-active deployment
+    - Sub-second failover
+    - Geographic redundancy
+    - Circuit breaker patterns
+
+  security:
+    - PCI-DSS compliance
+    - End-to-end encryption
+    - Secure key management
+    - PIN block security

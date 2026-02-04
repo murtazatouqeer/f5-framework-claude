@@ -1,0 +1,523 @@
+name: output-recording-workflow
+display_name: Production Output Recording Workflow
+display_name_vi: Quy trình ghi nhận sản lượng
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: workflow
+
+description: |
+  Workflow for recording production output including good output,
+  rejects, scrap, and rework with quality verification.
+
+description_vi: |
+  Quy trình ghi nhận sản lượng sản xuất bao gồm sản lượng tốt,
+  phế phẩm, phế liệu và làm lại với xác minh chất lượng.
+
+trigger:
+  events:
+    - operation_completed
+    - batch_completed
+    - shift_end
+    - output_milestone_reached
+  conditions:
+    - work_order.status = 'in_progress'
+    - output_quantity > 0
+
+actors:
+  - id: operator
+    name: Machine Operator
+    name_vi: Công nhân vận hành
+    responsibilities:
+      - Count and record output
+      - Classify good vs reject
+      - Report scrap
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Inspect output
+      - Approve quality
+      - Document defects
+
+  - id: lead_operator
+    name: Lead Operator
+    name_vi: Tổ trưởng
+    responsibilities:
+      - Verify counts
+      - Approve output records
+
+  - id: supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Approve variances
+      - Handle exceptions
+
+states:
+  - id: pending
+    name: Pending
+    name_vi: Đang chờ
+    description: Output ready to record
+
+  - id: counting
+    name: Counting
+    name_vi: Đang đếm
+    description: Output being counted
+
+  - id: inspecting
+    name: Inspecting
+    name_vi: Đang kiểm tra
+    description: Quality inspection in progress
+
+  - id: classifying
+    name: Classifying
+    name_vi: Đang phân loại
+    description: Classifying good/reject/scrap
+
+  - id: recording
+    name: Recording
+    name_vi: Đang ghi nhận
+    description: Recording in system
+
+  - id: verified
+    name: Verified
+    name_vi: Đã xác minh
+    description: Output record verified
+
+  - id: posted
+    name: Posted
+    name_vi: Đã ghi sổ
+    description: Posted to inventory/WIP
+
+steps:
+  - id: count_output
+    name: Count Output
+    name_vi: Đếm sản lượng
+    state: counting
+    actor: operator
+
+    actions:
+      - action: physical_count
+        description: Count all produced items
+        methods:
+          - manual_count
+          - scale_weight
+          - counter_reading
+          - sensor_count
+        outputs:
+          - total_count
+
+      - action: segregate_by_status
+        description: Separate good from suspect items
+        categories:
+          - visually_good
+          - suspect_quality
+          - obvious_reject
+
+      - action: record_counts
+        inputs:
+          - count_good
+          - count_suspect
+          - count_reject
+        outputs:
+          - count_record
+
+    validations:
+      - rule: total_count_reasonable
+        check: total <= scheduled * 1.10
+        message: Count exceeds reasonable maximum
+
+    next_step: quality_inspection
+
+  - id: quality_inspection
+    name: Quality Inspection
+    name_vi: Kiểm tra chất lượng
+    state: inspecting
+    actor: quality_inspector
+    condition: operation.inspection_required = true
+
+    actions:
+      - action: determine_inspection_method
+        options:
+          - 100_percent: All items inspected
+          - sampling: Statistical sampling
+          - skip: No inspection required
+
+      - action: perform_inspection
+        inputs:
+          - items_to_inspect
+          - inspection_criteria
+        checks:
+          - dimensional_verification
+          - visual_inspection
+          - functional_test
+        outputs:
+          - inspection_results
+
+      - action: record_measurements
+        condition: spc_required
+        outputs:
+          - measurement_data
+          - spc_chart_update
+
+      - action: document_defects
+        condition: defects_found
+        inputs:
+          - defect_type
+          - defect_quantity
+          - defect_location
+        outputs:
+          - defect_record
+
+    decision_point:
+      - condition: all_passed
+        next: classify_output
+      - condition: some_failed
+        next: handle_rejects
+
+    next_step: classify_output
+
+  - id: classify_output
+    name: Classify Output
+    name_vi: Phân loại sản lượng
+    state: classifying
+    actor: operator
+
+    actions:
+      - action: classify_good_output
+        criteria:
+          - meets_all_specifications
+          - no_visual_defects
+          - inspection_passed
+        outputs:
+          - good_quantity
+
+      - action: classify_rejects
+        criteria:
+          - fails_specification
+          - has_repairable_defect
+        dispositions:
+          - rework: Can be repaired
+          - scrap: Cannot be salvaged
+          - hold: Needs engineering review
+        outputs:
+          - reject_quantity
+          - reject_disposition
+
+      - action: classify_scrap
+        criteria:
+          - cannot_be_repaired
+          - not_worth_rework
+        outputs:
+          - scrap_quantity
+          - scrap_reason
+
+      - action: assign_lot_numbers
+        condition: lot_tracking_required
+        inputs:
+          - good_quantity
+          - product_id
+        outputs:
+          - lot_number
+          - lot_record
+
+    validations:
+      - rule: quantities_balance
+        check: good + reject + scrap = total_output
+        message: Quantities must balance
+
+    next_step: handle_rejects
+
+  - id: handle_rejects
+    name: Handle Rejects
+    name_vi: Xử lý phế phẩm
+    state: classifying
+    actor: quality_inspector
+    trigger: reject_quantity > 0
+
+    actions:
+      - action: document_reject_details
+        inputs:
+          - defect_code
+          - defect_description
+          - responsible_cause
+        outputs:
+          - reject_report
+
+      - action: determine_disposition
+        options:
+          - use_as_is:
+              condition: minor_deviation
+              requires: engineering_approval
+          - rework:
+              condition: repairable_defect
+              action: create_rework_order
+          - scrap:
+              condition: not_salvageable
+              action: record_scrap_cost
+          - return_to_vendor:
+              condition: incoming_material_defect
+              action: create_vendor_return
+
+      - action: create_ncr
+        condition: significant_quality_issue
+        outputs:
+          - ncr_number
+
+      - action: quarantine_rejects
+        location: quality_hold_area
+
+    next_step: record_output
+
+  - id: record_output
+    name: Record Output
+    name_vi: Ghi nhận sản lượng
+    state: recording
+    actor: operator
+
+    actions:
+      - action: enter_output_transaction
+        inputs:
+          - work_order_id
+          - operation_id
+          - good_quantity
+          - reject_quantity
+          - scrap_quantity
+          - lot_number
+          - operator_id
+          - machine_id
+        outputs:
+          - transaction_id
+
+      - action: record_time
+        inputs:
+          - setup_time_actual
+          - run_time_actual
+        outputs:
+          - time_record
+
+      - action: calculate_yield
+        formula: |
+          yield_percent = (good_quantity / total_output) * 100
+        outputs:
+          - yield_record
+
+      - action: backflush_materials
+        condition: operation.backflush_point = true
+        action: trigger_material_consumption
+
+      - action: update_work_order_progress
+        updates:
+          - completed_quantity
+          - operation_status
+
+    validations:
+      - rule: quantity_within_tolerance
+        check: good_quantity <= scheduled * 1.05
+        message: Cannot report more than 105% of scheduled
+
+      - rule: lot_number_valid
+        check: lot_number IS NOT NULL IF lot_tracking_required
+        message: Lot number required for tracked products
+
+    next_step: verify_output
+
+  - id: verify_output
+    name: Verify Output
+    name_vi: Xác minh sản lượng
+    state: verified
+    actor: lead_operator
+    condition: verification_required
+
+    actions:
+      - action: review_output_record
+        checks:
+          - quantities_reasonable
+          - lot_numbers_correct
+          - times_accurate
+
+      - action: physical_verification
+        condition: variance > threshold
+        description: Recount physical output
+
+      - action: approve_or_correct
+        decision:
+          approve:
+            action: mark_verified
+          correct:
+            action: update_quantities
+            requires: explanation
+
+      - action: electronic_signature
+        outputs:
+          - verifier_id
+          - verification_timestamp
+
+    validations:
+      - rule: verifier_different_from_reporter
+        message: Verifier must be different from reporter
+
+    transitions:
+      - to: verified
+        condition: verification_approved
+
+    next_step: post_output
+
+  - id: post_output
+    name: Post Output
+    name_vi: Ghi sổ sản lượng
+    state: posted
+    actor: system
+
+    actions:
+      - action: update_inventory
+        operations:
+          - deduct_wip_if_applicable
+          - add_to_next_operation_queue
+          - OR add_to_finished_goods
+
+      - action: post_costs
+        components:
+          - labor_cost: run_time * labor_rate
+          - overhead_cost: run_time * overhead_rate
+          - scrap_cost: scrap_qty * material_cost
+
+      - action: update_oee_metrics
+        calculations:
+          - availability: (run_time / planned_time)
+          - performance: (ideal_cycle * output) / run_time
+          - quality: good_quantity / total_quantity
+
+      - action: trigger_next_operation
+        condition: next_operation_exists AND good_qty > 0
+        action: add_to_next_op_queue
+
+      - action: complete_work_order
+        condition: final_operation AND all_quantity_done
+        action: trigger_completion_workflow
+
+    next_step: end_workflow
+
+  - id: handle_over_production
+    name: Handle Over-Production
+    name_vi: Xử lý sản xuất vượt
+    actor: supervisor
+    trigger: reported_quantity > scheduled_quantity * 1.05
+
+    actions:
+      - action: verify_count
+        description: Confirm actual quantity
+
+      - action: review_reason
+        reasons:
+          - setup_scrap_allowance
+          - customer_over_order
+          - safety_stock_build
+          - counting_error
+
+      - action: approve_or_adjust
+        decision:
+          approve:
+            requires: supervisor_approval
+            action: accept_over_production
+          reject:
+            action: recount_and_correct
+
+      - action: document_approval
+        outputs:
+          - approval_record
+          - reason_code
+
+kpis:
+  - metric: First Pass Yield (FPY)
+    formula: (good_first_time / total_output) * 100
+    target: "> 98%"
+
+  - metric: Scrap Rate
+    formula: (scrap_quantity / total_output) * 100
+    target: "< 2%"
+
+  - metric: Recording Accuracy
+    formula: (accurate_records / total_records) * 100
+    target: "> 99%"
+
+  - metric: Output Variance
+    formula: ABS(actual - standard) / standard * 100
+    target: "< 5%"
+
+  - metric: Cycle Time Accuracy
+    formula: ABS(actual_cycle - standard_cycle) / standard_cycle * 100
+    target: "< 10%"
+
+output_types:
+  - type: good_output
+    description: Output meeting all specifications
+    action: Add to inventory or next operation
+
+  - type: reject
+    description: Output not meeting specifications
+    subtypes:
+      - rework: Can be repaired
+      - hold: Needs disposition decision
+    action: Quarantine and disposition
+
+  - type: scrap
+    description: Output that cannot be salvaged
+    action: Record cost and dispose
+
+  - type: sample
+    description: Output taken for quality testing
+    action: Deduct from production count
+
+  - type: by_product
+    description: Secondary product from process
+    action: Record separately with own lot
+
+notifications:
+  - event: output_recorded
+    recipients: [supervisor]
+    message: "Output recorded: {quantity} good, {reject} reject on WO {wo_number}"
+
+  - event: high_reject_rate
+    recipients: [quality, supervisor]
+    condition: reject_rate > 5%
+    message: "High reject rate alert: {reject_rate}% on WO {wo_number}"
+
+  - event: scrap_recorded
+    recipients: [supervisor, planner]
+    message: "Scrap recorded: {quantity} units, reason: {reason}"
+
+  - event: lot_created
+    recipients: [quality]
+    message: "New lot created: {lot_number} for product {product}"
+
+  - event: over_production
+    recipients: [supervisor, planner]
+    message: "Over-production on WO {wo_number}: {variance}% above scheduled"
+
+integrations:
+  - system: MES
+    events:
+      - output_recorded
+      - cycle_complete
+    data: real_time_counts, cycle_times
+
+  - system: QMS
+    events:
+      - inspection_complete
+      - defect_recorded
+    data: quality_results, ncr
+
+  - system: ERP
+    events:
+      - inventory_update
+      - cost_posting
+    data: inventory_transactions, costs
+
+  - system: WMS
+    events:
+      - lot_created
+      - inventory_receipt
+    data: lot_tracking, locations

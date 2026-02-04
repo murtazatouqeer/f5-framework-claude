@@ -1,0 +1,570 @@
+name: DirectDebit
+display_name: Direct Debit / Ủy nhiệm chi
+description: |
+  Direct debit mandate authorizing a creditor to collect payments
+  from a customer's account. Supports recurring bill payments,
+  subscription collections, and automated payment instructions.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique direct debit identifier
+
+  mandate_reference:
+    type: string
+    format: "^DD-[0-9]{8}-[A-Z0-9]{8}$"
+    unique: true
+    indexed: true
+    description: Unique mandate reference
+    description_vi: Mã tham chiếu ủy nhiệm chi
+    example: "DD-20241215-A1B2C3D4"
+
+  # ---------------------------------------------------------------------------
+  # Account (Debtor)
+  # ---------------------------------------------------------------------------
+  account_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: BankAccount
+    description: Account to be debited
+
+  account_holder_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: AccountHolder
+    description: Account holder who authorized mandate
+
+  debtor_name:
+    type: string
+    max_length: 100
+    required: true
+    description: Name of debtor (account holder)
+    description_vi: Tên người trả
+
+  debtor_account_number:
+    type: string
+    max_length: 34
+    required: true
+    description: Debtor's account number
+
+  # ---------------------------------------------------------------------------
+  # Creditor
+  # ---------------------------------------------------------------------------
+  creditor_id:
+    type: string
+    max_length: 35
+    required: true
+    indexed: true
+    description: Creditor's identifier
+    description_vi: Mã người thụ hưởng
+
+  creditor_name:
+    type: string
+    max_length: 100
+    required: true
+    description: Creditor's name
+    description_vi: Tên người thụ hưởng
+
+  creditor_account_number:
+    type: string
+    max_length: 34
+    nullable: true
+    description: Creditor's account number
+
+  creditor_bank_code:
+    type: string
+    max_length: 11
+    nullable: true
+    description: Creditor's bank code
+
+  creditor_type:
+    type: enum
+    values: [utility, telecom, insurance, subscription, loan, other]
+    default: other
+    description: Type of creditor
+    description_vi: Loại người thụ hưởng
+
+  # ---------------------------------------------------------------------------
+  # Mandate Details
+  # ---------------------------------------------------------------------------
+  mandate_type:
+    type: enum
+    values: [recurring, one_off]
+    default: recurring
+    description: Type of mandate
+    description_vi: Loại ủy nhiệm
+
+  status:
+    type: enum
+    values: [pending, active, suspended, cancelled, expired]
+    default: pending
+    indexed: true
+    description: Mandate status
+    description_vi: Trạng thái
+    value_descriptions:
+      pending: "Awaiting activation / Chờ kích hoạt"
+      active: "Active and can be collected / Đang hoạt động"
+      suspended: "Temporarily suspended / Tạm ngưng"
+      cancelled: "Permanently cancelled / Đã hủy"
+      expired: "Past validity period / Hết hiệu lực"
+
+  # ---------------------------------------------------------------------------
+  # Collection Limits
+  # ---------------------------------------------------------------------------
+  max_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Maximum amount per collection
+    description_vi: Số tiền tối đa mỗi lần thu
+
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+    description: Currency for collections
+
+  frequency_limit:
+    type: enum
+    values: [once, daily, weekly, monthly, quarterly, unlimited]
+    default: monthly
+    description: Maximum collection frequency
+    description_vi: Tần suất thu tối đa
+
+  max_collections_per_period:
+    type: integer
+    nullable: true
+    description: Maximum collections per frequency period
+
+  # ---------------------------------------------------------------------------
+  # Validity Period
+  # ---------------------------------------------------------------------------
+  authorization_date:
+    type: date
+    required: true
+    description: Date mandate was authorized
+    description_vi: Ngày ủy quyền
+
+  first_collection_date:
+    type: date
+    nullable: true
+    description: First allowed collection date
+    description_vi: Ngày thu đầu tiên
+
+  final_collection_date:
+    type: date
+    nullable: true
+    description: Last allowed collection date
+    description_vi: Ngày thu cuối cùng
+
+  # ---------------------------------------------------------------------------
+  # Collection History
+  # ---------------------------------------------------------------------------
+  total_collected:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Total amount collected
+    description_vi: Tổng số tiền đã thu
+
+  collection_count:
+    type: integer
+    default: 0
+    description: Number of successful collections
+
+  failed_collection_count:
+    type: integer
+    default: 0
+    description: Number of failed collections
+
+  last_collection_at:
+    type: timestamp
+    nullable: true
+    description: Last collection timestamp
+
+  last_collection_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Amount of last collection
+
+  last_collection_status:
+    type: enum
+    values: [success, failed, rejected]
+    nullable: true
+
+  next_expected_collection:
+    type: date
+    nullable: true
+    description: Expected date of next collection
+
+  # ---------------------------------------------------------------------------
+  # Customer Settings
+  # ---------------------------------------------------------------------------
+  notify_before_collection:
+    type: boolean
+    default: true
+    description: Notify before each collection
+    description_vi: Thông báo trước khi thu
+
+  notify_days_before:
+    type: integer
+    default: 3
+    description: Days before collection to notify
+
+  notify_on_collection:
+    type: boolean
+    default: true
+    description: Notify after collection
+    description_vi: Thông báo sau khi thu
+
+  allow_amount_change:
+    type: boolean
+    default: true
+    description: Allow creditor to change amount
+
+  require_approval_above:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Require approval for amounts above this threshold
+    description_vi: Yêu cầu duyệt khi vượt ngưỡng
+
+  # ---------------------------------------------------------------------------
+  # Suspension
+  # ---------------------------------------------------------------------------
+  suspended_at:
+    type: timestamp
+    nullable: true
+
+  suspension_reason:
+    type: string
+    max_length: 200
+    nullable: true
+
+  suspension_end_date:
+    type: date
+    nullable: true
+    description: Auto-resume date
+
+  # ---------------------------------------------------------------------------
+  # Cancellation
+  # ---------------------------------------------------------------------------
+  cancellation_date:
+    type: date
+    nullable: true
+
+  cancellation_reason:
+    type: string
+    max_length: 200
+    nullable: true
+
+  cancelled_by:
+    type: enum
+    values: [customer, creditor, bank]
+    nullable: true
+
+  # ---------------------------------------------------------------------------
+  # Additional Info
+  # ---------------------------------------------------------------------------
+  customer_reference:
+    type: string
+    max_length: 35
+    nullable: true
+    description: Customer's reference at creditor
+    description_vi: Mã khách hàng tại đơn vị thụ hưởng
+    example: "Customer ID, policy number, etc."
+
+  description:
+    type: string
+    max_length: 200
+    nullable: true
+    description: Mandate description
+    description_vi: Mô tả ủy nhiệm chi
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+  activated_at:
+    type: timestamp
+    nullable: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: account_id
+
+  account_holder:
+    type: belongs_to
+    entity: AccountHolder
+    foreign_key: account_holder_id
+
+  collections:
+    type: has_many
+    entity: DirectDebitCollection
+    foreign_key: mandate_id
+    description: Collection history
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending
+
+  states:
+    pending:
+      description: "Mandate created, awaiting activation"
+      allowed_operations: [activate, cancel]
+
+    active:
+      description: "Mandate active, collections allowed"
+      allowed_operations: [collect, suspend, cancel, modify]
+
+    suspended:
+      description: "Temporarily suspended"
+      allowed_operations: [resume, cancel]
+
+    cancelled:
+      description: "Permanently cancelled"
+      final: true
+
+    expired:
+      description: "Past validity period"
+      final: true
+
+  transitions:
+    - from: pending
+      to: active
+      event: activate
+      conditions:
+        - "Account is active"
+        - "Verification complete"
+      actions:
+        - "Record activation timestamp"
+        - "Notify customer"
+        - "Notify creditor"
+
+    - from: active
+      to: suspended
+      event: suspend
+      actions:
+        - "Record suspension reason"
+        - "Block collections"
+        - "Notify creditor"
+
+    - from: suspended
+      to: active
+      event: resume
+      conditions:
+        - "Account is active"
+        - "Not past expiry"
+      actions:
+        - "Clear suspension"
+        - "Notify creditor"
+
+    - from: [pending, active, suspended]
+      to: cancelled
+      event: cancel
+      actions:
+        - "Record cancellation details"
+        - "Notify creditor"
+        - "Block future collections"
+
+    - from: active
+      to: expired
+      event: expire
+      conditions:
+        - "Current date > final_collection_date"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-DD-001
+    name: Valid Account
+    description: Account must be active for collections
+    rule: |
+      account.status = 'active'
+      AND account.allow_debit = true
+
+  - id: BR-DD-002
+    name: Amount Limit
+    description: Collection must not exceed max_amount
+    rule: |
+      IF max_amount IS NOT NULL
+      THEN collection_amount <= max_amount
+
+  - id: BR-DD-003
+    name: Frequency Check
+    description: Respect collection frequency limits
+    rule: |
+      IF frequency_limit = 'monthly'
+      THEN max 1 collection per calendar month
+
+  - id: BR-DD-004
+    name: Balance Check
+    description: Sufficient balance required
+    rule: |
+      account.available_balance >= collection_amount
+
+  - id: BR-DD-005
+    name: Approval Threshold
+    description: Require approval for large collections
+    rule: |
+      IF collection_amount > require_approval_above
+      THEN request_customer_approval()
+
+  - id: BR-DD-006
+    name: Pre-Collection Notification
+    description: Notify before collection
+    rule: |
+      IF notify_before_collection = true
+      THEN send_notification(notify_days_before days before collection)
+
+  - id: BR-DD-007
+    name: Validity Check
+    description: Collection within validity period
+    rule: |
+      collection_date >= first_collection_date
+      AND (final_collection_date IS NULL OR collection_date <= final_collection_date)
+
+# =============================================================================
+# COLLECTION PROCESSING
+# =============================================================================
+collection_processing:
+  pre_notification:
+    enabled: true
+    default_days: 3
+    channels: [push, sms, email]
+
+  collection_window:
+    start_time: "00:00"
+    end_time: "23:59"
+    timezone: "Asia/Ho_Chi_Minh"
+
+  rejection_reasons:
+    - code: "AC01"
+      reason: "Incorrect account number"
+    - code: "AC04"
+      reason: "Account closed"
+    - code: "AC06"
+      reason: "Account blocked"
+    - code: "AM04"
+      reason: "Insufficient funds"
+    - code: "MD01"
+      reason: "No valid mandate"
+    - code: "MD02"
+      reason: "Mandate cancelled"
+    - code: "MD06"
+      reason: "Mandate suspended"
+    - code: "MS02"
+      reason: "Reason not specified"
+
+  retry_policy:
+    enabled: true
+    max_retries: 2
+    retry_days: [1, 3]
+
+# =============================================================================
+# CREDITOR CATEGORIES
+# =============================================================================
+creditor_categories:
+  utility:
+    name: "Utilities"
+    name_vi: "Tiện ích"
+    examples: ["Electricity", "Water", "Gas"]
+    typical_frequency: monthly
+
+  telecom:
+    name: "Telecommunications"
+    name_vi: "Viễn thông"
+    examples: ["Mobile phone", "Internet", "Cable TV"]
+    typical_frequency: monthly
+
+  insurance:
+    name: "Insurance"
+    name_vi: "Bảo hiểm"
+    examples: ["Life insurance", "Auto insurance", "Health insurance"]
+    typical_frequency: monthly
+
+  subscription:
+    name: "Subscriptions"
+    name_vi: "Dịch vụ đăng ký"
+    examples: ["Streaming", "Gym", "Magazines"]
+    typical_frequency: monthly
+
+  loan:
+    name: "Loan Repayments"
+    name_vi: "Trả nợ vay"
+    examples: ["Mortgage", "Personal loan", "Auto loan"]
+    typical_frequency: monthly
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_dd_account
+    fields: [account_id]
+
+  - name: idx_dd_holder
+    fields: [account_holder_id]
+
+  - name: idx_dd_mandate_ref
+    fields: [mandate_reference]
+    unique: true
+
+  - name: idx_dd_creditor
+    fields: [creditor_id]
+
+  - name: idx_dd_status
+    fields: [status]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  retention_years: 10
+  events:
+    - mandate_created
+    - mandate_activated
+    - mandate_modified
+    - mandate_suspended
+    - mandate_resumed
+    - mandate_cancelled
+    - mandate_expired
+    - collection_received
+    - collection_processed
+    - collection_rejected
+    - collection_refunded

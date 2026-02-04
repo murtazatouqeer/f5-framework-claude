@@ -1,0 +1,481 @@
+name: cancellation-workflow
+display_name: Booking Cancellation Workflow
+display_name_vi: Quy trình hủy đặt chỗ
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Workflow for cancelling bookings including eligibility check,
+  refund calculation, supplier communication, and refund processing.
+
+workflow:
+  id: WF-CAN-BOOK
+  name: Booking Cancellation
+  type: sequential_with_branches
+
+  trigger:
+    types:
+      - customer_request
+      - agent_request
+      - airline_cancellation
+      - hotel_cancellation
+      - payment_failure
+      - fraud_detection
+
+  actors:
+    - customer: Booking owner
+    - agent: Customer service
+    - system: OTA platform
+    - supplier: Airline/hotel/activity
+    - finance: Refund processing
+
+  states:
+    - cancellation_requested
+    - verifying_eligibility
+    - calculating_refund
+    - awaiting_confirmation
+    - processing_supplier_cancellation
+    - processing_refund
+    - cancellation_complete
+    - disputed
+    - failed
+
+steps:
+  - id: STEP-01
+    name: Cancellation Request
+    description: Receive cancellation request
+    state: cancellation_requested
+    actor: customer | agent | system
+    inputs:
+      - booking_reference
+      - cancellation_reason
+      - cancellation_scope: full | partial
+      - partial_details: if_partial
+    authentication:
+      - verify_requester_identity
+      - verify_booking_ownership
+    outputs:
+      - cancellation_request_id
+      - booking_details
+      - cancellation_scope
+    next: STEP-02
+
+  - id: STEP-02
+    name: Eligibility Verification
+    description: Check cancellation eligibility
+    state: verifying_eligibility
+    actor: system
+    checks:
+      booking_status:
+        - status: not_already_cancelled
+        - status: not_completed
+        - status: not_no_show
+      timing:
+        - before_departure: required
+        - within_cancellation_window: preferred
+      components:
+        - flight: check_each_segment
+        - hotel: check_each_reservation
+        - activities: check_each_booking
+    categorize:
+      - cancellation_type: refundable | non_refundable | partial_refund
+      - special_circumstances: force_majeure | airline_initiated
+    outputs:
+      - eligibility_status
+      - cancellation_type
+      - applicable_policies
+    next: STEP-03
+
+  - id: STEP-03
+    name: Refund Calculation
+    description: Calculate refund amount
+    state: calculating_refund
+    actor: system
+
+    for_flights:
+      inputs:
+        - ticket_fare_paid
+        - fare_rules
+        - ticket_status
+      calculation:
+        refundable_fare:
+          - refund: fare_paid - airline_cancellation_fee - service_fee
+          - taxes: mostly_refundable
+        non_refundable_fare:
+          - refund: refundable_taxes_only
+          - credit: fare_value - change_fee (airline_credit)
+      outputs:
+        - flight_refund_amount
+        - airline_credit_option
+
+    for_hotels:
+      inputs:
+        - reservation_total
+        - cancellation_policy
+        - cancellation_deadline
+      calculation:
+        before_deadline:
+          - refund: full_amount
+          - penalty: none
+        after_deadline:
+          - penalty: per_policy (1_night, percentage, full)
+          - refund: total - penalty
+      outputs:
+        - hotel_refund_amount
+        - penalty_amount
+
+    for_packages:
+      inputs:
+        - package_total
+        - days_before_departure
+        - cancellation_tier
+      calculation:
+        tier_based:
+          - "> 60_days": deposit_forfeited
+          - "30-60_days": 50%_penalty
+          - "15-30_days": 75%_penalty
+          - "< 15_days": 100%_penalty
+      outputs:
+        - package_refund_amount
+        - penalty_breakdown
+
+    consolidation:
+      - total_refund: sum_of_components
+      - total_penalties: sum_of_penalties
+      - net_refund: total_refund - penalties
+      - processing_fee: if_applicable
+
+    outputs:
+      - refund_breakdown
+      - total_refund_amount
+      - penalties_applied
+      - credit_options
+    next: STEP-04
+
+  - id: STEP-04
+    name: Customer Confirmation
+    description: Present refund details and get confirmation
+    state: awaiting_confirmation
+    actor: customer
+    display:
+      - booking_summary
+      - cancellation_policy_applied
+      - refund_breakdown:
+          - original_amount_paid
+          - penalties:
+              - airline_fee
+              - hotel_penalty
+              - package_penalty
+              - service_fee_forfeited
+          - taxes_refundable
+          - net_refund_amount
+      - refund_method: original_payment
+      - refund_timeline: estimated_days
+      - alternative_options:
+          - airline_credit: if_available
+          - date_change: if_cheaper
+          - travel_insurance_claim: if_applicable
+    inputs:
+      - confirm_cancellation: boolean
+      - refund_choice: cash | credit
+      - cancellation_reason: optional_feedback
+    timeout: 48h
+    on_timeout: request_expired
+    next: STEP-05 (confirmed) | END (declined)
+
+  - id: STEP-05
+    name: Supplier Cancellation
+    description: Process cancellation with suppliers
+    state: processing_supplier_cancellation
+    actor: system
+
+    for_flight:
+      actions:
+        - send_cancellation: to_gds
+        - cancel_ticket: void_or_refund_request
+        - receive_confirmation
+        - store_cancellation_reference
+      outputs:
+        - gds_cancellation_reference
+        - ticket_status: voided | refund_pending
+
+    for_hotel:
+      actions:
+        - send_cancellation: to_supplier
+        - receive_confirmation
+        - confirm_no_charge: or_penalty_applied
+      outputs:
+        - hotel_cancellation_reference
+
+    for_activities:
+      actions:
+        - cancel_each_activity
+        - collect_confirmations
+      outputs:
+        - activity_cancellation_references
+
+    for_extras:
+      actions:
+        - cancel_ancillary_services
+        - process_refunds: per_policy
+
+    consolidation:
+      - all_suppliers_confirmed
+      - total_supplier_refunds
+      - any_failures: flag_for_review
+
+    outputs:
+      - supplier_cancellation_references
+      - supplier_refund_amounts
+    on_partial_failure: STEP-05B (manual_intervention)
+    next: STEP-06
+
+  - id: STEP-05B
+    name: Manual Intervention
+    description: Handle failed supplier cancellations
+    state: processing_supplier_cancellation
+    actor: agent
+    actions:
+      - review_failure_reason
+      - contact_supplier_directly
+      - escalate_if_needed
+      - resolve_manually
+    outputs:
+      - resolution_status
+      - manual_notes
+    next: STEP-06
+
+  - id: STEP-06
+    name: Refund Processing
+    description: Process customer refund
+    state: processing_refund
+    actor: system
+
+    refund_method_selection:
+      priority:
+        1: original_payment_method
+        2: alternative_if_original_unavailable
+      methods:
+        credit_card:
+          - process_time: 5-10_business_days
+          - action: refund_to_original_card
+        bank_transfer:
+          - process_time: 10-15_business_days
+          - action: transfer_to_provided_account
+        digital_wallet:
+          - process_time: 3-5_business_days
+          - action: refund_to_wallet
+        agency_credit:
+          - process_time: immediate
+          - action: credit_to_agency_account
+
+    actions:
+      - initiate_refund:
+          gateway: payment_gateway
+          amount: net_refund
+      - await_processing
+      - confirm_refund_success
+      - update_payment_record
+
+    on_refund_failure:
+      - retry: up_to_3_times
+      - escalate: to_finance_team
+      - manual_processing: if_needed
+
+    outputs:
+      - refund_reference
+      - refund_status
+      - expected_arrival_date
+    next: STEP-07
+
+  - id: STEP-07
+    name: Record Update
+    description: Update booking and cancellation records
+    state: cancellation_complete
+    actor: system
+    actions:
+      - update_booking_status:
+          new_status: cancelled
+          cancelled_at: timestamp
+          cancelled_by: requester_id
+          cancellation_reference: generated
+      - create_cancellation_record:
+          fields:
+            - booking_id
+            - cancellation_type
+            - reason_code
+            - penalties_applied
+            - refund_amount
+            - refund_status
+            - supplier_references
+      - update_inventory:
+          release: cancelled_inventory
+      - update_reporting:
+          increment: cancellation_metrics
+    outputs:
+      - cancellation_record_id
+      - updated_booking_status
+    next: STEP-08
+
+  - id: STEP-08
+    name: Confirmation Delivery
+    description: Send cancellation confirmation
+    state: cancellation_complete
+    actor: system
+    communications:
+      email:
+        content:
+          - cancellation_confirmation_number
+          - booking_that_was_cancelled
+          - refund_details:
+              - amount
+              - method
+              - expected_date
+          - any_credits_issued
+          - feedback_request
+      sms:
+        content: brief_confirmation
+      app_notification:
+        content: cancellation_confirmed
+    actions:
+      - send_cancellation_confirmation
+      - update_customer_profile:
+          increment: cancellation_count
+      - trigger_feedback_request:
+          delay: 24h
+    outputs:
+      - confirmation_sent
+      - delivery_status
+    next: END
+
+special_cancellation_flows:
+  airline_initiated:
+    id: WF-CAN-AIR
+    trigger: airline_cancels_flight
+    steps:
+      - receive_cancellation_notice
+      - identify_affected_bookings
+      - assess_customer_options:
+          - full_refund: automatic_entitlement
+          - rebooking: alternative_flights
+          - compensation: per_regulations
+      - notify_customers:
+          - explain_situation
+          - present_options
+      - process_customer_choice
+      - handle_connected_components:
+          - hotel: may_be_affected
+          - activities: may_be_affected
+
+  force_majeure:
+    id: WF-CAN-FM
+    trigger: force_majeure_event
+    conditions:
+      - natural_disaster
+      - pandemic_declaration
+      - war_or_terrorism
+      - government_travel_ban
+    steps:
+      - declare_force_majeure_event
+      - identify_affected_bookings
+      - apply_special_policy:
+          - waive_penalties
+          - offer_flexible_options
+      - bulk_process_affected:
+          - refund_option
+          - credit_option
+          - rebooking_option
+      - communicate_broadly
+
+  fraud_cancellation:
+    id: WF-CAN-FRAUD
+    trigger: fraud_detected
+    steps:
+      - flag_booking_for_fraud
+      - cancel_immediately
+      - block_payment_release
+      - notify_fraud_team
+      - do_not_notify_customer: until_investigation
+      - investigate_and_resolve
+
+partial_cancellation:
+  description: Cancel some components, keep others
+  rules:
+    - remaining_booking_must_be_viable
+    - recalculate_pricing_if_package
+    - may_lose_package_discount
+  process:
+    - identify_components_to_cancel
+    - check_impact_on_remaining
+    - calculate_partial_refund
+    - process_partial_cancellation
+    - update_booking_record
+
+dispute_handling:
+  trigger: customer_disputes_cancellation_terms
+  steps:
+    - receive_dispute
+    - review_booking_details
+    - review_policies_applied
+    - assess_validity:
+        - policy_correctly_applied
+        - special_circumstances_missed
+        - customer_misunderstanding
+    - resolve:
+        - uphold_original_decision
+        - grant_goodwill_adjustment
+        - reverse_if_error
+    - communicate_resolution
+    - escalate_if_unresolved
+
+refund_tracking:
+  customer_facing:
+    - refund_status_page
+    - email_updates_on_status
+    - estimated_completion_date
+  internal:
+    - refund_queue_monitoring
+    - aging_report
+    - escalation_triggers
+
+error_handling:
+  - error: supplier_cancellation_timeout
+    action: retry_then_manual
+
+  - error: refund_processing_failure
+    action: queue_for_finance_review
+
+  - error: partial_supplier_failure
+    action: manual_intervention_required
+
+audit_requirements:
+  - log_cancellation_request
+  - log_eligibility_check
+  - log_refund_calculation
+  - log_customer_confirmation
+  - log_supplier_cancellations
+  - log_refund_processing
+  - retain_7_years
+
+sla:
+  - cancellation_request_to_confirmation: < 5m
+  - supplier_cancellation: < 2m per supplier
+  - refund_initiation: same_day
+  - refund_completion:
+      credit_card: 5-10_business_days
+      bank_transfer: 10-15_business_days
+
+metrics:
+  - name: cancellation_rate
+    calculation: cancellations / bookings
+    target: monitoring (< 15%)
+
+  - name: refund_processing_time
+    target: "< 5 business days average"
+
+  - name: cancellation_dispute_rate
+    target: "< 2%"
+
+  - name: customer_satisfaction_post_cancellation
+    target: "> 3.5/5"

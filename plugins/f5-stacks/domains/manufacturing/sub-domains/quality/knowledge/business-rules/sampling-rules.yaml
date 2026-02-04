@@ -1,0 +1,377 @@
+name: sampling-rules
+display_name: Sampling Business Rules
+display_name_vi: Quy tắc kinh doanh lấy mẫu
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: business-rules
+
+description: |
+  Business rules governing statistical sampling plans including
+  AQL-based sampling, lot acceptance, and inspection level switching.
+
+description_vi: |
+  Quy tắc kinh doanh quản lý kế hoạch lấy mẫu thống kê bao gồm
+  lấy mẫu theo AQL, chấp nhận lô và chuyển đổi mức kiểm tra.
+
+rule_categories:
+  - sampling_plan_selection
+  - sample_size_determination
+  - acceptance_criteria
+  - switching_rules
+  - lot_formation
+
+standards_reference:
+  - standard: ANSI/ASQ Z1.4
+    description: Sampling Procedures for Inspection by Attributes
+  - standard: ANSI/ASQ Z1.9
+    description: Sampling Procedures for Inspection by Variables
+  - standard: ISO 2859
+    description: Sampling procedures for inspection by attributes
+  - standard: MIL-STD-1916
+    description: DoD Preferred Methods for Acceptance
+
+rules:
+  # Sampling Plan Selection Rules
+  - id: SMP-RULE-001
+    name: aql_selection_by_criticality
+    name_vi: Chọn AQL theo mức độ nghiêm trọng
+    category: sampling_plan_selection
+    priority: critical
+    description: AQL values must be appropriate for defect criticality
+    description_vi: Giá trị AQL phải phù hợp với mức độ nghiêm trọng của lỗi
+    condition: |
+      AQL assignments by criticality:
+        critical_defects: AQL <= 0.065
+        major_defects: AQL between 0.1 and 1.0
+        minor_defects: AQL between 1.0 and 6.5
+    action: |
+      ENFORCE AQL limits based on criticality
+      REJECT invalid AQL assignments
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-002
+    name: inspection_level_default
+    name_vi: Mức kiểm tra mặc định
+    category: sampling_plan_selection
+    priority: high
+    description: Default inspection level is General Inspection Level II
+    description_vi: Mức kiểm tra mặc định là Mức kiểm tra chung II
+    condition: |
+      WHEN inspection_level NOT specified
+      THEN inspection_level = 'II' (General)
+    action: |
+      SET default inspection level II
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  - id: SMP-RULE-003
+    name: sample_size_code_letter
+    name_vi: Mã chữ kích thước mẫu
+    category: sample_size_determination
+    priority: high
+    description: Sample size code letter determined by lot size and inspection level
+    description_vi: Mã chữ kích thước mẫu được xác định bởi kích thước lô và mức kiểm tra
+    condition: |
+      LOOKUP sample_size_code FROM:
+        lot_size_range
+        inspection_level (I, II, III, S-1, S-2, S-3, S-4)
+      PER ANSI/ASQ Z1.4 Table I
+    action: |
+      AUTO-CALCULATE sample size code
+      DISPLAY to user for verification
+    enforcement: automatic
+    exception_allowed: false
+
+  # Sample Size Determination Rules
+  - id: SMP-RULE-010
+    name: minimum_sample_size
+    name_vi: Kích thước mẫu tối thiểu
+    category: sample_size_determination
+    priority: high
+    description: Sample size must meet minimum requirements
+    description_vi: Kích thước mẫu phải đáp ứng yêu cầu tối thiểu
+    condition: |
+      FOR normal inspection:
+        sample_size >= sample_size_from_table(code_letter, AQL)
+
+      Minimum sizes by code:
+        A: 2, B: 3, C: 5, D: 8, E: 13, F: 20, G: 32, H: 50...
+    action: |
+      CALCULATE required sample size
+      VALIDATE actual >= required
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-011
+    name: sample_lot_ratio
+    name_vi: Tỷ lệ mẫu/lô
+    category: sample_size_determination
+    priority: medium
+    description: Sample size should not exceed lot size
+    description_vi: Kích thước mẫu không nên vượt quá kích thước lô
+    condition: |
+      sample_size <= lot_size
+      IF calculated_sample_size > lot_size
+      THEN 100% inspection required
+    action: |
+      ADJUST sample size to lot size maximum
+      FLAG for 100% inspection
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-012
+    name: random_sampling_required
+    name_vi: Yêu cầu lấy mẫu ngẫu nhiên
+    category: sample_size_determination
+    priority: high
+    description: Samples must be randomly selected from lot
+    description_vi: Mẫu phải được chọn ngẫu nhiên từ lô
+    condition: |
+      sample.sample_type IN ('random', 'stratified', 'systematic')
+      NOT 'convenience' or 'judgment'
+    action: |
+      REQUIRE random sampling method documentation
+      PROVIDE random selection tool
+    enforcement: procedural
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  # Acceptance Criteria Rules
+  - id: SMP-RULE-020
+    name: accept_reject_numbers
+    name_vi: Số chấp nhận từ chối
+    category: acceptance_criteria
+    priority: critical
+    description: Lot accepted if defects <= accept number, rejected if defects >= reject number
+    description_vi: Lô được chấp nhận nếu lỗi <= số chấp nhận, từ chối nếu lỗi >= số từ chối
+    condition: |
+      IF defects_found <= accept_number THEN lot_result = 'accept'
+      IF defects_found >= reject_number THEN lot_result = 'reject'
+      IF accept_number < defects_found < reject_number THEN expand_sample
+    action: |
+      AUTO-DETERMINE lot acceptance
+      TRIGGER sample expansion if intermediate
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-021
+    name: zero_acceptance_critical
+    name_vi: Chấp nhận không cho lỗi nghiêm trọng
+    category: acceptance_criteria
+    priority: critical
+    description: Zero defects allowed for critical characteristics
+    description_vi: Không cho phép lỗi cho đặc tính quan trọng
+    condition: |
+      FOR critical_defects
+      accept_number = 0
+      reject_number = 1
+      (c=0 sampling plan)
+    action: |
+      REJECT lot on first critical defect
+      NO statistical allowance for critical defects
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-022
+    name: double_sampling_option
+    name_vi: Tùy chọn lấy mẫu kép
+    category: acceptance_criteria
+    priority: medium
+    description: Double sampling allowed when sample results are inconclusive
+    description_vi: Cho phép lấy mẫu kép khi kết quả mẫu không rõ ràng
+    condition: |
+      IF using double sampling plan:
+        First sample: IF defects <= accept1 THEN accept
+                     IF defects >= reject1 THEN reject
+                     ELSE take second sample
+        Combined: IF total_defects <= accept2 THEN accept
+                  ELSE reject
+    action: |
+      GUIDE through double sampling process
+      COMBINE results correctly
+    enforcement: automatic
+    exception_allowed: false
+
+  # Switching Rules (ANSI/ASQ Z1.4)
+  - id: SMP-RULE-030
+    name: switch_normal_to_tightened
+    name_vi: Chuyển bình thường sang siết chặt
+    category: switching_rules
+    priority: high
+    description: Switch to tightened inspection when quality deteriorates
+    description_vi: Chuyển sang kiểm tra siết chặt khi chất lượng xấu đi
+    condition: |
+      WHEN on normal inspection
+      AND 2 out of 5 consecutive lots rejected
+      THEN switch to tightened inspection
+    action: |
+      AUTO-SWITCH to tightened
+      NOTIFY quality_engineer and supplier
+      INCREASE sample size per tightened table
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-031
+    name: switch_tightened_to_normal
+    name_vi: Chuyển siết chặt sang bình thường
+    category: switching_rules
+    priority: high
+    description: Return to normal after quality improvement on tightened
+    description_vi: Trở lại bình thường sau khi cải thiện chất lượng ở siết chặt
+    condition: |
+      WHEN on tightened inspection
+      AND 5 consecutive lots accepted
+      THEN switch to normal inspection
+    action: |
+      AUTO-SWITCH to normal
+      NOTIFY quality_engineer
+      REDUCE sample size per normal table
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-032
+    name: switch_normal_to_reduced
+    name_vi: Chuyển bình thường sang giảm
+    category: switching_rules
+    priority: medium
+    description: Switch to reduced inspection when quality is excellent
+    description_vi: Chuyển sang kiểm tra giảm khi chất lượng xuất sắc
+    condition: |
+      WHEN on normal inspection
+      AND 10 consecutive lots accepted
+      AND total defects in last 10 lots <= limit_number
+      AND production stable
+      AND quality_manager approves
+      THEN switch to reduced inspection
+    action: |
+      RECOMMEND reduced inspection
+      REQUIRE approval
+      REDUCE sample size per reduced table
+    enforcement: semi-automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  - id: SMP-RULE-033
+    name: switch_reduced_to_normal
+    name_vi: Chuyển giảm sang bình thường
+    category: switching_rules
+    priority: high
+    description: Return to normal from reduced on any quality issue
+    description_vi: Trở lại bình thường từ giảm khi có bất kỳ vấn đề chất lượng
+    condition: |
+      WHEN on reduced inspection
+      AND any ONE of:
+        - lot rejected
+        - production irregular
+        - other conditions warrant
+      THEN switch to normal inspection
+    action: |
+      IMMEDIATE switch to normal
+      NOTIFY quality_engineer
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: SMP-RULE-034
+    name: discontinue_inspection
+    name_vi: Ngừng kiểm tra
+    category: switching_rules
+    priority: critical
+    description: Discontinue acceptance until corrective action taken
+    description_vi: Ngừng chấp nhận cho đến khi có hành động khắc phục
+    condition: |
+      WHEN on tightened inspection
+      AND 5 lots not accepted
+      THEN discontinue acceptance inspection
+    action: |
+      STOP acceptance of lots
+      REQUIRE corrective action from supplier
+      REQUIRE quality_manager approval to resume
+    enforcement: automatic
+    exception_allowed: false
+
+  # Lot Formation Rules
+  - id: SMP-RULE-040
+    name: lot_homogeneity
+    name_vi: Đồng nhất lô
+    category: lot_formation
+    priority: high
+    description: Lots must be homogeneous for valid sampling
+    description_vi: Lô phải đồng nhất để lấy mẫu hợp lệ
+    condition: |
+      LOT must be formed from:
+        - Same manufacturing conditions
+        - Same raw material lot
+        - Same operator/shift
+        - Same equipment
+        - Same time period
+    action: |
+      VALIDATE lot formation criteria
+      FLAG non-homogeneous lots
+    enforcement: procedural
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  - id: SMP-RULE-041
+    name: lot_size_limits
+    name_vi: Giới hạn kích thước lô
+    category: lot_formation
+    priority: medium
+    description: Lot sizes should fall within practical limits
+    description_vi: Kích thước lô nên nằm trong giới hạn thực tế
+    condition: |
+      lot_size >= minimum_economic_lot_size
+      lot_size <= maximum_inspection_lot_size
+
+      Typical ranges per product type defined
+    action: |
+      WARN if lot size outside typical range
+      RECOMMEND lot splitting if too large
+    enforcement: advisory
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  # Variables Sampling Rules
+  - id: SMP-RULE-050
+    name: variables_sampling_requirements
+    name_vi: Yêu cầu lấy mẫu biến số
+    category: sampling_plan_selection
+    priority: high
+    description: Variables sampling requires additional statistical calculations
+    description_vi: Lấy mẫu biến số yêu cầu tính toán thống kê bổ sung
+    condition: |
+      WHEN using variables sampling (Z1.9)
+      REQUIRE:
+        - Normal distribution assumption
+        - Standard deviation method (known or unknown)
+        - Quality index calculation (k value)
+    action: |
+      CALCULATE quality index
+      COMPARE to acceptance criteria
+      VALIDATE distribution assumption
+    enforcement: automatic
+    exception_allowed: false
+
+validation_triggers:
+  - event: sampling_plan_create
+    rules: [SMP-RULE-001, SMP-RULE-002]
+
+  - event: inspection_start
+    rules: [SMP-RULE-003, SMP-RULE-010, SMP-RULE-012]
+
+  - event: lot_complete
+    rules: [SMP-RULE-020, SMP-RULE-021]
+
+  - event: switching_evaluation
+    rules: [SMP-RULE-030, SMP-RULE-031, SMP-RULE-032, SMP-RULE-033, SMP-RULE-034]
+
+switching_score_tracking:
+  enabled: true
+  window_size: 10
+  metrics:
+    - lots_accepted
+    - lots_rejected
+    - total_defects
+    - production_stability

@@ -1,0 +1,524 @@
+name: content_publishing_workflow
+display_name: Content Publishing Workflow
+description: |
+  End-to-end workflow for ingesting, processing, and publishing
+  streaming content to the platform.
+
+domain: entertainment
+subdomain: streaming
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-STR-001
+trigger:
+  event: content_submission
+  source: content_management_system
+  conditions:
+    - submission_complete: true
+    - required_files_uploaded: true
+
+participants:
+  roles:
+    - content_coordinator
+    - content_reviewer
+    - technical_qa
+    - legal_compliance
+    - content_manager
+    - system
+
+  systems:
+    - content_management_system
+    - transcoding_pipeline
+    - metadata_service
+    - drm_service
+    - cdn_service
+    - recommendation_engine
+
+stages:
+  - id: CP-001
+    name: Content Ingestion
+    description: Initial content upload and validation
+    actor: system
+
+    inputs:
+      - source_video_files
+      - content_metadata
+      - artwork_assets
+      - subtitle_files
+      - audio_tracks
+
+    activities:
+      - id: CP-001-A
+        name: Validate Source Files
+        type: automated
+        action: Verify uploaded files meet specifications
+        validations:
+          video:
+            - format: [ProRes, DNxHD, H.264, H.265]
+            - min_resolution: "1920x1080"
+            - min_bitrate: "10Mbps"
+            - audio_channels: [2, 6, 8]
+          artwork:
+            - poster: "2000x3000px minimum"
+            - backdrop: "3840x2160px minimum"
+            - logo: "SVG or 1000px minimum"
+          subtitles:
+            - format: [SRT, VTT, TTML]
+            - encoding: UTF-8
+
+      - id: CP-001-B
+        name: Generate Content ID
+        type: automated
+        action: Create unique content identifier
+        output: content_id
+
+      - id: CP-001-C
+        name: Store Source Files
+        type: automated
+        action: Archive source files to cold storage
+        output: archive_reference
+
+      - id: CP-001-D
+        name: Create Content Record
+        type: automated
+        action: Initialize content in database
+        status: draft
+
+    outputs:
+      - content_id
+      - validation_report
+      - archive_reference
+
+    sla: 30_minutes
+    next_stage: CP-002
+
+  - id: CP-002
+    name: Metadata Entry
+    description: Complete content metadata entry
+    actor: content_coordinator
+
+    inputs:
+      - content_id
+      - provided_metadata
+
+    activities:
+      - id: CP-002-A
+        name: Enter Basic Metadata
+        type: manual
+        action: Complete required metadata fields
+        fields:
+          required:
+            - title
+            - description
+            - content_type
+            - release_year
+            - age_rating
+            - genres
+            - languages
+          optional:
+            - original_title
+            - tagline
+            - keywords
+            - themes
+
+      - id: CP-002-B
+        name: Add Cast & Crew
+        type: manual_assisted
+        action: Link cast and crew from database
+        system_support:
+          - auto_suggest: based on content title
+          - person_search: by name
+          - imdb_import: optional
+
+      - id: CP-002-C
+        name: Set Availability
+        type: manual
+        action: Configure availability windows
+        settings:
+          - available_from
+          - available_until
+          - visibility_level
+          - subscription_tiers
+
+      - id: CP-002-D
+        name: Configure Licensing
+        type: manual
+        action: Link content to license agreements
+        required: license_id
+
+      - id: CP-002-E
+        name: Validate Metadata
+        type: automated
+        action: Check metadata completeness
+        output: metadata_score
+
+    outputs:
+      - completed_metadata
+      - metadata_score
+
+    sla: 2_hours
+    next_stage: CP-003
+
+  - id: CP-003
+    name: Transcoding & Processing
+    description: Video transcoding and asset processing
+    actor: system
+
+    inputs:
+      - source_video_files
+      - transcoding_profile
+
+    activities:
+      - id: CP-003-A
+        name: Queue Transcoding Job
+        type: automated
+        action: Submit to transcoding pipeline
+        profiles:
+          - name: adaptive_streaming
+            outputs:
+              - quality: SD
+                resolution: 854x480
+                bitrate: 1500kbps
+              - quality: HD
+                resolution: 1280x720
+                bitrate: 3000kbps
+              - quality: FHD
+                resolution: 1920x1080
+                bitrate: 6000kbps
+              - quality: 4K
+                resolution: 3840x2160
+                bitrate: 15000kbps
+
+      - id: CP-003-B
+        name: Generate Thumbnails
+        type: automated
+        action: Extract thumbnails and chapter images
+        outputs:
+          - poster_thumbnail
+          - chapter_thumbnails
+          - preview_sprites
+
+      - id: CP-003-C
+        name: Process Audio Tracks
+        type: automated
+        action: Encode audio variants
+        outputs:
+          - aac_stereo
+          - eac3_5_1
+          - dolby_atmos
+
+      - id: CP-003-D
+        name: Process Subtitles
+        type: automated
+        action: Convert and validate subtitles
+        outputs:
+          - vtt_files
+          - sync_validation
+
+      - id: CP-003-E
+        name: Generate Manifests
+        type: automated
+        action: Create streaming manifests
+        formats:
+          - HLS: manifest.m3u8
+          - DASH: manifest.mpd
+
+      - id: CP-003-F
+        name: Apply DRM Encryption
+        type: automated
+        action: Encrypt with DRM systems
+        systems:
+          - Widevine
+          - FairPlay
+          - PlayReady
+
+    outputs:
+      - transcoded_files
+      - manifests
+      - encrypted_assets
+
+    sla: 4_hours
+    parallel_execution: true
+    next_stage: CP-004
+
+  - id: CP-004
+    name: Quality Assurance
+    description: Technical and content quality review
+    actor: technical_qa
+
+    inputs:
+      - transcoded_assets
+      - manifests
+
+    activities:
+      - id: CP-004-A
+        name: Automated Quality Check
+        type: automated
+        action: Run quality analysis
+        checks:
+          - video_quality_metrics: VMAF > 85
+          - audio_sync: drift < 50ms
+          - subtitle_sync: drift < 500ms
+          - drm_playback: all_devices
+          - adaptive_switching: smooth
+
+      - id: CP-004-B
+        name: Manual Playback Review
+        type: manual
+        action: Watch content on multiple devices
+        checklist:
+          - video_clarity
+          - audio_quality
+          - subtitle_accuracy
+          - no_artifacts
+          - smooth_playback
+
+      - id: CP-004-C
+        name: Accessibility Check
+        type: manual
+        action: Verify accessibility features
+        checklist:
+          - closed_captions
+          - audio_descriptions
+          - contrast_compliance
+
+      - id: CP-004-D
+        name: Document Issues
+        type: manual
+        action: Log any quality issues found
+        output: qa_report
+
+    outputs:
+      - qa_report
+      - qa_status
+
+    sla: 4_hours
+    decision_point:
+      pass: proceed_to_review
+      fail: return_to_transcoding
+    next_stage: CP-005
+
+  - id: CP-005
+    name: Content Review
+    description: Editorial and compliance review
+    actor: content_reviewer
+
+    inputs:
+      - content_id
+      - metadata
+      - qa_report
+
+    activities:
+      - id: CP-005-A
+        name: Review Content Appropriateness
+        type: manual
+        action: Verify content meets platform standards
+        checklist:
+          - age_rating_accuracy
+          - content_warnings_complete
+          - no_prohibited_content
+          - brand_safe
+
+      - id: CP-005-B
+        name: Review Metadata Accuracy
+        type: manual
+        action: Verify metadata correctness
+        checklist:
+          - title_accuracy
+          - description_quality
+          - cast_crew_complete
+          - genre_appropriate
+
+      - id: CP-005-C
+        name: Compliance Check
+        type: manual
+        action: Verify legal compliance
+        checklist:
+          - license_valid
+          - territory_rights_confirmed
+          - no_copyright_issues
+          - regulatory_compliance
+
+      - id: CP-005-D
+        name: Submit Review Decision
+        type: decision
+        options:
+          approve:
+            next: CP-006
+          request_changes:
+            next: CP-002
+            feedback: required
+          reject:
+            next: end
+            reason: required
+
+    outputs:
+      - review_decision
+      - review_notes
+
+    sla: 24_hours
+    next_stage: CP-006
+
+  - id: CP-006
+    name: CDN Distribution
+    description: Distribute content to CDN edge servers
+    actor: system
+
+    inputs:
+      - encrypted_assets
+      - manifests
+
+    activities:
+      - id: CP-006-A
+        name: Upload to Origin
+        type: automated
+        action: Transfer assets to CDN origin
+        progress_tracking: true
+
+      - id: CP-006-B
+        name: Configure CDN Rules
+        type: automated
+        action: Set up CDN delivery rules
+        config:
+          - cache_policy
+          - geo_restrictions
+          - token_authentication
+          - bandwidth_limits
+
+      - id: CP-006-C
+        name: Pre-warm Edge Locations
+        type: automated
+        action: Push to major edge locations
+        regions:
+          - north_america
+          - europe
+          - asia_pacific
+
+      - id: CP-006-D
+        name: Verify Distribution
+        type: automated
+        action: Test playback from multiple locations
+        tests:
+          - origin_playback
+          - edge_playback
+          - geo_restriction_test
+
+    outputs:
+      - cdn_urls
+      - distribution_status
+
+    sla: 2_hours
+    next_stage: CP-007
+
+  - id: CP-007
+    name: Publishing
+    description: Final publishing and catalog update
+    actor: content_manager
+
+    inputs:
+      - content_id
+      - cdn_urls
+      - all_approvals
+
+    activities:
+      - id: CP-007-A
+        name: Final Review
+        type: manual
+        action: Confirm ready to publish
+        checklist:
+          - all_qa_passed
+          - review_approved
+          - cdn_distributed
+          - license_active
+          - schedule_confirmed
+
+      - id: CP-007-B
+        name: Publish Content
+        type: manual
+        action: Set content status to published
+        triggers:
+          - update_catalog
+          - invalidate_caches
+          - notify_recommendation_engine
+
+      - id: CP-007-C
+        name: Update Search Index
+        type: automated
+        action: Add to search and browse indexes
+        indexes:
+          - search_index
+          - browse_catalog
+          - genre_categories
+
+      - id: CP-007-D
+        name: Generate Recommendations
+        type: automated
+        action: Include in recommendation engine
+        tasks:
+          - calculate_similarity
+          - update_user_recommendations
+          - add_to_new_releases
+
+      - id: CP-007-E
+        name: Send Notifications
+        type: automated
+        action: Notify users based on preferences
+        notifications:
+          - watchlist_available
+          - followed_genre
+          - followed_creator
+
+    outputs:
+      - published_content_id
+      - publication_timestamp
+
+    sla: 30_minutes
+    next_stage: complete
+
+completion_criteria:
+  - content_status: published
+  - cdn_verified: true
+  - search_indexed: true
+  - notifications_sent: true
+
+exception_handling:
+  transcoding_failure:
+    action: retry_with_fallback
+    max_retries: 3
+    fallback: manual_intervention
+
+  qa_failure:
+    action: return_to_stage
+    target: CP-003
+    notification: technical_team
+
+  review_rejection:
+    action: archive_content
+    notification: content_coordinator
+
+  cdn_failure:
+    action: escalate
+    notification: infrastructure_team
+
+metrics:
+  - name: average_time_to_publish
+    description: Average time from submission to publication
+    target: "< 24 hours"
+
+  - name: first_pass_qa_rate
+    description: Percentage passing QA on first attempt
+    target: "> 90%"
+
+  - name: review_approval_rate
+    description: Percentage approved in review
+    target: "> 95%"
+
+  - name: transcoding_success_rate
+    description: Transcoding job success rate
+    target: "> 99%"
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

@@ -1,0 +1,308 @@
+# Drug Inventory Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Drug inventory and stock management entity
+
+entity:
+  id: drug_inventory
+  name: Drug Inventory
+  name_ja: 医薬品在庫
+  description: Pharmacy drug inventory tracking and management
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: inventory_id
+      type: uuid
+      primary_key: true
+      description: Unique inventory record ID
+      
+    - name: ndc
+      type: string
+      length: 11
+      required: true
+      references: drug
+      description: Drug NDC
+      
+    - name: location_id
+      type: string
+      required: true
+      description: Pharmacy location identifier
+
+    # Quantities
+    - name: quantity_on_hand
+      type: decimal
+      precision: 12
+      scale: 2
+      required: true
+      default: 0
+      description: Current quantity on hand
+      
+    - name: quantity_allocated
+      type: decimal
+      precision: 12
+      scale: 2
+      default: 0
+      description: Quantity allocated to pending orders
+      
+    - name: quantity_available
+      type: decimal
+      precision: 12
+      scale: 2
+      computed: "quantity_on_hand - quantity_allocated"
+      description: Available quantity
+      
+    - name: quantity_on_order
+      type: decimal
+      precision: 12
+      scale: 2
+      default: 0
+      description: Quantity on purchase order
+      
+    - name: unit
+      type: string
+      length: 20
+      default: "EA"
+      description: Unit of measure
+
+    # Par Levels
+    - name: par_level
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Minimum stock level (reorder point)
+      
+    - name: max_level
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Maximum stock level
+      
+    - name: reorder_quantity
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Quantity to order when below par
+      
+    - name: auto_reorder
+      type: boolean
+      default: false
+      description: Automatic reorder enabled
+
+    # Lot Tracking
+    - name: lot_number
+      type: string
+      length: 50
+      description: Current lot number
+      
+    - name: expiration_date
+      type: date
+      description: Earliest expiration in stock
+      
+    - name: lot_tracking_required
+      type: boolean
+      default: false
+      description: Requires lot-level tracking
+
+    # Location in Pharmacy
+    - name: bin_location
+      type: string
+      length: 50
+      description: Physical bin/shelf location
+      
+    - name: storage_area
+      type: enum
+      values: [shelf, refrigerator, freezer, safe, vault, controlled_cabinet]
+      default: shelf
+      description: Storage area type
+      
+    - name: fast_mover
+      type: boolean
+      default: false
+      description: High-velocity item
+
+    # Supplier Information
+    - name: primary_wholesaler
+      type: string
+      description: Primary wholesaler (McKesson, Cardinal, ABC)
+      
+    - name: wholesaler_item_number
+      type: string
+      description: Wholesaler catalog number
+      
+    - name: contract_price
+      type: decimal
+      precision: 12
+      scale: 4
+      description: Contract price from wholesaler
+
+    # Costing
+    - name: unit_cost
+      type: decimal
+      precision: 12
+      scale: 4
+      description: Current unit cost
+      
+    - name: weighted_avg_cost
+      type: decimal
+      precision: 12
+      scale: 4
+      description: Weighted average cost
+      
+    - name: last_purchase_cost
+      type: decimal
+      precision: 12
+      scale: 4
+      description: Most recent purchase cost
+      
+    - name: last_purchase_date
+      type: date
+      description: Date of last purchase
+
+    # Inventory Value
+    - name: inventory_value
+      type: decimal
+      precision: 14
+      scale: 2
+      computed: "quantity_on_hand * weighted_avg_cost"
+      description: Total inventory value
+
+    # Usage Statistics
+    - name: avg_daily_usage
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Average daily dispensed
+      
+    - name: days_on_hand
+      type: decimal
+      precision: 10
+      scale: 2
+      computed: "quantity_on_hand / avg_daily_usage"
+      description: Days of inventory on hand
+      
+    - name: last_dispensed_date
+      type: date
+      description: Last date this drug was dispensed
+      
+    - name: dispense_count_30day
+      type: integer
+      description: Number of dispenses in last 30 days
+
+    # Controlled Substance Specific
+    - name: dea_schedule
+      type: enum
+      values: [unscheduled, II, III, IV, V]
+      default: unscheduled
+      
+    - name: perpetual_inventory
+      type: boolean
+      default: false
+      description: Perpetual inventory required (controlled)
+      
+    - name: last_physical_count
+      type: decimal
+      precision: 12
+      scale: 2
+      description: Last physical count quantity
+      
+    - name: last_count_date
+      type: timestamp
+      description: Date of last physical count
+      
+    - name: counted_by
+      type: uuid
+      description: User who performed count
+      
+    - name: witnessed_by
+      type: uuid
+      description: Witness for controlled count
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, inactive, discontinued, recalled, quarantined]
+      default: active
+      
+    - name: inactive_reason
+      type: string
+      description: Reason for inactive status
+      
+    - name: recall_id
+      type: uuid
+      references: drug_recall
+      description: Associated recall if quarantined
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  relationships:
+    - name: drug
+      type: many_to_one
+      target: drug
+      foreign_key: ndc
+      
+    - name: dispenses
+      type: one_to_many
+      target: dispense
+      foreign_key: inventory_id
+      
+    - name: transactions
+      type: one_to_many
+      target: inventory_transaction
+      description: Inventory adjustment transactions
+      
+    - name: recall
+      type: many_to_one
+      target: drug_recall
+      foreign_key: recall_id
+
+  indexes:
+    - fields: [ndc, location_id]
+      unique: true
+      name: idx_inventory_ndc_location
+      
+    - fields: [bin_location]
+      name: idx_inventory_bin
+      
+    - fields: [expiration_date]
+      name: idx_inventory_expiration
+      
+    - fields: [quantity_on_hand]
+      name: idx_inventory_qty
+      
+    - fields: [dea_schedule]
+      name: idx_inventory_dea
+      
+    - fields: [status]
+      name: idx_inventory_status
+
+  validations:
+    - field: quantity_on_hand
+      rule: non_negative
+      message: "Quantity on hand cannot be negative"
+      
+    - field: par_level
+      rule: less_than
+      compare_field: max_level
+      message: "Par level must be less than max level"
+      
+    - field: perpetual_inventory
+      rule: required_if
+      condition: "dea_schedule in ['II', 'III', 'IV', 'V']"
+      value: true
+      message: "Perpetual inventory required for controlled substances"
+
+  audit:
+    enabled: true
+    events: [create, update, count, adjustment, receipt, dispense]
+    retention_days: 2555
+    dea_compliant: true
+    fields: [quantity_on_hand, last_physical_count, adjustments]

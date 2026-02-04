@@ -1,0 +1,724 @@
+name: payroll-admin-use-cases
+display_name: Payroll Administrator Use Cases
+description: |
+  Use cases for payroll administrators managing day-to-day payroll
+  operations, calculations, and employee payroll data.
+
+domain: hr-management
+subdomain: payroll
+category: use-cases
+version: "1.0.0"
+status: active
+
+actor:
+  name: Payroll Administrator
+  description: HR staff responsible for payroll processing
+  goals:
+    - Process accurate and timely payroll
+    - Maintain employee payroll records
+    - Handle exceptions and corrections
+    - Generate required reports
+
+use_cases:
+  # Payroll Period Management
+  - id: UC-PAD-001
+    name: open_payroll_period
+    title: Open New Payroll Period
+    description: Initialize a new payroll period for processing
+
+    preconditions:
+      - previous_period_closed
+      - user_has_payroll_admin_role
+
+    main_flow:
+      - step: 1
+        action: Navigate to period management
+        actor: payroll_admin
+      - step: 2
+        action: Click "Create New Period"
+        actor: payroll_admin
+      - step: 3
+        action: Enter period details
+        actor: payroll_admin
+        inputs:
+          - period_year
+          - period_month
+          - period_start_date
+          - period_end_date
+          - cutoff_date
+          - pay_date
+      - step: 4
+        action: Validate period parameters
+        actor: system
+        validations:
+          - no_overlapping_period
+          - dates_logical
+          - working_days_calculated
+      - step: 5
+        action: Load employee list for period
+        actor: system
+      - step: 6
+        action: Initialize period
+        actor: system
+      - step: 7
+        action: Confirm period created
+        actor: system
+
+    postconditions:
+      - period_created_with_open_status
+      - employees_associated_with_period
+
+  - id: UC-PAD-002
+    name: manage_period_employees
+    title: Manage Period Employee List
+    description: Add or remove employees from a payroll period
+
+    preconditions:
+      - period_is_open
+      - before_cutoff_date
+
+    main_flow:
+      - step: 1
+        action: Navigate to period employee management
+        actor: payroll_admin
+      - step: 2
+        action: Display current employee list
+        actor: system
+      - step: 3
+        action: Add new employee
+        actor: payroll_admin
+        inputs:
+          - employee_id
+          - effective_date
+          - proration_required
+      - step: 4
+        action: Validate employee eligibility
+        actor: system
+      - step: 5
+        action: Calculate proration if needed
+        actor: system
+      - step: 6
+        action: Add to period
+        actor: system
+
+    alternative_flows:
+      - id: AF-001
+        condition: remove_employee
+        steps:
+          - Select employee
+          - Provide removal reason
+          - Process termination proration
+          - Remove from period
+
+    postconditions:
+      - employee_list_updated
+
+  # Payroll Run Management
+  - id: UC-PAD-003
+    name: create_payroll_run
+    title: Create and Execute Payroll Run
+    description: Create a payroll run and calculate all employee payslips
+
+    preconditions:
+      - period_is_open
+      - data_cutoff_complete
+      - all_approvals_received
+
+    main_flow:
+      - step: 1
+        action: Navigate to payroll runs
+        actor: payroll_admin
+      - step: 2
+        action: Create new run
+        actor: payroll_admin
+        inputs:
+          - period_id
+          - run_type (regular/off_cycle/bonus)
+          - employee_scope (all/department/selected)
+      - step: 3
+        action: Validate prerequisites
+        actor: system
+        checks:
+          - attendance_complete
+          - overtime_approved
+          - no_pending_changes
+      - step: 4
+        action: Initiate calculation
+        actor: payroll_admin
+      - step: 5
+        action: Process each employee
+        actor: system
+        processing:
+          - calculate_earnings
+          - calculate_insurance
+          - calculate_tax
+          - apply_deductions
+          - compute_net_pay
+      - step: 6
+        action: Display progress
+        actor: system
+      - step: 7
+        action: Generate run summary
+        actor: system
+      - step: 8
+        action: Display results with exceptions
+        actor: system
+
+    exception_handling:
+      - condition: employee_calculation_fails
+        action: Flag employee, continue with others
+      - condition: critical_validation_fails
+        action: Pause run, notify admin
+
+    postconditions:
+      - payroll_run_completed
+      - draft_payslips_generated
+      - summary_available
+
+  - id: UC-PAD-004
+    name: review_payroll_results
+    title: Review Payroll Calculation Results
+    description: Review and validate payroll run results before finalization
+
+    preconditions:
+      - payroll_run_completed
+      - run_status_is_calculated
+
+    main_flow:
+      - step: 1
+        action: Open payroll run
+        actor: payroll_admin
+      - step: 2
+        action: Display run summary
+        actor: system
+        display:
+          - total_employees
+          - gross_total
+          - deductions_total
+          - net_total
+          - variance_from_previous
+      - step: 3
+        action: Review variance report
+        actor: payroll_admin
+        checks:
+          - significant_changes
+          - new_employees
+          - terminated_employees
+          - salary_changes
+      - step: 4
+        action: Review exception report
+        actor: payroll_admin
+        exceptions:
+          - calculation_errors
+          - missing_data
+          - validation_warnings
+      - step: 5
+        action: Drill down to individual payslips
+        actor: payroll_admin
+      - step: 6
+        action: Make notes for approval
+        actor: payroll_admin
+
+    postconditions:
+      - run_reviewed
+      - review_notes_recorded
+
+  - id: UC-PAD-005
+    name: handle_payroll_exception
+    title: Handle Payroll Exception
+    description: Investigate and resolve payroll calculation exceptions
+
+    preconditions:
+      - exception_identified
+      - run_not_finalized
+
+    main_flow:
+      - step: 1
+        action: Open exception list
+        actor: payroll_admin
+      - step: 2
+        action: Select exception
+        actor: payroll_admin
+      - step: 3
+        action: View exception details
+        actor: system
+        display:
+          - employee_info
+          - error_type
+          - error_message
+          - affected_calculation
+      - step: 4
+        action: Investigate root cause
+        actor: payroll_admin
+      - step: 5
+        action: Determine resolution
+        actor: payroll_admin
+        options:
+          - fix_source_data
+          - apply_manual_adjustment
+          - exclude_from_run
+      - step: 6
+        action: Apply resolution
+        actor: payroll_admin
+      - step: 7
+        action: Recalculate if needed
+        actor: system
+      - step: 8
+        action: Verify resolution
+        actor: payroll_admin
+      - step: 9
+        action: Document resolution
+        actor: payroll_admin
+
+    postconditions:
+      - exception_resolved
+      - resolution_documented
+
+  - id: UC-PAD-006
+    name: apply_manual_adjustment
+    title: Apply Manual Adjustment
+    description: Apply manual adjustment to employee payslip
+
+    preconditions:
+      - payslip_exists
+      - run_not_finalized
+      - adjustment_justified
+
+    main_flow:
+      - step: 1
+        action: Open employee payslip
+        actor: payroll_admin
+      - step: 2
+        action: Click "Add Adjustment"
+        actor: payroll_admin
+      - step: 3
+        action: Enter adjustment details
+        actor: payroll_admin
+        inputs:
+          - adjustment_type (earning/deduction)
+          - adjustment_code
+          - amount
+          - reason
+      - step: 4
+        action: Validate adjustment
+        actor: system
+      - step: 5
+        action: Recalculate payslip
+        actor: system
+      - step: 6
+        action: Display updated payslip
+        actor: system
+      - step: 7
+        action: Confirm adjustment
+        actor: payroll_admin
+
+    postconditions:
+      - adjustment_applied
+      - payslip_recalculated
+      - adjustment_logged
+
+    audit:
+      - original_amount
+      - adjusted_amount
+      - reason
+      - adjusted_by
+
+  # Employee Payroll Management
+  - id: UC-PAD-007
+    name: manage_employee_payroll_profile
+    title: Manage Employee Payroll Profile
+    description: Set up and maintain employee payroll configuration
+
+    preconditions:
+      - employee_exists
+      - user_has_payroll_admin_role
+
+    main_flow:
+      - step: 1
+        action: Search for employee
+        actor: payroll_admin
+      - step: 2
+        action: Open payroll profile
+        actor: payroll_admin
+      - step: 3
+        action: Update profile fields
+        actor: payroll_admin
+        fields:
+          compensation:
+            - salary_structure
+            - bank_account
+            - payment_method
+          tax:
+            - tax_id
+            - tax_status
+            - registered_dependents
+          insurance:
+            - si_number
+            - hi_number
+            - contribution_base
+            - exemptions
+      - step: 4
+        action: Validate changes
+        actor: system
+      - step: 5
+        action: Save profile
+        actor: payroll_admin
+      - step: 6
+        action: Determine effective date
+        actor: system
+
+    postconditions:
+      - profile_updated
+      - change_history_recorded
+
+  - id: UC-PAD-008
+    name: process_salary_revision
+    title: Process Salary Revision
+    description: Apply approved salary revision to employee record
+
+    preconditions:
+      - revision_approved
+      - effective_date_reached
+
+    main_flow:
+      - step: 1
+        action: View pending revisions
+        actor: payroll_admin
+      - step: 2
+        action: Select revision to process
+        actor: payroll_admin
+      - step: 3
+        action: Verify approval status
+        actor: system
+      - step: 4
+        action: Apply new salary
+        actor: payroll_admin
+      - step: 5
+        action: Update salary structure
+        actor: system
+      - step: 6
+        action: Calculate insurance base change
+        actor: system
+      - step: 7
+        action: Process retroactive if needed
+        actor: system
+      - step: 8
+        action: Generate change documents
+        actor: system
+      - step: 9
+        action: Mark revision processed
+        actor: system
+
+    postconditions:
+      - salary_updated
+      - insurance_base_updated
+      - retroactive_calculated
+
+  # Overtime and Attendance
+  - id: UC-PAD-009
+    name: import_attendance_data
+    title: Import Attendance Data
+    description: Import attendance/timesheet data for payroll processing
+
+    preconditions:
+      - period_is_open
+      - attendance_data_available
+
+    main_flow:
+      - step: 1
+        action: Navigate to data import
+        actor: payroll_admin
+      - step: 2
+        action: Select import type
+        actor: payroll_admin
+        types:
+          - timesheet_system_sync
+          - manual_upload
+      - step: 3
+        action: Upload or sync data
+        actor: payroll_admin
+      - step: 4
+        action: Validate imported data
+        actor: system
+        validations:
+          - employee_exists
+          - dates_within_period
+          - no_duplicates
+          - hours_reasonable
+      - step: 5
+        action: Display validation results
+        actor: system
+      - step: 6
+        action: Resolve validation errors
+        actor: payroll_admin
+      - step: 7
+        action: Confirm import
+        actor: payroll_admin
+      - step: 8
+        action: Process and store data
+        actor: system
+
+    postconditions:
+      - attendance_data_imported
+      - ready_for_calculation
+
+  - id: UC-PAD-010
+    name: process_overtime
+    title: Process Overtime Records
+    description: Process approved overtime for payroll calculation
+
+    preconditions:
+      - overtime_records_exist
+      - overtime_approved
+
+    main_flow:
+      - step: 1
+        action: View pending overtime
+        actor: payroll_admin
+      - step: 2
+        action: Filter by period
+        actor: payroll_admin
+      - step: 3
+        action: Verify approval status
+        actor: payroll_admin
+      - step: 4
+        action: Calculate overtime amounts
+        actor: system
+        calculations:
+          - classify_by_type
+          - apply_rates
+          - calculate_night_premium
+      - step: 5
+        action: Review calculations
+        actor: payroll_admin
+      - step: 6
+        action: Confirm processing
+        actor: payroll_admin
+      - step: 7
+        action: Create earning entries
+        actor: system
+
+    postconditions:
+      - overtime_processed
+      - earning_entries_created
+
+  # Reports and Bank File
+  - id: UC-PAD-011
+    name: generate_bank_file
+    title: Generate Bank Payment File
+    description: Generate bank file for salary disbursement
+
+    preconditions:
+      - payroll_run_approved
+      - employee_bank_accounts_valid
+
+    main_flow:
+      - step: 1
+        action: Navigate to bank file generation
+        actor: payroll_admin
+      - step: 2
+        action: Select payroll run
+        actor: payroll_admin
+      - step: 3
+        action: Select bank format
+        actor: payroll_admin
+        formats:
+          - vietcombank
+          - techcombank
+          - acb
+          - bidv
+          - generic_csv
+      - step: 4
+        action: Validate bank accounts
+        actor: system
+      - step: 5
+        action: Generate file
+        actor: system
+      - step: 6
+        action: Display file summary
+        actor: system
+        summary:
+          - total_transactions
+          - total_amount
+          - excluded_employees
+      - step: 7
+        action: Download file
+        actor: payroll_admin
+      - step: 8
+        action: Record file generation
+        actor: system
+
+    alternative_flows:
+      - id: AF-001
+        condition: invalid_accounts
+        steps:
+          - List employees with invalid accounts
+          - Option to exclude or fix
+
+    postconditions:
+      - bank_file_generated
+      - file_logged
+
+  - id: UC-PAD-012
+    name: generate_statutory_report
+    title: Generate Statutory Report
+    description: Generate BHXH or tax reports for submission
+
+    preconditions:
+      - period_data_complete
+      - user_has_permission
+
+    main_flow:
+      - step: 1
+        action: Navigate to statutory reports
+        actor: payroll_admin
+      - step: 2
+        action: Select report type
+        actor: payroll_admin
+        types:
+          - bhxh_monthly (D02-TS)
+          - pit_monthly (02/KK-TNCN)
+          - pit_annual (05/QTT-TNCN)
+      - step: 3
+        action: Select period
+        actor: payroll_admin
+      - step: 4
+        action: Generate report
+        actor: system
+      - step: 5
+        action: Validate report data
+        actor: system
+      - step: 6
+        action: Display validation results
+        actor: system
+      - step: 7
+        action: Resolve any issues
+        actor: payroll_admin
+      - step: 8
+        action: Export in required format
+        actor: system
+      - step: 9
+        action: Download report file
+        actor: payroll_admin
+
+    postconditions:
+      - report_generated
+      - ready_for_submission
+
+  # Off-Cycle Processing
+  - id: UC-PAD-013
+    name: process_final_settlement
+    title: Process Employee Final Settlement
+    description: Calculate and process final payment for terminated employee
+
+    preconditions:
+      - employee_terminated
+      - termination_effective
+
+    main_flow:
+      - step: 1
+        action: Receive termination notification
+        actor: payroll_admin
+      - step: 2
+        action: Open final settlement wizard
+        actor: payroll_admin
+      - step: 3
+        action: Calculate components
+        actor: system
+        components:
+          - remaining_salary
+          - unused_leave_payout
+          - severance_pay
+          - outstanding_bonuses
+          - loan_recovery
+      - step: 4
+        action: Review calculation
+        actor: payroll_admin
+      - step: 5
+        action: Adjust if needed
+        actor: payroll_admin
+      - step: 6
+        action: Calculate tax
+        actor: system
+      - step: 7
+        action: Generate settlement summary
+        actor: system
+      - step: 8
+        action: Submit for approval
+        actor: payroll_admin
+      - step: 9
+        action: After approval, process payment
+        actor: payroll_admin
+
+    postconditions:
+      - settlement_calculated
+      - approval_workflow_initiated
+
+    timeline:
+      deadline: 14_days_from_termination
+
+  - id: UC-PAD-014
+    name: respond_to_employee_query
+    title: Respond to Employee Payroll Query
+    description: Handle and resolve employee payroll questions
+
+    preconditions:
+      - query_submitted
+      - assigned_to_payroll_admin
+
+    main_flow:
+      - step: 1
+        action: Open query ticket
+        actor: payroll_admin
+      - step: 2
+        action: Review query details
+        actor: payroll_admin
+      - step: 3
+        action: Investigate issue
+        actor: payroll_admin
+      - step: 4
+        action: Prepare response
+        actor: payroll_admin
+      - step: 5
+        action: Send response to employee
+        actor: payroll_admin
+      - step: 6
+        action: Mark query resolved
+        actor: payroll_admin
+
+    alternative_flows:
+      - id: AF-001
+        condition: requires_correction
+        steps:
+          - Initiate correction process
+          - Notify employee of correction timeline
+
+    postconditions:
+      - query_resolved
+      - response_logged
+
+    sla:
+      response_time: 2_business_days
+
+permissions:
+  required_roles:
+    - payroll_admin
+    - payroll_manager
+
+  data_access:
+    - all_employee_payroll_data
+    - payroll_configurations
+    - salary_information
+
+  restricted_actions:
+    - approve_own_payslip
+    - modify_finalized_payslips
+
+audit:
+  all_actions_logged: true
+  retention: 10_years
+  includes:
+    - user_id
+    - action_type
+    - timestamp
+    - before_after_values

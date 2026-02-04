@@ -1,0 +1,559 @@
+name: Usage Tracking
+display_name: Usage Tracking Workflow / Quy trình theo dõi sử dụng
+description: |
+  Complete workflow for capturing, processing, aggregating, and billing
+  usage-based metrics in real-time and batch processes.
+
+domain: saas-platform
+workflow_type: event_driven
+version: "1.0"
+
+# =============================================================================
+# USAGE TRACKING ARCHITECTURE
+# =============================================================================
+architecture:
+  overview: |
+    Usage tracking follows an event-driven architecture with multiple
+    processing tiers for different latency requirements.
+
+  tiers:
+    real_time:
+      latency: "<100ms"
+      purpose: "Rate limiting, quota enforcement"
+      storage: redis
+
+    near_real_time:
+      latency: "<5 minutes"
+      purpose: "Dashboard visibility, alerts"
+      storage: time_series_db
+
+    batch:
+      latency: "<1 hour"
+      purpose: "Billing aggregation, reporting"
+      storage: data_warehouse
+
+# =============================================================================
+# USAGE CAPTURE
+# =============================================================================
+usage_capture:
+  name: Usage Event Capture
+  name_vi: Ghi nhận sự kiện sử dụng
+
+  sources:
+    api_gateway:
+      events:
+        - api_request
+        - bandwidth_egress
+      capture_method: middleware
+      implementation: |
+        async function captureApiUsage(req, res, next) {
+          const startTime = Date.now();
+
+          res.on('finish', async () => {
+            const usage = {
+              tenant_id: req.tenantId,
+              metric: 'api_calls',
+              quantity: 1,
+              timestamp: new Date(),
+              metadata: {
+                endpoint: req.path,
+                method: req.method,
+                status: res.statusCode,
+                duration_ms: Date.now() - startTime,
+                bytes_out: res.get('Content-Length') || 0
+              }
+            };
+
+            await usageQueue.publish(usage);
+          });
+
+          next();
+        }
+
+    storage_service:
+      events:
+        - file_upload
+        - file_delete
+        - storage_snapshot
+      capture_method: event_emitter
+      implementation: |
+        storage.on('upload', async (file) => {
+          await usageQueue.publish({
+            tenant_id: file.tenantId,
+            metric: 'storage_gb',
+            quantity: file.size / (1024 * 1024 * 1024),
+            operation: 'add',
+            timestamp: new Date()
+          });
+        });
+
+    background_jobs:
+      events:
+        - job_executed
+        - compute_time
+      capture_method: job_wrapper
+      implementation: |
+        async function trackComputeUsage(job, handler) {
+          const startTime = Date.now();
+
+          try {
+            await handler(job);
+          } finally {
+            await usageQueue.publish({
+              tenant_id: job.tenantId,
+              metric: 'compute_hours',
+              quantity: (Date.now() - startTime) / (1000 * 60 * 60),
+              timestamp: new Date()
+            });
+          }
+        }
+
+    user_activity:
+      events:
+        - user_login
+        - active_session
+      capture_method: session_tracker
+      schedule: "Every 15 minutes"
+
+  event_schema:
+    required:
+      - event_id: uuid
+      - tenant_id: uuid
+      - metric: string
+      - quantity: decimal
+      - timestamp: datetime
+
+    optional:
+      - user_id: uuid
+      - api_key_id: uuid
+      - resource_id: string
+      - request_id: string
+      - metadata: json
+
+# =============================================================================
+# REAL-TIME PROCESSING
+# =============================================================================
+real_time_processing:
+  name: Real-Time Usage Processing
+  name_vi: Xử lý sử dụng thời gian thực
+
+  steps:
+    - id: RT-01
+      name: Receive Event
+      type: queue_consumer
+      queue: usage_events
+      batch_size: 100
+      flush_interval: 1_second
+
+    - id: RT-02
+      name: Validate Event
+      type: validation
+      checks:
+        - tenant_exists_and_active
+        - metric_is_valid
+        - quantity_is_positive
+        - timestamp_is_recent
+
+    - id: RT-03
+      name: Update Counters
+      type: redis_operation
+      operations:
+        current_period_usage:
+          key: "usage:{tenant_id}:{metric}:{billing_period}"
+          operation: INCRBYFLOAT
+          value: quantity
+          expire: "billing_period_end + 7 days"
+
+        rate_limit_window:
+          key: "rate:{tenant_id}:{window}"
+          operation: INCR
+          expire: window_duration
+
+        real_time_counter:
+          key: "realtime:{tenant_id}:{metric}:{hour}"
+          operation: INCRBYFLOAT
+          expire: 25_hours
+
+    - id: RT-04
+      name: Check Thresholds
+      type: threshold_check
+      parallel: true
+      checks:
+        rate_limit:
+          condition: "rate_count > tier_limit"
+          action: set_rate_limited_flag
+
+        usage_threshold:
+          thresholds: [50, 80, 90, 100, 110]
+          condition: "current_usage >= included * threshold%"
+          action: trigger_threshold_alert
+
+    - id: RT-05
+      name: Emit Real-Time Events
+      type: event_publisher
+      events:
+        - usage.recorded
+        - usage.threshold_reached
+        - usage.rate_limited
+
+# =============================================================================
+# NEAR REAL-TIME AGGREGATION
+# =============================================================================
+near_real_time_aggregation:
+  name: Near Real-Time Aggregation
+  name_vi: Tổng hợp gần thời gian thực
+  schedule: "Every 5 minutes"
+
+  steps:
+    - id: NRT-01
+      name: Fetch Recent Events
+      type: batch_fetch
+      source: event_stream
+      window: "5 minutes"
+
+    - id: NRT-02
+      name: Aggregate by Tenant and Metric
+      type: aggregation
+      group_by: [tenant_id, metric]
+      aggregations:
+        sum:
+          applies_to: [api_calls, bandwidth_gb, messages]
+          output: total_quantity
+
+        max:
+          applies_to: [storage_gb, seats]
+          output: peak_quantity
+
+        count:
+          applies_to: all
+          output: event_count
+
+    - id: NRT-03
+      name: Store Aggregated Data
+      type: time_series_insert
+      storage: timescale_db
+      table: usage_metrics_5min
+      columns:
+        - timestamp: window_start
+        - tenant_id
+        - metric
+        - total_quantity
+        - peak_quantity
+        - event_count
+
+    - id: NRT-04
+      name: Update Dashboard Cache
+      type: cache_update
+      storage: redis
+      key_pattern: "dashboard:{tenant_id}:usage"
+      data:
+        - current_period_usage_by_metric
+        - usage_trend_last_24h
+        - projected_month_end_usage
+
+    - id: NRT-05
+      name: Check Alert Conditions
+      type: alert_check
+      conditions:
+        spike_detection:
+          condition: "current_hour > previous_hour * 5"
+          alert: usage_spike
+
+        anomaly_detection:
+          condition: "current > moving_average * 3"
+          alert: usage_anomaly
+
+# =============================================================================
+# DAILY AGGREGATION
+# =============================================================================
+daily_aggregation:
+  name: Daily Usage Aggregation
+  name_vi: Tổng hợp sử dụng hàng ngày
+  schedule: "Daily at 00:30 UTC"
+
+  steps:
+    - id: DA-01
+      name: Aggregate Daily Totals
+      type: sql_aggregation
+      query: |
+        INSERT INTO usage_metrics_daily (
+          date, tenant_id, metric, quantity, peak_quantity, event_count
+        )
+        SELECT
+          DATE(timestamp) as date,
+          tenant_id,
+          metric,
+          SUM(total_quantity) as quantity,
+          MAX(peak_quantity) as peak_quantity,
+          SUM(event_count) as event_count
+        FROM usage_metrics_5min
+        WHERE timestamp >= CURRENT_DATE - INTERVAL '1 day'
+          AND timestamp < CURRENT_DATE
+        GROUP BY DATE(timestamp), tenant_id, metric
+        ON CONFLICT (date, tenant_id, metric)
+        DO UPDATE SET quantity = EXCLUDED.quantity
+
+    - id: DA-02
+      name: Snapshot Storage Usage
+      type: storage_snapshot
+      description: "Capture point-in-time storage for max aggregation"
+      query: |
+        INSERT INTO usage_records (
+          tenant_id, metric, quantity, timestamp, aggregation_type
+        )
+        SELECT
+          tenant_id,
+          'storage_gb',
+          current_storage_gb,
+          CURRENT_TIMESTAMP,
+          'max'
+        FROM tenant_storage_stats
+
+    - id: DA-03
+      name: Calculate Daily Active Users
+      type: seat_calculation
+      query: |
+        INSERT INTO usage_records (
+          tenant_id, metric, quantity, timestamp, aggregation_type
+        )
+        SELECT
+          tenant_id,
+          'seats',
+          COUNT(DISTINCT user_id) as active_users,
+          CURRENT_TIMESTAMP,
+          'max'
+        FROM user_sessions
+        WHERE last_activity >= CURRENT_DATE - INTERVAL '1 day'
+        GROUP BY tenant_id
+
+    - id: DA-04
+      name: Cleanup Detailed Data
+      type: data_cleanup
+      actions:
+        - archive_old_5min_data: "older than 7 days"
+        - compress_archived_data
+        - update_retention_stats
+
+# =============================================================================
+# BILLING PERIOD AGGREGATION
+# =============================================================================
+billing_aggregation:
+  name: Billing Period Aggregation
+  name_vi: Tổng hợp kỳ thanh toán
+  schedule: "Hourly"
+  description: "Aggregates usage for billing at period end"
+
+  steps:
+    - id: BA-01
+      name: Identify Periods Ending
+      type: query
+      query: |
+        SELECT * FROM subscriptions
+        WHERE current_period_end <= NOW() + INTERVAL '1 day'
+          AND status IN ('active', 'trialing')
+
+    - id: BA-02
+      name: Aggregate Period Usage
+      type: batch_process
+      for_each: subscription
+      process: |
+        for metric in metered_metrics:
+          aggregation = get_aggregation_type(metric)
+
+          if aggregation == 'sum':
+            usage = SELECT SUM(quantity)
+                    FROM usage_metrics_daily
+                    WHERE tenant_id = :tenant_id
+                      AND metric = :metric
+                      AND date >= :period_start
+                      AND date < :period_end
+
+          elif aggregation == 'max':
+            usage = SELECT MAX(quantity)
+                    FROM usage_metrics_daily
+                    WHERE tenant_id = :tenant_id
+                      AND metric = :metric
+                      AND date >= :period_start
+                      AND date < :period_end
+
+          store_billing_usage(tenant_id, metric, period, usage)
+
+    - id: BA-03
+      name: Calculate Overage
+      type: calculation
+      for_each: [tenant, metric]
+      formula: |
+        included_amount = plan.included[metric]
+        overage_quantity = MAX(0, total_usage - included_amount)
+        overage_amount = overage_quantity * plan.overage_rate[metric]
+
+    - id: BA-04
+      name: Generate Usage Invoice Lines
+      type: invoice_preparation
+      output:
+        - metric
+        - included_amount
+        - actual_usage
+        - overage_quantity
+        - overage_rate
+        - overage_amount
+
+# =============================================================================
+# ALERT WORKFLOWS
+# =============================================================================
+alert_workflows:
+  threshold_alerts:
+    name: Usage Threshold Alerts
+    name_vi: Cảnh báo ngưỡng sử dụng
+
+    triggers:
+      - threshold: 50
+        severity: info
+        actions:
+          - send_email
+          - in_app_notification
+        message: "You've used 50% of your {metric} allocation"
+
+      - threshold: 80
+        severity: warning
+        actions:
+          - send_email
+          - in_app_notification
+          - webhook_if_configured
+        message: "You've used 80% of your {metric}. Consider upgrading."
+
+      - threshold: 90
+        severity: high
+        actions:
+          - send_email
+          - in_app_notification
+          - webhook_if_configured
+          - sms_if_opted_in
+        message: "Alert: 90% of {metric} used"
+
+      - threshold: 100
+        severity: critical
+        actions:
+          - send_email
+          - in_app_notification
+          - webhook_if_configured
+          - sms_if_opted_in
+        message: "You've reached your {metric} limit"
+
+      - threshold: 110
+        severity: critical
+        actions:
+          - apply_soft_limit
+          - all_notification_channels
+        message: "Usage exceeds limit. Service may be degraded."
+
+    alert_suppression:
+      same_threshold_cooldown: 24_hours
+      max_alerts_per_day: 5
+
+  anomaly_alerts:
+    name: Usage Anomaly Alerts
+    name_vi: Cảnh báo bất thường sử dụng
+
+    detection:
+      spike:
+        condition: "current > baseline * 5"
+        window: 1_hour
+        action: alert_tenant_admin
+
+      sustained_high:
+        condition: "average_24h > baseline * 2"
+        action: review_and_alert
+
+      sudden_drop:
+        condition: "current < baseline * 0.1"
+        window: 1_hour
+        action: investigate_service_issue
+
+# =============================================================================
+# USAGE DASHBOARD DATA
+# =============================================================================
+dashboard_data:
+  name: Usage Dashboard Data Pipeline
+  name_vi: Luồng dữ liệu bảng điều khiển sử dụng
+
+  endpoints:
+    current_usage:
+      path: "/api/v1/usage/current"
+      cache_ttl: 5_minutes
+      data:
+        - metric
+        - current_usage
+        - included_amount
+        - overage_amount
+        - usage_percent
+        - projected_end_of_period
+
+    usage_history:
+      path: "/api/v1/usage/history"
+      parameters:
+        - metric
+        - start_date
+        - end_date
+        - granularity: [hourly, daily, monthly]
+      data:
+        - time_series_data
+        - period_totals
+
+    usage_breakdown:
+      path: "/api/v1/usage/breakdown"
+      data:
+        - by_user
+        - by_api_key
+        - by_endpoint
+        - by_organization
+
+# =============================================================================
+# DATA RETENTION
+# =============================================================================
+data_retention:
+  policies:
+    real_time_counters:
+      storage: redis
+      retention: billing_period + 7_days
+      cleanup: automatic_expiry
+
+    5_minute_aggregates:
+      storage: timescale_db
+      retention: 7_days
+      cleanup: daily_job
+
+    daily_aggregates:
+      storage: postgresql
+      retention: 2_years
+      cleanup: monthly_job
+
+    billing_period_totals:
+      storage: postgresql
+      retention: 7_years
+      cleanup: none_in_retention_period
+
+    raw_events:
+      storage: cold_storage
+      retention: 90_days
+      cleanup: daily_archive_job
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+events:
+  - name: usage.recorded
+    payload: [tenant_id, metric, quantity]
+    frequency: high_volume
+
+  - name: usage.threshold_reached
+    payload: [tenant_id, metric, threshold_percent, current_usage]
+
+  - name: usage.limit_exceeded
+    payload: [tenant_id, metric, overage_amount]
+
+  - name: usage.aggregated
+    payload: [tenant_id, metric, period, total]
+
+  - name: usage.anomaly_detected
+    payload: [tenant_id, metric, anomaly_type, severity]

@@ -1,0 +1,742 @@
+name: in-process-inspection-workflow
+display_name: In-Process Inspection Workflow
+display_name_vi: Quy trình kiểm tra trong quá trình
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: workflow
+
+description: |
+  Workflow for quality inspections during manufacturing process including
+  first article inspection (FAI), patrol inspection, and operator self-inspection
+  with SPC monitoring and real-time quality control.
+
+description_vi: |
+  Quy trình kiểm tra chất lượng trong quá trình sản xuất bao gồm
+  kiểm tra sản phẩm đầu tiên (FAI), kiểm tra tuần tra và tự kiểm tra
+  của nhân viên vận hành với giám sát SPC và kiểm soát chất lượng thời gian thực.
+
+workflow_metadata:
+  category: quality_control
+  complexity: high
+  estimated_duration: "continuous"
+  automation_level: highly-automated
+  compliance:
+    - ISO 9001:2015
+    - IATF 16949
+    - FDA 21 CFR Part 820
+
+actors:
+  - id: production_operator
+    name: Production Operator
+    name_vi: Nhân viên vận hành sản xuất
+    responsibilities:
+      - Perform self-inspection
+      - Record measurements
+      - Flag out-of-spec conditions
+      - Stop production on critical defects
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Perform first article inspection
+      - Conduct patrol inspections
+      - Verify operator measurements
+      - Monitor SPC charts
+
+  - id: production_supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Authorize production start
+      - Approve first article
+      - Manage containment actions
+      - Coordinate with quality
+
+  - id: quality_engineer
+    name: Quality Engineer
+    name_vi: Kỹ sư chất lượng
+    responsibilities:
+      - Analyze SPC data
+      - Investigate out-of-control conditions
+      - Approve process adjustments
+      - Manage control plans
+
+triggers:
+  - id: production_start
+    name: Production Start
+    type: event
+    source: mes_system
+    condition: "work_order.status = 'released'"
+
+  - id: setup_complete
+    name: Setup Complete
+    type: event
+    source: production_system
+    condition: "setup.status = 'complete'"
+
+  - id: patrol_schedule
+    name: Patrol Schedule
+    type: scheduled
+    source: quality_system
+    frequency: "every 2 hours"
+
+  - id: spc_alert
+    name: SPC Alert
+    type: event
+    source: spc_system
+    condition: "control_chart.out_of_control = true"
+
+states:
+  - id: setup_pending
+    name: Setup Pending
+    name_vi: Chờ thiết lập
+    type: initial
+    description: Production setup not yet complete
+
+  - id: fai_required
+    name: FAI Required
+    name_vi: Yêu cầu FAI
+    type: intermediate
+    description: First article inspection required before production
+
+  - id: fai_in_progress
+    name: FAI In Progress
+    name_vi: FAI đang thực hiện
+    type: intermediate
+    description: First article being inspected
+
+  - id: production_authorized
+    name: Production Authorized
+    name_vi: Sản xuất được ủy quyền
+    type: intermediate
+    description: Production authorized to proceed
+
+  - id: in_production
+    name: In Production
+    name_vi: Đang sản xuất
+    type: intermediate
+    description: Production running with ongoing inspection
+
+  - id: spc_alert_active
+    name: SPC Alert Active
+    name_vi: Cảnh báo SPC đang hoạt động
+    type: intermediate
+    description: Out-of-control condition detected
+
+  - id: production_hold
+    name: Production Hold
+    name_vi: Tạm dừng sản xuất
+    type: intermediate
+    description: Production stopped due to quality issue
+
+  - id: production_complete
+    name: Production Complete
+    name_vi: Hoàn thành sản xuất
+    type: final
+    description: Production run complete
+
+steps:
+  # First Article Inspection Phase
+  - id: complete_setup
+    name: Complete Setup
+    name_vi: Hoàn thành thiết lập
+    sequence: 1
+    actor: production_operator
+    description: Complete machine setup and preparation
+    from_state: setup_pending
+    to_state: fai_required
+    actions:
+      - Complete tooling installation
+      - Set process parameters
+      - Verify material loaded
+      - Complete setup checklist
+    outputs:
+      - name: setup_checklist
+        type: record
+      - name: parameter_settings
+        type: record
+    validations:
+      - All checklist items complete
+      - Parameters within specification
+      - Tooling properly installed
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: produce_first_article
+    name: Produce First Article
+    name_vi: Sản xuất sản phẩm đầu tiên
+    sequence: 2
+    actor: production_operator
+    description: Produce first article samples for inspection
+    from_state: fai_required
+    to_state: fai_in_progress
+    actions:
+      - Run first pieces (typically 3-5)
+      - Identify as FAI samples
+      - Hold for inspection
+    outputs:
+      - name: fai_samples
+        type: material
+        quantity: "per_control_plan"
+    sla:
+      target: 15 minutes
+      maximum: 30 minutes
+
+  - id: perform_fai
+    name: Perform First Article Inspection
+    name_vi: Thực hiện kiểm tra sản phẩm đầu tiên
+    sequence: 3
+    actor: quality_inspector
+    description: Inspect all characteristics on first article
+    from_state: fai_in_progress
+    to_state: fai_in_progress
+    actions:
+      - Measure all critical characteristics
+      - Measure all major characteristics
+      - Verify visual/cosmetic requirements
+      - Record all measurements
+      - Calculate Cpk if SPC required
+    inputs:
+      - name: fai_samples
+        type: material
+        required: true
+      - name: control_plan
+        type: document
+        required: true
+    outputs:
+      - name: fai_record
+        type: record
+      - name: measurement_data
+        type: record
+      - name: fai_photos
+        type: attachment
+        conditional: true
+    validations:
+      - All characteristics measured
+      - Equipment calibrated
+      - Results within specification
+    business_rules:
+      - 100% inspection of all characteristics
+      - Critical characteristics measured multiple times
+      - Capability study if new process
+    sla:
+      target: 30 minutes
+      maximum: 1 hour
+
+  - id: approve_fai
+    name: Approve First Article
+    name_vi: Phê duyệt sản phẩm đầu tiên
+    sequence: 4
+    actor: production_supervisor
+    description: Review and approve first article inspection results
+    from_state: fai_in_progress
+    to_state: production_authorized
+    condition: "fai_record.result = 'pass'"
+    actions:
+      - Review FAI results
+      - Verify measurements acceptable
+      - Sign off on FAI record
+      - Authorize production start
+    inputs:
+      - name: fai_record
+        type: record
+        required: true
+    outputs:
+      - name: fai_approval
+        type: approval
+      - name: production_authorization
+        type: authorization
+    approval_required:
+      approver: production_supervisor
+      escalation:
+        - condition: "any_critical_characteristic_at_limit"
+          approver: quality_engineer
+    sla:
+      target: 10 minutes
+      maximum: 30 minutes
+
+  - id: reject_fai
+    name: Handle FAI Rejection
+    name_vi: Xử lý từ chối FAI
+    sequence: 4
+    actor: production_supervisor
+    description: Handle failed first article inspection
+    from_state: fai_in_progress
+    to_state: setup_pending
+    condition: "fai_record.result = 'fail'"
+    actions:
+      - Document failure reasons
+      - Identify corrective actions
+      - Adjust setup parameters
+      - Scrap failed samples
+    outputs:
+      - name: fai_rejection_record
+        type: record
+      - name: corrective_actions
+        type: record
+    next_step: complete_setup
+    notifications:
+      - recipient: quality_engineer
+        message: "FAI failed for WO {{work_order_number}}"
+        condition: "failure_count > 2"
+
+  # Production Phase with Continuous Inspection
+  - id: start_production
+    name: Start Production
+    name_vi: Bắt đầu sản xuất
+    sequence: 5
+    actor: production_operator
+    description: Begin production run
+    from_state: production_authorized
+    to_state: in_production
+    actions:
+      - Start production equipment
+      - Initialize SPC charts
+      - Set inspection frequency timer
+      - Log production start
+    outputs:
+      - name: production_start_log
+        type: record
+      - name: spc_chart_initialized
+        type: record
+
+  - id: operator_self_inspection
+    name: Operator Self-Inspection
+    name_vi: Tự kiểm tra của nhân viên vận hành
+    sequence: 6
+    actor: production_operator
+    description: Operator performs periodic self-inspection
+    from_state: in_production
+    to_state: in_production
+    frequency: "per_control_plan"
+    actions:
+      - Take sample per control plan
+      - Measure designated characteristics
+      - Record on SPC chart
+      - Verify within specification
+      - Flag any out-of-spec
+    inputs:
+      - name: control_plan
+        type: document
+        required: true
+      - name: inspection_sample
+        type: material
+        required: true
+    outputs:
+      - name: self_inspection_record
+        type: record
+      - name: spc_data_point
+        type: record
+    validations:
+      - Measurements recorded at frequency
+      - Data plotted on control chart
+      - Equipment calibrated
+    decision_points:
+      - condition: "measurement.result = 'within_spec'"
+        action: "Continue production"
+      - condition: "measurement.result = 'out_of_spec'"
+        action: "Stop and notify supervisor"
+        next_step: handle_out_of_spec
+
+  - id: patrol_inspection
+    name: Patrol Inspection
+    name_vi: Kiểm tra tuần tra
+    sequence: 7
+    actor: quality_inspector
+    description: Quality inspector performs patrol inspection
+    from_state: in_production
+    to_state: in_production
+    frequency: "every 2 hours"
+    actions:
+      - Verify operator inspection frequency
+      - Take verification samples
+      - Audit SPC chart accuracy
+      - Check process conditions
+      - Verify 5S compliance
+    inputs:
+      - name: self_inspection_records
+        type: record
+        required: true
+    outputs:
+      - name: patrol_inspection_record
+        type: record
+      - name: verification_results
+        type: record
+      - name: audit_findings
+        type: record
+        conditional: true
+    validations:
+      - Operator inspections at frequency
+      - SPC charts current
+      - Process within control limits
+    sla:
+      target: 20 minutes
+      maximum: 30 minutes
+
+  - id: monitor_spc
+    name: Monitor SPC Charts
+    name_vi: Giám sát biểu đồ SPC
+    sequence: 8
+    actor: system
+    description: System monitors control charts for out-of-control conditions
+    from_state: in_production
+    to_state: in_production
+    continuous: true
+    actions:
+      - Calculate control limits
+      - Check Western Electric rules
+      - Detect trends and patterns
+      - Generate alerts on violations
+    outputs:
+      - name: spc_analysis
+        type: record
+      - name: spc_alert
+        type: notification
+        conditional: true
+    spc_rules:
+      - name: rule_1
+        description: Point beyond 3 sigma
+        action: immediate_alert
+      - name: rule_2
+        description: 2 of 3 points beyond 2 sigma
+        action: warning_alert
+      - name: rule_3
+        description: 4 of 5 points beyond 1 sigma
+        action: trend_alert
+      - name: rule_4
+        description: 8 consecutive points on one side
+        action: shift_alert
+      - name: rule_5
+        description: 6 consecutive increasing/decreasing
+        action: trend_alert
+
+  - id: handle_spc_alert
+    name: Handle SPC Alert
+    name_vi: Xử lý cảnh báo SPC
+    sequence: 9
+    actor: quality_inspector
+    description: Respond to out-of-control SPC condition
+    from_state: in_production
+    to_state: spc_alert_active
+    trigger: spc_alert
+    actions:
+      - Acknowledge alert
+      - Verify measurement accuracy
+      - Identify special cause
+      - Determine if production stop required
+      - Document investigation
+    inputs:
+      - name: spc_alert
+        type: notification
+        required: true
+    outputs:
+      - name: spc_investigation
+        type: record
+      - name: containment_decision
+        type: decision
+    decision_points:
+      - condition: "measurement_error_confirmed"
+        action: "Correct and continue"
+        next_step: return_to_production
+      - condition: "process_drift_minor"
+        action: "Adjust and continue monitoring"
+        next_step: adjust_process
+      - condition: "process_out_of_control"
+        action: "Stop production"
+        next_step: stop_production
+    sla:
+      target: 15 minutes
+      maximum: 30 minutes
+
+  - id: handle_out_of_spec
+    name: Handle Out-of-Spec Condition
+    name_vi: Xử lý điều kiện ngoài thông số
+    sequence: 10
+    actor: production_supervisor
+    description: Handle out-of-specification condition
+    from_state: in_production
+    to_state: production_hold
+    actions:
+      - Stop production immediately
+      - Quarantine suspect material
+      - Notify quality department
+      - Identify suspect lot boundaries
+      - Document issue details
+    outputs:
+      - name: production_stop_record
+        type: record
+      - name: containment_action
+        type: record
+      - name: suspect_lot_identification
+        type: record
+    notifications:
+      - recipient: quality_engineer
+        message: "Out-of-spec condition at {{workstation}}"
+        priority: high
+      - recipient: production_manager
+        message: "Production stopped for quality issue"
+        priority: high
+
+  - id: investigate_issue
+    name: Investigate Issue
+    name_vi: Điều tra vấn đề
+    sequence: 11
+    actor: quality_engineer
+    description: Investigate root cause of quality issue
+    from_state: production_hold
+    to_state: production_hold
+    actions:
+      - Review SPC data and trends
+      - Examine process parameters
+      - Check material lot information
+      - Interview operators
+      - Identify root cause
+    inputs:
+      - name: spc_data
+        type: record
+        required: true
+      - name: process_parameters
+        type: record
+        required: true
+    outputs:
+      - name: investigation_report
+        type: record
+      - name: root_cause_analysis
+        type: record
+      - name: corrective_action_plan
+        type: document
+    sla:
+      target: 2 hours
+      maximum: 4 hours
+
+  - id: disposition_suspect_material
+    name: Disposition Suspect Material
+    name_vi: Xử lý vật liệu nghi ngờ
+    sequence: 12
+    actor: quality_engineer
+    description: Determine disposition of material produced during issue
+    from_state: production_hold
+    to_state: production_hold
+    actions:
+      - Identify all suspect material
+      - Determine disposition options
+      - Approve rework or scrap
+      - Document decision
+    outputs:
+      - name: disposition_decision
+        type: decision
+        values: [release, rework, scrap, sort]
+      - name: ncr_record
+        type: record
+        conditional: true
+    decision_points:
+      - condition: "100_percent_inspection_feasible"
+        action: "Sort and release conforming"
+      - condition: "rework_possible"
+        action: "Create rework order"
+      - condition: "not_recoverable"
+        action: "Scrap material"
+
+  - id: implement_corrective_action
+    name: Implement Corrective Action
+    name_vi: Thực hiện hành động khắc phục
+    sequence: 13
+    actor: production_supervisor
+    description: Implement corrective actions before resuming production
+    from_state: production_hold
+    to_state: fai_required
+    actions:
+      - Implement identified corrections
+      - Adjust process parameters
+      - Verify equipment condition
+      - Update control plan if needed
+    outputs:
+      - name: corrective_action_implementation
+        type: record
+    approval_required:
+      approver: quality_engineer
+    next_step: produce_first_article
+
+  - id: return_to_production
+    name: Return to Production
+    name_vi: Trở lại sản xuất
+    sequence: 14
+    actor: production_operator
+    description: Resume normal production after alert resolution
+    from_state: spc_alert_active
+    to_state: in_production
+    actions:
+      - Verify process corrected
+      - Reset SPC monitoring
+      - Resume production
+      - Continue inspection frequency
+    outputs:
+      - name: production_resume_log
+        type: record
+
+  - id: complete_production_run
+    name: Complete Production Run
+    name_vi: Hoàn thành đợt sản xuất
+    sequence: 15
+    actor: production_operator
+    description: Complete production run with final inspection
+    from_state: in_production
+    to_state: production_complete
+    trigger: "quantity_complete OR work_order_close"
+    actions:
+      - Perform last piece inspection
+      - Finalize SPC charts
+      - Complete production log
+      - Transfer to final inspection
+    outputs:
+      - name: last_piece_inspection
+        type: record
+      - name: production_summary
+        type: report
+      - name: spc_summary
+        type: report
+
+control_plan_integration:
+  description: Inspection requirements driven by control plan
+  elements:
+    - characteristic
+    - specification
+    - measurement_method
+    - sample_size
+    - frequency
+    - reaction_plan
+    - control_method
+
+spc_configuration:
+  chart_types:
+    - type: xbar_r
+      use_for: variable_data
+      subgroup_size: 3-5
+    - type: xbar_s
+      use_for: variable_data
+      subgroup_size: 6-25
+    - type: individual_mr
+      use_for: single_measurements
+    - type: p_chart
+      use_for: proportion_defective
+    - type: c_chart
+      use_for: defect_count
+    - type: u_chart
+      use_for: defects_per_unit
+
+  control_limits:
+    calculation: "automatic from data"
+    recalculation_frequency: "monthly"
+    minimum_subgroups: 25
+
+  capability_targets:
+    cp_minimum: 1.33
+    cpk_minimum: 1.33
+    ppk_minimum: 1.33
+
+exceptions:
+  - id: equipment_breakdown
+    name: Equipment Breakdown
+    description: Production equipment fails during run
+    handling:
+      - Stop production
+      - Quarantine last good piece
+      - Perform maintenance
+      - Require FAI after repair
+
+  - id: material_change
+    name: Material Lot Change
+    description: Raw material lot changes during production
+    handling:
+      - Document changeover point
+      - Consider mini-FAI
+      - Update traceability
+      - Continue SPC monitoring
+
+  - id: operator_change
+    name: Operator Change
+    description: Operator changes during shift
+    handling:
+      - Brief incoming operator
+      - Review current SPC status
+      - Verify understanding of control plan
+      - Continue inspection frequency
+
+notifications:
+  - trigger: fai_failed
+    recipients: [quality_engineer, production_manager]
+    message: "FAI failed for WO {{work_order_number}}"
+    priority: high
+
+  - trigger: spc_out_of_control
+    recipients: [quality_inspector, production_supervisor]
+    message: "SPC alert: {{characteristic}} out of control"
+    priority: critical
+
+  - trigger: production_stopped
+    recipients: [quality_manager, production_manager]
+    message: "Production stopped: {{reason}}"
+    priority: critical
+
+integrations:
+  - system: mes
+    events:
+      - production_start
+      - production_complete
+      - quantity_updates
+    data_exchange:
+      - work_order_info
+      - production_counts
+      - downtime_reasons
+
+  - system: spc_software
+    events:
+      - data_point_added
+      - alert_generated
+    data_exchange:
+      - measurement_data
+      - control_limits
+      - capability_indices
+
+  - system: quality_system
+    events:
+      - inspection_complete
+      - ncr_created
+    data_exchange:
+      - inspection_records
+      - disposition_decisions
+
+metrics:
+  - name: fai_first_pass_rate
+    description: FAI approval on first attempt
+    target: "> 95%"
+
+  - name: process_capability_cpk
+    description: Average Cpk across characteristics
+    target: "> 1.33"
+
+  - name: spc_out_of_control_rate
+    description: Percentage of time in out-of-control
+    target: "< 2%"
+
+  - name: operator_inspection_compliance
+    description: Adherence to inspection frequency
+    target: "> 98%"
+
+  - name: production_stop_frequency
+    description: Quality-related stops per shift
+    target: "< 1"
+
+audit_trail:
+  enabled: true
+  events:
+    - fai_results
+    - production_authorization
+    - spc_alerts
+    - production_stops
+    - disposition_decisions
+    - corrective_actions
+  retention_years: 7

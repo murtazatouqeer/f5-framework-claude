@@ -1,0 +1,637 @@
+# =============================================================================
+# REFERRAL WORKFLOW - EHR Sub-domain
+# Quy trình Chuyển tuyến
+# =============================================================================
+
+name: ReferralWorkflow
+display_name: Referral Workflow / Quy trình Chuyển tuyến
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: coordination
+
+description: |
+  End-to-end workflow for specialist referrals from order creation through
+  appointment completion and report receipt. Includes authorization management,
+  care coordination, and closed-loop communication.
+
+# =============================================================================
+# REFERRAL TYPES
+# =============================================================================
+referral_types:
+  - id: specialist_consultation
+    name: Specialist Consultation
+    description: Referral to specialist for evaluation
+    return_to_pcp: yes
+
+  - id: transfer_of_care
+    name: Transfer of Care
+    description: Transfer ongoing care to specialist
+    return_to_pcp: no
+
+  - id: comanagement
+    name: Co-Management
+    description: Shared care between PCP and specialist
+    return_to_pcp: ongoing
+
+  - id: procedure_referral
+    name: Procedure Referral
+    description: Referral for specific procedure
+    return_to_pcp: after_procedure
+
+  - id: second_opinion
+    name: Second Opinion
+    description: Additional expert opinion
+    return_to_pcp: yes
+
+  - id: emergency_referral
+    name: Emergency Referral
+    description: Urgent specialist evaluation
+    priority: stat
+    return_to_pcp: variable
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: draft
+    name: Draft
+    description: Referral being composed
+    allowed_transitions: [pending_review, cancelled]
+
+  - id: pending_review
+    name: Pending Review
+    description: Awaiting clinical review
+    allowed_transitions: [approved, returned, cancelled]
+
+  - id: approved
+    name: Approved
+    description: Clinically approved, ready to process
+    entry_actions:
+      - check_authorization_requirements
+      - identify_network_providers
+    allowed_transitions: [pending_authorization, sent_to_specialist, scheduled]
+
+  - id: pending_authorization
+    name: Pending Authorization
+    description: Awaiting insurance authorization
+    allowed_transitions: [authorized, denied, approved]
+
+  - id: authorized
+    name: Authorized
+    description: Insurance authorization obtained
+    entry_actions:
+      - document_auth_number
+      - notify_scheduling
+    allowed_transitions: [sent_to_specialist, scheduled]
+
+  - id: denied
+    name: Authorization Denied
+    description: Insurance denied authorization
+    entry_actions:
+      - notify_ordering_provider
+      - notify_patient
+    allowed_transitions: [appeal, cancelled, approved]
+
+  - id: appeal
+    name: Under Appeal
+    description: Authorization denial under appeal
+    allowed_transitions: [authorized, denied, cancelled]
+
+  - id: sent_to_specialist
+    name: Sent to Specialist
+    description: Referral sent, awaiting scheduling
+    entry_actions:
+      - transmit_to_specialist
+      - track_receipt
+    allowed_transitions: [scheduled, unable_to_schedule, cancelled]
+
+  - id: scheduled
+    name: Scheduled
+    description: Appointment scheduled with specialist
+    entry_actions:
+      - document_appointment
+      - notify_patient
+      - send_clinical_information
+    allowed_transitions: [seen, no_show, cancelled]
+
+  - id: unable_to_schedule
+    name: Unable to Schedule
+    description: Scheduling barriers encountered
+    entry_actions:
+      - notify_referring_provider
+      - document_barriers
+    allowed_transitions: [sent_to_specialist, cancelled]
+
+  - id: seen
+    name: Patient Seen
+    description: Patient attended specialist appointment
+    allowed_transitions: [report_pending, completed]
+
+  - id: no_show
+    name: No Show
+    description: Patient did not attend appointment
+    entry_actions:
+      - notify_referring_provider
+      - contact_patient
+    allowed_transitions: [scheduled, cancelled]
+
+  - id: report_pending
+    name: Report Pending
+    description: Awaiting specialist consultation report
+    allowed_transitions: [completed, report_received]
+
+  - id: report_received
+    name: Report Received
+    description: Specialist report received
+    entry_actions:
+      - file_report
+      - notify_referring_provider
+    allowed_transitions: [reviewed, completed]
+
+  - id: reviewed
+    name: Report Reviewed
+    description: Referring provider reviewed report
+    entry_actions:
+      - document_review
+      - update_care_plan
+    allowed_transitions: [completed]
+
+  - id: completed
+    name: Completed
+    description: Referral process complete
+    allowed_transitions: []
+
+  - id: cancelled
+    name: Cancelled
+    description: Referral cancelled
+    entry_actions:
+      - document_reason
+      - notify_stakeholders
+    allowed_transitions: []
+
+# =============================================================================
+# REFERRAL CREATION WORKFLOW
+# =============================================================================
+referral_creation:
+  # Step 1: Specialist Selection
+  - id: STEP-001
+    name: Specialist Selection
+    description: Identify appropriate specialist
+    order: 1
+    actors: [provider, care_coordinator]
+    actions:
+      - action: identify_specialty
+        description: Determine specialty needed
+      - action: search_specialists
+        criteria:
+          - specialty
+          - location
+          - insurance_network
+          - availability
+          - patient_preference
+          - quality_ratings
+      - action: select_specialist
+        displays:
+          - provider_name
+          - specialty
+          - location
+          - network_status
+          - next_available
+
+  # Step 2: Clinical Information
+  - id: STEP-002
+    name: Clinical Information
+    description: Provide clinical context for referral
+    order: 2
+    actors: [provider]
+    actions:
+      - action: specify_reason
+        description: Indication for referral
+        required: true
+      - action: clinical_question
+        description: Specific question to answer
+      - action: urgency_level
+        options:
+          - routine: within_30_days
+          - urgent: within_7_days
+          - emergent: within_24_hours
+      - action: attach_documents
+        types:
+          - relevant_clinical_notes
+          - pertinent_lab_results
+          - imaging_reports
+          - prior_specialist_reports
+
+  # Step 3: Authorization Check
+  - id: STEP-003
+    name: Authorization Check
+    description: Determine if prior authorization required
+    order: 3
+    actors: [system, authorization_staff]
+    actions:
+      - action: check_requirements
+        description: Query insurance for auth requirements
+        integration: eligibility_service
+      - action: display_requirements
+        shows:
+          - auth_required: yes_no
+          - auth_process: payer_specific
+          - estimated_timeline: days
+
+  # Step 4: Referral Approval
+  - id: STEP-004
+    name: Referral Approval
+    description: Sign and approve referral
+    order: 4
+    actors: [provider]
+    actions:
+      - action: review_referral
+        description: Final review of referral
+      - action: sign_referral
+        description: Apply electronic signature
+      - action: set_expiration
+        description: Referral validity period
+        default: 90_days
+
+# =============================================================================
+# AUTHORIZATION WORKFLOW
+# =============================================================================
+authorization_workflow:
+  # Submit Authorization
+  - id: AUTH-001
+    name: Submit Authorization Request
+    description: Request prior authorization from payer
+    actors: [authorization_staff]
+    actions:
+      - action: gather_documentation
+        elements:
+          - clinical_notes
+          - diagnostic_results
+          - treatment_history
+          - medical_necessity_statement
+      - action: submit_request
+        methods:
+          - electronic: payer_portal_or_api
+          - fax: standard_form
+          - phone: peer_to_peer
+      - action: track_submission
+        documentation:
+          - submission_date
+          - reference_number
+          - expected_response_date
+
+  # Monitor Authorization
+  - id: AUTH-002
+    name: Monitor Authorization Status
+    description: Track authorization decision
+    actors: [authorization_staff]
+    actions:
+      - action: check_status
+        frequency: daily
+        methods:
+          - portal_check
+          - api_query
+          - phone_inquiry
+      - action: escalate_delays
+        threshold: expected_date_plus_3_days
+
+  # Process Decision
+  - id: AUTH-003
+    name: Process Authorization Decision
+    description: Handle authorization outcome
+    actors: [authorization_staff]
+    outcomes:
+      approved:
+        actions:
+          - document_auth_number
+          - document_validity_dates
+          - document_approved_services
+          - notify_scheduling
+      denied:
+        actions:
+          - document_denial_reason
+          - notify_provider
+          - evaluate_appeal_options
+          - notify_patient
+      pending_additional_info:
+        actions:
+          - gather_requested_information
+          - resubmit_with_additional_documentation
+
+  # Appeal Process
+  - id: AUTH-004
+    name: Authorization Appeal
+    description: Appeal denied authorization
+    actors: [provider, authorization_staff]
+    process:
+      level_1_appeal:
+        - submit_written_appeal
+        - include_additional_documentation
+        - await_decision
+      peer_to_peer_review:
+        - schedule_with_medical_director
+        - prepare_clinical_justification
+        - conduct_review
+      level_2_appeal:
+        - external_review_if_available
+        - await_final_decision
+
+# =============================================================================
+# CARE COORDINATION WORKFLOW
+# =============================================================================
+care_coordination:
+  # Pre-Appointment
+  - id: COORD-001
+    name: Pre-Appointment Coordination
+    description: Prepare patient for specialist visit
+    actors: [care_coordinator, patient]
+    actions:
+      - action: patient_notification
+        content:
+          - appointment_details
+          - specialist_information
+          - preparation_instructions
+          - what_to_bring
+      - action: verify_insurance
+        description: Confirm coverage for visit
+      - action: send_records
+        description: Transmit clinical information
+        methods:
+          - direct_secure_messaging
+          - fax
+          - health_information_exchange
+          - patient_portal
+
+  # Post-Appointment
+  - id: COORD-002
+    name: Post-Appointment Follow-up
+    description: Track outcomes and receive reports
+    actors: [care_coordinator]
+    actions:
+      - action: confirm_attendance
+        description: Verify patient was seen
+        methods:
+          - patient_contact
+          - specialist_query
+          - claims_data
+      - action: request_report
+        description: Obtain consultation report
+        timeline: within_14_days
+      - action: file_report
+        description: File in patient record
+      - action: notify_provider
+        description: Alert referring provider
+
+  # Care Integration
+  - id: COORD-003
+    name: Care Plan Integration
+    description: Incorporate specialist recommendations
+    actors: [provider, care_team]
+    actions:
+      - action: review_recommendations
+        description: Evaluate specialist recommendations
+      - action: update_care_plan
+        description: Modify treatment plan
+      - action: update_problem_list
+        description: Add new diagnoses
+      - action: reconcile_medications
+        description: Update medication list
+      - action: schedule_follow_up
+        description: Plan ongoing care
+
+# =============================================================================
+# SPECIALIST COMMUNICATION
+# =============================================================================
+specialist_communication:
+  # Outbound Communication
+  - id: COMM-001
+    name: Referral Transmission
+    description: Send referral to specialist
+    methods:
+      - electronic_referral:
+          standard: hl7_fhir_referral
+          delivery: direct_secure_messaging
+      - fax:
+          content: referral_summary
+          attachments: clinical_documents
+      - hie:
+          query: care_everywhere
+          push: document_exchange
+    content:
+      - referral_reason
+      - clinical_question
+      - relevant_history
+      - current_medications
+      - allergies
+      - recent_results
+      - insurance_authorization
+
+  # Inbound Communication
+  - id: COMM-002
+    name: Consultation Report Receipt
+    description: Receive specialist consultation report
+    methods:
+      - electronic:
+          standard: ccda_consultation_note
+          delivery: direct_or_hie
+      - fax:
+          processing: scan_and_index
+      - mail:
+          processing: scan_and_index
+    actions:
+      - verify_receipt
+      - file_to_record
+      - route_for_review
+      - acknowledge_receipt_to_specialist
+
+  # Ongoing Communication
+  - id: COMM-003
+    name: Collaborative Communication
+    description: Ongoing specialist-PCP communication
+    methods:
+      - secure_messaging
+      - phone
+      - shared_care_plans
+    triggers:
+      - significant_change_in_condition
+      - treatment_modification
+      - care_plan_update
+      - transfer_of_care
+
+# =============================================================================
+# SPECIAL SCENARIOS
+# =============================================================================
+special_scenarios:
+  - id: SCEN-001
+    name: Emergency Referral
+    description: Urgent specialist evaluation needed
+    timeline: same_day_or_next_day
+    process:
+      - direct_provider_to_provider_contact
+      - expedited_authorization_if_required
+      - immediate_scheduling
+      - verbal_handoff_of_clinical_information
+    bypass:
+      - standard_authorization_for_emergency
+
+  - id: SCEN-002
+    name: Self-Referral
+    description: Patient can self-refer per plan
+    conditions:
+      - ppo_or_pos_plan
+      - in_network_specialist
+    process:
+      - document_self_referral
+      - may_not_require_pcp_order
+      - still_send_clinical_information
+
+  - id: SCEN-003
+    name: Out-of-Network Referral
+    description: Specialist not in patient's network
+    requirements:
+      - document_medical_necessity
+      - patient_notification_of_costs
+      - single_case_agreement_if_available
+    authorization:
+      - may_require_gap_exception
+      - higher_patient_cost_share
+
+  - id: SCEN-004
+    name: Pediatric Referral
+    description: Referral for minor patient
+    special_considerations:
+      - parent_guardian_notification
+      - consent_requirements
+      - pediatric_specialist_requirements
+      - school_coordination_if_needed
+
+  - id: SCEN-005
+    name: Behavioral Health Referral
+    description: Mental health or substance abuse referral
+    special_requirements:
+      - confidentiality_protections
+      - consent_for_information_sharing
+      - specialized_authorization_process
+    integration:
+      - coordinate_with_medical_care
+      - medication_management_communication
+
+# =============================================================================
+# CLOSED LOOP TRACKING
+# =============================================================================
+closed_loop_tracking:
+  - id: TRACK-001
+    name: Referral Status Dashboard
+    description: Track all referrals through completion
+    views:
+      by_status:
+        - pending_authorization
+        - pending_scheduling
+        - scheduled_not_seen
+        - pending_report
+        - pending_review
+      by_urgency:
+        - overdue_referrals
+        - urgent_referrals
+      by_patient:
+        - patient_referral_history
+
+  - id: TRACK-002
+    name: Escalation Rules
+    description: Automatic escalation for delays
+    rules:
+      - rule: authorization_pending_7_days
+        action: escalate_to_supervisor
+      - rule: not_scheduled_14_days
+        action: contact_specialist_office
+      - rule: report_pending_30_days
+        action: request_report_from_specialist
+      - rule: not_reviewed_7_days
+        action: remind_referring_provider
+
+  - id: TRACK-003
+    name: Completion Verification
+    description: Confirm referral completion
+    criteria:
+      - patient_seen: confirmed
+      - report_received: filed_to_chart
+      - provider_reviewed: documented
+      - care_plan_updated: if_applicable
+    triggers_completion: all_criteria_met
+
+# =============================================================================
+# INTEGRATIONS
+# =============================================================================
+integrations:
+  - id: INT-001
+    name: Provider Directory
+    description: Search for specialists
+    data:
+      - provider_demographics
+      - specialties
+      - network_status
+      - locations
+      - availability
+
+  - id: INT-002
+    name: Authorization Service
+    description: Submit and track authorizations
+    transactions:
+      - eligibility_check
+      - auth_submission
+      - status_inquiry
+      - auth_response
+
+  - id: INT-003
+    name: Health Information Exchange
+    description: Share clinical information
+    standards:
+      - ccda_documents
+      - fhir_resources
+      - direct_messaging
+
+  - id: INT-004
+    name: Scheduling Integration
+    description: Coordinate appointment scheduling
+    features:
+      - view_availability
+      - book_appointments
+      - receive_confirmations
+
+# =============================================================================
+# METRICS
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: Referral Completion Rate
+    description: Referrals resulting in specialist visit
+    target: "> 85%"
+    calculation: seen / (total - cancelled)
+
+  - id: MET-002
+    name: Time to Appointment
+    description: Referral approved to appointment date
+    targets:
+      routine: "< 30 days"
+      urgent: "< 7 days"
+
+  - id: MET-003
+    name: Report Receipt Rate
+    description: Consultation reports received
+    target: "> 95%"
+
+  - id: MET-004
+    name: Report Review Time
+    description: Report receipt to provider review
+    target: "< 3 business days"
+
+  - id: MET-005
+    name: Authorization Turnaround
+    description: Authorization request to decision
+    target: "< 5 business days"
+
+  - id: MET-006
+    name: No-Show Rate
+    description: Scheduled but not attended
+    target: "< 10%"

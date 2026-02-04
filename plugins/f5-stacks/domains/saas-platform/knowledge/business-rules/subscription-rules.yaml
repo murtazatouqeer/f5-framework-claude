@@ -1,0 +1,552 @@
+name: Subscription Rules
+display_name: Subscription Rules / Quy tắc đăng ký
+description: |
+  Business rules governing subscription lifecycle, plan changes,
+  trials, billing cycles, and subscription management.
+
+domain: saas-platform
+rule_category: billing
+version: "1.0"
+
+# =============================================================================
+# TRIAL RULES
+# =============================================================================
+trial_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-TRL-001 - Trial Duration
+  # ---------------------------------------------------------------------------
+  - id: SUB-TRL-001
+    name: Trial Duration by Plan
+    name_vi: Thời hạn dùng thử theo gói
+    severity: medium
+    description: |
+      Trial periods vary by plan tier.
+      Trial days are calendar days from activation.
+    description_vi: |
+      Thời gian dùng thử khác nhau theo cấp gói.
+      Ngày dùng thử là ngày lịch từ khi kích hoạt.
+
+    trial_periods:
+      free: 0  # No trial needed, always free
+      starter: 14
+      professional: 14
+      enterprise: 30
+
+    calculation: |
+      trial_end_date = trial_start_date + trial_days
+      // Trial ends at 23:59:59 UTC on the last day
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-TRL-002 - Trial Eligibility
+  # ---------------------------------------------------------------------------
+  - id: SUB-TRL-002
+    name: Trial Eligibility
+    name_vi: Điều kiện dùng thử
+    severity: high
+    description: |
+      One trial per tenant per plan tier.
+      Previous subscribers to higher tiers are not eligible.
+    description_vi: |
+      Mỗi khách thuê chỉ được dùng thử một lần mỗi cấp gói.
+      Người đã đăng ký gói cao hơn trước đó không đủ điều kiện.
+
+    eligibility_rules:
+      - name: "No previous trial"
+        condition: |
+          NOT EXISTS (
+            SELECT 1 FROM subscriptions
+            WHERE tenant_id = :tenant_id
+            AND plan_tier = :target_tier
+            AND had_trial = true
+          )
+
+      - name: "No downgrade trial"
+        condition: |
+          NOT EXISTS (
+            SELECT 1 FROM subscriptions
+            WHERE tenant_id = :tenant_id
+            AND plan_tier > :target_tier
+            AND status IN ('active', 'cancelled')
+          )
+
+    exceptions:
+      - "Sales-approved extended trials"
+      - "Partner program participants"
+      - "Migration from competitor platforms"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-TRL-003 - Trial Conversion
+  # ---------------------------------------------------------------------------
+  - id: SUB-TRL-003
+    name: Trial Conversion
+    name_vi: Chuyển đổi dùng thử
+    severity: high
+    description: |
+      Trial converts to paid on trial_end if payment method exists.
+      Without payment method, trial ends and access is restricted.
+    description_vi: |
+      Dùng thử chuyển sang trả phí vào trial_end nếu có phương thức thanh toán.
+      Không có phương thức thanh toán, dùng thử kết thúc và quyền truy cập bị hạn chế.
+
+    conversion_flow:
+      with_payment_method:
+        day_minus_3: "Send conversion reminder email"
+        day_minus_1: "Send final reminder with invoice preview"
+        day_0:
+          - "Charge payment method"
+          - "If successful: status = active"
+          - "If failed: status = past_due, start dunning"
+
+      without_payment_method:
+        day_minus_3: "Send add payment method reminder"
+        day_minus_1: "Send urgent reminder"
+        day_0:
+          - "status = cancelled"
+          - "reason = trial_expired_no_payment"
+          - "Apply read-only grace period (7 days)"
+
+    grace_period:
+      duration: 7_days
+      access: read_only
+      restrictions:
+        - "No new data creation"
+        - "No API write operations"
+        - "Export data allowed"
+
+# =============================================================================
+# PLAN CHANGE RULES
+# =============================================================================
+plan_change_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CHG-001 - Upgrade Processing
+  # ---------------------------------------------------------------------------
+  - id: SUB-CHG-001
+    name: Upgrade Processing
+    name_vi: Xử lý nâng cấp
+    severity: high
+    description: |
+      Upgrades take effect immediately.
+      Prorated credit applied for unused portion of current plan.
+    description_vi: |
+      Nâng cấp có hiệu lực ngay lập tức.
+      Tín dụng tỷ lệ được áp dụng cho phần chưa sử dụng của gói hiện tại.
+
+    processing:
+      timing: immediate
+      proration:
+        enabled: true
+        method: day_based
+        calculation: |
+          days_remaining = period_end - today
+          days_in_period = period_end - period_start
+          unused_amount = (current_price / days_in_period) * days_remaining
+
+          new_period_cost = new_price * (days_remaining / days_in_period)
+          charge_amount = new_period_cost - unused_amount
+
+      feature_activation:
+        - "New tier limits applied immediately"
+        - "New features enabled immediately"
+        - "Usage counters continue (not reset)"
+
+    invoice_handling:
+      - "Generate proration invoice"
+      - "Charge immediately if amount > $1"
+      - "Add to next invoice if amount <= $1"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CHG-002 - Downgrade Processing
+  # ---------------------------------------------------------------------------
+  - id: SUB-CHG-002
+    name: Downgrade Processing
+    name_vi: Xử lý hạ cấp
+    severity: high
+    description: |
+      Downgrades take effect at end of current billing period.
+      No prorated refunds for downgrades.
+    description_vi: |
+      Hạ cấp có hiệu lực vào cuối kỳ thanh toán hiện tại.
+      Không hoàn tiền tỷ lệ cho hạ cấp.
+
+    processing:
+      timing: end_of_period
+      effective_date: next_period_start
+
+      pre_downgrade_validation:
+        - name: "Check usage within new limits"
+          action: |
+            IF current_seats > new_plan.seat_limit THEN
+              REQUIRE seat_reduction_plan
+            END IF
+
+        - name: "Check storage within new limits"
+          action: |
+            IF current_storage > new_plan.storage_limit THEN
+              REQUIRE data_cleanup_or_export
+            END IF
+
+        - name: "Check feature dependencies"
+          action: |
+            IF using_features_not_in_new_plan THEN
+              WARN user_about_feature_loss
+            END IF
+
+      downgrade_warnings:
+        - seats_over_limit: "You have {current} seats but new plan allows {limit}. Please remove {excess} team members."
+        - storage_over_limit: "You're using {current}GB but new plan allows {limit}GB. Please delete or export {excess}GB."
+        - feature_loss: "The following features will be disabled: {features}"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CHG-003 - Plan Change Restrictions
+  # ---------------------------------------------------------------------------
+  - id: SUB-CHG-003
+    name: Plan Change Restrictions
+    name_vi: Hạn chế thay đổi gói
+    severity: medium
+    description: |
+      Limits on frequency and type of plan changes.
+    description_vi: |
+      Giới hạn về tần suất và loại thay đổi gói.
+
+    restrictions:
+      change_frequency:
+        max_changes_per_month: 2
+        cooldown_between_changes: 24_hours
+
+      blocked_changes:
+        - from: enterprise
+          to: free
+          reason: "Direct downgrade to free not allowed. Contact support."
+          alternative: "Cancel subscription and create new free account"
+
+        - during_trial:
+          upgrades: allowed
+          downgrades: blocked
+          reason: "Complete trial or convert first"
+
+      annual_to_monthly:
+        - "Allowed at end of annual term"
+        - "Early switch requires forfeiting remaining annual credit"
+        - "Must acknowledge loss via confirmation dialog"
+
+# =============================================================================
+# BILLING CYCLE RULES
+# =============================================================================
+billing_cycle_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-BIL-001 - Billing Date Calculation
+  # ---------------------------------------------------------------------------
+  - id: SUB-BIL-001
+    name: Billing Date Calculation
+    name_vi: Tính ngày thanh toán
+    severity: high
+    description: |
+      Billing dates are based on subscription start date.
+      Month-based cycles handle varying month lengths.
+    description_vi: |
+      Ngày thanh toán dựa trên ngày bắt đầu đăng ký.
+      Chu kỳ theo tháng xử lý độ dài tháng khác nhau.
+
+    calculation_rules:
+      monthly:
+        anchor: subscription_start_day
+        examples:
+          - start: "Jan 15"
+            next: "Feb 15, Mar 15, Apr 15..."
+          - start: "Jan 31"
+            next: "Feb 28, Mar 31, Apr 30..."  # Last day logic
+
+        edge_cases:
+          day_31_in_30_day_month: "Bill on last day of month"
+          day_29_30_31_in_february: "Bill on Feb 28 (or 29 in leap year)"
+
+      annual:
+        anchor: subscription_start_date
+        examples:
+          - start: "2024-03-15"
+            next: "2025-03-15"
+          - start: "2024-02-29"
+            next: "2025-02-28"  # Leap year handling
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-BIL-002 - Invoice Generation Timing
+  # ---------------------------------------------------------------------------
+  - id: SUB-BIL-002
+    name: Invoice Generation Timing
+    name_vi: Thời điểm tạo hóa đơn
+    severity: medium
+    description: |
+      Invoices generated before billing date for review.
+      Charge attempted on due date.
+    description_vi: |
+      Hóa đơn được tạo trước ngày thanh toán để xem xét.
+      Tính phí được thực hiện vào ngày đáo hạn.
+
+    timing:
+      invoice_generation: 7_days_before_period_end
+      invoice_finalization: 3_days_before_due_date
+      payment_attempt: on_due_date
+
+    invoice_contents:
+      - "Subscription base charge"
+      - "Seat charges (if applicable)"
+      - "Usage charges (metered billing)"
+      - "Proration adjustments"
+      - "Credits and discounts"
+      - "Taxes"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-BIL-003 - Annual Billing Benefits
+  # ---------------------------------------------------------------------------
+  - id: SUB-BIL-003
+    name: Annual Billing Benefits
+    name_vi: Lợi ích thanh toán hàng năm
+    severity: low
+    description: |
+      Annual billing provides discount over monthly.
+      Discount varies by plan tier.
+    description_vi: |
+      Thanh toán hàng năm cung cấp giảm giá so với hàng tháng.
+      Mức giảm giá khác nhau theo cấp gói.
+
+    discounts:
+      starter:
+        monthly_price: 29
+        annual_monthly_equivalent: 24.17  # $290/year
+        discount_percent: 17
+
+      professional:
+        monthly_price: 99
+        annual_monthly_equivalent: 82.50  # $990/year
+        discount_percent: 17
+
+      enterprise:
+        discount_percent: 20
+        custom_pricing: true
+
+# =============================================================================
+# CANCELLATION RULES
+# =============================================================================
+cancellation_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CAN-001 - Cancellation Processing
+  # ---------------------------------------------------------------------------
+  - id: SUB-CAN-001
+    name: Cancellation Processing
+    name_vi: Xử lý hủy đăng ký
+    severity: high
+    description: |
+      Cancellation takes effect at end of current period.
+      No prorated refunds for unused time.
+    description_vi: |
+      Hủy có hiệu lực vào cuối kỳ hiện tại.
+      Không hoàn tiền tỷ lệ cho thời gian chưa sử dụng.
+
+    processing:
+      immediate_cancellation:
+        - "Set cancel_at_period_end = true"
+        - "Set cancelled_at = now()"
+        - "Record cancellation_reason"
+        - "Send cancellation confirmation email"
+
+      at_period_end:
+        - "Change status to cancelled"
+        - "Disable paid features"
+        - "Start data retention countdown"
+        - "Send final notification"
+
+    data_retention:
+      period: 30_days
+      access: read_only_for_export
+      after_retention:
+        - "Archive tenant data"
+        - "Remove from active systems"
+        - "Retain audit logs per compliance"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CAN-002 - Cancellation Feedback
+  # ---------------------------------------------------------------------------
+  - id: SUB-CAN-002
+    name: Cancellation Feedback
+    name_vi: Phản hồi hủy đăng ký
+    severity: low
+    description: |
+      Collect cancellation reasons for product improvement.
+      Offer retention incentives when appropriate.
+    description_vi: |
+      Thu thập lý do hủy để cải thiện sản phẩm.
+      Đưa ra ưu đãi giữ chân khi phù hợp.
+
+    feedback_collection:
+      required_fields:
+        - reason_category
+        - feedback_text (optional)
+
+      reason_categories:
+        - too_expensive
+        - missing_features
+        - switching_competitor
+        - business_closed
+        - not_using_enough
+        - technical_issues
+        - poor_support
+        - other
+
+    retention_offers:
+      too_expensive:
+        offer: "20% discount for 3 months"
+        condition: "tenure > 3 months"
+
+      missing_features:
+        offer: "Roadmap preview + direct PM contact"
+        condition: "professional or enterprise tier"
+
+      not_using_enough:
+        offer: "Free onboarding session"
+        condition: "usage < 20% of limits"
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-CAN-003 - Reactivation Rules
+  # ---------------------------------------------------------------------------
+  - id: SUB-CAN-003
+    name: Reactivation Rules
+    name_vi: Quy tắc kích hoạt lại
+    severity: medium
+    description: |
+      Cancelled subscriptions can be reactivated within retention period.
+      Data is preserved and restored on reactivation.
+    description_vi: |
+      Đăng ký đã hủy có thể được kích hoạt lại trong thời gian lưu giữ.
+      Dữ liệu được bảo toàn và khôi phục khi kích hoạt lại.
+
+    reactivation_rules:
+      within_retention_period:
+        data: fully_preserved
+        pricing: current_rates
+        trial: not_eligible
+
+      after_retention_period:
+        data: archived_may_be_restored
+        pricing: current_rates
+        restoration_fee: may_apply
+        restoration_time: "1-3 business days"
+
+      promotional_reactivation:
+        winback_campaigns: true
+        special_pricing: "Case by case"
+        target_cancelled_days: "30-180 days"
+
+# =============================================================================
+# PAUSE RULES (PROFESSIONAL & ENTERPRISE)
+# =============================================================================
+pause_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-PAU-001 - Subscription Pause
+  # ---------------------------------------------------------------------------
+  - id: SUB-PAU-001
+    name: Subscription Pause
+    name_vi: Tạm dừng đăng ký
+    severity: medium
+    description: |
+      Professional and Enterprise tiers can pause subscriptions.
+      Paused subscriptions retain data but disable access.
+    description_vi: |
+      Gói Professional và Enterprise có thể tạm dừng đăng ký.
+      Đăng ký tạm dừng giữ lại dữ liệu nhưng vô hiệu hóa quyền truy cập.
+
+    eligibility:
+      allowed_tiers: [professional, enterprise]
+      minimum_tenure: 3_months
+      max_pause_duration: 3_months
+      max_pauses_per_year: 2
+
+    during_pause:
+      billing: suspended
+      data: preserved
+      access: disabled
+      integrations: disabled
+      api_keys: disabled
+
+    pause_pricing:
+      professional: free
+      enterprise: 20%_of_monthly  # Data retention fee
+
+    auto_resume:
+      - "Auto-resume after max_pause_duration"
+      - "Resume notification 7 days before"
+      - "Payment method charge on resume"
+
+# =============================================================================
+# SEAT MANAGEMENT RULES
+# =============================================================================
+seat_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-SEA-001 - Seat Pricing
+  # ---------------------------------------------------------------------------
+  - id: SUB-SEA-001
+    name: Seat Pricing
+    name_vi: Giá theo chỗ ngồi
+    severity: high
+    description: |
+      Additional seats billed at plan-specific rates.
+      Seat charges are prorated for mid-cycle additions.
+    description_vi: |
+      Chỗ ngồi bổ sung được tính theo mức giá cụ thể của gói.
+      Phí chỗ ngồi được tính tỷ lệ cho việc thêm giữa chu kỳ.
+
+    pricing:
+      starter:
+        included_seats: 3
+        additional_seat_price: 10
+        max_seats: 10
+
+      professional:
+        included_seats: 10
+        additional_seat_price: 15
+        max_seats: 100
+
+      enterprise:
+        included_seats: custom
+        additional_seat_price: custom
+        max_seats: unlimited
+
+    proration:
+      add_seat_mid_cycle: |
+        prorated_charge = seat_price * (days_remaining / days_in_period)
+        // Charge immediately if > $1, else add to next invoice
+
+      remove_seat_mid_cycle: |
+        // No refund, seat removed at end of billing period
+        effective_date = current_period_end
+
+  # ---------------------------------------------------------------------------
+  # Rule: SUB-SEA-002 - Seat Allocation
+  # ---------------------------------------------------------------------------
+  - id: SUB-SEA-002
+    name: Seat Allocation
+    name_vi: Phân bổ chỗ ngồi
+    severity: medium
+    description: |
+      Seats must be assigned to active users.
+      Deactivated users free up seats.
+    description_vi: |
+      Chỗ ngồi phải được gán cho người dùng hoạt động.
+      Người dùng bị vô hiệu hóa giải phóng chỗ ngồi.
+
+    allocation_rules:
+      seat_consumption:
+        - "Active users consume seats"
+        - "Pending invitations consume seats"
+        - "Suspended users do not consume seats"
+        - "Deleted users free up seats immediately"
+
+      seat_release:
+        user_deactivation: immediate
+        user_deletion: immediate
+        invitation_expiry: immediate
+        invitation_decline: immediate
+
+    over_limit_handling:
+      - "Cannot invite new users when at limit"
+      - "Cannot reactivate suspended users when at limit"
+      - "Admin notified when approaching limit (80%)"

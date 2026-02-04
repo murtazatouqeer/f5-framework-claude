@@ -1,0 +1,603 @@
+name: reinsurance_rules
+display_name: Reinsurance Rules
+description: |
+  Business rules governing reinsurance arrangements including treaty limits,
+  facultative referral triggers, cession calculations, and placement procedures.
+
+domain: insurance
+subdomain: underwriting
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - retention_limits
+  - treaty_application
+  - facultative_triggers
+  - cession_calculation
+  - placement_procedures
+  - reporting_requirements
+
+rules:
+  # Retention Limit Rules
+  - id: BR-REI-001
+    name: Company Retention Limits
+    category: retention_limits
+    description: |
+      Maximum risk the company retains on any single life
+      before ceding to reinsurance.
+    priority: critical
+
+    retention_table:
+      standard_lives:
+        preferred:
+          retention: 750000000  # 750M VND
+          notes: Best risk class
+        standard:
+          retention: 500000000  # 500M VND
+          notes: Normal underwriting
+        substandard_1:
+          retention: 400000000  # 400M VND
+          notes: Up to 25% loading
+        substandard_2:
+          retention: 300000000  # 300M VND
+          notes: 26-50% loading
+        substandard_3:
+          retention: 200000000  # 200M VND
+          notes: 51-75% loading
+        substandard_4:
+          retention: 100000000  # 100M VND
+          notes: 76-100% loading
+        substandard_high:
+          retention: 50000000  # 50M VND
+          notes: Above 100% loading
+
+      special_categories:
+        aviation_mortality:
+          retention: 100000000  # 100M VND
+        hazardous_occupation:
+          retention: 200000000  # 200M VND
+        cancer_history:
+          retention: 200000000  # 200M VND
+        cardiovascular_history:
+          retention: 250000000  # 250M VND
+
+  - id: BR-REI-002
+    name: Per-Life Maximum Limits
+    category: retention_limits
+    description: |
+      Absolute maximum coverage per individual life
+      including all reinsurance arrangements.
+    priority: critical
+
+    maximum_limits:
+      total_per_life:
+        automatic_treaty: 5000000000  # 5B VND
+        with_facultative: 20000000000  # 20B VND
+        absolute_maximum: 50000000000  # 50B VND (with special RI)
+
+      by_coverage_type:
+        life_death:
+          automatic: 5000000000
+          maximum: 50000000000
+        critical_illness:
+          automatic: 2000000000
+          maximum: 10000000000
+        disability:
+          automatic: 1000000000
+          maximum: 5000000000
+        accidental_death:
+          automatic: 5000000000
+          maximum: 20000000000
+
+    cumulative_rules:
+      same_insurer:
+        aggregation: required
+        includes:
+          - all_active_policies
+          - pending_applications
+          - reinstatement_requests
+
+      industry_wide:
+        consideration: where_disclosed
+        action: reduce_maximum_accordingly
+
+  - id: BR-REI-003
+    name: Retention by Product Type
+    category: retention_limits
+    description: |
+      Product-specific retention adjustments.
+    priority: high
+
+    product_retention:
+      term_life:
+        multiplier: 1.0
+        notes: Standard retention applies
+
+      whole_life:
+        multiplier: 0.8
+        notes: 80% of standard retention
+        rationale: Longer exposure period
+
+      endowment:
+        multiplier: 0.9
+        notes: 90% of standard retention
+
+      universal_life:
+        multiplier: 0.8
+        notes: 80% of standard retention
+        rationale: Investment component risk
+
+      credit_life:
+        multiplier: 1.2
+        notes: 120% of standard retention
+        rationale: Decreasing coverage
+
+      group_life:
+        per_member: standard_retention
+        aggregate_limit: 10x_retention
+        catastrophe_cover: required
+
+  # Treaty Application Rules
+  - id: BR-REI-010
+    name: Automatic Treaty Coverage
+    category: treaty_application
+    description: |
+      Rules for automatic cession under treaty arrangements.
+    priority: critical
+
+    quota_share_treaty:
+      participation:
+        company_share: 20%
+        treaty_share: 80%
+
+      application:
+        automatic_for:
+          - all_individual_life
+          - all_individual_health
+        excluded:
+          - group_business
+          - credit_life
+          - specific_exclusions
+
+      premium_sharing:
+        follows: sum_insured_share
+        commission: per_treaty_terms
+
+    surplus_treaty:
+      structure:
+        first_surplus:
+          lines: 4
+          line_value: 500000000  # 500M VND
+          capacity: 2000000000  # 2B VND
+        second_surplus:
+          lines: 6
+          line_value: 500000000
+          capacity: 3000000000  # 3B VND
+
+      application:
+        retention: company_retention
+        first_surplus: above_retention_up_to_capacity
+        second_surplus: above_first_surplus_capacity
+        facultative: above_second_surplus
+
+  - id: BR-REI-011
+    name: Treaty Acceptance Criteria
+    category: treaty_application
+    description: |
+      Criteria for automatic acceptance under treaty.
+    priority: critical
+
+    automatic_acceptance:
+      age_limits:
+        minimum: 18
+        maximum: 60
+        maximum_expiry_age: 70
+
+      loading_limits:
+        maximum_automatic: 150%
+        above_150: facultative_required
+
+      occupation_limits:
+        class_1_to_3: automatic
+        class_4: automatic_up_to_retention
+        class_5: facultative_required
+        declined: not_covered
+
+      exclusion_limits:
+        standard_exclusions: automatic
+        custom_exclusions: reinsurer_notification
+        multiple_exclusions: facultative_if_exceeds_3
+
+      medical_conditions:
+        standard_impairments: automatic
+        complex_impairments: facultative_may_apply
+        specified_exclusions:
+          - aids_hiv
+          - organ_transplant
+          - als
+          - huntingtons
+
+  # Facultative Trigger Rules
+  - id: BR-REI-020
+    name: Mandatory Facultative Referral
+    category: facultative_triggers
+    description: |
+      Conditions requiring mandatory facultative submission.
+    priority: critical
+
+    sum_based_triggers:
+      life_coverage:
+        threshold: 5000000000  # 5B VND
+        action: refer_all_excess
+
+      critical_illness:
+        threshold: 2000000000  # 2B VND
+        action: refer_all_excess
+
+      disability:
+        threshold: 1000000000  # 1B VND
+        action: refer_all_excess
+
+    loading_based_triggers:
+      loading_above_150:
+        action: mandatory_facultative
+        treaty_participation: nil
+
+      loading_100_to_150:
+        action: facultative_for_excess
+        treaty_up_to: retention_only
+
+    condition_based_triggers:
+      excluded_occupations:
+        list:
+          - professional_diver
+          - offshore_oil_worker
+          - underground_miner
+          - stunt_performer
+        action: full_facultative
+
+      hazardous_activities:
+        list:
+          - aviation_except_passenger
+          - motor_racing
+          - mountaineering_high_altitude
+          - scuba_beyond_recreational
+        action: facultative_for_activity_risk
+
+      complex_medical:
+        conditions:
+          - active_cancer
+          - recent_heart_attack
+          - organ_transplant
+          - severe_psychiatric
+        action: mandatory_facultative
+
+  - id: BR-REI-021
+    name: Discretionary Facultative
+    category: facultative_triggers
+    description: |
+      Conditions where facultative is optional but recommended.
+    priority: medium
+
+    recommended_facultative:
+      borderline_cases:
+        description: Cases near decline threshold
+        benefit: Additional capacity, second opinion
+        decision: underwriter_discretion
+
+      unusual_combinations:
+        description: Multiple moderate impairments
+        benefit: Risk sharing, expertise
+        decision: senior_underwriter_discretion
+
+      capacity_management:
+        description: High exposure in category
+        benefit: Aggregate management
+        decision: reinsurance_department
+
+  # Cession Calculation Rules
+  - id: BR-REI-030
+    name: Quota Share Cession
+    category: cession_calculation
+    description: |
+      Calculation of cession under quota share treaty.
+    priority: high
+
+    calculation:
+      formula: |
+        Treaty_Share = Sum_Insured × Quota_Percentage
+        Retention = Sum_Insured × (1 - Quota_Percentage)
+
+        Where: Quota_Percentage = 80% (standard)
+
+      example:
+        sum_insured: 1000000000
+        quota_percentage: 80%
+        treaty_share: 800000000
+        retention: 200000000
+
+        premium:
+          total_premium: 10000000
+          treaty_share: 8000000
+          retention: 2000000
+          commission_received: 1600000  # 20% of 8M
+
+  - id: BR-REI-031
+    name: Surplus Cession
+    category: cession_calculation
+    description: |
+      Calculation of cession under surplus treaties.
+    priority: high
+
+    calculation:
+      formula: |
+        Retention = MIN(Sum_Insured, Company_Retention)
+        Surplus_Needed = Sum_Insured - Retention
+
+        First_Surplus = MIN(Surplus_Needed, First_Surplus_Capacity)
+        Second_Surplus = MIN(Surplus_Needed - First_Surplus, Second_Surplus_Capacity)
+        Facultative = Surplus_Needed - First_Surplus - Second_Surplus
+
+      example:
+        sum_insured: 8000000000  # 8B VND
+        company_retention: 500000000
+        first_surplus_capacity: 2000000000
+        second_surplus_capacity: 3000000000
+
+        allocation:
+          retention: 500000000
+          first_surplus: 2000000000
+          second_surplus: 3000000000
+          facultative: 2500000000
+
+        percentages:
+          retention: 6.25%
+          first_surplus: 25%
+          second_surplus: 37.5%
+          facultative: 31.25%
+
+  - id: BR-REI-032
+    name: Premium Cession
+    category: cession_calculation
+    description: |
+      Calculation of premium cession and commission.
+    priority: high
+
+    premium_calculation:
+      automatic_treaty:
+        basis: original_premium
+        cession: proportional_to_sum
+        commission:
+          life: 20%
+          health: 15%
+          disability: 15%
+        profit_commission:
+          threshold: 60%_loss_ratio
+          rate: 25%_of_profit
+
+      facultative:
+        basis: quoted_premium
+        negotiation: case_by_case
+        commission:
+          typical_range: 5%_to_15%
+          depends_on: risk_quality
+
+  # Placement Procedure Rules
+  - id: BR-REI-040
+    name: Facultative Submission Process
+    category: placement_procedures
+    description: |
+      Process for submitting facultative cases to reinsurers.
+    priority: high
+
+    submission_steps:
+      1_prepare:
+        action: Compile submission package
+        documents:
+          - facultative_questionnaire
+          - risk_summary
+          - medical_evidence
+          - financial_justification
+          - underwriting_assessment
+          - proposed_terms
+        responsibility: underwriting_department
+        sla: 2_business_days
+
+      2_submit:
+        action: Send to reinsurers
+        methods:
+          - reinsurer_portal
+          - email_encrypted
+          - broker_submission
+        submit_to:
+          standard: lead_reinsurer_first
+          urgent: multiple_simultaneously
+          complex: through_broker
+
+      3_follow_up:
+        action: Track responses
+        sla:
+          normal: 5_business_days
+          urgent: 48_hours
+          critical: 24_hours
+        reminders: at_75%_of_sla
+
+      4_negotiate:
+        action: Handle quotes and counter-offers
+        authority:
+          accept_quote: senior_underwriter
+          negotiate_terms: chief_underwriter
+          accept_adverse: committee
+
+      5_confirm:
+        action: Finalize placement
+        documentation:
+          - reinsurer_confirmation
+          - final_terms
+          - bordereaux_update
+          - policy_issue_authorization
+
+  - id: BR-REI-041
+    name: Reinsurer Selection
+    category: placement_procedures
+    description: |
+      Criteria for selecting reinsurers for facultative.
+    priority: medium
+
+    selection_criteria:
+      security_rating:
+        minimum: A_rating
+        preferred: AA_or_above
+        check: annual_review
+
+      relationship:
+        priority_order:
+          1: treaty_reinsurers
+          2: preferred_partners
+          3: market_placement
+
+      capacity:
+        consider: existing_exposure
+        diversification: recommended
+        concentration_limit: 30%_single_reinsurer
+
+      expertise:
+        consider: condition_specific_expertise
+        specialist_reinsurers: for_complex_cases
+
+      responsiveness:
+        track: turnaround_times
+        prefer: reliable_response
+
+    placement_rules:
+      lead_reinsurer:
+        minimum_share: 25%
+        responsibility: terms_negotiation
+
+      follow_reinsurers:
+        follow_lead_terms: standard
+        modifications: case_by_case
+
+      minimum_placement:
+        required: 100%_of_facultative
+        shortfall: reduce_sum_or_decline
+
+  # Reporting Requirement Rules
+  - id: BR-REI-050
+    name: Treaty Reporting Requirements
+    category: reporting_requirements
+    description: |
+      Reporting requirements under treaty arrangements.
+    priority: high
+
+    bordereaux:
+      frequency: monthly
+      due_date: 15th_of_following_month
+      content:
+        - policy_number
+        - insured_name
+        - date_of_birth
+        - sum_insured
+        - premium
+        - cession_details
+        - effective_date
+        - risk_classification
+
+      format: treaty_specified_template
+      submission: electronic_portal
+
+    claims_notification:
+      threshold: per_treaty_definition
+      timing:
+        initial: within_7_days_of_notification
+        reserves: quarterly_updates
+        settlement: within_30_days
+
+      documentation:
+        - claim_form
+        - policy_details
+        - cause_of_claim
+        - reserve_estimate
+
+    financial_statements:
+      frequency: quarterly
+      content:
+        - premium_account
+        - claims_account
+        - commission_account
+        - outstanding_reserves
+
+      reconciliation: semi_annual
+
+  - id: BR-REI-051
+    name: Facultative Reporting
+    category: reporting_requirements
+    description: |
+      Reporting requirements for facultative placements.
+    priority: medium
+
+    placement_notification:
+      timing: within_7_days_of_confirmation
+      content:
+        - case_reference
+        - final_terms
+        - reinsurer_shares
+        - premium_details
+        - effective_date
+
+    policy_changes:
+      notification_required:
+        - sum_insured_change
+        - coverage_modification
+        - lapse_reinstatement
+        - surrender_maturity
+
+      timing: within_30_days
+
+    claims:
+      notification: immediate
+      documentation: per_facultative_agreement
+      settlement: reinsurer_approval_required
+
+  - id: BR-REI-052
+    name: Management Information
+    category: reporting_requirements
+    description: |
+      Internal management reporting for reinsurance.
+    priority: medium
+
+    regular_reports:
+      weekly:
+        - pending_facultative_cases
+        - placement_status
+        - sla_compliance
+
+      monthly:
+        - cession_summary
+        - retention_utilization
+        - facultative_activity
+        - reinsurer_performance
+
+      quarterly:
+        - treaty_performance
+        - loss_ratio_analysis
+        - capacity_review
+        - reinsurer_security_review
+
+      annual:
+        - treaty_renewal_preparation
+        - retention_review
+        - reinsurance_strategy
+
+audit_requirements:
+  - Verify cession calculations monthly
+  - Audit facultative placements quarterly
+  - Review reinsurer confirmations for accuracy
+  - Reconcile bordereaux to policy records
+  - Treaty compliance audit annually
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

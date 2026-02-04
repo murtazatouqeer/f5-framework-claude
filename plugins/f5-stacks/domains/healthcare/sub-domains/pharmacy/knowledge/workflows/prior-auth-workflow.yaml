@@ -1,0 +1,435 @@
+# Prior Authorization Workflow
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Workflow for processing prior authorization requests
+
+workflow:
+  id: prior-auth-workflow
+  name: Prior Authorization Processing
+  name_ja: 事前承認ワークフロー
+  description: Workflow for initiating and tracking prior authorization requests
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - claim_rejected_pa_required
+      - formulary_indicates_pa
+      - pharmacist_initiates_pa
+      - patient_requests_pa
+
+  actors:
+    - id: pharmacy_tech
+      role: Pharmacy Technician
+      description: Initiates PA, gathers information
+      
+    - id: pharmacist
+      role: Pharmacist
+      description: Reviews clinical information, coordinates
+      
+    - id: prescriber_office
+      role: Prescriber Office
+      description: Provides clinical documentation
+      
+    - id: insurance_company
+      role: Insurance/PBM
+      description: Reviews and decides on PA
+      
+    - id: system
+      role: Pharmacy System
+      description: Tracks PA status
+
+  preconditions:
+    - Prescription requiring PA exists
+    - Patient insurance information valid
+    - Prescriber information available
+
+  overview:
+    description: |
+      Prior authorization workflow handles the process of obtaining approval
+      from insurance companies for medications that require pre-approval
+      before coverage. This includes step therapy, quantity limits,
+      and non-formulary medications.
+
+  pa_categories:
+    clinical_pa:
+      description: "Based on clinical criteria"
+      examples: ["Specialty medications", "High-cost drugs"]
+    quantity_limit_exception:
+      description: "Exceeds plan quantity limits"
+      examples: ["Higher dose than covered", "More frequent fills"]
+    step_therapy_exception:
+      description: "Bypass step therapy requirements"
+      examples: ["Failed first-line agents", "Contraindication to step drugs"]
+    non_formulary_exception:
+      description: "Coverage for non-formulary drug"
+      examples: ["No formulary alternative", "Medical necessity"]
+
+  steps:
+    # Identify PA Requirement
+    - step: 1
+      id: identify_pa_requirement
+      name: Identify PA Requirement
+      actor: system
+      description: Determine that PA is required
+      
+      detection_methods:
+        claim_rejection:
+          codes: [75, 76, "PA REQUIRED"]
+          action: Flag prescription for PA
+        formulary_lookup:
+          indicator: pa_required = true
+          action: Pre-emptive PA notification
+        pharmacist_review:
+          trigger: Clinical concern requiring PA
+          action: Manual PA initiation
+          
+      pa_information_display:
+        - Rejection reason/code
+        - PA phone/fax numbers
+        - Required criteria (if available)
+        - Estimated timeline
+        
+      database_operations:
+        - UPDATE prescription with pa_required = true
+        - CREATE prior_authorization record
+        - SET pa_status = 'identified'
+        
+      next_step: 2
+
+    # Notify Patient
+    - step: 2
+      id: notify_patient
+      name: Notify Patient of PA Requirement
+      actor: pharmacy_tech
+      description: Inform patient about PA requirement
+      
+      communication:
+        immediate:
+          - Explain PA requirement
+          - Provide timeline expectations
+          - Offer alternatives
+        follow_up:
+          - Written notification
+          - Contact for prescriber info
+          
+      patient_options:
+        wait_for_pa:
+          description: "Wait for PA processing"
+          action: Continue workflow
+        cash_pay:
+          description: "Pay cash, get reimbursed later"
+          action: Process as cash, provide claim form
+        therapeutic_alternative:
+          description: "Switch to covered alternative"
+          action: Contact prescriber for change
+        cancel:
+          description: "Do not proceed"
+          action: Cancel prescription
+          
+      database_operations:
+        - LOG patient_notified
+        - UPDATE patient_decision
+        
+      next_step: 3 or alternative based on decision
+
+    # Gather Clinical Information
+    - step: 3
+      id: gather_information
+      name: Gather Clinical Information
+      actor: pharmacy_tech
+      description: Collect required documentation
+      
+      information_sources:
+        patient_profile:
+          - Diagnosis codes
+          - Previous medications tried
+          - Allergy information
+          - Height/weight if needed
+        prescriber_office:
+          - Clinical notes
+          - Lab results
+          - Treatment history
+          - Medical necessity letter
+          
+      required_documentation:
+        standard_pa:
+          - Diagnosis codes (ICD-10)
+          - Previous therapy tried/failed
+          - Clinical justification
+        specialty_pa:
+          - All standard items
+          - Lab results
+          - Specialist notes
+          - REMS documentation if applicable
+          
+      prescriber_contact:
+        fax_request:
+          - PA request form
+          - Required information checklist
+          - Deadline for response
+        phone_request:
+          - Contact office directly
+          - Explain urgency if applicable
+          
+      database_operations:
+        - STORE gathered_documents
+        - UPDATE pa_status = 'gathering_info'
+        
+      next_step: 4
+
+    # Complete PA Request
+    - step: 4
+      id: complete_request
+      name: Complete PA Request Form
+      actor: pharmacy_tech
+      description: Prepare PA submission
+      
+      request_completion:
+        patient_section:
+          - Demographics
+          - Insurance information
+          - Diagnosis
+        prescriber_section:
+          - NPI and contact info
+          - Clinical justification
+          - Signature (if required)
+        pharmacy_section:
+          - Drug information
+          - NDC, quantity, days supply
+          - Pharmacy contact
+          
+      review_before_submission:
+        - All required fields completed
+        - Supporting documentation attached
+        - Prescriber approval obtained
+        
+      database_operations:
+        - UPDATE prior_authorization with complete data
+        - ATTACH supporting_documents
+        
+      next_step: 5
+
+    # Submit PA Request
+    - step: 5
+      id: submit_request
+      name: Submit PA Request
+      actor: pharmacy_tech
+      description: Submit PA to insurance
+      
+      submission_methods:
+        electronic:
+          preferred: true
+          options:
+            - CoverMyMeds
+            - Surescripts PA
+            - Plan-specific portal
+        fax:
+          fallback: true
+          documentation: "Retain fax confirmation"
+        phone:
+          for: "Urgent requests"
+          documentation: "Record reference number"
+          
+      urgency_options:
+        standard:
+          timeline: "24-72 hours"
+        urgent:
+          criteria: "Patient health at risk if delayed"
+          timeline: "24-72 hours by regulation"
+        expedited:
+          criteria: "Plan-specific criteria"
+          timeline: "24 hours or less"
+          
+      database_operations:
+        - SET submitted_date = now()
+        - UPDATE status = 'submitted'
+        - LOG submission_method
+        - STORE reference_number
+        
+      next_step: 6
+
+    # Track PA Status
+    - step: 6
+      id: track_status
+      name: Track PA Status
+      actor: system
+      description: Monitor PA for decision
+      
+      tracking_methods:
+        automated:
+          - Electronic PA portal updates
+          - System polling for status
+        manual:
+          - Check portal periodically
+          - Call insurance if delayed
+          
+      status_updates:
+        pending:
+          action: Continue monitoring
+        info_requested:
+          action: Provide additional information
+          next_step: Back to step 3
+        approved:
+          next_step: 7
+        denied:
+          next_step: 8
+          
+      escalation:
+        no_response_24h:
+          action: Follow up with plan
+        no_response_48h:
+          action: Escalate, notify patient
+          
+      database_operations:
+        - UPDATE pa_status based on response
+        - LOG status_check_datetime
+        
+      next_step: 7 or 8 based on decision
+
+    # PA Approved
+    - step: 7
+      id: pa_approved
+      name: Process PA Approval
+      actor: pharmacy_tech
+      description: Handle approved PA
+      
+      approval_processing:
+        record_approval:
+          - PA number
+          - Effective date
+          - Expiration date
+          - Approved quantity/duration
+          - Special conditions
+        update_prescription:
+          - Link PA number
+          - Update billing information
+          - Ready for fill
+          
+      patient_notification:
+        method: Phone, text, or app
+        content: |
+          Your prior authorization has been approved!
+          You may pick up your prescription.
+          
+      database_operations:
+        - UPDATE prior_authorization with approval details
+        - UPDATE prescription with pa_number
+        - SET prescription.pa_status = 'approved'
+        
+      next_step: Exit to dispensing workflow
+
+    # PA Denied
+    - step: 8
+      id: pa_denied
+      name: Handle PA Denial
+      actor: pharmacist
+      description: Process denied PA
+      
+      denial_handling:
+        review_denial:
+          - Understand denial reason
+          - Check for appeal options
+          - Identify alternatives
+          
+      patient_options:
+        appeal:
+          action: Initiate appeal process
+          timeline: "Usually 30-60 days to appeal"
+        alternative_therapy:
+          action: Contact prescriber for change
+        cash_pay:
+          action: Patient pays out of pocket
+        manufacturer_assistance:
+          action: Check for patient assistance programs
+          
+      prescriber_notification:
+        content:
+          - Denial reason
+          - Appeal options
+          - Alternative suggestions
+          
+      database_operations:
+        - UPDATE prior_authorization with denial details
+        - LOG denial_reason, denial_code
+        - UPDATE prescription.pa_status = 'denied'
+        
+      next_step: Appeal workflow or patient decision
+
+    # Appeal Process
+    - step: 9
+      id: appeal_process
+      name: PA Appeal
+      actor: pharmacist
+      optional: true
+      description: Process PA appeal
+      
+      appeal_preparation:
+        additional_documentation:
+          - Additional clinical notes
+          - Letter of medical necessity
+          - Peer-reviewed literature
+          - Prescriber letter
+        appeal_form:
+          - Complete plan appeal form
+          - Include all original documentation
+          - Add new supporting information
+          
+      appeal_submission:
+        level_1: "Internal appeal to same plan"
+        level_2: "External review (if available)"
+        expedited: "For urgent health situations"
+        
+      appeal_outcomes:
+        approved:
+          action: Return to step 7
+        denied_final:
+          action: Exhaust options, notify patient
+          
+      database_operations:
+        - CREATE appeal record
+        - TRACK appeal status
+        - UPDATE original PA record
+        
+      next_step: Based on appeal outcome
+
+  completion:
+    status: pa_process_complete
+    outputs:
+      - pa_record
+      - approval_or_denial
+      - prescription_updated
+      - patient_notified
+
+  error_handling:
+    prescriber_unreachable:
+      action: Leave messages, send fax, document attempts
+      
+    missing_documentation:
+      action: Itemize needed items, follow up
+      
+    system_down:
+      action: Use manual/fax submission
+
+  sla_management:
+    pa_submission:
+      target: "Within 2 hours of identification"
+    prescriber_contact:
+      target: "Same day"
+    status_check:
+      target: "At least daily"
+    patient_notification:
+      target: "Within 1 hour of decision"
+
+  metrics:
+    track:
+      - pa_turnaround_time
+      - approval_rate
+      - appeal_success_rate
+      - first_pass_approval_rate
+      - documentation_completion_rate
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555
+    hipaa_compliant: true

@@ -1,0 +1,533 @@
+name: VitalSign
+display_name: Vital Sign / Dấu hiệu sinh tồn
+description: |
+  Clinical vital sign measurements including temperature, blood pressure,
+  heart rate, respiratory rate, oxygen saturation, height, weight, and pain level.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: observation
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: vital_id
+      display_name: Vital Sign ID
+      type: string
+      pattern: "^VS-[0-9]{12}$"
+      auto_generated: true
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: final
+      description: Verified and complete
+
+    - value: amended
+      description: Corrected after finalization
+
+    - value: entered_in_error
+      description: Recorded in error
+
+  default: final
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: recorded_by
+      type: uuid
+      required: true
+      references: User
+
+    - name: recorded_by_name
+      type: string
+
+    - name: recorded_at
+      type: timestamp
+      required: true
+      auto_set: on_create
+
+    - name: measurement_datetime
+      type: timestamp
+      description: When vitals were actually measured (may differ from recorded)
+
+  temperature:
+    - name: temperature
+      type: decimal
+      precision: 4
+      scale: 1
+      description: Body temperature
+
+    - name: temperature_unit
+      type: enum
+      values: [celsius, fahrenheit]
+      default: celsius
+
+    - name: temperature_site
+      type: enum
+      values:
+        - oral
+        - rectal
+        - axillary
+        - tympanic
+        - temporal
+        - forehead
+      default: oral
+
+    - name: temperature_celsius
+      type: decimal
+      computed: true
+      formula: |
+        IF temperature_unit = 'fahrenheit'
+        THEN (temperature - 32) * 5/9
+        ELSE temperature
+
+    - name: temperature_interpretation
+      type: enum
+      computed: true
+      values: [hypothermia, normal, low_grade_fever, fever, high_fever]
+      formula: |
+        CASE
+          WHEN temperature_celsius < 36 THEN 'hypothermia'
+          WHEN temperature_celsius < 37.5 THEN 'normal'
+          WHEN temperature_celsius < 38 THEN 'low_grade_fever'
+          WHEN temperature_celsius < 39 THEN 'fever'
+          ELSE 'high_fever'
+        END
+
+  cardiovascular:
+    - name: heart_rate
+      type: integer
+      description: Heart rate in beats per minute (BPM)
+      validation:
+        min: 20
+        max: 300
+
+    - name: heart_rate_rhythm
+      type: enum
+      values: [regular, irregular]
+
+    - name: heart_rate_interpretation
+      type: enum
+      computed: true
+      values: [bradycardia, normal, tachycardia]
+
+    - name: blood_pressure_systolic
+      type: integer
+      description: Systolic blood pressure (mmHg)
+      validation:
+        min: 50
+        max: 300
+
+    - name: blood_pressure_diastolic
+      type: integer
+      description: Diastolic blood pressure (mmHg)
+      validation:
+        min: 30
+        max: 200
+
+    - name: blood_pressure_position
+      type: enum
+      values: [sitting, standing, supine, left_lateral]
+      default: sitting
+
+    - name: blood_pressure_site
+      type: enum
+      values: [left_arm, right_arm, left_leg, right_leg]
+      default: left_arm
+
+    - name: blood_pressure_cuff_size
+      type: enum
+      values: [pediatric, small_adult, adult, large_adult, thigh]
+
+    - name: mean_arterial_pressure
+      type: integer
+      computed: true
+      formula: "blood_pressure_diastolic + (blood_pressure_systolic - blood_pressure_diastolic) / 3"
+
+    - name: blood_pressure_interpretation
+      type: enum
+      computed: true
+      values: [hypotension, normal, elevated, hypertension_stage1, hypertension_stage2, hypertensive_crisis]
+
+  respiratory:
+    - name: respiratory_rate
+      type: integer
+      description: Respiratory rate in breaths per minute
+      validation:
+        min: 4
+        max: 60
+
+    - name: respiratory_effort
+      type: enum
+      values: [normal, labored, shallow, deep]
+
+    - name: respiratory_rate_interpretation
+      type: enum
+      computed: true
+      values: [bradypnea, normal, tachypnea]
+
+    - name: oxygen_saturation
+      type: decimal
+      precision: 4
+      scale: 1
+      description: SpO2 percentage
+      validation:
+        min: 50
+        max: 100
+
+    - name: oxygen_saturation_method
+      type: enum
+      values: [pulse_oximeter, arterial_blood_gas]
+      default: pulse_oximeter
+
+    - name: supplemental_oxygen
+      type: boolean
+      default: false
+
+    - name: oxygen_flow_rate
+      type: decimal
+      precision: 4
+      scale: 1
+      description: Liters per minute (LPM)
+
+    - name: oxygen_delivery_device
+      type: enum
+      values:
+        - nasal_cannula
+        - simple_mask
+        - non_rebreather
+        - venturi_mask
+        - high_flow
+        - bipap
+        - cpap
+        - mechanical_ventilator
+        - room_air
+
+  anthropometric:
+    - name: weight
+      type: decimal
+      precision: 6
+      scale: 2
+      description: Body weight
+
+    - name: weight_unit
+      type: enum
+      values: [kg, lb]
+      default: kg
+
+    - name: weight_kg
+      type: decimal
+      computed: true
+      formula: "IF weight_unit = 'lb' THEN weight * 0.453592 ELSE weight"
+
+    - name: height
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Body height
+
+    - name: height_unit
+      type: enum
+      values: [cm, in]
+      default: cm
+
+    - name: height_cm
+      type: decimal
+      computed: true
+      formula: "IF height_unit = 'in' THEN height * 2.54 ELSE height"
+
+    - name: bmi
+      type: decimal
+      precision: 4
+      scale: 1
+      computed: true
+      formula: "weight_kg / ((height_cm / 100) ^ 2)"
+
+    - name: bmi_interpretation
+      type: enum
+      computed: true
+      values: [underweight, normal, overweight, obese_class_i, obese_class_ii, obese_class_iii]
+      formula: |
+        CASE
+          WHEN bmi < 18.5 THEN 'underweight'
+          WHEN bmi < 25 THEN 'normal'
+          WHEN bmi < 30 THEN 'overweight'
+          WHEN bmi < 35 THEN 'obese_class_i'
+          WHEN bmi < 40 THEN 'obese_class_ii'
+          ELSE 'obese_class_iii'
+        END
+
+    - name: head_circumference
+      type: decimal
+      precision: 4
+      scale: 1
+      description: Head circumference (pediatric)
+
+    - name: head_circumference_unit
+      type: enum
+      values: [cm, in]
+      default: cm
+
+  pain:
+    - name: pain_level
+      type: integer
+      description: Pain scale 0-10
+      validation:
+        min: 0
+        max: 10
+
+    - name: pain_scale_type
+      type: enum
+      values:
+        - numeric_rating
+        - visual_analog
+        - wong_baker_faces
+        - flacc
+        - cries
+      default: numeric_rating
+
+    - name: pain_location
+      type: string
+
+    - name: pain_character
+      type: array
+      items:
+        type: enum
+        values: [sharp, dull, aching, burning, stabbing, throbbing, pressure]
+
+  neurological:
+    - name: glasgow_coma_scale
+      type: object
+      properties:
+        eye_response:
+          type: integer
+          min: 1
+          max: 4
+        verbal_response:
+          type: integer
+          min: 1
+          max: 5
+        motor_response:
+          type: integer
+          min: 1
+          max: 6
+        total:
+          type: integer
+          computed: true
+
+    - name: pupil_left_size
+      type: integer
+      description: Pupil size in mm
+
+    - name: pupil_left_reaction
+      type: enum
+      values: [brisk, sluggish, fixed]
+
+    - name: pupil_right_size
+      type: integer
+
+    - name: pupil_right_reaction
+      type: enum
+      values: [brisk, sluggish, fixed]
+
+  additional:
+    - name: blood_glucose
+      type: decimal
+      precision: 5
+      scale: 1
+      description: Blood glucose mg/dL or mmol/L
+
+    - name: blood_glucose_unit
+      type: enum
+      values: [mg_dl, mmol_l]
+
+    - name: blood_glucose_timing
+      type: enum
+      values: [fasting, random, pre_meal, post_meal, bedtime]
+
+  measurement_context:
+    - name: measurement_method
+      type: enum
+      values:
+        - manual
+        - automatic
+        - patient_reported
+      default: manual
+
+    - name: device_id
+      type: string
+      description: Medical device identifier
+
+    - name: device_type
+      type: string
+
+    - name: comments
+      type: text
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: recorder
+    type: many_to_one
+    target: User
+    foreign_key: recorded_by
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-VS-001
+    name: At Least One Measurement
+    description: Vital sign record must have at least one measurement
+    rule: |
+      temperature IS NOT NULL OR
+      heart_rate IS NOT NULL OR
+      blood_pressure_systolic IS NOT NULL OR
+      respiratory_rate IS NOT NULL OR
+      oxygen_saturation IS NOT NULL OR
+      weight IS NOT NULL OR
+      height IS NOT NULL OR
+      pain_level IS NOT NULL
+
+  - id: BR-VS-002
+    name: Blood Pressure Pair
+    description: Both systolic and diastolic required together
+    rule: |
+      blood_pressure_systolic IS NOT NULL
+      REQUIRES blood_pressure_diastolic IS NOT NULL
+
+  - id: BR-VS-003
+    name: Systolic Greater Than Diastolic
+    description: Systolic must be greater than diastolic
+    rule: blood_pressure_systolic > blood_pressure_diastolic
+
+  - id: BR-VS-004
+    name: Critical Value Alert
+    description: Critical vital signs trigger alerts
+    rule: |
+      ALERT IF:
+        temperature_celsius > 40 OR temperature_celsius < 35 OR
+        heart_rate > 150 OR heart_rate < 40 OR
+        blood_pressure_systolic > 200 OR blood_pressure_systolic < 80 OR
+        blood_pressure_diastolic > 120 OR blood_pressure_diastolic < 40 OR
+        respiratory_rate > 30 OR respiratory_rate < 8 OR
+        oxygen_saturation < 90
+
+  - id: BR-VS-005
+    name: O2 Details with Supplemental
+    description: Supplemental oxygen requires flow rate and device
+    rule: |
+      supplemental_oxygen = TRUE
+      REQUIRES oxygen_flow_rate IS NOT NULL AND
+               oxygen_delivery_device IS NOT NULL
+
+  - id: BR-VS-006
+    name: Pediatric Measurements
+    description: Head circumference for patients under 3 years
+    rule: |
+      patient.age < 3
+      REQUIRES head_circumference SHOULD BE recorded
+
+  - id: BR-VS-007
+    name: Pain Assessment Documentation
+    description: Pain level requires scale type
+    rule: |
+      pain_level IS NOT NULL
+      REQUIRES pain_scale_type IS NOT NULL
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_vitals_patient
+    columns: [patient_id]
+
+  - name: idx_vitals_encounter
+    columns: [encounter_id]
+
+  - name: idx_vitals_datetime
+    columns: [recorded_at]
+
+  - name: idx_vitals_patient_date
+    columns: [patient_id, recorded_at]
+
+# =============================================================================
+# REFERENCE RANGES
+# =============================================================================
+reference_ranges:
+  adult:
+    temperature_celsius:
+      low: 36.1
+      high: 37.2
+    heart_rate:
+      low: 60
+      high: 100
+    blood_pressure_systolic:
+      normal_low: 90
+      normal_high: 120
+      elevated_high: 129
+      stage1_high: 139
+      stage2_high: 180
+    blood_pressure_diastolic:
+      normal_low: 60
+      normal_high: 80
+      stage1_high: 89
+      stage2_high: 120
+    respiratory_rate:
+      low: 12
+      high: 20
+    oxygen_saturation:
+      low: 95
+      critical: 90
+
+  pediatric:
+    newborn:
+      heart_rate: { low: 100, high: 160 }
+      respiratory_rate: { low: 30, high: 60 }
+    infant:
+      heart_rate: { low: 100, high: 150 }
+      respiratory_rate: { low: 25, high: 50 }
+    toddler:
+      heart_rate: { low: 90, high: 140 }
+      respiratory_rate: { low: 20, high: 40 }
+    child:
+      heart_rate: { low: 70, high: 120 }
+      respiratory_rate: { low: 18, high: 30 }
+    adolescent:
+      heart_rate: { low: 60, high: 100 }
+      respiratory_rate: { low: 12, high: 20 }

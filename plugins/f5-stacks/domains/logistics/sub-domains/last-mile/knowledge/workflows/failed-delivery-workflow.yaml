@@ -1,0 +1,421 @@
+name: FailedDeliveryWorkflow
+display_name: Failed Delivery Workflow
+description: |
+  Workflow for handling failed delivery attempts.
+  Covers reattempt scheduling, customer contact, and return processing.
+
+domain: logistics
+subdomain: last-mile
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_type: exception_handling
+trigger: delivery.attempt_failed
+
+participants:
+  - role: system
+    description: Delivery Management System
+  - role: agent
+    description: Delivery agent who attempted delivery
+  - role: recipient
+    description: Customer who should receive the delivery
+  - role: operations
+    description: Operations team for escalation
+  - role: customer_service
+    description: Customer service for communication
+
+states:
+  - id: failed_recorded
+    name: Failed Recorded
+    description: Delivery failure documented in system
+    type: initial
+
+  - id: failure_analyzed
+    name: Failure Analyzed
+    description: Failure reason categorized and analyzed
+    type: intermediate
+
+  - id: customer_contacted
+    name: Customer Contacted
+    description: Recipient notified of failed delivery
+    type: intermediate
+
+  - id: awaiting_instruction
+    name: Awaiting Instruction
+    description: Waiting for customer decision
+    type: intermediate
+
+  - id: reattempt_scheduled
+    name: Reattempt Scheduled
+    description: New delivery attempt scheduled
+    type: intermediate
+
+  - id: alternative_arranged
+    name: Alternative Arranged
+    description: Alternative delivery method arranged
+    type: intermediate
+
+  - id: return_initiated
+    name: Return Initiated
+    description: Return to sender process started
+    type: intermediate
+
+  - id: resolved
+    name: Resolved
+    description: Failed delivery issue resolved
+    type: final_success
+
+  - id: unresolved
+    name: Unresolved
+    description: Issue could not be resolved
+    type: final_failure
+
+transitions:
+  - id: T001
+    name: Record Failure
+    from: null
+    to: failed_recorded
+    trigger: agent
+    conditions:
+      - delivery.status = 'arrived'
+      - delivery_not_possible = true
+    actions:
+      - record_failure_timestamp
+      - capture_failure_reason
+      - collect_evidence_photos
+      - update_attempt_count
+      - pause_sla_clock
+
+  - id: T002
+    name: Analyze Failure
+    from: failed_recorded
+    to: failure_analyzed
+    trigger: system
+    actions:
+      - categorize_failure_reason
+      - determine_resolution_options
+      - calculate_reattempt_eligibility
+      - assess_sla_impact
+      - flag_for_review_if_needed
+
+  - id: T003
+    name: Contact Customer
+    from: failure_analyzed
+    to: customer_contacted
+    trigger: system
+    actions:
+      - send_failure_notification
+      - provide_resolution_options
+      - share_rescheduling_link
+      - initiate_callback_if_urgent
+    channels:
+      primary: sms
+      secondary: push
+      fallback: email
+
+  - id: T004
+    name: Await Response
+    from: customer_contacted
+    to: awaiting_instruction
+    trigger: system
+    conditions:
+      - notification_sent = true
+    actions:
+      - start_response_timer
+      - enable_self_service_options
+    timeout:
+      duration: 24 hours
+      action: apply_default_resolution
+
+  - id: T005
+    name: Schedule Reattempt
+    from: awaiting_instruction
+    to: reattempt_scheduled
+    trigger: [recipient, system]
+    conditions:
+      - reattempt_requested = true
+      - attempt_count < max_attempts
+    actions:
+      - book_new_slot
+      - confirm_address
+      - update_delivery_instructions
+      - assign_to_queue
+      - notify_customer
+
+  - id: T006
+    name: Arrange Alternative
+    from: awaiting_instruction
+    to: alternative_arranged
+    trigger: [recipient, system]
+    conditions:
+      - alternative_requested = true
+    actions:
+      - process_alternative_choice
+      - update_delivery_method
+      - notify_customer
+    alternatives:
+      - pickup_point
+      - locker
+      - neighbor
+      - new_address
+
+  - id: T007
+    name: Initiate Return
+    from: awaiting_instruction
+    to: return_initiated
+    trigger: [recipient, system, timeout]
+    conditions:
+      - return_requested = true OR
+      - max_attempts_reached = true OR
+      - response_timeout = true
+    actions:
+      - create_return_shipment
+      - notify_sender
+      - schedule_return_logistics
+      - update_refund_status
+
+  - id: T008
+    name: Resolve via Reattempt
+    from: reattempt_scheduled
+    to: resolved
+    trigger: system
+    conditions:
+      - reattempt.status = 'delivered'
+    actions:
+      - close_failed_case
+      - update_metrics
+      - send_satisfaction_survey
+
+  - id: T009
+    name: Resolve via Alternative
+    from: alternative_arranged
+    to: resolved
+    trigger: system
+    conditions:
+      - alternative_delivery.completed = true
+    actions:
+      - close_failed_case
+      - update_metrics
+      - track_alternative_success
+
+  - id: T010
+    name: Complete Return
+    from: return_initiated
+    to: resolved
+    trigger: system
+    conditions:
+      - return.completed = true
+    actions:
+      - finalize_return
+      - process_refund_if_applicable
+      - notify_all_parties
+      - close_case
+
+  - id: T011
+    name: Mark Unresolved
+    from: [awaiting_instruction, reattempt_scheduled, alternative_arranged, return_initiated]
+    to: unresolved
+    trigger: system
+    conditions:
+      - resolution_attempts_exhausted = true
+      - manual_closure_required = true
+    actions:
+      - escalate_to_management
+      - document_unresolved_reason
+      - notify_stakeholders
+
+failure_categories:
+  - category: customer_unavailable
+    reasons:
+      - not_home
+      - no_response
+      - phone_unreachable
+    default_action: schedule_reattempt
+    customer_contact: required
+    reattempt_allowed: true
+
+  - category: address_issue
+    reasons:
+      - wrong_address
+      - incomplete_address
+      - address_not_found
+      - building_access_denied
+    default_action: contact_for_correction
+    customer_contact: required
+    reattempt_allowed: true
+
+  - category: recipient_refusal
+    reasons:
+      - refused_delivery
+      - refused_cod_payment
+      - order_cancelled
+    default_action: initiate_return
+    customer_contact: optional
+    reattempt_allowed: false
+
+  - category: package_issue
+    reasons:
+      - damaged_package
+      - wrong_item
+      - incomplete_order
+    default_action: escalate_and_return
+    customer_contact: required
+    reattempt_allowed: false
+
+  - category: external_factors
+    reasons:
+      - severe_weather
+      - road_closed
+      - restricted_area
+      - curfew
+    default_action: auto_reschedule
+    customer_contact: informational
+    reattempt_allowed: true
+
+resolution_options:
+  - option: reattempt_same_day
+    availability: |
+      NOW() + 2 hours < operating_hours.close
+    conditions:
+      - same_agent_available OR backup_agent_available
+      - customer_confirmed_availability
+    priority: high
+
+  - option: reattempt_next_day
+    availability: always
+    conditions:
+      - attempt_count < max_attempts
+    priority: medium
+
+  - option: reattempt_scheduled_slot
+    availability: always
+    conditions:
+      - slot_available = true
+      - customer_selected_slot = true
+    priority: medium
+
+  - option: redirect_pickup_point
+    availability: |
+      nearby_pickup_points > 0
+    conditions:
+      - customer_consent = true
+      - package_size_compatible = true
+    priority: medium
+
+  - option: redirect_locker
+    availability: |
+      nearby_lockers > 0 AND locker_available = true
+    conditions:
+      - customer_consent = true
+      - package_fits_locker = true
+    priority: medium
+
+  - option: redirect_neighbor
+    availability: always
+    conditions:
+      - customer_authorization = true
+      - neighbor_available = true
+    priority: low
+
+  - option: return_to_sender
+    availability: always
+    conditions:
+      - max_attempts_reached OR customer_requested_return
+    priority: low
+
+customer_communication:
+  - stage: immediate_notification
+    timing: within 5 minutes of failure
+    channels: [sms, push]
+    content:
+      - failure_reason
+      - apology_message
+      - next_steps
+      - action_link
+
+  - stage: resolution_options
+    timing: within 1 hour
+    channels: [email, sms]
+    content:
+      - available_options
+      - self_service_link
+      - support_contact
+
+  - stage: reminder
+    timing: 12 hours after failure
+    conditions:
+      - no_response_received
+    channels: [push, sms]
+    content:
+      - reminder_message
+      - urgency_indicator
+      - default_action_warning
+
+  - stage: final_notice
+    timing: 24 hours after failure
+    conditions:
+      - no_response_received
+    channels: [sms, email, call]
+    content:
+      - last_chance_message
+      - return_warning
+      - contact_request
+
+escalation_rules:
+  - level: 1
+    trigger: second_failed_attempt
+    action: notify_supervisor
+    response_time: 2 hours
+
+  - level: 2
+    trigger: vip_customer_failure
+    action: priority_handling
+    response_time: 1 hour
+
+  - level: 3
+    trigger: sla_breach_imminent
+    action: emergency_resolution
+    response_time: 30 minutes
+
+  - level: 4
+    trigger: customer_complaint
+    action: management_escalation
+    response_time: 15 minutes
+
+metrics:
+  - name: resolution_rate
+    description: Percentage of failed deliveries resolved
+    target: > 95%
+
+  - name: reattempt_success_rate
+    description: Success rate on reattempt
+    target: > 90%
+
+  - name: resolution_time
+    description: Average time to resolve failed delivery
+    target: < 24 hours
+
+  - name: customer_response_rate
+    description: Customers responding to resolution options
+    target: > 70%
+
+  - name: return_rate
+    description: Percentage resulting in return
+    target: < 5%
+
+events:
+  - name: failed_delivery.recorded
+    payload: [delivery_id, failure_reason, attempt_number]
+
+  - name: failed_delivery.reattempt_scheduled
+    payload: [delivery_id, scheduled_date, slot_id]
+
+  - name: failed_delivery.alternative_selected
+    payload: [delivery_id, alternative_type, new_destination]
+
+  - name: failed_delivery.resolved
+    payload: [delivery_id, resolution_type, resolution_time]
+
+  - name: failed_delivery.returned
+    payload: [delivery_id, return_reason, refund_amount]

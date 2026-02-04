@@ -1,0 +1,603 @@
+name: Cancellation Workflow
+display_name: Policy Cancellation Workflow
+description: |
+  Workflow for processing policy cancellations and surrenders.
+  Handles refund calculations and termination procedures.
+
+domain: insurance
+subdomain: policy
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-CANCEL-001
+trigger:
+  - type: user_action
+    action: request_cancellation
+  - type: api_call
+    endpoint: POST /cancellations
+  - type: event
+    name: cancellation.requested
+  - type: system
+    event: non_payment_lapse
+
+actors:
+  - id: policyholder
+    name: Policyholder
+    type: external
+  - id: agent
+    name: Insurance Agent
+    type: internal
+  - id: operations
+    name: Operations Team
+    type: internal
+  - id: retention
+    name: Retention Team
+    type: internal
+  - id: finance
+    name: Finance Team
+    type: internal
+  - id: approver
+    name: Approver
+    type: internal
+  - id: system
+    name: System
+    type: system
+
+states:
+  - id: requested
+    name: Cancellation Requested
+    description: Request received
+    initial: true
+  - id: retention_attempt
+    name: Retention Attempt
+    description: Attempting to retain customer
+  - id: validating
+    name: Validating Request
+    description: Validating cancellation eligibility
+  - id: documents_pending
+    name: Documents Pending
+    description: Awaiting required documents
+  - id: calculating
+    name: Calculating Refund
+    description: Computing refund amount
+  - id: pending_approval
+    name: Pending Approval
+    description: Awaiting management approval
+  - id: approved
+    name: Approved
+    description: Cancellation approved
+  - id: processing_refund
+    name: Processing Refund
+    description: Refund being processed
+  - id: processing_clawback
+    name: Processing Clawback
+    description: Commission clawback in progress
+  - id: completed
+    name: Completed
+    description: Cancellation complete
+    final: true
+  - id: rejected
+    name: Rejected
+    description: Cancellation rejected
+    final: true
+  - id: withdrawn
+    name: Withdrawn
+    description: Customer withdrew request
+    final: true
+
+cancellation_types:
+  - type: free_look
+    full_refund: true
+    requires_approval: false
+    clawback: true
+  - type: surrender
+    refund_method: surrender_value
+    requires_approval: true
+    clawback: true
+  - type: non_payment
+    refund_method: none
+    requires_approval: false
+    clawback: true
+  - type: death
+    refund_method: none
+    requires_approval: false
+    clawback: false
+  - type: fraud
+    refund_method: none
+    requires_approval: true
+    clawback: true
+
+steps:
+  - id: step_1
+    name: Receive Cancellation Request
+    actor: policyholder
+    from_state: null
+    to_state: requested
+    inputs:
+      required:
+        - cancellation_type
+        - effective_date
+        - reason
+      optional:
+        - bank_details
+        - supporting_documents
+    actions:
+      - action: create_cancellation_record
+        params:
+          cancellation_number: generate_cancellation_number()
+          status: requested
+      - action: validate_policy_active
+      - action: log_event
+        event: cancellation.requested
+    validations:
+      - rule: policy_exists
+        condition: "policy IS NOT NULL"
+      - rule: policy_cancellable
+        condition: "policy.status IN ['active', 'lapsed']"
+    outputs:
+      - cancellation_id
+      - cancellation_number
+
+  - id: step_2
+    name: Attempt Retention
+    actor: retention
+    from_state: requested
+    to_state: retention_attempt
+    condition:
+      expression: |
+        cancellation_type = 'surrender' AND
+        retention_eligible = true
+    actions:
+      - action: contact_customer
+        method: [phone, email]
+      - action: understand_reasons
+      - action: offer_alternatives
+        options:
+          - premium_discount
+          - paid_up_option
+          - partial_surrender
+          - policy_loan
+          - coverage_reduction
+      - action: record_outcome
+    inputs:
+      - retention_outcome
+      - customer_decision
+    sla:
+      duration: 48_hours
+      attempts: 2
+
+  - id: step_2a
+    name: Customer Retained
+    actor: policyholder
+    from_state: retention_attempt
+    to_state: withdrawn
+    condition:
+      expression: "retention_outcome = 'success'"
+    actions:
+      - action: withdraw_cancellation
+      - action: apply_retention_terms
+        condition: "retention_offer_accepted"
+      - action: notify_agent
+      - action: log_event
+        event: cancellation.withdrawn
+
+  - id: step_3
+    name: Validate Request
+    actor: operations
+    from_state: [requested, retention_attempt]
+    to_state: validating
+    condition:
+      expression: "retention_outcome != 'success'"
+    actions:
+      - action: verify_requestor_identity
+      - action: check_pending_claims
+      - action: check_policy_loans
+      - action: determine_required_documents
+      - action: verify_signatures
+    outputs:
+      - validation_result
+      - pending_claims
+      - loan_balance
+      - required_documents
+
+  - id: step_3a
+    name: Request Documents
+    actor: operations
+    from_state: validating
+    to_state: documents_pending
+    condition:
+      expression: "documents_complete = false"
+    actions:
+      - action: notify_policyholder
+        template: cancellation_documents_required
+        documents: required_documents
+      - action: set_deadline
+        days: 14
+    outputs:
+      - required_documents_list
+
+  - id: step_3b
+    name: Receive Documents
+    actor: policyholder
+    from_state: documents_pending
+    to_state: validating
+    inputs:
+      - uploaded_documents
+    actions:
+      - action: verify_documents
+      - action: update_document_status
+
+  - id: step_4
+    name: Calculate Refund
+    actor: system
+    from_state: validating
+    to_state: calculating
+    condition:
+      expression: "validation_result = 'passed'"
+    actions:
+      - action: determine_refund_method
+        based_on: cancellation_type
+      - action: calculate_refund
+        methods:
+          free_look:
+            formula: "premium_paid - medical_costs - stamp_duty"
+          surrender:
+            formula: "surrender_value + bonuses - charges"
+          pro_rata:
+            formula: "unearned_premium * (1 - short_rate_factor)"
+      - action: calculate_deductions
+        items:
+          - outstanding_premiums
+          - policy_loans
+          - surrender_charges
+          - admin_fees
+      - action: calculate_net_refund
+        formula: "gross_refund - total_deductions"
+    outputs:
+      - gross_refund
+      - deductions_breakdown
+      - net_refund
+      - refund_currency
+
+  - id: step_4a
+    name: Hold for Pending Claims
+    actor: operations
+    from_state: calculating
+    to_state: calculating
+    condition:
+      expression: "pending_claims_count > 0"
+    actions:
+      - action: hold_cancellation
+        reason: pending_claims
+      - action: notify_policyholder
+        template: cancellation_on_hold
+      - action: set_review_date
+        days: 30
+    note: "Cancellation held until claims resolved"
+
+  - id: step_5
+    name: Review and Approve
+    actor: approver
+    from_state: calculating
+    to_state: pending_approval
+    condition:
+      expression: |
+        requires_approval = true OR
+        refund_amount > approval_threshold OR
+        cancellation_type = 'fraud'
+    actions:
+      - action: route_for_approval
+        based_on: approval_matrix
+      - action: notify_approver
+      - action: create_approval_task
+    inputs:
+      - approval_decision
+      - approval_notes
+    sla:
+      duration: 24_hours
+
+  - id: step_5a
+    name: Auto-Approve
+    actor: system
+    from_state: calculating
+    to_state: approved
+    condition:
+      expression: |
+        requires_approval = false AND
+        refund_amount <= approval_threshold AND
+        pending_claims_count = 0
+    actions:
+      - action: auto_approve_cancellation
+
+  - id: step_5b
+    name: Approve Cancellation
+    actor: approver
+    from_state: pending_approval
+    to_state: approved
+    condition:
+      expression: "approval_decision = 'approved'"
+    actions:
+      - action: approve_cancellation
+      - action: log_event
+        event: cancellation.approved
+
+  - id: step_5c
+    name: Reject Cancellation
+    actor: approver
+    from_state: pending_approval
+    to_state: rejected
+    condition:
+      expression: "approval_decision = 'rejected'"
+    actions:
+      - action: reject_cancellation
+      - action: notify_policyholder
+        template: cancellation_rejected
+        include: rejection_reason
+      - action: notify_agent
+      - action: log_event
+        event: cancellation.rejected
+    outputs:
+      - rejection_reason
+
+  - id: step_6
+    name: Process Commission Clawback
+    actor: finance
+    from_state: approved
+    to_state: processing_clawback
+    condition:
+      expression: "clawback_required = true AND clawback_amount > 0"
+    actions:
+      - action: calculate_clawback
+        based_on:
+          - commission_paid
+          - policy_age
+          - clawback_table
+      - action: debit_agent_account
+        amount: clawback_amount
+      - action: notify_agent
+        template: commission_clawback
+      - action: record_clawback
+    outputs:
+      - clawback_amount
+      - clawback_reference
+
+  - id: step_7
+    name: Process Refund
+    actor: finance
+    from_state: [approved, processing_clawback]
+    to_state: processing_refund
+    condition:
+      expression: "net_refund > 0"
+    actions:
+      - action: validate_bank_details
+      - action: initiate_refund
+        method: bank_transfer
+        amount: net_refund
+      - action: generate_payment_reference
+      - action: log_event
+        event: refund.initiated
+    outputs:
+      - payment_reference
+      - payment_status
+    sla:
+      duration: 7_days
+
+  - id: step_7a
+    name: Refund Payment Success
+    actor: system
+    from_state: processing_refund
+    to_state: completed
+    condition:
+      expression: "payment_status = 'success'"
+    actions:
+      - action: confirm_refund
+      - action: proceed_to_complete
+
+  - id: step_7b
+    name: Refund Payment Failed
+    actor: finance
+    from_state: processing_refund
+    to_state: processing_refund
+    condition:
+      expression: "payment_status = 'failed'"
+    actions:
+      - action: investigate_failure
+      - action: contact_policyholder
+        purpose: verify_bank_details
+      - action: retry_payment
+        max_attempts: 3
+    on_max_attempts:
+      action: escalate_to_manager
+
+  - id: step_8
+    name: Complete Cancellation
+    actor: system
+    from_state: [approved, processing_refund]
+    to_state: completed
+    actions:
+      - action: terminate_policy
+        effective_date: cancellation.effective_date
+      - action: update_policy_status
+        status: cancelled
+      - action: generate_cancellation_letter
+      - action: generate_settlement_statement
+      - action: send_confirmation
+        to: policyholder
+        documents:
+          - cancellation_letter
+          - settlement_statement
+          - payment_receipt
+      - action: notify_agent
+      - action: update_reinsurance
+      - action: log_event
+        event: cancellation.completed
+    outputs:
+      - cancellation_letter_url
+      - settlement_statement_url
+
+transitions:
+  - from: requested
+    to: retention_attempt
+    event: attempt_retention
+
+  - from: requested
+    to: validating
+    event: skip_retention
+
+  - from: retention_attempt
+    to: validating
+    event: retention_failed
+
+  - from: retention_attempt
+    to: withdrawn
+    event: customer_retained
+
+  - from: validating
+    to: documents_pending
+    event: documents_required
+
+  - from: documents_pending
+    to: validating
+    event: documents_received
+
+  - from: validating
+    to: calculating
+    event: validation_passed
+
+  - from: validating
+    to: rejected
+    event: validation_failed
+
+  - from: calculating
+    to: pending_approval
+    event: approval_required
+
+  - from: calculating
+    to: approved
+    event: auto_approved
+
+  - from: pending_approval
+    to: approved
+    event: approved
+
+  - from: pending_approval
+    to: rejected
+    event: rejected
+
+  - from: approved
+    to: processing_clawback
+    event: process_clawback
+
+  - from: approved
+    to: processing_refund
+    event: process_refund
+
+  - from: processing_clawback
+    to: processing_refund
+    event: clawback_complete
+
+  - from: processing_refund
+    to: completed
+    event: refund_complete
+
+  - from: approved
+    to: completed
+    event: no_refund_required
+
+approval_matrix:
+  free_look:
+    authority: auto
+
+  surrender:
+    refund_under_10m: supervisor
+    refund_10m_to_50m: manager
+    refund_over_50m: department_head
+
+  fraud:
+    always: executive
+
+notifications:
+  - trigger: cancellation.requested
+    recipient: [operations, agent]
+    template: cancellation_received
+    channel: [email, portal]
+
+  - trigger: retention_attempt
+    recipient: retention
+    template: retention_required
+    channel: [email, portal]
+
+  - trigger: documents_pending
+    recipient: policyholder
+    template: documents_required
+    channel: [email, sms]
+
+  - trigger: cancellation.approved
+    recipient: [policyholder, agent]
+    template: cancellation_approved
+    channel: [email, sms]
+
+  - trigger: refund.initiated
+    recipient: policyholder
+    template: refund_processing
+    channel: [email, sms]
+
+  - trigger: cancellation.completed
+    recipient: [policyholder, agent]
+    template: cancellation_complete
+    channel: [email, portal]
+
+  - trigger: clawback.processed
+    recipient: agent
+    template: commission_clawback
+    channel: [email, portal]
+
+sla:
+  free_look_cancellation:
+    target: 7_days
+    max: 15_days
+
+  standard_cancellation:
+    target: 14_days
+    max: 30_days
+
+  refund_processing:
+    target: 7_days
+    max: 14_days
+
+metrics:
+  - name: cancellation_rate
+    formula: "cancelled_policies / active_policies * 100"
+  - name: retention_success_rate
+    formula: "retained / retention_attempted * 100"
+  - name: average_processing_time
+    formula: "AVG(completed_at - requested_at)"
+  - name: refund_processing_time
+    formula: "AVG(refund_complete_at - approved_at)"
+  - name: sla_compliance
+    formula: "within_sla / total_cancellations * 100"
+
+retention_strategies:
+  high_value:
+    criteria:
+      - annual_premium > 50000000
+      - tenure > 3_years
+    offers:
+      - premium_discount_15%
+      - enhanced_coverage
+      - personal_service_manager
+
+  mid_value:
+    criteria:
+      - annual_premium > 10000000
+    offers:
+      - premium_discount_10%
+      - paid_up_option
+      - policy_loan
+
+  standard:
+    offers:
+      - premium_discount_5%
+      - payment_plan
+      - coverage_adjustment

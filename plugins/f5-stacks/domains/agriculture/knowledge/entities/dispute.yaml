@@ -1,0 +1,336 @@
+name: Dispute
+display_name: Dispute / Khiếu nại
+description: |
+  Khiếu nại và tranh chấp giữa buyer và seller.
+  Bao gồm các vấn đề về chất lượng, trọng lượng, giao hàng.
+
+domain: agriculture
+category: support
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: dispute_code
+    type: string
+    required: true
+    validation:
+      pattern: "^DSP-[0-9]{8}-[A-Z0-9]{4}$"
+    example: "DSP-20241201-A1B2"
+
+  - name: order_id
+    type: uuid
+    required: true
+
+  - name: opened_by
+    type: uuid
+    required: true
+    description: User mở dispute
+
+  - name: opened_by_role
+    type: enum
+    required: true
+    validation:
+      values: [buyer, seller]
+
+  - name: dispute_type
+    type: enum
+    required: true
+    description: Loại khiếu nại
+    validation:
+      values: [
+        weight_discrepancy,      # Chênh lệch trọng lượng
+        quality_issue,           # Vấn đề chất lượng
+        wrong_item,              # Sai hàng
+        damaged_goods,           # Hàng hư hỏng
+        late_delivery,           # Giao hàng trễ
+        non_delivery,            # Không giao hàng
+        payment_issue,           # Vấn đề thanh toán
+        seller_no_response,      # Seller không phản hồi
+        buyer_no_response,       # Buyer không phản hồi
+        other                    # Khác
+      ]
+
+  - name: severity
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, critical]
+    default: medium
+
+  - name: title
+    type: string
+    required: true
+    validation:
+      max_length: 200
+
+  - name: description
+    type: text
+    required: true
+    description: Mô tả chi tiết vấn đề
+
+  - name: evidence
+    type: array
+    required: false
+    description: Bằng chứng (ảnh, video, file)
+    example:
+      - type: "image"
+        url: "https://..."
+        description: "Ảnh hàng bị hư"
+      - type: "video"
+        url: "https://..."
+
+  # Dispute values
+  - name: claimed_amount
+    type: decimal
+    required: false
+    description: Số tiền yêu cầu bồi thường
+
+  - name: order_amount
+    type: decimal
+    required: true
+    description: Giá trị đơn hàng
+
+  # Weight dispute specific
+  - name: declared_weight_kg
+    type: decimal
+    required: false
+
+  - name: actual_weight_kg
+    type: decimal
+    required: false
+
+  - name: weight_variance_percent
+    type: decimal
+    required: false
+
+  # Status and resolution
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [
+        opened,
+        under_review,
+        awaiting_seller_response,
+        awaiting_buyer_response,
+        escalated,
+        mediation,
+        resolved,
+        closed,
+        cancelled
+      ]
+    default: opened
+
+  - name: assigned_to
+    type: uuid
+    required: false
+    description: Admin xử lý
+
+  - name: priority_score
+    type: integer
+    required: false
+    description: Điểm ưu tiên (auto-calculated)
+
+  # Resolution
+  - name: resolution_type
+    type: enum
+    required: false
+    validation:
+      values: [
+        full_refund,
+        partial_refund,
+        replacement,
+        price_adjustment,
+        no_action,
+        seller_penalty,
+        buyer_penalty,
+        mutual_agreement
+      ]
+
+  - name: resolution_amount
+    type: decimal
+    required: false
+    description: Số tiền giải quyết
+
+  - name: resolution_notes
+    type: text
+    required: false
+
+  - name: resolved_by
+    type: uuid
+    required: false
+
+  - name: resolved_at
+    type: timestamp
+    required: false
+
+  # Penalties
+  - name: seller_penalty_amount
+    type: decimal
+    required: false
+
+  - name: buyer_penalty_amount
+    type: decimal
+    required: false
+
+  # Feedback
+  - name: satisfaction_rating
+    type: integer
+    required: false
+    description: Rating sau khi resolve (1-5)
+    validation:
+      min: 1
+      max: 5
+
+  - name: feedback
+    type: text
+    required: false
+
+  # Communication
+  - name: messages
+    type: array
+    required: false
+    description: Tin nhắn trao đổi
+    example:
+      - sender_id: "uuid"
+        sender_role: "buyer"
+        message: "Hàng bị thiếu cân"
+        timestamp: "2024-12-01T10:30:00Z"
+        attachments: []
+
+  # SLA tracking
+  - name: first_response_at
+    type: timestamp
+    required: false
+
+  - name: first_response_sla_hours
+    type: integer
+    required: true
+    default: 4
+
+  - name: resolution_sla_hours
+    type: integer
+    required: true
+    default: 72
+
+  - name: sla_breached
+    type: boolean
+    required: false
+    default: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    required: true
+
+  - name: opened_by_user
+    type: belongs_to
+    entity: User
+    required: true
+
+  - name: assigned_admin
+    type: belongs_to
+    entity: User
+    required: false
+
+  - name: resolution_transactions
+    type: has_many
+    entity: Payment
+
+state_machine:
+  initial: opened
+  states:
+    - name: opened
+      description: Vừa mở
+    - name: under_review
+      description: Admin đang xem xét
+    - name: awaiting_seller_response
+      description: Chờ seller phản hồi
+    - name: awaiting_buyer_response
+      description: Chờ buyer phản hồi
+    - name: escalated
+      description: Đã escalate lên cấp cao hơn
+    - name: mediation
+      description: Đang hòa giải
+    - name: resolved
+      description: Đã giải quyết
+    - name: closed
+      description: Đã đóng
+    - name: cancelled
+      description: Đã hủy
+  transitions:
+    - from: opened
+      to: under_review
+      trigger: assign
+      actions: [notify_assigned_admin, record_first_response]
+    - from: under_review
+      to: awaiting_seller_response
+      trigger: request_seller_info
+      actions: [notify_seller]
+    - from: under_review
+      to: awaiting_buyer_response
+      trigger: request_buyer_info
+      actions: [notify_buyer]
+    - from: [awaiting_seller_response, awaiting_buyer_response]
+      to: under_review
+      trigger: receive_response
+    - from: under_review
+      to: escalated
+      trigger: escalate
+      actions: [notify_supervisor]
+    - from: [under_review, escalated]
+      to: mediation
+      trigger: start_mediation
+      actions: [notify_both_parties]
+    - from: [under_review, escalated, mediation]
+      to: resolved
+      trigger: resolve
+      actions: [process_resolution, notify_all]
+    - from: resolved
+      to: closed
+      trigger: close
+      conditions: [satisfaction_rating_provided]
+    - from: [opened, under_review]
+      to: cancelled
+      trigger: cancel
+      actions: [notify_opener]
+
+indexes:
+  - [dispute_code]
+  - [order_id]
+  - [opened_by]
+  - [status]
+  - [severity]
+  - [assigned_to]
+  - [created_at]
+
+business_rules:
+  - BR-DSP-001: Dispute phải mở trong vòng 48h sau delivery
+  - BR-DSP-002: Weight dispute auto-created nếu variance > 5%
+  - BR-DSP-003: First response SLA = 4 giờ làm việc
+  - BR-DSP-004: Resolution SLA = 72 giờ
+  - BR-DSP-005: Dispute value > 10M = Auto escalate
+  - BR-DSP-006: 3+ disputes/user/tháng = Flag for review
+
+events:
+  - name: dispute.opened
+    payload: [id, dispute_code, order_id, dispute_type]
+  - name: dispute.assigned
+    payload: [id, assigned_to]
+  - name: dispute.escalated
+    payload: [id, severity, reason]
+  - name: dispute.resolved
+    payload: [id, resolution_type, resolution_amount]
+  - name: dispute.sla_breach
+    payload: [id, breach_type]

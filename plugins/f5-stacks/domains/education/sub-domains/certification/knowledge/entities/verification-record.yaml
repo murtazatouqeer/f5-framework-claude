@@ -1,0 +1,258 @@
+# Verification Record Entity
+# F5 Framework v2.0 - Education/Certification
+# Records credential verification attempts
+
+entity:
+  id: verification_record
+  name: Verification Record
+  name_ja: 検証記録
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    A record of each credential verification attempt, tracking who
+    verified what credential, when, and the result. Used for analytics
+    and audit trails.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+      
+    - name: verification_id
+      type: string
+      format: "VRF-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    # Credential Reference
+    - name: credential_type
+      type: enum
+      values: [certificate, badge]
+      required: true
+      indexed: true
+      
+    - name: certificate_id
+      type: uuid
+      foreign_key: certificate.id
+      indexed: true
+      
+    - name: badge_id
+      type: uuid
+      foreign_key: badge.id
+      indexed: true
+
+    # Verification Details
+    - name: verification_type
+      type: enum
+      values: [url, qr_code, api, manual, batch, blockchain]
+      required: true
+      indexed: true
+      
+    - name: verification_method
+      type: enum
+      values: [online, hosted, signed, blockchain_hash]
+      default: online
+
+    # Result
+    - name: status
+      type: enum
+      values: [valid, invalid, expired, revoked, suspended, not_found, error]
+      required: true
+      indexed: true
+      
+    - name: is_valid
+      type: boolean
+      required: true
+      indexed: true
+      
+    - name: verification_message
+      type: string
+      max_length: 500
+      description: Human-readable result message
+      
+    - name: error_code
+      type: string
+      max_length: 50
+      description: Error code if failed
+
+    # Credential Details Returned
+    - name: credential_details
+      type: jsonb
+      description: Credential info shown to verifier
+      schema:
+        holder_name: string
+        program_name: string
+        issued_at: timestamp
+        valid_until: timestamp
+        certificate_number: string
+        skills: array
+        
+    - name: details_level
+      type: enum
+      values: [basic, standard, full]
+      default: standard
+      description: Level of detail returned
+
+    # Verifier Information
+    - name: verifier_type
+      type: enum
+      values: [anonymous, registered, api_client, system]
+      default: anonymous
+      indexed: true
+      
+    - name: verifier_id
+      type: uuid
+      foreign_key: user.id
+      description: If registered verifier
+      
+    - name: verifier_name
+      type: string
+      max_length: 200
+      description: Name provided by verifier
+      
+    - name: verifier_organization
+      type: string
+      max_length: 200
+      description: Organization of verifier
+      
+    - name: verifier_email
+      type: string
+      max_length: 255
+      
+    - name: api_client_id
+      type: uuid
+      description: API client if API verification
+
+    # Context
+    - name: purpose
+      type: enum
+      values: [employment, education, compliance, background_check, personal, other]
+      description: Stated purpose of verification
+      
+    - name: purpose_notes
+      type: text
+      description: Additional context
+
+    # Technical Details
+    - name: verifier_ip
+      type: string
+      max_length: 45
+      description: IP address of verifier
+      
+    - name: user_agent
+      type: string
+      max_length: 500
+      description: Browser/client user agent
+      
+    - name: country
+      type: string
+      length: 2
+      description: Country from IP geolocation
+      
+    - name: referrer
+      type: string
+      max_length: 500
+      description: HTTP referrer
+
+    # Blockchain Verification
+    - name: blockchain_verified
+      type: boolean
+      default: false
+      description: Verified against blockchain
+      
+    - name: blockchain_tx_hash
+      type: string
+      max_length: 100
+      description: Transaction hash verified
+      
+    - name: blockchain_block
+      type: bigint
+      description: Block number
+
+    # Timing
+    - name: verified_at
+      type: timestamp
+      required: true
+      indexed: true
+      
+    - name: response_time_ms
+      type: integer
+      description: Verification response time
+
+    # Holder Notification
+    - name: holder_notified
+      type: boolean
+      default: false
+      description: Holder was notified of verification
+      
+    - name: notified_at
+      type: timestamp
+
+    # Metadata
+    - name: request_id
+      type: string
+      max_length: 100
+      description: External request tracking ID
+      
+    - name: metadata
+      type: jsonb
+      
+    - name: created_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_recent
+      formula: "verified_at > NOW() - INTERVAL '24 hours'"
+
+  relationships:
+    - name: certificate
+      type: belongs_to
+      entity: certificate
+      foreign_key: certificate_id
+      
+    - name: badge
+      type: belongs_to
+      entity: badge
+      foreign_key: badge_id
+      
+    - name: verifier
+      type: belongs_to
+      entity: user
+      foreign_key: verifier_id
+
+  indexes:
+    - fields: [certificate_id, verified_at]
+      name: idx_cert_verified_at
+      
+    - fields: [badge_id, verified_at]
+      name: idx_badge_verified_at
+      
+    - fields: [verified_at]
+      name: idx_verified_at
+      
+    - fields: [verifier_ip, verified_at]
+      name: idx_verifier_ip
+
+  validations:
+    - rule: "certificate_id IS NOT NULL OR badge_id IS NOT NULL"
+      message: Must reference either certificate or badge
+
+  analytics:
+    tracked_metrics:
+      - verifications_per_day
+      - unique_credentials_verified
+      - verification_success_rate
+      - average_response_time
+      - verifications_by_type
+      - verifications_by_country
+      - verifications_by_purpose
+
+  retention:
+    policy: time_based
+    duration_months: 24
+    anonymize_after_months: 12
+    fields_to_anonymize: [verifier_ip, verifier_email, verifier_name]

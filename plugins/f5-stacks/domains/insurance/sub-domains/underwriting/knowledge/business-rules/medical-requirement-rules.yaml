@@ -1,0 +1,685 @@
+name: medical_requirement_rules
+display_name: Medical Requirement Rules
+description: |
+  Business rules governing medical evidence requirements based on
+  age, sum insured, product type, and disclosed medical history.
+
+domain: insurance
+subdomain: underwriting
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - non_medical_limits
+  - age_based_requirements
+  - sum_based_requirements
+  - condition_based_requirements
+  - validity_rules
+  - provider_requirements
+
+rules:
+  # Non-Medical Limit Rules
+  - id: BR-MED-001
+    name: Non-Medical Limits by Product
+    category: non_medical_limits
+    description: |
+      Maximum sum insured that can be accepted without
+      any medical examination requirements.
+    priority: critical
+
+    limits_by_product:
+      term_life:
+        standard: 500000000  # 500M VND
+        preferred_channel: 750000000  # 750M (bancassurance)
+        group: 1000000000  # 1B VND
+
+      whole_life:
+        standard: 300000000  # 300M VND
+        preferred_channel: 500000000
+        group: 750000000
+
+      endowment:
+        standard: 500000000
+        preferred_channel: 750000000
+
+      critical_illness:
+        standard: 200000000  # 200M VND
+        preferred_channel: 300000000
+
+      disability_income:
+        standard: 300000000  # annual benefit
+        preferred_channel: 500000000
+
+    conditions:
+      - age_within_limits
+      - no_adverse_disclosures
+      - standard_occupation_class
+      - no_hazardous_activities
+
+  - id: BR-MED-002
+    name: Non-Medical Limits by Age
+    category: non_medical_limits
+    description: |
+      Age-adjusted non-medical limits reducing with age.
+    priority: critical
+
+    age_adjustments:
+      age_18_35:
+        multiplier: 1.0
+        description: Full non-medical limits apply
+
+      age_36_45:
+        multiplier: 0.8
+        description: 80% of standard limits
+
+      age_46_50:
+        multiplier: 0.6
+        description: 60% of standard limits
+
+      age_51_55:
+        multiplier: 0.4
+        description: 40% of standard limits
+
+      age_56_60:
+        multiplier: 0.2
+        description: 20% of standard limits
+
+      age_61_plus:
+        multiplier: 0.0
+        description: No non-medical acceptance
+
+  - id: BR-MED-003
+    name: Cumulative Sum Rules
+    category: non_medical_limits
+    description: |
+      Non-medical limits apply to cumulative sum across
+      all policies with the company.
+    priority: critical
+
+    calculation:
+      formula: |
+        Cumulative_Sum = New_Application + Existing_Coverage + Pending_Applications
+
+      existing_coverage:
+        include:
+          - active_policies
+          - policies_in_free_look
+          - pending_applications
+        exclude:
+          - lapsed_policies
+          - fully_surrendered
+          - matured_policies
+
+    action_when_exceeded:
+      - trigger_medical_requirements
+      - apply_requirements_for_total_sum
+      - consider_existing_evidence_reuse
+
+  # Age-Based Requirement Rules
+  - id: BR-MED-010
+    name: Age-Based Medical Requirements Matrix
+    category: age_based_requirements
+    description: |
+      Minimum medical requirements triggered by applicant age
+      regardless of sum insured.
+    priority: high
+
+    requirements_matrix:
+      age_18_35:
+        always_required: []
+        optional: []
+        notes: Requirements driven by sum only
+
+      age_36_40:
+        always_required:
+          - health_declaration
+        optional:
+          - random_medical_exam
+        random_rate: 5%
+
+      age_41_45:
+        always_required:
+          - health_declaration
+          - hiv_test
+        optional:
+          - medical_exam
+        trigger_sum: 500000000
+
+      age_46_50:
+        always_required:
+          - health_declaration
+          - medical_exam_basic
+          - hiv_test
+          - blood_profile
+        optional: []
+
+      age_51_55:
+        always_required:
+          - health_declaration
+          - medical_exam_full
+          - blood_profile
+          - ecg
+          - chest_xray
+          - hiv_test
+        optional:
+          - stress_test
+
+      age_56_60:
+        always_required:
+          - health_declaration
+          - medical_exam_full
+          - blood_profile_comprehensive
+          - ecg
+          - stress_test
+          - chest_xray
+          - hiv_test
+          - psa_male
+        optional:
+          - coronary_ct
+
+      age_61_65:
+        always_required:
+          - health_declaration
+          - medical_exam_comprehensive
+          - blood_profile_comprehensive
+          - ecg
+          - stress_test
+          - chest_xray
+          - hiv_test
+          - psa_male
+          - mammogram_female
+          - kidney_function
+          - liver_function
+        optional:
+          - coronary_ct
+          - echo
+
+  # Sum-Based Requirement Rules
+  - id: BR-MED-020
+    name: Sum-Based Medical Requirements
+    category: sum_based_requirements
+    description: |
+      Medical requirements triggered by sum insured amounts.
+    priority: critical
+
+    sum_tiers:
+      tier_1:
+        sum_range: "0 - 500M"
+        requirements:
+          - health_declaration
+        notes: Non-medical if within age limits
+
+      tier_2:
+        sum_range: "500M - 1B"
+        requirements:
+          - health_declaration
+          - medical_exam_basic
+          - blood_profile
+          - hiv_test
+
+      tier_3:
+        sum_range: "1B - 2B"
+        requirements:
+          - health_declaration
+          - medical_exam_full
+          - blood_profile
+          - urinalysis
+          - ecg
+          - hiv_test
+          - chest_xray
+
+      tier_4:
+        sum_range: "2B - 5B"
+        requirements:
+          - health_declaration
+          - medical_exam_comprehensive
+          - blood_profile_comprehensive
+          - urinalysis
+          - ecg
+          - stress_test
+          - chest_xray
+          - hiv_test
+          - hepatitis_panel
+
+      tier_5:
+        sum_range: "5B - 10B"
+        requirements:
+          - health_declaration
+          - medical_exam_comprehensive
+          - blood_profile_comprehensive
+          - urinalysis
+          - ecg
+          - stress_test
+          - chest_xray
+          - hiv_test
+          - hepatitis_panel
+          - abdominal_ultrasound
+          - tumor_markers
+
+      tier_6:
+        sum_range: "Above 10B"
+        requirements:
+          - health_declaration
+          - medical_exam_comprehensive
+          - blood_profile_comprehensive
+          - urinalysis
+          - ecg
+          - stress_test
+          - chest_xray
+          - hiv_test
+          - hepatitis_panel
+          - abdominal_ultrasound
+          - tumor_markers
+          - coronary_ct
+          - echo
+          - additional_specialist_as_needed
+
+  - id: BR-MED-021
+    name: Combined Age-Sum Matrix
+    category: sum_based_requirements
+    description: |
+      Final requirements are the GREATER of age-based
+      and sum-based requirements.
+    priority: critical
+
+    combination_rule: |
+      Final_Requirements = MAX(Age_Requirements, Sum_Requirements)
+
+      Where MAX means:
+      - All requirements from the more demanding tier
+      - Plus any additional requirements from the other tier
+
+    example:
+      applicant_age: 52
+      sum_insured: 800000000
+      age_tier_requirements:
+        - medical_exam_full
+        - blood_profile_comprehensive
+        - ecg
+        - stress_test
+        - chest_xray
+      sum_tier_requirements:
+        - medical_exam_basic
+        - blood_profile
+        - urinalysis
+      final_requirements:
+        - medical_exam_full  # from age tier (more comprehensive)
+        - blood_profile_comprehensive  # from age tier
+        - ecg  # from age tier
+        - stress_test  # from age tier
+        - chest_xray  # from age tier
+        - urinalysis  # from sum tier (additional)
+
+  # Condition-Based Requirement Rules
+  - id: BR-MED-030
+    name: Disclosure-Triggered Requirements
+    category: condition_based_requirements
+    description: |
+      Additional medical requirements triggered by
+      specific disclosures in the health declaration.
+    priority: high
+
+    triggers:
+      cardiovascular:
+        disclosures:
+          - chest_pain
+          - palpitations
+          - high_blood_pressure
+          - high_cholesterol
+          - heart_disease_family
+        additional_requirements:
+          - ecg
+          - lipid_profile
+          - stress_test
+          - echo_if_abnormal
+
+      respiratory:
+        disclosures:
+          - asthma
+          - copd
+          - shortness_of_breath
+          - chronic_cough
+          - smoking_history
+        additional_requirements:
+          - chest_xray
+          - pulmonary_function_test
+
+      diabetes:
+        disclosures:
+          - diabetes
+          - high_blood_sugar
+          - diabetes_family
+        additional_requirements:
+          - hba1c
+          - fasting_glucose
+          - kidney_function
+          - eye_exam
+          - diabetic_questionnaire
+
+      cancer:
+        disclosures:
+          - cancer_history
+          - cancer_family
+          - unexplained_weight_loss
+          - lumps_masses
+        additional_requirements:
+          - tumor_markers
+          - imaging_as_appropriate
+          - specialist_report
+          - pathology_if_available
+
+      mental_health:
+        disclosures:
+          - depression
+          - anxiety
+          - psychiatric_treatment
+          - suicide_attempt
+        additional_requirements:
+          - psychiatrist_report
+          - treatment_records
+          - mental_health_questionnaire
+
+      musculoskeletal:
+        disclosures:
+          - back_problems
+          - joint_problems
+          - disability_claim
+        additional_requirements:
+          - specialist_report
+          - imaging_mri_ct
+          - functional_assessment
+
+  - id: BR-MED-031
+    name: Occupation-Triggered Requirements
+    category: condition_based_requirements
+    description: |
+      Medical requirements triggered by occupation class
+      or specific occupational hazards.
+    priority: medium
+
+    triggers:
+      class_4_5:
+        occupations:
+          - manual_labor
+          - construction
+          - mining
+          - heavy_industry
+        additional_requirements:
+          - physical_exam_detailed
+          - audiometry
+          - vision_test
+          - drug_screen
+
+      aviation:
+        occupations:
+          - pilot
+          - cabin_crew
+          - air_traffic_control
+        additional_requirements:
+          - aviation_medical
+          - ecg
+          - vision_test
+          - hearing_test
+
+      diving:
+        occupations:
+          - commercial_diver
+          - underwater_worker
+        additional_requirements:
+          - diving_medical
+          - pulmonary_function
+          - ecg
+          - audiometry
+
+      chemical_exposure:
+        occupations:
+          - chemical_plant
+          - laboratory
+          - pesticide_handling
+        additional_requirements:
+          - liver_function
+          - kidney_function
+          - complete_blood_count
+          - specific_exposure_tests
+
+  # Validity Rules
+  - id: BR-MED-040
+    name: Medical Evidence Validity Periods
+    category: validity_rules
+    description: |
+      Maximum age of medical evidence for acceptance.
+    priority: critical
+
+    validity_periods:
+      health_declaration:
+        validity: 90_days
+        from: signature_date
+        extension: not_allowed
+
+      medical_exam:
+        validity: 6_months
+        from: exam_date
+        extension:
+          allowed: true
+          max_extension: 3_months
+          condition: no_health_changes
+
+      blood_tests:
+        validity: 6_months
+        from: sample_date
+        extension: not_allowed
+
+      ecg:
+        validity: 12_months
+        from: test_date
+        exception: 6_months_if_cardiovascular_history
+
+      stress_test:
+        validity: 12_months
+        from: test_date
+        exception: 6_months_if_cardiovascular_concern
+
+      chest_xray:
+        validity: 12_months
+        from: xray_date
+        exception: 6_months_if_respiratory_concern
+
+      specialist_report:
+        validity: 6_months
+        from: report_date
+        extension: not_allowed
+
+      hiv_test:
+        validity: 6_months
+        from: test_date
+        extension: not_allowed
+
+  - id: BR-MED-041
+    name: Evidence Reuse Rules
+    category: validity_rules
+    description: |
+      Rules for reusing medical evidence from previous
+      applications or policies.
+    priority: medium
+
+    reuse_conditions:
+      same_company:
+        allowed: true
+        max_age: 12_months
+        sum_increase_limit: 50%
+        conditions:
+          - no_new_disclosures
+          - same_product_type
+          - no_adverse_changes
+
+      from_other_insurer:
+        allowed: limited
+        requirements:
+          - original_reports_required
+          - verification_with_provider
+          - max_age_6_months
+          - no_confidential_data
+
+      from_employer_medical:
+        allowed: limited
+        requirements:
+          - within_12_months
+          - comprehensive_enough
+          - original_results
+
+    never_reuse:
+      - hiv_test
+      - drug_screen
+      - pregnancy_test
+
+  - id: BR-MED-042
+    name: Incomplete Evidence Handling
+    category: validity_rules
+    description: |
+      Actions when medical evidence is incomplete or expired.
+    priority: high
+
+    handling:
+      expired_evidence:
+        action: request_fresh
+        timeline: 14_days
+        reminder: 7_days
+        final_action: decline_or_postpone
+
+      incomplete_evidence:
+        action: request_completion
+        timeline: 14_days
+        specific_gaps_communicated: true
+        partial_assessment: not_allowed
+
+      conflicting_evidence:
+        action: request_clarification
+        methods:
+          - additional_tests
+          - specialist_opinion
+          - provider_clarification
+        resolution_required: true
+
+      unreadable_evidence:
+        action: request_replacement
+        timeline: 7_days
+        original_required: true
+
+  # Provider Requirements
+  - id: BR-MED-050
+    name: Approved Medical Provider Rules
+    category: provider_requirements
+    description: |
+      Requirements for medical examination providers.
+    priority: high
+
+    provider_categories:
+      panel_doctors:
+        description: Company-approved examiners
+        required_for:
+          - medical_exam
+          - blood_tests
+          - ecg
+        approval_criteria:
+          - licensed_physician
+          - completed_training
+          - quality_standards_met
+          - no_conflict_of_interest
+
+      panel_laboratories:
+        description: Company-approved labs
+        required_for:
+          - blood_tests
+          - urinalysis
+          - specialized_tests
+        approval_criteria:
+          - accredited_laboratory
+          - quality_certifications
+          - standardized_reporting
+
+      panel_hospitals:
+        description: Company-approved facilities
+        required_for:
+          - stress_test
+          - imaging
+          - specialist_consultations
+        approval_criteria:
+          - accredited_facility
+          - qualified_specialists
+          - quality_equipment
+
+      non_panel_acceptance:
+        allowed: limited
+        conditions:
+          - remote_location
+          - specialist_not_available
+          - emergency_situation
+        approval_required: underwriter
+
+  - id: BR-MED-051
+    name: Medical Report Format Requirements
+    category: provider_requirements
+    description: |
+      Required format and content for medical reports.
+    priority: medium
+
+    general_requirements:
+      identification:
+        - applicant_full_name
+        - date_of_birth
+        - id_number
+        - policy_application_number
+
+      provider_details:
+        - examiner_name
+        - examiner_registration
+        - facility_name
+        - examination_date
+
+      attestation:
+        - examiner_signature
+        - facility_stamp
+        - date_of_report
+
+    specific_requirements:
+      medical_exam:
+        - height_weight
+        - blood_pressure_multiple
+        - pulse_rate
+        - physical_examination_findings
+        - examiner_opinion
+
+      lab_results:
+        - test_methodology
+        - reference_ranges
+        - abnormal_flags
+        - sample_date_time
+
+      specialist_report:
+        - diagnosis
+        - treatment_plan
+        - prognosis
+        - functional_assessment
+
+cost_allocation:
+  company_paid:
+    - initial_requirements
+    - additional_triggered_tests
+    - specialist_referrals
+
+  applicant_paid:
+    - repeat_tests_due_to_error
+    - excessive_retest_requests
+    - non_panel_provider_premium
+
+audit_requirements:
+  - Random audit of 5% of non-medical acceptances
+  - Annual review of non-medical limits
+  - Provider quality monitoring
+  - Evidence validity compliance checks
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

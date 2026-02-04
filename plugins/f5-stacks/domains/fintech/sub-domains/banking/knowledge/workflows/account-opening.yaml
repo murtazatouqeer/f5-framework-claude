@@ -1,0 +1,685 @@
+name: Account Opening Workflow
+display_name: Account Opening Workflow / Quy trình mở tài khoản
+description: |
+  End-to-end workflow for opening new bank accounts including
+  identity verification, compliance checks, and account activation.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-ACC-OPEN
+  name: Account Opening
+  name_vi: Mở tài khoản
+  category: account_management
+
+  trigger:
+    type: customer_request
+    channels:
+      - mobile_app
+      - web_banking
+      - branch
+      - agent_banking
+
+  expected_duration:
+    ekyc: 5_minutes
+    branch: 30_minutes
+    full_verification: 1-3_business_days
+
+  actors:
+    - customer
+    - system
+    - kyc_officer
+    - compliance_officer
+    - branch_staff
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Submit Application
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: submit_application
+    name: Submit Application
+    name_vi: Nộp đơn đăng ký
+    actor: customer
+
+    description: |
+      Customer provides personal information and selects account type.
+
+    inputs:
+      personal_info:
+        - full_name
+        - date_of_birth
+        - gender
+        - nationality
+        - id_type  # national_id, passport, cccd
+        - id_number
+        - id_issue_date
+        - id_expiry_date
+        - phone_number
+        - email
+
+      address_info:
+        - permanent_address
+        - current_address
+        - province_city
+        - district
+        - ward
+
+      account_preferences:
+        - account_type  # checking, savings, fixed_deposit
+        - account_tier  # standard, gold, platinum
+        - currency  # VND, USD
+        - debit_card_requested  # boolean
+        - digital_banking  # boolean
+
+    validations:
+      - rule: age_validation
+        condition: "age >= 18"
+        error: "MINIMUM_AGE_NOT_MET"
+
+      - rule: id_validity
+        condition: "id_expiry_date > today"
+        error: "ID_EXPIRED"
+
+      - rule: phone_format
+        condition: "valid_vietnam_phone(phone_number)"
+        error: "INVALID_PHONE_FORMAT"
+
+    outputs:
+      - application_id
+      - application_status: submitted
+
+    next_step: verify_identity
+
+    error_handling:
+      validation_failed:
+        action: return_to_customer
+        message: "Please correct the highlighted fields"
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Verify Identity
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: verify_identity
+    name: Verify Identity
+    name_vi: Xác minh danh tính
+    actor: system | kyc_officer
+
+    description: |
+      Verify customer identity through eKYC or in-person verification.
+
+    methods:
+      ekyc:
+        provider: internal | third_party
+        steps:
+          - capture_id_front
+          - capture_id_back
+          - liveness_check
+          - face_matching
+          - ocr_extraction
+
+        thresholds:
+          face_match_score: 0.85
+          liveness_score: 0.90
+          ocr_confidence: 0.80
+
+        fallback: manual_review
+
+      in_person:
+        location: branch
+        requirements:
+          - original_id_document
+          - recent_utility_bill
+          - passport_photo
+        verification:
+          - visual_id_check
+          - signature_capture
+          - photo_capture
+
+    outputs:
+      - kyc_result: passed | failed | pending_review
+      - kyc_level: basic | standard | enhanced
+      - verification_method: ekyc | in_person
+      - verification_score
+
+    next_step:
+      if_passed: perform_checks
+      if_failed: reject_application
+      if_pending: manual_kyc_review
+
+    sla:
+      ekyc: 2_minutes
+      in_person: 15_minutes
+      manual_review: 24_hours
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Perform Compliance Checks
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: perform_checks
+    name: Perform Compliance Checks
+    name_vi: Thực hiện kiểm tra tuân thủ
+    actor: system
+
+    description: |
+      Run AML screening, sanctions check, and credit assessment.
+
+    checks:
+      aml_screening:
+        provider: internal | world_check
+        lists:
+          - pep_list
+          - sanctions_list
+          - adverse_media
+        result: clear | match | potential_match
+
+      sanctions_screening:
+        lists:
+          - OFAC_SDN
+          - UN_Consolidated
+          - EU_Sanctions
+          - Vietnam_local
+        result: clear | match
+
+      credit_check:
+        provider: pcb | cic
+        required_for: [checking, credit_products]
+        data_retrieved:
+          - credit_score
+          - existing_loans
+          - payment_history
+
+      duplicate_check:
+        criteria:
+          - id_number
+          - phone_number
+          - email
+        result: unique | duplicate_found
+
+    outputs:
+      - compliance_status: approved | rejected | escalated
+      - risk_rating: low | medium | high
+      - flags: []
+
+    next_step:
+      if_approved: create_account
+      if_rejected: reject_application
+      if_escalated: compliance_review
+
+    escalation_triggers:
+      - pep_match
+      - sanctions_potential_match
+      - high_risk_country
+      - adverse_media_hit
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Compliance Review (Conditional)
+  # ---------------------------------------------------------------------------
+  - step: 3.5
+    id: compliance_review
+    name: Compliance Review
+    name_vi: Xét duyệt tuân thủ
+    actor: compliance_officer
+    conditional: true
+
+    description: |
+      Manual review for escalated cases requiring compliance officer decision.
+
+    review_items:
+      - escalation_reason
+      - screening_results
+      - supporting_documents
+      - customer_explanation
+
+    decisions:
+      approve:
+        conditions: false_positive | acceptable_risk
+        requirements: documentation
+        approver: compliance_officer
+
+      approve_with_conditions:
+        conditions: enhanced_monitoring
+        requirements: risk_mitigation_plan
+        approver: senior_compliance_officer
+
+      reject:
+        conditions: confirmed_match | unacceptable_risk
+        requirements: rejection_memo
+        approver: compliance_officer
+
+    outputs:
+      - review_decision
+      - review_notes
+      - monitoring_level
+
+    next_step:
+      if_approved: create_account
+      if_rejected: reject_application
+
+    sla: 2_business_days
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Create Account
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: create_account
+    name: Create Account
+    name_vi: Tạo tài khoản
+    actor: system
+
+    description: |
+      Generate account number and create account in core banking system.
+
+    actions:
+      generate_account_number:
+        format: "BBBSSSAAAAAAAAAC"
+        components:
+          BBB: branch_code
+          SSS: product_code
+          AAAAAAAAAA: sequential_number
+          C: check_digit
+
+      create_in_cbs:
+        system: core_banking
+        data:
+          - customer_id
+          - account_number
+          - account_type
+          - currency
+          - branch_code
+          - opening_date
+          - status: pending_activation
+
+      set_default_limits:
+        source: account_type_defaults
+        limits:
+          - daily_transfer_limit
+          - monthly_transfer_limit
+          - per_transaction_limit
+
+      create_customer_profile:
+        if: new_customer
+        data:
+          - customer_id
+          - kyc_level
+          - segment
+          - relationship_manager
+
+    outputs:
+      - account_number
+      - customer_id
+      - account_status: created
+
+    next_step: fund_initial_deposit
+
+    rollback:
+      on_failure: reverse_account_creation
+      notification: operations_team
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Fund Initial Deposit
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: fund_initial_deposit
+    name: Fund Initial Deposit
+    name_vi: Nạp tiền ban đầu
+    actor: customer
+    optional: true
+
+    description: |
+      Customer makes initial deposit to activate account.
+
+    deposit_methods:
+      cash:
+        channels: [branch, agent]
+        limits:
+          minimum: 50000
+          maximum: 200000000
+
+      transfer:
+        channels: [mobile_app, web_banking]
+        from: other_bank_account
+        limits:
+          minimum: 50000
+          maximum: per_kyc_limit
+
+      card:
+        channels: [mobile_app, web_banking]
+        types: [debit, credit]
+        limits:
+          minimum: 50000
+          maximum: 50000000
+
+    minimum_balance_requirements:
+      checking_standard: 0
+      checking_premium: 5000000
+      savings_standard: 100000
+      fixed_deposit: 1000000
+
+    outputs:
+      - initial_balance
+      - deposit_reference
+      - deposit_channel
+
+    next_step: issue_debit_card
+
+    skip_condition:
+      if: minimum_balance = 0 AND card_not_requested
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Issue Debit Card
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: issue_debit_card
+    name: Issue Debit Card
+    name_vi: Phát hành thẻ ghi nợ
+    actor: system
+    conditional: true
+
+    description: |
+      Issue debit card if requested by customer.
+
+    condition: debit_card_requested = true
+
+    actions:
+      determine_card_type:
+        based_on: account_tier
+        mapping:
+          standard: visa_classic
+          gold: visa_gold
+          platinum: visa_platinum
+
+      generate_card_record:
+        data:
+          - card_number: generate_pan()
+          - expiry_date: +4_years
+          - card_status: inactive
+
+      initiate_production:
+        instant_issuance:
+          available_at: branch
+          time: 15_minutes
+
+        standard_issuance:
+          production_time: 5-7_business_days
+          delivery: branch_pickup | home_delivery
+
+      create_virtual_card:
+        if: digital_banking_enabled
+        immediate: true
+        usable_for: online_transactions
+
+    outputs:
+      - card_number_masked
+      - card_status: inactive
+      - expected_delivery_date
+      - virtual_card_available
+
+    next_step: activate_digital_banking
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Activate Digital Banking
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: activate_digital_banking
+    name: Activate Digital Banking
+    name_vi: Kích hoạt ngân hàng số
+    actor: system | customer
+    conditional: true
+
+    description: |
+      Set up mobile app and web banking access.
+
+    condition: digital_banking = true
+
+    actions:
+      create_credentials:
+        username: customer_id | phone_number | email
+        password: customer_set | temporary_generated
+
+      enable_features:
+        - balance_inquiry
+        - transaction_history
+        - internal_transfer
+        - bill_payment
+        - card_management
+
+      set_security:
+        - biometric_enrollment: optional
+        - smart_otp_setup: required
+        - transaction_pin: required
+
+      configure_limits:
+        source: kyc_level_defaults
+        adjustable: true
+
+    outputs:
+      - digital_banking_status: active
+      - username
+      - features_enabled: []
+
+    next_step: welcome_communication
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Welcome Communication
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: welcome_communication
+    name: Welcome Communication
+    name_vi: Thông báo chào mừng
+    actor: system
+
+    description: |
+      Send welcome messages and onboarding materials.
+
+    communications:
+      immediate:
+        channels: [sms, push]
+        content: account_created_confirmation
+        includes:
+          - account_number_masked
+          - app_download_link
+
+      email:
+        timing: within_1_hour
+        content: welcome_kit
+        includes:
+          - account_details
+          - terms_and_conditions
+          - fee_schedule
+          - onboarding_guide
+
+      follow_up:
+        timing: day_3
+        content: onboarding_tips
+        includes:
+          - feature_highlights
+          - support_contacts
+          - faq_link
+
+    outputs:
+      - communications_sent: []
+      - onboarding_status: started
+
+    next_step: complete_workflow
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Complete Workflow
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: complete_workflow
+    name: Complete Workflow
+    name_vi: Hoàn thành quy trình
+    actor: system
+
+    description: |
+      Finalize account opening and update status.
+
+    actions:
+      update_account_status:
+        from: pending_activation
+        to: active
+
+      log_completion:
+        data:
+          - completion_time
+          - total_duration
+          - steps_completed
+          - channel
+
+      trigger_analytics:
+        events:
+          - account_opened
+          - customer_acquired
+
+      assign_relationship_manager:
+        if: segment IN [affluent, high_net_worth]
+
+    outputs:
+      - workflow_status: completed
+      - account_status: active
+      - completion_timestamp
+
+# =============================================================================
+# REJECTION HANDLING
+# =============================================================================
+rejection_flow:
+  - step: reject_application
+    name: Reject Application
+    name_vi: Từ chối đơn đăng ký
+
+    actions:
+      update_status:
+        application_status: rejected
+        rejection_reason: from_previous_step
+
+      notify_customer:
+        channels: [sms, email]
+        content: rejection_notice
+        include_reason: if_allowed_by_policy
+
+      log_rejection:
+        data:
+          - rejection_reason
+          - rejection_step
+          - reviewer_if_manual
+
+      retention:
+        period: 5_years
+        purpose: regulatory_compliance
+
+    reapplication:
+      allowed_after: 30_days
+      exceptions:
+        - sanctions_match: not_allowed
+        - fraud: not_allowed
+
+# =============================================================================
+# SLA AND METRICS
+# =============================================================================
+sla:
+  end_to_end:
+    ekyc_path: 10_minutes
+    branch_path: 45_minutes
+    with_compliance_review: 3_business_days
+
+  step_slas:
+    submit_application: 5_minutes
+    verify_identity: 5_minutes
+    perform_checks: 2_minutes
+    compliance_review: 48_hours
+    create_account: 30_seconds
+    issue_debit_card: 5_minutes
+    activate_digital_banking: 2_minutes
+
+metrics:
+  tracked:
+    - application_to_activation_time
+    - ekyc_success_rate
+    - compliance_escalation_rate
+    - rejection_rate
+    - digital_banking_adoption
+    - card_issuance_rate
+
+  targets:
+    ekyc_success_rate: "> 85%"
+    application_completion_rate: "> 90%"
+    digital_adoption: "> 80%"
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  system_errors:
+    core_banking_unavailable:
+      action: queue_for_retry
+      retry_attempts: 3
+      retry_interval: 5_minutes
+      escalation: operations_team
+
+    ekyc_provider_down:
+      action: offer_alternative
+      alternatives: [in_person, callback]
+
+    card_production_failed:
+      action: retry_with_notification
+      customer_impact: delayed_card
+
+  business_errors:
+    duplicate_application:
+      action: merge_or_reject
+      notification: customer
+
+    incomplete_documents:
+      action: request_resubmission
+      deadline: 7_days
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - application_submitted
+    - identity_verified
+    - checks_completed
+    - compliance_reviewed
+    - account_created
+    - card_issued
+    - digital_banking_activated
+    - workflow_completed
+    - workflow_rejected
+
+  data_retention:
+    successful_applications: 10_years
+    rejected_applications: 5_years
+    audit_logs: 7_years
+
+# =============================================================================
+# IMPLEMENTATION NOTES
+# =============================================================================
+implementation_notes:
+  integrations:
+    - Core Banking System (CBS)
+    - eKYC provider
+    - AML screening service
+    - Credit bureau (PCB/CIC)
+    - Card management system
+    - Digital banking platform
+    - Communication gateway (SMS/Email)
+
+  testing_scenarios:
+    - Successful eKYC path
+    - Successful branch path
+    - eKYC failure with fallback
+    - Compliance escalation
+    - Rejection at various stages
+    - System error recovery

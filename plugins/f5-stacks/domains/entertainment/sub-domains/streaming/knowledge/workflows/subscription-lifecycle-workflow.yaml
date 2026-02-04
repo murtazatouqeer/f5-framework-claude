@@ -1,0 +1,635 @@
+name: subscription_lifecycle_workflow
+display_name: Subscription Lifecycle Workflow
+description: |
+  End-to-end workflow managing subscription creation, billing,
+  renewal, and cancellation processes.
+
+domain: entertainment
+subdomain: streaming
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-STR-002
+trigger:
+  events:
+    - subscription_signup
+    - subscription_renewal
+    - subscription_cancellation
+    - payment_event
+  source: subscription_service
+
+participants:
+  roles:
+    - customer
+    - customer_support
+    - billing_admin
+    - system
+
+  systems:
+    - subscription_service
+    - payment_gateway
+    - identity_service
+    - notification_service
+    - analytics_service
+
+stages:
+  # ============================================
+  # Subscription Creation
+  # ============================================
+  - id: SL-001
+    name: Plan Selection
+    description: Customer selects subscription plan
+    actor: customer
+
+    inputs:
+      - user_id
+      - selected_plan
+
+    activities:
+      - id: SL-001-A
+        name: Display Available Plans
+        type: automated
+        action: Show plans based on region and eligibility
+        display:
+          - plan_name
+          - price
+          - features
+          - billing_cycle_options
+
+      - id: SL-001-B
+        name: Apply Promotions
+        type: automated
+        action: Check and apply eligible promotions
+        checks:
+          - promo_codes
+          - partner_discounts
+          - referral_credits
+          - special_offers
+
+      - id: SL-001-C
+        name: Calculate Price
+        type: automated
+        action: Calculate final price with taxes
+        calculation:
+          - base_price
+          - discount
+          - taxes
+          - final_amount
+
+    outputs:
+      - selected_plan
+      - calculated_price
+      - applied_promotions
+
+    sla: real_time
+    next_stage: SL-002
+
+  - id: SL-002
+    name: Account Setup
+    description: Create or verify user account
+    actor: system
+
+    inputs:
+      - user_id
+      - selected_plan
+
+    activities:
+      - id: SL-002-A
+        name: Verify Account
+        type: automated
+        action: Validate user account status
+        checks:
+          - account_exists
+          - email_verified
+          - no_fraud_flags
+          - eligible_for_trial
+
+      - id: SL-002-B
+        name: Check Existing Subscriptions
+        type: automated
+        action: Verify no duplicate subscriptions
+        validation:
+          - no_active_subscription
+          - no_pending_subscription
+
+      - id: SL-002-C
+        name: Create Profile
+        type: automated
+        action: Set up default profile if needed
+        creates:
+          - primary_profile
+          - default_preferences
+
+    outputs:
+      - account_verified
+      - trial_eligible
+      - profiles_created
+
+    sla: 5_seconds
+    next_stage: SL-003
+
+  - id: SL-003
+    name: Payment Setup
+    description: Collect and validate payment information
+    actor: customer
+
+    inputs:
+      - user_id
+      - calculated_price
+
+    activities:
+      - id: SL-003-A
+        name: Collect Payment Method
+        type: manual
+        action: Customer enters payment details
+        options:
+          - credit_card
+          - debit_card
+          - paypal
+          - apple_pay
+          - google_pay
+          - carrier_billing
+
+      - id: SL-003-B
+        name: Validate Payment Method
+        type: automated
+        action: Verify payment method validity
+        validations:
+          - card_number_valid
+          - expiry_valid
+          - cvv_valid
+          - address_verification
+
+      - id: SL-003-C
+        name: Pre-authorize Payment
+        type: automated
+        action: Hold authorization for subscription amount
+        amount: 0.00  # Or first charge amount
+        timeout: 7_days
+
+      - id: SL-003-D
+        name: Store Payment Method
+        type: automated
+        action: Securely store payment details
+        compliance:
+          - pci_dss
+          - tokenization
+
+    outputs:
+      - payment_method_id
+      - authorization_id
+
+    sla: real_time
+    next_stage: SL-004
+
+  - id: SL-004
+    name: Subscription Activation
+    description: Activate subscription and grant access
+    actor: system
+
+    inputs:
+      - user_id
+      - plan_id
+      - payment_method_id
+
+    activities:
+      - id: SL-004-A
+        name: Create Subscription Record
+        type: automated
+        action: Create subscription in database
+        fields:
+          - subscription_id
+          - user_id
+          - plan_id
+          - status: active or trialing
+          - start_date
+          - billing_cycle_anchor
+
+      - id: SL-004-B
+        name: Grant Entitlements
+        type: automated
+        action: Enable subscription features
+        entitlements:
+          - streaming_access
+          - max_streams
+          - max_profiles
+          - download_quota
+          - quality_level
+
+      - id: SL-004-C
+        name: Schedule First Billing
+        type: automated
+        action: Set up billing schedule
+        scheduling:
+          trial: first_charge_after_trial
+          paid: immediate_charge
+
+      - id: SL-004-D
+        name: Send Welcome Communications
+        type: automated
+        action: Send confirmation and welcome
+        communications:
+          - email_confirmation
+          - welcome_email
+          - getting_started_guide
+          - push_notification
+
+    outputs:
+      - subscription_id
+      - activation_timestamp
+
+    sla: 30_seconds
+    next_stage: complete_or_billing
+
+  # ============================================
+  # Billing Cycle
+  # ============================================
+  - id: SL-010
+    name: Billing Initiation
+    description: Start billing cycle processing
+    actor: system
+    trigger: scheduled
+
+    inputs:
+      - subscription_id
+      - billing_date
+
+    activities:
+      - id: SL-010-A
+        name: Verify Subscription Active
+        type: automated
+        action: Confirm subscription is active
+        checks:
+          - status: active
+          - not_cancelled
+          - not_paused
+
+      - id: SL-010-B
+        name: Calculate Billing Amount
+        type: automated
+        action: Calculate charge amount
+        includes:
+          - base_plan_price
+          - prorations
+          - discounts
+          - taxes
+
+      - id: SL-010-C
+        name: Create Invoice
+        type: automated
+        action: Generate invoice record
+        details:
+          - line_items
+          - subtotal
+          - tax_breakdown
+          - total
+
+    outputs:
+      - invoice_id
+      - charge_amount
+
+    sla: 5_minutes
+    next_stage: SL-011
+
+  - id: SL-011
+    name: Payment Processing
+    description: Process subscription payment
+    actor: system
+
+    inputs:
+      - invoice_id
+      - payment_method_id
+
+    activities:
+      - id: SL-011-A
+        name: Attempt Payment
+        type: automated
+        action: Charge payment method
+        gateway_call:
+          - amount
+          - payment_method
+          - invoice_reference
+
+      - id: SL-011-B
+        name: Handle Payment Result
+        type: decision
+        options:
+          success:
+            next: SL-012
+          failure:
+            next: SL-013
+
+    outputs:
+      - payment_result
+      - transaction_id
+
+    sla: 30_seconds
+    next_stage: conditional
+
+  - id: SL-012
+    name: Payment Success
+    description: Handle successful payment
+    actor: system
+
+    inputs:
+      - invoice_id
+      - transaction_id
+
+    activities:
+      - id: SL-012-A
+        name: Update Invoice Status
+        type: automated
+        action: Mark invoice as paid
+        updates:
+          - status: paid
+          - paid_at: now
+          - transaction_id
+
+      - id: SL-012-B
+        name: Extend Subscription
+        type: automated
+        action: Update subscription period
+        updates:
+          - current_period_end: next_billing_date
+          - next_billing_date: calculated
+
+      - id: SL-012-C
+        name: Send Receipt
+        type: automated
+        action: Email payment receipt
+        includes:
+          - invoice_details
+          - payment_confirmation
+          - next_billing_date
+
+      - id: SL-012-D
+        name: Record Analytics
+        type: automated
+        action: Log billing metrics
+        metrics:
+          - mrr_update
+          - ltv_update
+          - renewal_count
+
+    outputs:
+      - updated_subscription
+      - receipt_sent
+
+    sla: 1_minute
+    next_stage: complete
+
+  - id: SL-013
+    name: Payment Failure Handling
+    description: Handle failed payment
+    actor: system
+
+    inputs:
+      - invoice_id
+      - failure_reason
+
+    activities:
+      - id: SL-013-A
+        name: Log Failure
+        type: automated
+        action: Record payment failure
+        details:
+          - failure_code
+          - failure_message
+          - attempt_number
+
+      - id: SL-013-B
+        name: Update Subscription Status
+        type: automated
+        action: Mark subscription as past due
+        condition: first_failure
+        status: past_due
+
+      - id: SL-013-C
+        name: Schedule Retry
+        type: automated
+        action: Schedule payment retry
+        schedule:
+          attempt_1: 1_day
+          attempt_2: 3_days
+          attempt_3: 5_days
+          attempt_4: 7_days
+
+      - id: SL-013-D
+        name: Send Notification
+        type: automated
+        action: Notify user of failure
+        communications:
+          - email: payment_failed
+          - push: update_payment_method
+          - in_app: payment_banner
+
+    outputs:
+      - retry_scheduled
+      - notification_sent
+
+    sla: 5_minutes
+    decision_point:
+      retry_available: SL-011
+      max_retries_exceeded: SL-014
+    next_stage: conditional
+
+  - id: SL-014
+    name: Subscription Suspension
+    description: Suspend subscription after max failures
+    actor: system
+
+    inputs:
+      - subscription_id
+      - failure_count
+
+    activities:
+      - id: SL-014-A
+        name: Suspend Subscription
+        type: automated
+        action: Suspend access
+        updates:
+          - status: suspended
+          - access_revoked: true
+
+      - id: SL-014-B
+        name: Revoke Entitlements
+        type: automated
+        action: Remove subscription features
+        revoked:
+          - streaming_access
+          - downloads_disabled
+          - profiles_restricted
+
+      - id: SL-014-C
+        name: Send Final Notice
+        type: automated
+        action: Send suspension notification
+        message: account_suspended
+        includes:
+          - reactivation_instructions
+          - data_retention_notice
+
+    outputs:
+      - suspended_subscription
+
+    sla: immediate
+    next_stage: end
+
+  # ============================================
+  # Cancellation
+  # ============================================
+  - id: SL-020
+    name: Cancellation Request
+    description: Process cancellation request
+    actor: customer
+
+    inputs:
+      - subscription_id
+      - cancellation_reason
+
+    activities:
+      - id: SL-020-A
+        name: Capture Cancellation Reason
+        type: manual
+        action: Collect feedback
+        options:
+          - too_expensive
+          - not_using_enough
+          - content_not_interesting
+          - switching_to_competitor
+          - temporary_pause
+          - other
+
+      - id: SL-020-B
+        name: Offer Retention
+        type: automated
+        action: Present retention offers
+        offers:
+          - pause_subscription
+          - downgrade_plan
+          - discount_offer
+          - feature_highlight
+
+      - id: SL-020-C
+        name: Confirm Cancellation
+        type: manual
+        action: Customer confirms cancellation
+        confirmation:
+          - acknowledge_end_date
+          - understand_data_policy
+
+    outputs:
+      - cancellation_confirmed
+      - retention_outcome
+
+    sla: real_time
+    next_stage: SL-021
+
+  - id: SL-021
+    name: Cancellation Processing
+    description: Process confirmed cancellation
+    actor: system
+
+    inputs:
+      - subscription_id
+      - effective_date
+
+    activities:
+      - id: SL-021-A
+        name: Update Subscription Status
+        type: automated
+        action: Mark as cancelled
+        updates:
+          - status: cancelled
+          - cancelled_at: now
+          - cancels_at: period_end
+          - auto_renew: false
+
+      - id: SL-021-B
+        name: Maintain Access
+        type: automated
+        action: Keep access until period end
+        note: User paid for current period
+
+      - id: SL-021-C
+        name: Schedule Expiration
+        type: automated
+        action: Schedule access revocation
+        at: current_period_end
+
+      - id: SL-021-D
+        name: Send Confirmation
+        type: automated
+        action: Confirm cancellation
+        includes:
+          - cancellation_date
+          - access_end_date
+          - reactivation_instructions
+
+      - id: SL-021-E
+        name: Trigger Win-back Campaign
+        type: automated
+        action: Schedule win-back communications
+        schedule:
+          - day_7: miss_you_email
+          - day_14: special_offer
+          - day_30: final_offer
+
+    outputs:
+      - cancellation_processed
+      - win_back_scheduled
+
+    sla: 1_minute
+    next_stage: complete
+
+completion_criteria:
+  activation:
+    - subscription_active
+    - payment_setup
+    - entitlements_granted
+
+  billing:
+    - payment_processed
+    - subscription_extended
+    - receipt_sent
+
+  cancellation:
+    - status_updated
+    - user_notified
+    - win_back_scheduled
+
+exception_handling:
+  payment_gateway_error:
+    action: retry_with_backoff
+    max_retries: 3
+    notification: billing_admin
+
+  subscription_conflict:
+    action: escalate
+    notification: customer_support
+
+  fraud_detected:
+    action: suspend_immediately
+    notification: fraud_team
+
+metrics:
+  - name: subscription_activation_rate
+    target: "> 85%"
+
+  - name: payment_success_rate
+    target: "> 98%"
+
+  - name: voluntary_churn_rate
+    target: "< 3% monthly"
+
+  - name: involuntary_churn_rate
+    target: "< 1% monthly"
+
+  - name: win_back_success_rate
+    target: "> 10%"
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

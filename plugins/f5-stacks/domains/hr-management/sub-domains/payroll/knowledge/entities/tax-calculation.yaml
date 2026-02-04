@@ -1,0 +1,407 @@
+name: tax-calculation
+display_name: Tax Calculation
+description: |
+  Personal Income Tax (PIT/TNCN) calculation details for employees,
+  implementing Vietnam's progressive tax system.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: TaxCalculation
+  table_name: tax_calculations
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: payslip_id
+      type: uuid
+      required: true
+
+    - name: employee_id
+      type: uuid
+      required: true
+
+    - name: period_id
+      type: uuid
+      required: true
+
+    # Tax Period
+    - name: tax_year
+      type: integer
+      required: true
+
+    - name: tax_month
+      type: integer
+      required: true
+
+    # Residency Status
+    - name: tax_status
+      type: enum
+      values: [resident, non_resident]
+      default: resident
+
+    - name: tax_id
+      type: string
+      length: 20
+      description: Mã số thuế
+
+    # Income Components
+    - name: gross_income
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Total gross earnings
+
+    - name: non_taxable_income
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Income exempt from tax
+
+    - name: non_taxable_breakdown
+      type: jsonb
+      description: Detail of non-taxable items
+      example: |
+        {
+          "meal_allowance_exempt": 730000,
+          "uniform_allowance": 500000,
+          "training_allowance": 0
+        }
+
+    - name: taxable_gross
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Gross income minus non-taxable
+
+    # Deductions Before Tax
+    - name: personal_deduction
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 11000000
+      description: Giảm trừ bản thân - 11M VND/month
+
+    - name: dependent_count
+      type: integer
+      default: 0
+
+    - name: dependent_deduction
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: 4.4M VND per dependent per month
+
+    - name: dependents_detail
+      type: jsonb
+      description: Registered dependents
+      example: |
+        [
+          {
+            "name": "Nguyen Van B",
+            "relationship": "child",
+            "id_number": "123456789",
+            "deduction_amount": 4400000
+          }
+        ]
+
+    - name: insurance_deduction
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: SI + HI + UI employee contributions
+
+    - name: voluntary_pension
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Voluntary pension contributions
+
+    - name: charity_deduction
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Charitable donations
+
+    - name: other_deductions
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: total_deductions
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Sum of all deductions
+
+    # Taxable Income
+    - name: assessable_income
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Thu nhập tính thuế
+
+    # Tax Calculation
+    - name: tax_bracket_applied
+      type: jsonb
+      description: Progressive tax breakdown
+      example: |
+        [
+          {
+            "bracket": 1,
+            "range_from": 0,
+            "range_to": 5000000,
+            "rate_percent": 5,
+            "taxable_in_bracket": 5000000,
+            "tax_amount": 250000
+          },
+          {
+            "bracket": 2,
+            "range_from": 5000000,
+            "range_to": 10000000,
+            "rate_percent": 10,
+            "taxable_in_bracket": 4975000,
+            "tax_amount": 497500
+          }
+        ]
+
+    - name: tax_rate_applied
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Effective tax rate
+
+    - name: tax_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Final tax to withhold
+
+    # Non-Resident Calculation
+    - name: non_resident_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 20
+      description: Flat 20% for non-residents
+
+    - name: non_resident_tax
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Tax for non-residents
+
+    # YTD Tracking
+    - name: ytd_gross_income
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: ytd_taxable_income
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: ytd_tax_paid
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    # Adjustments
+    - name: adjustment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Manual adjustment if any
+
+    - name: adjustment_reason
+      type: text
+
+    # Metadata
+    - name: calculated_at
+      type: timestamp
+      required: true
+
+    - name: calculated_by
+      type: uuid
+
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: payslip
+      type: belongs_to
+      entity: PaySlip
+      foreign_key: payslip_id
+
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: period
+      type: belongs_to
+      entity: PayrollPeriod
+      foreign_key: period_id
+
+  indexes:
+    - columns: [payslip_id]
+      unique: true
+    - columns: [employee_id, period_id]
+    - columns: [tax_year, tax_month]
+    - columns: [employee_id, tax_year]
+
+  tax_brackets_vietnam:
+    resident:
+      - bracket: 1
+        range_from: 0
+        range_to: 5000000
+        rate_percent: 5
+        cumulative_max_tax: 250000
+
+      - bracket: 2
+        range_from: 5000000
+        range_to: 10000000
+        rate_percent: 10
+        cumulative_max_tax: 750000
+
+      - bracket: 3
+        range_from: 10000000
+        range_to: 18000000
+        rate_percent: 15
+        cumulative_max_tax: 1950000
+
+      - bracket: 4
+        range_from: 18000000
+        range_to: 32000000
+        rate_percent: 20
+        cumulative_max_tax: 4750000
+
+      - bracket: 5
+        range_from: 32000000
+        range_to: 52000000
+        rate_percent: 25
+        cumulative_max_tax: 9750000
+
+      - bracket: 6
+        range_from: 52000000
+        range_to: 80000000
+        rate_percent: 30
+        cumulative_max_tax: 18150000
+
+      - bracket: 7
+        range_from: 80000000
+        range_to: null
+        rate_percent: 35
+        cumulative_max_tax: null
+
+    non_resident:
+      flat_rate: 20
+
+  deduction_limits:
+    personal_deduction: 11000000
+    dependent_deduction: 4400000
+    voluntary_pension_max: "varies"
+    charity_max: "actual_donation"
+
+  non_taxable_items:
+    - code: MEAL
+      name: Meal allowance
+      limit: 730000
+      condition: "per_month"
+
+    - code: UNIFORM
+      name: Uniform allowance
+      limit: null
+      condition: "actual_cost"
+
+    - code: TRAINING
+      name: Training expense
+      limit: null
+      condition: "job_related"
+
+    - code: PHONE
+      name: Phone allowance
+      limit: null
+      condition: "with_documentation"
+      note: "May be taxable depending on policy"
+
+  validations:
+    - field: assessable_income
+      rule: equals
+      compare_to: "taxable_gross - total_deductions"
+      tolerance: 1
+      message: "Assessable income calculation error"
+
+    - field: assessable_income
+      rule: non_negative
+      message: "Assessable income cannot be negative"
+
+    - field: tax_amount
+      rule: non_negative
+      message: "Tax amount cannot be negative"
+
+  computed_fields:
+    - name: taxable_gross
+      formula: "gross_income - non_taxable_income"
+
+    - name: total_deductions
+      formula: "personal_deduction + dependent_deduction + insurance_deduction + voluntary_pension + charity_deduction + other_deductions"
+
+    - name: assessable_income
+      formula: "MAX(0, taxable_gross - total_deductions)"
+
+    - name: effective_tax_rate
+      formula: "(tax_amount / gross_income) * 100"
+
+  hooks:
+    on_calculate:
+      - validate_inputs
+      - calculate_deductions
+      - apply_tax_brackets
+      - apply_adjustments
+      - update_ytd
+
+  audit:
+    track:
+      - tax_amount
+      - assessable_income
+      - adjustment_amount
+
+    retention: 10_years
+
+compliance:
+  - standard: Vietnam_PIT_Law
+    requirement: Progressive tax calculation
+  - standard: Circular_111
+    requirement: Tax deduction rules

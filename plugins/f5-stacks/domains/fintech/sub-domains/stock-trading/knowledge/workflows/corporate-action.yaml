@@ -1,0 +1,642 @@
+name: corporate-action
+display_name: Corporate Actions Processing
+description: |
+  Process for handling corporate actions such as dividends,
+  rights issues, stock splits/consolidations, M&A. From announcement
+  to processing and distribution of entitlements to investors.
+
+domain: fintech/stock-trading
+version: "1.0"
+type: event_driven
+
+actors:
+  - id: issuer
+    name: Issuer
+    description: Listed company issuing securities
+
+  - id: exchange
+    name: Exchange
+    description: HOSE/HNX/UPCoM
+
+  - id: vsd
+    name: VSD
+    description: Vietnam Securities Depository
+
+  - id: corporate_action_system
+    name: CA System
+    description: Corporate action processing system
+
+  - id: portfolio_system
+    name: Portfolio System
+    description: Updates positions and portfolios
+
+  - id: investor
+    name: Investor
+    description: Securities holder
+
+  - id: notification_service
+    name: Notification Service
+    description: Sends notifications to investors
+
+corporate_action_types:
+  mandatory:
+    - id: cash_dividend
+      name: Cash Dividend
+      description: Dividend paid in cash
+      auto_process: true
+
+    - id: stock_dividend
+      name: Stock Dividend
+      description: Dividend paid in shares
+      auto_process: true
+
+    - id: stock_split
+      name: Stock Split
+      description: "Split shares (e.g., 1 into 10)"
+      auto_process: true
+
+    - id: reverse_split
+      name: Reverse Split
+      description: "Consolidate shares (e.g., 10 into 1)"
+      auto_process: true
+
+    - id: spin_off
+      name: Spin-off
+      description: Separate part into new company
+      auto_process: true
+
+    - id: merger
+      name: Merger
+      description: Merge with another company
+      auto_process: true
+
+  voluntary:
+    - id: rights_issue
+      name: Rights Issue
+      description: Right to buy new shares
+      auto_process: false
+      requires_election: true
+
+    - id: tender_offer
+      name: Tender Offer
+      description: Offer to buy back shares
+      auto_process: false
+      requires_election: true
+
+    - id: buyback
+      name: Share Buyback
+      description: Company buys back shares
+      auto_process: false
+      requires_election: true
+
+    - id: bonus_issue
+      name: Bonus Issue
+      description: Issue bonus shares to shareholders
+      auto_process: true
+
+states:
+  # ===== ANNOUNCEMENT STATES =====
+  - id: announced
+    name: Announced
+    description: CA event has been announced
+    terminal: false
+
+  - id: details_received
+    name: Details Received
+    description: Full information received from VSD/Exchange
+    terminal: false
+
+  - id: validated
+    name: Validated
+    description: CA information has been validated
+    terminal: false
+
+  # ===== ELIGIBILITY STATES =====
+  - id: identifying_holders
+    name: Identifying Holders
+    description: Identifying list of eligible shareholders
+    terminal: false
+
+  - id: holders_identified
+    name: Holders Identified
+    description: Shareholder list has been locked
+    terminal: false
+
+  - id: entitlements_calculated
+    name: Entitlements Calculated
+    description: Individual entitlements calculated
+    terminal: false
+
+  # ===== ELECTION STATES (Voluntary) =====
+  - id: election_open
+    name: Election Open
+    description: Shareholders can register to exercise rights
+    terminal: false
+
+  - id: election_processing
+    name: Election Processing
+    description: Processing shareholder elections
+    terminal: false
+
+  - id: election_closed
+    name: Election Closed
+    description: Election period ended
+    terminal: false
+
+  # ===== PROCESSING STATES =====
+  - id: pending_ex_date
+    name: Pending Ex-Date
+    description: Waiting for Ex-date
+    terminal: false
+
+  - id: ex_date_processed
+    name: Ex-Date Processed
+    description: Reference price adjusted
+    terminal: false
+
+  - id: pending_record_date
+    name: Pending Record Date
+    description: Waiting for Record date
+    terminal: false
+
+  - id: record_date_processed
+    name: Record Date Processed
+    description: Entitlement list locked
+    terminal: false
+
+  - id: pending_payment_date
+    name: Pending Payment Date
+    description: Waiting for Payment date
+    terminal: false
+
+  # ===== DISTRIBUTION STATES =====
+  - id: distributing
+    name: Distributing
+    description: Distributing entitlements
+    terminal: false
+
+  - id: partial_distributed
+    name: Partial Distributed
+    description: Partially distributed
+    terminal: false
+
+  - id: distributed
+    name: Distributed
+    description: Distribution complete
+    terminal: false
+
+  # ===== COMPLETION STATES =====
+  - id: reconciling
+    name: Reconciling
+    description: Reconciling figures with VSD
+    terminal: false
+
+  - id: completed
+    name: Completed
+    description: CA completed
+    terminal: true
+
+  - id: cancelled
+    name: Cancelled
+    description: CA cancelled
+    terminal: true
+
+  - id: failed
+    name: Failed
+    description: CA processing failed
+    terminal: false
+
+transitions:
+  # ===== ANNOUNCEMENT FLOW =====
+  - from: announced
+    to: details_received
+    trigger: receive_ca_notice
+    actor: corporate_action_system
+    actions:
+      - Receive notice from VSD/Exchange
+      - Parse CA information
+      - Save to database
+
+  - from: details_received
+    to: validated
+    trigger: validate_ca_details
+    actor: corporate_action_system
+    conditions:
+      - All required fields complete
+      - Valid dates (Ex-date < Record date < Payment date)
+      - Valid ratios/amounts
+    actions:
+      - Validate data
+      - Calculate impact
+
+  - from: details_received
+    to: announced
+    trigger: request_clarification
+    actor: corporate_action_system
+    conditions:
+      - Missing information
+      - Or inconsistent information
+    actions:
+      - Send clarification request to VSD
+
+  # ===== ELIGIBILITY FLOW =====
+  - from: validated
+    to: identifying_holders
+    trigger: start_identification
+    actor: corporate_action_system
+    actions:
+      - Query position list at record date
+      - Calculate entitled share quantity
+
+  - from: identifying_holders
+    to: holders_identified
+    trigger: identification_complete
+    actor: corporate_action_system
+    actions:
+      - Save shareholder list
+      - Reconcile with VSD (if needed)
+
+  - from: holders_identified
+    to: entitlements_calculated
+    trigger: calculate_entitlements
+    actor: corporate_action_system
+    actions:
+      - Calculate individual entitlements
+      - Handle rounding (fractional shares)
+      - Save entitlement records
+
+  # ===== VOLUNTARY ACTION - ELECTION FLOW =====
+  - from: entitlements_calculated
+    to: election_open
+    trigger: open_election
+    actor: corporate_action_system
+    conditions:
+      - CA type is voluntary
+    actions:
+      - Send notifications to shareholders
+      - Open election form
+
+  - from: election_open
+    to: election_processing
+    trigger: receive_election
+    actor: investor
+    actions:
+      - Receive shareholder election
+      - Validate election quantity
+
+  - from: election_processing
+    to: election_open
+    trigger: continue_accepting
+    actor: corporate_action_system
+    conditions:
+      - Election period not ended
+    actions:
+      - Update total elections
+
+  - from: election_open
+    to: election_closed
+    trigger: deadline_reached
+    actor: corporate_action_system
+    conditions:
+      - Election deadline reached
+    actions:
+      - Close election form
+      - Summarize results
+
+  - from: election_processing
+    to: election_closed
+    trigger: deadline_reached
+    actor: corporate_action_system
+    actions:
+      - Close elections
+      - Process final elections
+
+  # ===== EX-DATE PROCESSING =====
+  - from: [entitlements_calculated, election_closed]
+    to: pending_ex_date
+    trigger: await_ex_date
+    actor: corporate_action_system
+    actions:
+      - Set timer for Ex-date
+
+  - from: pending_ex_date
+    to: ex_date_processed
+    trigger: ex_date_arrived
+    actor: exchange
+    conditions:
+      - Current date = Ex-date
+    actions:
+      - Adjust reference price
+      - Mark as "ex-entitlement"
+      - Notify investors
+
+  # ===== RECORD DATE PROCESSING =====
+  - from: ex_date_processed
+    to: pending_record_date
+    trigger: await_record_date
+    actor: corporate_action_system
+    actions:
+      - Wait for Record date
+
+  - from: pending_record_date
+    to: record_date_processed
+    trigger: record_date_arrived
+    actor: vsd
+    conditions:
+      - Current date = Record date
+    actions:
+      - Lock entitlement list
+      - Send list to securities company
+      - Confirm with issuer
+
+  # ===== PAYMENT/DISTRIBUTION FLOW =====
+  - from: record_date_processed
+    to: pending_payment_date
+    trigger: await_payment
+    actor: corporate_action_system
+    actions:
+      - Wait for Payment date
+
+  - from: pending_payment_date
+    to: distributing
+    trigger: start_distribution
+    actor: corporate_action_system
+    conditions:
+      - Current date >= Payment date
+      - Received cash/securities from VSD
+    actions:
+      - Start distribution
+
+  - from: distributing
+    to: partial_distributed
+    trigger: batch_distributed
+    actor: corporate_action_system
+    conditions:
+      - Shareholders remaining
+    actions:
+      - Distribute by batch
+      - Update account balances
+      - Send notifications
+
+  - from: partial_distributed
+    to: partial_distributed
+    trigger: continue_distribution
+    actor: corporate_action_system
+    conditions:
+      - Batches remaining to process
+    actions:
+      - Process next batch
+
+  - from: [distributing, partial_distributed]
+    to: distributed
+    trigger: distribution_complete
+    actor: corporate_action_system
+    conditions:
+      - All shareholders received
+    actions:
+      - Update positions
+      - Log completion
+
+  # ===== RECONCILIATION & COMPLETION =====
+  - from: distributed
+    to: reconciling
+    trigger: start_reconciliation
+    actor: corporate_action_system
+    actions:
+      - Reconcile with VSD
+      - Check discrepancies
+
+  - from: reconciling
+    to: completed
+    trigger: reconciliation_passed
+    actor: corporate_action_system
+    conditions:
+      - No discrepancies
+      - Or discrepancies resolved
+    actions:
+      - Mark as completed
+      - Archive records
+
+  - from: reconciling
+    to: failed
+    trigger: reconciliation_failed
+    actor: corporate_action_system
+    conditions:
+      - Serious discrepancies
+    actions:
+      - Log error
+      - Escalate
+
+  - from: failed
+    to: reconciling
+    trigger: retry_reconciliation
+    actor: corporate_action_system
+    actions:
+      - Adjust and retry
+
+  # ===== CANCELLATION =====
+  - from: [announced, details_received, validated]
+    to: cancelled
+    trigger: ca_cancelled
+    actor: issuer
+    conditions:
+      - Issuer cancelled event
+    actions:
+      - Notify shareholders
+      - Rollback if needed
+
+processing_rules:
+  cash_dividend:
+    calculation: shares_held × dividend_per_share
+    rounding: floor
+    tax_withholding: 5%
+    distribution: credit_to_cash_account
+
+  stock_dividend:
+    calculation: shares_held × ratio
+    rounding: floor
+    fractional_handling: cash_in_lieu
+    distribution: credit_to_position
+
+  stock_split:
+    calculation: shares_held × split_ratio
+    rounding: floor
+    price_adjustment: current_price / split_ratio
+    distribution: update_position
+
+  reverse_split:
+    calculation: shares_held / consolidation_ratio
+    rounding: floor
+    fractional_handling: cash_in_lieu
+    price_adjustment: current_price × consolidation_ratio
+    distribution: update_position
+
+  rights_issue:
+    calculation: shares_held × rights_ratio
+    subscription_price: specified_price
+    deadline: election_deadline
+    oversubscription: if_allowed
+    distribution: new_shares_on_payment
+
+key_dates:
+  announcement_date:
+    description: Event announcement date
+    notification: Notify all shareholders
+
+  ex_date:
+    description: Ex-entitlement trading date
+    action: Adjust reference price
+
+  record_date:
+    description: Record date for entitlements
+    action: Lock entitlement list
+
+  election_deadline:
+    description: Election deadline (voluntary)
+    action: Close election acceptance
+
+  payment_date:
+    description: Payment/distribution date
+    action: Distribute entitlements
+
+sla:
+  notification:
+    target: 4 hours
+    description: Notify shareholders after receiving CA notice
+
+  entitlement_calculation:
+    target: 1 hour
+    description: Calculate entitlements
+
+  distribution:
+    target: same day
+    description: Distribute on payment date
+
+  reconciliation:
+    target: T+1
+    description: Reconcile with VSD within 1 day
+
+diagram: |
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │                        CORPORATE ACTIONS PROCESSING                              │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+                               ┌───────────────┐
+                               │   ANNOUNCED   │
+                               │  (VSD/Exch)   │
+                               └───────┬───────┘
+                                       │
+                                       ▼
+                               ┌───────────────┐
+                               │    DETAILS    │
+                               │   RECEIVED    │
+                               └───────┬───────┘
+                                       │
+                                       ▼
+                               ┌───────────────┐
+                               │   VALIDATED   │
+                               └───────┬───────┘
+                                       │
+                 ┌─────────────────────┴─────────────────────┐
+                 │                                           │
+                 ▼                                           ▼
+  ┌──────────────────────────┐               ┌──────────────────────────┐
+  │     MANDATORY CA         │               │     VOLUNTARY CA         │
+  │  (Auto Processing)       │               │  (Election Required)     │
+  └───────────┬──────────────┘               └───────────┬──────────────┘
+              │                                          │
+              │                               ┌──────────┴──────────┐
+              │                               ▼                     │
+              │               ┌─────────────────────────┐           │
+              │               │    ELECTION OPEN        │           │
+              │               │  (Open Registration)    │           │
+              │               └───────────┬─────────────┘           │
+              │                           │                         │
+              │                           ▼                         │
+              │               ┌─────────────────────────┐           │
+              │               │   ELECTION CLOSED       │           │
+              │               │  (Close Registration)   │           │
+              │               └───────────┬─────────────┘           │
+              │                           │                         │
+              └───────────────────────────┼─────────────────────────┘
+                                          │
+                                          ▼
+  ╔═══════════════════════════════════════════════════════════════════════════════╗
+  ║                              TIMELINE PROCESSING                               ║
+  ╠═══════════════════════════════════════════════════════════════════════════════╣
+  ║                                                                               ║
+  ║   Announcement ──► Ex-Date ──► Record Date ──► Payment Date                   ║
+  ║        │              │              │               │                        ║
+  ║        ▼              ▼              ▼               ▼                        ║
+  ║   ┌─────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐                  ║
+  ║   │ Notify  │   │ Adjust   │   │ Lock     │   │ Distrib- │                  ║
+  ║   │ Invest- │   │ Ref      │   │ Share-   │   │ ute      │                  ║
+  ║   │ ors     │   │ Price    │   │ holders  │   │ Rights   │                  ║
+  ║   └─────────┘   └──────────┘   └──────────┘   └──────────┘                  ║
+  ║                                                                               ║
+  ╚═══════════════════════════════════════════════════════════════════════════════╝
+                                          │
+                                          ▼
+                               ┌───────────────────────┐
+                               │     DISTRIBUTING      │
+                               │  (Distributing)       │
+                               └───────────┬───────────┘
+                                           │
+                              ┌────────────┼────────────┐
+                              ▼            │            ▼
+               ┌──────────────────┐        │  ┌──────────────────┐
+               │  Cash Dividend   │        │  │  Stock Dividend  │
+               │  Cash Div        │        │  │  Stock Div       │
+               └────────┬─────────┘        │  └────────┬─────────┘
+                        │                  │           │
+                        │   ┌──────────────┘           │
+                        │   │                          │
+                        ▼   ▼                          ▼
+               ┌──────────────────┐        ┌──────────────────┐
+               │  Credit Cash     │        │  Credit Shares   │
+               │  to Account      │        │  to Position     │
+               └────────┬─────────┘        └────────┬─────────┘
+                        │                           │
+                        └───────────┬───────────────┘
+                                    ▼
+                         ┌───────────────────────┐
+                         │     DISTRIBUTED       │
+                         │  (Distributed)        │
+                         └───────────┬───────────┘
+                                     │
+                                     ▼
+                         ┌───────────────────────┐
+                         │     RECONCILING       │
+                         │  (Reconcile VSD)      │
+                         └───────────┬───────────┘
+                                     │
+                                     ▼
+                         ┌───────────────────────┐
+                         │     COMPLETED ✓       │
+                         └───────────────────────┘
+
+metrics:
+  - name: ca_processing_accuracy
+    description: CA processing accuracy
+    formula: (correct_distributions / total_distributions) × 100
+    target: ">= 99.99%"
+
+  - name: notification_timeliness
+    description: On-time notification rate
+    formula: (on_time_notifications / total_notifications) × 100
+    target: ">= 99%"
+
+  - name: distribution_timeliness
+    description: On-time distribution rate
+    formula: (on_time_distributions / total_distributions) × 100
+    target: ">= 99.9%"
+
+  - name: election_participation
+    description: Election participation rate (voluntary CA)
+    formula: (elections_received / entitled_holders) × 100
+    target: "Track only"
+
+  - name: reconciliation_discrepancy
+    description: Reconciliation discrepancy rate
+    formula: discrepancies / total_ca_processed × 100
+    target: "< 0.1%"

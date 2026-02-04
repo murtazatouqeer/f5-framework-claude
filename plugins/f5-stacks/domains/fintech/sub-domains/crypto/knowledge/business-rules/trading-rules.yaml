@@ -1,0 +1,443 @@
+name: TradingRules
+display_name: Trading Business Rules / Quy tắc giao dịch
+description: |
+  Business rules governing cryptocurrency trading operations
+  including order placement, matching, and execution.
+
+domain: fintech
+sub_domain: crypto
+rule_category: trading
+version: "1.0"
+status: active
+
+# =============================================================================
+# ORDER PLACEMENT RULES
+# =============================================================================
+order_placement:
+  - id: TR-001
+    name: Minimum Order Size
+    name_vi: Kích thước lệnh tối thiểu
+    description: Order must meet minimum notional value
+    severity: error
+    enforcement: validation
+    condition: |
+      order.quantity * order.price >= trading_pair.min_notional
+    message: Order value below minimum of ${min_notional}
+
+  - id: TR-002
+    name: Maximum Order Size
+    name_vi: Kích thước lệnh tối đa
+    description: Order cannot exceed maximum size
+    severity: error
+    enforcement: validation
+    condition: |
+      order.quantity <= trading_pair.max_order_quantity
+    message: Order exceeds maximum quantity
+
+  - id: TR-003
+    name: Price Precision
+    name_vi: Độ chính xác giá
+    description: Price must match tick size precision
+    severity: error
+    enforcement: validation
+    condition: |
+      (order.price % trading_pair.tick_size) == 0
+    message: Price must be multiple of tick size
+
+  - id: TR-004
+    name: Quantity Precision
+    name_vi: Độ chính xác số lượng
+    description: Quantity must match lot size precision
+    severity: error
+    enforcement: validation
+    condition: |
+      (order.quantity % trading_pair.lot_size) == 0
+    message: Quantity must be multiple of lot size
+
+  - id: TR-005
+    name: Balance Sufficiency
+    name_vi: Đủ số dư
+    description: User must have sufficient balance
+    severity: error
+    enforcement: pre_order
+    condition: |
+      IF order.side = 'buy':
+        available_quote >= order.quantity * order.price
+      ELSE:
+        available_base >= order.quantity
+    message: Insufficient balance
+
+  - id: TR-006
+    name: Price Deviation Limit
+    name_vi: Giới hạn chênh lệch giá
+    description: Limit price cannot deviate too far from market
+    severity: error
+    enforcement: validation
+    condition: |
+      abs(order.price - market_price) / market_price <= 0.10
+    exception: After hours, low liquidity markets
+    message: Price deviates more than 10% from market
+
+  - id: TR-007
+    name: Market Order Value Limit
+    name_vi: Giới hạn giá trị lệnh thị trường
+    description: Market orders limited by expected slippage
+    severity: warning
+    enforcement: validation
+    condition: |
+      estimated_slippage <= 0.05  # 5%
+    action: Warn user of potential slippage
+    message: Large market order may result in significant slippage
+
+# =============================================================================
+# SELF-TRADE PREVENTION
+# =============================================================================
+self_trade_prevention:
+  - id: TR-010
+    name: Self-Trade Prevention
+    name_vi: Ngăn giao dịch tự thân
+    description: User cannot trade with themselves
+    severity: error
+    enforcement: matching_engine
+    condition: |
+      buyer_user_id != seller_user_id
+    modes:
+      cancel_taker: Cancel incoming order
+      cancel_maker: Cancel resting order
+      cancel_both: Cancel both orders
+    default_mode: cancel_taker
+
+  - id: TR-011
+    name: Sub-Account Self-Trade
+    name_vi: Giao dịch tự thân tài khoản phụ
+    description: Self-trade rules apply across sub-accounts
+    severity: error
+    enforcement: matching_engine
+    condition: |
+      buyer_master_account != seller_master_account
+    message: Cannot trade between own sub-accounts
+
+# =============================================================================
+# ORDER TYPE RULES
+# =============================================================================
+order_types:
+  - id: TR-020
+    name: Limit Order Requirements
+    name_vi: Yêu cầu lệnh giới hạn
+    description: Limit orders must have price
+    severity: error
+    enforcement: validation
+    condition: |
+      IF order_type = 'limit':
+        price IS NOT NULL AND price > 0
+    message: Limit orders require a valid price
+
+  - id: TR-021
+    name: Stop Order Requirements
+    name_vi: Yêu cầu lệnh dừng
+    description: Stop orders must have stop price
+    severity: error
+    enforcement: validation
+    condition: |
+      IF order_type IN ('stop_limit', 'stop_market'):
+        stop_price IS NOT NULL AND stop_price > 0
+    message: Stop orders require a stop price
+
+  - id: TR-022
+    name: Stop Order Direction
+    name_vi: Hướng lệnh dừng
+    description: Stop orders must trigger in correct direction
+    severity: error
+    enforcement: validation
+    condition: |
+      IF side = 'buy':
+        stop_price > current_price
+      ELSE:
+        stop_price < current_price
+    message: Stop price invalid for order direction
+
+  - id: TR-023
+    name: Post-Only Rejection
+    name_vi: Từ chối lệnh chỉ maker
+    description: Post-only orders rejected if would take liquidity
+    severity: error
+    enforcement: matching_engine
+    condition: |
+      IF order.post_only:
+        would_not_match_immediately()
+    message: Post-only order would match immediately
+
+  - id: TR-024
+    name: IOC Partial Fill
+    name_vi: Điền một phần IOC
+    description: IOC orders fill what's available, cancel rest
+    severity: info
+    enforcement: matching_engine
+    behavior: |
+      Execute immediately available quantity
+      Cancel remaining quantity
+
+  - id: TR-025
+    name: FOK All-or-Nothing
+    name_vi: FOK toàn bộ hoặc không
+    description: FOK orders must fill completely or cancel
+    severity: error
+    enforcement: matching_engine
+    condition: |
+      can_fill_completely(order)
+    message: Cannot fill entire order quantity
+
+# =============================================================================
+# MATCHING ENGINE RULES
+# =============================================================================
+matching_engine:
+  - id: TR-030
+    name: Price-Time Priority
+    name_vi: Ưu tiên giá-thời gian
+    description: Orders matched by best price, then arrival time
+    severity: critical
+    enforcement: matching_engine
+    algorithm: |
+      1. Sort by price (best first)
+      2. Within same price, sort by time (FIFO)
+      3. Match oldest order first
+
+  - id: TR-031
+    name: Maker-Taker Designation
+    name_vi: Xác định maker-taker
+    description: Resting order is maker, incoming is taker
+    severity: info
+    enforcement: matching_engine
+    definition: |
+      maker = order already in book
+      taker = order that causes match
+
+  - id: TR-032
+    name: Atomic Trade Execution
+    name_vi: Thực hiện giao dịch nguyên tử
+    description: Trade creation and balance updates are atomic
+    severity: critical
+    enforcement: transaction_required
+    implementation: |
+      BEGIN TRANSACTION
+        CREATE trade
+        UPDATE buyer_balance
+        UPDATE seller_balance
+        UPDATE buyer_order
+        UPDATE seller_order
+        CHARGE fees
+      COMMIT
+
+  - id: TR-033
+    name: Partial Fill Handling
+    name_vi: Xử lý điền một phần
+    description: Partially filled orders remain in book
+    severity: info
+    enforcement: matching_engine
+    behavior: |
+      Update order.executed_quantity
+      Update order.remaining_quantity
+      Order remains open until fully filled or cancelled
+
+# =============================================================================
+# FEE RULES
+# =============================================================================
+fee_rules:
+  - id: TR-040
+    name: Fee Calculation
+    name_vi: Tính phí
+    description: Fees calculated based on trade value and tier
+    severity: info
+    enforcement: application_logic
+    formula: |
+      base_fee = trade_value * fee_rate
+      discount = calculate_discounts(user)
+      final_fee = base_fee * (1 - discount)
+
+  - id: TR-041
+    name: Token Fee Discount
+    name_vi: Giảm phí bằng token
+    description: Discount when paying fees with platform token
+    severity: info
+    enforcement: application_logic
+    condition: |
+      user.pay_fees_with_token = true AND
+      user.token_balance >= required_fee
+    discount: 0.25  # 25%
+
+  - id: TR-042
+    name: Fee Deduction Priority
+    name_vi: Ưu tiên khấu trừ phí
+    description: Order of fee deduction from assets
+    severity: info
+    enforcement: application_logic
+    priority:
+      1: Platform token (if enabled)
+      2: Received asset
+      3: Quote asset (for sells)
+      4: Base asset (for buys)
+
+  - id: TR-043
+    name: Negative Maker Fee
+    name_vi: Phí maker âm
+    description: Market makers may receive rebates
+    severity: info
+    enforcement: application_logic
+    condition: |
+      user.fee_tier.maker_fee < 0
+    behavior: Credit rebate to user balance
+
+# =============================================================================
+# RATE LIMITING
+# =============================================================================
+rate_limiting:
+  - id: TR-050
+    name: Order Rate Limit
+    name_vi: Giới hạn tốc độ đặt lệnh
+    description: Maximum orders per second per user
+    severity: error
+    enforcement: rate_limiting
+    limits:
+      default: 10
+      vip_1: 20
+      vip_2: 50
+      market_maker: 100
+    window: 1 second
+    message: Order rate limit exceeded
+
+  - id: TR-051
+    name: Maximum Open Orders
+    name_vi: Số lệnh mở tối đa
+    description: Limit on concurrent open orders
+    severity: error
+    enforcement: application_logic
+    limits:
+      per_pair: 200
+      total: 1000
+    message: Maximum open orders reached
+
+  - id: TR-052
+    name: Cancel Rate Limit
+    name_vi: Giới hạn tốc độ hủy lệnh
+    description: Rate limit on order cancellations
+    severity: warning
+    enforcement: rate_limiting
+    limit: 100
+    window: 10 seconds
+    message: Cancel rate limit exceeded
+
+# =============================================================================
+# MARKET HOURS
+# =============================================================================
+market_hours:
+  - id: TR-060
+    name: 24/7 Trading
+    name_vi: Giao dịch 24/7
+    description: Crypto markets operate continuously
+    severity: info
+    enforcement: none
+    status: Always open
+
+  - id: TR-061
+    name: Maintenance Window
+    name_vi: Cửa sổ bảo trì
+    description: Trading suspended during maintenance
+    severity: critical
+    enforcement: application_logic
+    condition: |
+      NOT in_maintenance_window()
+    message: Trading suspended for system maintenance
+
+  - id: TR-062
+    name: Circuit Breaker
+    name_vi: Ngắt mạch
+    description: Trading halted on extreme volatility
+    severity: critical
+    enforcement: automatic
+    triggers:
+      - price_change_10min > 15%
+      - price_change_1h > 25%
+    action: Halt trading for 5 minutes
+    cooldown: 15 minutes
+
+# =============================================================================
+# ORDER MODIFICATION
+# =============================================================================
+order_modification:
+  - id: TR-070
+    name: Modify Open Orders Only
+    name_vi: Chỉ sửa lệnh mở
+    description: Only open orders can be modified
+    severity: error
+    enforcement: validation
+    condition: |
+      order.status IN ('open', 'partially_filled')
+    message: Cannot modify this order
+
+  - id: TR-071
+    name: Modification Restrictions
+    name_vi: Hạn chế sửa đổi
+    description: Certain fields cannot be modified
+    severity: error
+    enforcement: validation
+    immutable_fields:
+      - side
+      - order_type
+      - trading_pair_id
+    message: Cannot change order side or type
+
+  - id: TR-072
+    name: Quantity Modification
+    name_vi: Sửa đổi số lượng
+    description: Can only reduce remaining quantity
+    severity: error
+    enforcement: validation
+    condition: |
+      new_quantity <= order.remaining_quantity
+    message: Cannot increase order quantity
+
+# =============================================================================
+# TRADE IMMUTABILITY
+# =============================================================================
+trade_immutability:
+  - id: TR-080
+    name: Immutable Trades
+    name_vi: Giao dịch không thể thay đổi
+    description: Executed trades cannot be modified
+    severity: critical
+    enforcement: database_constraint
+    implementation: No UPDATE allowed on trades table
+
+  - id: TR-081
+    name: Trade Rollback Prohibition
+    name_vi: Cấm hoàn tác giao dịch
+    description: Trades cannot be rolled back
+    severity: critical
+    enforcement: application_logic
+    exception: System error during atomic execution
+    process: Manual investigation required
+
+# =============================================================================
+# VALIDATION SUMMARY
+# =============================================================================
+validation_summary:
+  pre_order:
+    - TR-001  # Min size
+    - TR-002  # Max size
+    - TR-003  # Price precision
+    - TR-004  # Quantity precision
+    - TR-005  # Balance check
+    - TR-006  # Price deviation
+    - TR-020  # Limit price required
+    - TR-021  # Stop price required
+    - TR-022  # Stop direction
+
+  matching:
+    - TR-010  # Self-trade prevention
+    - TR-023  # Post-only check
+    - TR-030  # Price-time priority
+    - TR-032  # Atomic execution
+
+  post_trade:
+    - TR-040  # Fee calculation
+    - TR-080  # Immutability

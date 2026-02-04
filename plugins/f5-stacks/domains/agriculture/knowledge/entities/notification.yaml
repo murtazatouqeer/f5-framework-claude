@@ -1,0 +1,313 @@
+name: Notification
+display_name: Notification / Thông báo
+description: |
+  Thông báo cho user qua các kênh: Push, Email, SMS.
+  Hỗ trợ real-time và scheduled notifications.
+
+domain: agriculture
+category: communication
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: notification_id
+    type: string
+    required: true
+    validation:
+      pattern: "^NTF-[0-9]{8}-[A-Z0-9]{8}$"
+
+  - name: recipient_id
+    type: uuid
+    required: true
+    description: User nhận thông báo
+
+  - name: recipient_type
+    type: enum
+    required: true
+    validation:
+      values: [farmer, buyer, admin, shipper, hub_operator]
+
+  # Content
+  - name: title
+    type: string
+    required: true
+    validation:
+      max_length: 100
+
+  - name: body
+    type: text
+    required: true
+    validation:
+      max_length: 500
+
+  - name: short_body
+    type: string
+    required: false
+    description: Phiên bản ngắn cho push notification
+    validation:
+      max_length: 100
+
+  - name: image_url
+    type: string
+    required: false
+
+  - name: icon
+    type: string
+    required: false
+
+  # Type and category
+  - name: type
+    type: enum
+    required: true
+    validation:
+      values: [
+        # Order related
+        order_created,
+        order_confirmed,
+        order_shipped,
+        order_delivered,
+        order_completed,
+        order_cancelled,
+
+        # Auction related
+        auction_starting,
+        auction_ending,
+        bid_placed,
+        bid_outbid,
+        auction_won,
+        auction_lost,
+        auction_extended,
+
+        # Listing related
+        listing_approved,
+        listing_rejected,
+        listing_expiring,
+        listing_expired,
+        new_offer,
+        offer_accepted,
+        offer_rejected,
+
+        # Payment related
+        payment_pending,
+        payment_received,
+        payment_failed,
+        deposit_pending,
+        deposit_received,
+        escrow_released,
+        refund_processed,
+
+        # Dispute related
+        dispute_opened,
+        dispute_update,
+        dispute_resolved,
+
+        # Farm related
+        farm_verified,
+        farm_rejected,
+        farm_suspended,
+        certification_expiring,
+
+        # System
+        system_announcement,
+        maintenance_notice,
+        promotion,
+        reminder
+      ]
+
+  - name: category
+    type: enum
+    required: true
+    validation:
+      values: [transactional, marketing, system, reminder]
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, normal, high, urgent]
+    default: normal
+
+  # Channels
+  - name: channels
+    type: array
+    required: true
+    description: Kênh gửi thông báo
+    example: ["push", "email", "sms"]
+
+  - name: channel_status
+    type: object
+    required: false
+    description: Trạng thái từng kênh
+    example:
+      push:
+        status: "delivered"
+        sent_at: "2024-12-01T10:30:00Z"
+      email:
+        status: "sent"
+        sent_at: "2024-12-01T10:30:05Z"
+      sms:
+        status: "failed"
+        error: "Invalid phone number"
+
+  # Reference
+  - name: reference_type
+    type: enum
+    required: false
+    description: Loại entity liên quan
+    validation:
+      values: [order, auction, listing, dispute, payment, farm]
+
+  - name: reference_id
+    type: uuid
+    required: false
+
+  # Action
+  - name: action_url
+    type: string
+    required: false
+    description: Deep link URL
+
+  - name: action_data
+    type: object
+    required: false
+    description: Data cho action
+
+  - name: cta_text
+    type: string
+    required: false
+    description: Call-to-action button text
+    example: "Xem đơn hàng"
+
+  # Scheduling
+  - name: scheduled_at
+    type: timestamp
+    required: false
+    description: Thời gian gửi (nếu scheduled)
+
+  - name: sent_at
+    type: timestamp
+    required: false
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, scheduled, sending, sent, delivered, read, failed, cancelled]
+    default: pending
+
+  # Tracking
+  - name: read_at
+    type: timestamp
+    required: false
+
+  - name: clicked_at
+    type: timestamp
+    required: false
+
+  - name: dismissed_at
+    type: timestamp
+    required: false
+
+  # Retry
+  - name: retry_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: max_retries
+    type: integer
+    required: true
+    default: 3
+
+  - name: error_message
+    type: string
+    required: false
+
+  # Expiry
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Hết hạn hiển thị
+
+  # Metadata
+  - name: metadata
+    type: object
+    required: false
+    description: Additional data
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: recipient
+    type: belongs_to
+    entity: User
+    required: true
+
+indexes:
+  - [notification_id]
+  - [recipient_id]
+  - [type]
+  - [status]
+  - [category]
+  - [scheduled_at]
+  - [created_at]
+
+business_rules:
+  - BR-NTF-001: Urgent notifications gửi qua tất cả channels
+  - BR-NTF-002: Marketing notifications require opt-in
+  - BR-NTF-003: SMS chỉ cho transactional quan trọng
+  - BR-NTF-004: Batch similar notifications (max 1/5 phút cùng loại)
+  - BR-NTF-005: Auto-expire sau 30 ngày nếu chưa đọc
+  - BR-NTF-006: Max 3 retries cho failed notifications
+
+notification_templates:
+  order_created:
+    title: "Đơn hàng mới #{order_code}"
+    body: "Đơn hàng {quantity} con {animal_type} đã được tạo. Vui lòng đặt cọc trong 24h."
+    channels: [push, email]
+    priority: high
+
+  auction_won:
+    title: "Chúc mừng! Bạn đã thắng đấu giá"
+    body: "Bạn đã thắng đấu giá {listing_title} với giá {final_price}đ. Thanh toán cọc ngay!"
+    channels: [push, email, sms]
+    priority: urgent
+
+  bid_outbid:
+    title: "Bạn đã bị vượt giá!"
+    body: "Giá mới: {current_price}đ cho {listing_title}. Đấu giá còn {time_remaining}."
+    channels: [push]
+    priority: high
+
+  payment_pending:
+    title: "Thanh toán chờ xử lý"
+    body: "Vui lòng hoàn tất thanh toán {amount}đ cho đơn hàng #{order_code}."
+    channels: [push, email]
+    priority: high
+
+  dispute_opened:
+    title: "Khiếu nại mới #{dispute_code}"
+    body: "Khiếu nại đã được mở cho đơn hàng #{order_code}. Xem chi tiết."
+    channels: [push, email]
+    priority: urgent
+
+events:
+  - name: notification.sent
+    payload: [id, recipient_id, type, channels]
+  - name: notification.delivered
+    payload: [id, channel, delivered_at]
+  - name: notification.read
+    payload: [id, read_at]
+  - name: notification.clicked
+    payload: [id, clicked_at, action_url]
+  - name: notification.failed
+    payload: [id, channel, error_message]

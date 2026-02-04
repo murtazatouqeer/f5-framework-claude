@@ -1,0 +1,103 @@
+# Kustomize Overlay - Production
+# F5 Framework - Infrastructure Stack
+#
+# Production environment overlay
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+metadata:
+  name: app-production
+
+# Extend base
+resources:
+  - ../../base
+  - ingress.yaml
+  - hpa.yaml
+  - pdb.yaml
+  - networkpolicy.yaml
+
+# Production namespace
+namespace: production
+
+# Production-specific labels
+commonLabels:
+  app.kubernetes.io/environment: production
+
+# Production-specific annotations
+commonAnnotations:
+  f5.io/environment: production
+
+# Image for production (pinned version)
+images:
+  - name: app
+    newName: myorg/myapp
+    newTag: v1.0.0  # Always pin to specific version
+
+# Production replicas
+replicas:
+  - name: app
+    count: 3
+
+# Production ConfigMap
+configMapGenerator:
+  - name: app-config
+    behavior: merge
+    literals:
+      - APP_ENV=production
+      - LOG_LEVEL=warn
+      - DEBUG=false
+    options:
+      disableNameSuffixHash: true
+
+# Production patches
+patches:
+  # Production resource limits
+  - patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources
+        value:
+          requests:
+            cpu: 200m
+            memory: 256Mi
+          limits:
+            cpu: 1000m
+            memory: 1Gi
+    target:
+      kind: Deployment
+      name: app
+
+  # Add pod anti-affinity for production
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: app
+                topologyKey: kubernetes.io/hostname
+    target:
+      kind: Deployment
+      name: app
+
+  # Add topology spread constraints
+  - patch: |-
+      - op: add
+        path: /spec/template/spec/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: topology.kubernetes.io/zone
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: app
+    target:
+      kind: Deployment
+      name: app
+
+# Components for production
+components: []
+  # - ../../components/monitoring
+  # - ../../components/security

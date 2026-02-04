@@ -1,0 +1,682 @@
+name: End User Use Cases
+display_name: End User Use Cases / Các trường hợp sử dụng của người dùng cuối
+description: |
+  Use cases for regular end users interacting with the SaaS platform
+  for daily operations, profile management, and collaboration.
+
+domain: saas-platform
+actor: end_user
+version: "1.0"
+
+# =============================================================================
+# ACTOR DEFINITION
+# =============================================================================
+actor_definition:
+  name: End User
+  name_vi: Người dùng cuối
+  roles: [member, viewer]
+  description: |
+    Regular users within a tenant organization who use the platform
+    for their daily work. Limited administrative capabilities.
+
+# =============================================================================
+# AUTHENTICATION USE CASES
+# =============================================================================
+authentication:
+  # ---------------------------------------------------------------------------
+  # UC-EU-001: Sign Up via Invitation
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-001
+    name: Sign Up via Invitation
+    name_vi: Đăng ký qua lời mời
+    priority: high
+
+    description: |
+      User receives invitation and creates account to join organization.
+
+    preconditions:
+      - "Valid invitation exists for user's email"
+      - "Invitation has not expired"
+
+    main_flow:
+      1: "User receives invitation email"
+      2: "User clicks invitation link"
+      3: "System validates invitation token"
+      4: "System displays account creation form"
+      5: "User enters name and password"
+      6: "User accepts terms of service"
+      7: "System creates user account"
+      8: "System assigns user to tenant with invited role"
+      9: "System marks invitation as accepted"
+      10: "System redirects user to dashboard"
+
+    alternative_flows:
+      existing_user_different_tenant:
+        condition: "User has account in different tenant"
+        steps:
+          - "Display option to join new tenant"
+          - "User confirms joining additional tenant"
+          - "Add user to new tenant"
+
+      sso_required:
+        condition: "Tenant requires SSO"
+        steps:
+          - "Display SSO login prompt"
+          - "User authenticates via SSO"
+          - "Link SSO identity to invitation"
+
+    exception_flows:
+      invitation_expired:
+        condition: "Invitation older than 7 days"
+        response:
+          - "Display 'Invitation expired' message"
+          - "Offer to request new invitation"
+
+      invitation_already_used:
+        condition: "Invitation already accepted"
+        response:
+          - "Display 'Invitation already used' message"
+          - "Redirect to login"
+
+    postconditions:
+      - "User account created and active"
+      - "User associated with tenant"
+      - "Invitation marked as used"
+      - "Welcome email sent"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-002: Login
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-002
+    name: Login
+    name_vi: Đăng nhập
+    priority: high
+
+    description: |
+      User authenticates to access their account.
+
+    main_flow:
+      1: "User navigates to login page"
+      2: "User enters email address"
+      3: "System determines login method based on tenant settings"
+      4: "User enters password or proceeds to SSO"
+      5: "System validates credentials"
+      6: "System checks MFA requirement"
+      7: "User completes MFA if required"
+      8: "System creates session"
+      9: "System redirects to dashboard or intended destination"
+
+    authentication_methods:
+      password:
+        steps:
+          - "Enter email and password"
+          - "System validates against stored hash"
+
+      sso:
+        steps:
+          - "Redirect to IdP"
+          - "Authenticate at IdP"
+          - "Return with SAML assertion"
+          - "System validates assertion"
+
+      magic_link:
+        steps:
+          - "Enter email"
+          - "System sends magic link"
+          - "Click link in email"
+          - "System validates token"
+
+      social_oauth:
+        providers: [google, github, microsoft]
+        steps:
+          - "Click provider button"
+          - "Authenticate with provider"
+          - "Return with OAuth token"
+
+    mfa_flow:
+      condition: "MFA enabled for user or required by tenant"
+      steps:
+        - "Display MFA prompt"
+        - "User enters code from authenticator/SMS"
+        - "System validates code"
+
+    exception_flows:
+      invalid_credentials:
+        response:
+          - "Display 'Invalid email or password'"
+          - "Increment failed attempt counter"
+          - "Lock account after 5 failures"
+
+      account_locked:
+        condition: "5+ failed attempts"
+        response:
+          - "Display 'Account temporarily locked'"
+          - "Send unlock email"
+          - "Lock duration: 30 minutes"
+
+      account_suspended:
+        response:
+          - "Display 'Account suspended'"
+          - "Provide admin contact"
+
+      tenant_inactive:
+        response:
+          - "Display 'Organization account inactive'"
+          - "Provide support contact"
+
+    postconditions:
+      - "Session created"
+      - "Last login timestamp updated"
+      - "Login audit event recorded"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-003: Reset Password
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-003
+    name: Reset Password
+    name_vi: Đặt lại mật khẩu
+    priority: high
+
+    description: |
+      User resets forgotten password.
+
+    preconditions:
+      - "User account exists"
+      - "Account uses password authentication (not SSO-only)"
+
+    main_flow:
+      1: "User clicks 'Forgot password' link"
+      2: "User enters email address"
+      3: "System validates email exists"
+      4: "System generates reset token"
+      5: "System sends reset email"
+      6: "User clicks reset link"
+      7: "System validates token"
+      8: "User enters new password"
+      9: "System validates password strength"
+      10: "System updates password hash"
+      11: "System revokes all existing sessions"
+      12: "System redirects to login"
+
+    exception_flows:
+      email_not_found:
+        response:
+          - "Display generic 'If account exists, reset email sent'"
+          - "Do not reveal if email exists"
+
+      token_expired:
+        condition: "Token older than 24 hours"
+        response:
+          - "Display 'Reset link expired'"
+          - "Offer to request new reset"
+
+      sso_only_account:
+        response:
+          - "Display 'Password managed by SSO provider'"
+          - "Direct to IdP password reset"
+
+    postconditions:
+      - "Password updated"
+      - "All sessions invalidated"
+      - "Password change audit event recorded"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-004: Logout
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-004
+    name: Logout
+    name_vi: Đăng xuất
+    priority: medium
+
+    description: |
+      User ends their session.
+
+    main_flow:
+      1: "User clicks logout"
+      2: "System invalidates current session"
+      3: "System clears session cookies"
+      4: "System redirects to login page"
+
+    logout_options:
+      current_session: "Logout from current device"
+      all_sessions: "Logout from all devices"
+
+    postconditions:
+      - "Session invalidated"
+      - "Logout audit event recorded"
+
+# =============================================================================
+# PROFILE MANAGEMENT USE CASES
+# =============================================================================
+profile_management:
+  # ---------------------------------------------------------------------------
+  # UC-EU-010: View Profile
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-010
+    name: View Profile
+    name_vi: Xem hồ sơ
+    priority: medium
+
+    description: |
+      User views their profile information.
+
+    main_flow:
+      1: "User navigates to Profile"
+      2: "System displays profile information"
+      3: "User views personal details, preferences, security settings"
+
+    displayed_information:
+      personal:
+        - name
+        - email
+        - avatar
+        - timezone
+        - language
+
+      security:
+        - mfa_status
+        - active_sessions
+        - last_password_change
+
+      activity:
+        - last_login
+        - recent_activity
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-011: Update Profile
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-011
+    name: Update Profile
+    name_vi: Cập nhật hồ sơ
+    priority: medium
+
+    description: |
+      User updates their profile information.
+
+    main_flow:
+      1: "User navigates to Profile > Edit"
+      2: "User modifies allowed fields"
+      3: "User saves changes"
+      4: "System validates and saves"
+      5: "System displays success confirmation"
+
+    editable_fields:
+      - display_name
+      - avatar
+      - timezone
+      - language
+      - notification_preferences
+
+    non_editable_fields:
+      - email: "Requires verification flow"
+      - role: "Admin managed"
+
+    postconditions:
+      - "Profile updated"
+      - "Changes reflected immediately"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-012: Change Email
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-012
+    name: Change Email
+    name_vi: Thay đổi email
+    priority: medium
+
+    description: |
+      User changes their email address.
+
+    preconditions:
+      - "New email is not already in use"
+      - "User can authenticate with password/MFA"
+
+    main_flow:
+      1: "User navigates to Profile > Security"
+      2: "User clicks 'Change Email'"
+      3: "User enters new email address"
+      4: "User confirms with current password"
+      5: "System sends verification to new email"
+      6: "User clicks verification link in new email"
+      7: "System updates email"
+      8: "System sends confirmation to old email"
+
+    postconditions:
+      - "Email updated after verification"
+      - "Old email notified of change"
+      - "Audit log entry created"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-013: Change Password
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-013
+    name: Change Password
+    name_vi: Thay đổi mật khẩu
+    priority: high
+
+    description: |
+      User changes their password.
+
+    preconditions:
+      - "User knows current password"
+      - "Account uses password authentication"
+
+    main_flow:
+      1: "User navigates to Profile > Security"
+      2: "User clicks 'Change Password'"
+      3: "User enters current password"
+      4: "User enters new password twice"
+      5: "System validates current password"
+      6: "System validates new password strength"
+      7: "System updates password"
+      8: "System optionally invalidates other sessions"
+      9: "System sends confirmation email"
+
+    password_requirements:
+      - min_length: 12
+      - uppercase: required
+      - lowercase: required
+      - number: required
+      - special_char: required
+      - not_previous: last_12_passwords
+
+    postconditions:
+      - "Password updated"
+      - "Confirmation email sent"
+      - "Audit log entry created"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-014: Manage MFA
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-014
+    name: Manage MFA
+    name_vi: Quản lý MFA
+    priority: high
+
+    description: |
+      User enables or manages multi-factor authentication.
+
+    main_flow_enable:
+      1: "User navigates to Profile > Security > MFA"
+      2: "User clicks 'Enable MFA'"
+      3: "System displays QR code for authenticator app"
+      4: "User scans QR code with authenticator"
+      5: "User enters verification code"
+      6: "System validates code"
+      7: "System generates backup codes"
+      8: "User saves backup codes securely"
+      9: "MFA enabled"
+
+    main_flow_disable:
+      precondition: "MFA not required by tenant"
+      steps:
+        1: "User navigates to MFA settings"
+        2: "User clicks 'Disable MFA'"
+        3: "User confirms with current MFA code"
+        4: "System disables MFA"
+
+    mfa_methods:
+      totp:
+        apps: [google_authenticator, authy, 1password]
+
+      security_key:
+        tier: [professional, enterprise]
+        standards: [fido2, webauthn]
+
+      backup_codes:
+        count: 10
+        usage: one_time_each
+
+    postconditions:
+      - "MFA enabled/disabled"
+      - "Security notification sent"
+      - "Audit log entry created"
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-015: Manage Sessions
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-015
+    name: Manage Sessions
+    name_vi: Quản lý phiên
+    priority: medium
+
+    description: |
+      User views and manages active sessions.
+
+    main_flow:
+      1: "User navigates to Profile > Security > Sessions"
+      2: "System displays list of active sessions"
+      3: "User can view session details"
+      4: "User can revoke individual sessions"
+      5: "User can revoke all other sessions"
+
+    session_details:
+      - device_type
+      - browser
+      - location: from_ip_geolocation
+      - last_activity
+      - created_at
+
+    actions:
+      - revoke_session: "End specific session"
+      - revoke_all_others: "End all except current"
+
+    postconditions:
+      - "Selected sessions invalidated"
+      - "Audit log entry created"
+
+# =============================================================================
+# NOTIFICATION PREFERENCES
+# =============================================================================
+notification_preferences:
+  # ---------------------------------------------------------------------------
+  # UC-EU-020: Manage Notification Preferences
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-020
+    name: Manage Notification Preferences
+    name_vi: Quản lý tùy chọn thông báo
+    priority: medium
+
+    description: |
+      User configures how they receive notifications.
+
+    main_flow:
+      1: "User navigates to Profile > Notifications"
+      2: "System displays notification categories"
+      3: "User toggles channels for each category"
+      4: "User saves preferences"
+
+    notification_categories:
+      security:
+        types: [login_from_new_device, password_changed, mfa_changes]
+        channels: [email]
+        user_configurable: false  # Always on
+
+      product:
+        types: [feature_updates, tips, product_news]
+        channels: [email, in_app]
+        user_configurable: true
+
+      team:
+        types: [mentions, assignments, comments]
+        channels: [email, in_app, push]
+        user_configurable: true
+
+      billing:
+        types: [invoice_ready, payment_failed, plan_changes]
+        channels: [email]
+        user_configurable: partial  # Admins only
+
+    channels:
+      - email
+      - in_app
+      - push: mobile_app_users
+      - sms: opt_in_required
+
+# =============================================================================
+# COLLABORATION USE CASES
+# =============================================================================
+collaboration:
+  # ---------------------------------------------------------------------------
+  # UC-EU-030: View Team Members
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-030
+    name: View Team Members
+    name_vi: Xem thành viên nhóm
+    priority: medium
+
+    description: |
+      User views list of team members in their organization.
+
+    main_flow:
+      1: "User navigates to Team"
+      2: "System displays team member list"
+      3: "User can search and filter"
+      4: "User can view member profiles"
+
+    displayed_information:
+      - name
+      - email
+      - role
+      - department: if_organizations_enabled
+      - status: active/away
+
+    actions_available:
+      - view_profile
+      - send_message: if_messaging_enabled
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-031: Switch Organization
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-031
+    name: Switch Organization
+    name_vi: Chuyển đổi tổ chức
+    priority: medium
+    tier_required: enterprise
+
+    description: |
+      User switches between organizations within a tenant.
+
+    preconditions:
+      - "Tenant has organizations enabled"
+      - "User belongs to multiple organizations"
+
+    main_flow:
+      1: "User clicks organization switcher"
+      2: "System displays available organizations"
+      3: "User selects organization"
+      4: "System switches context"
+      5: "Dashboard refreshes with organization context"
+
+    postconditions:
+      - "User context switched to selected organization"
+      - "Permissions reflect organization role"
+
+# =============================================================================
+# API ACCESS USE CASES
+# =============================================================================
+api_access:
+  # ---------------------------------------------------------------------------
+  # UC-EU-040: Generate Personal API Token
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-040
+    name: Generate Personal API Token
+    name_vi: Tạo token API cá nhân
+    priority: medium
+    condition: "User has API access permission"
+
+    description: |
+      User generates personal API token for integrations.
+
+    preconditions:
+      - "User has permission to create API tokens"
+      - "Tenant allows user API tokens"
+
+    main_flow:
+      1: "User navigates to Profile > API Tokens"
+      2: "User clicks 'Generate Token'"
+      3: "User enters token name and selects scopes"
+      4: "System generates token"
+      5: "System displays token once"
+      6: "User copies and secures token"
+
+    token_properties:
+      - scopes: limited_to_user_permissions
+      - expiration: configurable
+      - rate_limits: user_level
+
+    postconditions:
+      - "Token created"
+      - "Token shown once only"
+      - "Audit log entry created"
+
+# =============================================================================
+# HELP & SUPPORT USE CASES
+# =============================================================================
+help_support:
+  # ---------------------------------------------------------------------------
+  # UC-EU-050: Access Help Center
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-050
+    name: Access Help Center
+    name_vi: Truy cập trung tâm trợ giúp
+    priority: medium
+
+    description: |
+      User accesses help documentation and resources.
+
+    main_flow:
+      1: "User clicks help icon"
+      2: "System displays help options"
+      3: "User can search knowledge base"
+      4: "User can view guides and tutorials"
+      5: "User can contact support"
+
+    help_resources:
+      - knowledge_base: searchable_articles
+      - video_tutorials: feature_walkthroughs
+      - api_documentation: for_developers
+      - community_forum: peer_support
+      - live_chat: tier_dependent
+
+  # ---------------------------------------------------------------------------
+  # UC-EU-051: Submit Support Ticket
+  # ---------------------------------------------------------------------------
+  - id: UC-EU-051
+    name: Submit Support Ticket
+    name_vi: Gửi yêu cầu hỗ trợ
+    priority: medium
+
+    description: |
+      User submits support request.
+
+    main_flow:
+      1: "User clicks 'Contact Support'"
+      2: "User selects issue category"
+      3: "User describes issue"
+      4: "User attaches screenshots if needed"
+      5: "System creates support ticket"
+      6: "System sends confirmation email"
+      7: "User can track ticket status"
+
+    support_tiers:
+      free:
+        channels: [email, community]
+        response_time: best_effort
+
+      starter:
+        channels: [email, chat]
+        response_time: 24_hours
+
+      professional:
+        channels: [email, chat, phone]
+        response_time: 8_hours
+
+      enterprise:
+        channels: [email, chat, phone, dedicated_manager]
+        response_time: 4_hours
+        sla: contractual
+
+    postconditions:
+      - "Ticket created"
+      - "Confirmation email sent"
+      - "Ticket visible in user portal"

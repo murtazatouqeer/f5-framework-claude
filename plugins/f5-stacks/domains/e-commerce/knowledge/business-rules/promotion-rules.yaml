@@ -1,0 +1,384 @@
+name: Promotion Rules
+display_name: Promotion Rules / Quy tắc khuyến mãi
+description: |
+  Business rules governing promotional campaigns, coupons, and discount eligibility.
+  Includes validation, stacking, and limitation rules.
+
+domain: e-commerce
+category: promotions
+
+rules:
+  # Coupon Validation Rules
+  - id: BR-PRO-001
+    name: Coupon Code Uniqueness
+    description: Coupon codes must be unique (case-insensitive)
+    priority: critical
+    condition: |
+      NOT EXISTS(
+        SELECT 1 FROM coupons
+        WHERE UPPER(code) = UPPER(new_coupon.code)
+      )
+    action: reject_if_violated
+    message: "Coupon code already exists"
+    applies_to: [Coupon]
+
+  - id: BR-PRO-002
+    name: Coupon Date Validation
+    description: Coupon must be within valid date range
+    priority: critical
+    condition: |
+      NOW() >= coupon.start_date AND
+      (coupon.end_date IS NULL OR NOW() <= coupon.end_date)
+    action: reject_if_violated
+    message: "Coupon is not currently valid"
+    applies_to: [Coupon]
+
+  - id: BR-PRO-003
+    name: Coupon Status Check
+    description: Only active coupons can be applied
+    priority: critical
+    condition: coupon.status = 'active'
+    action: reject_if_violated
+    message: "Coupon is not active"
+    applies_to: [Coupon]
+
+  - id: BR-PRO-004
+    name: Total Usage Limit
+    description: Coupon cannot exceed total usage limit
+    priority: high
+    condition: |
+      coupon.usage_limit_total IS NULL OR
+      coupon.used_count < coupon.usage_limit_total
+    action: reject_if_violated
+    message: "Coupon usage limit reached"
+    applies_to: [Coupon]
+
+  - id: BR-PRO-005
+    name: Per Customer Usage Limit
+    description: Customer cannot exceed per-customer usage limit
+    priority: high
+    condition: |
+      coupon.usage_limit_per_customer IS NULL OR
+      customer_usage_count < coupon.usage_limit_per_customer
+    action: reject_if_violated
+    message: "You have already used this coupon"
+    applies_to: [Coupon, Customer]
+
+  # Eligibility Rules
+  - id: BR-PRO-010
+    name: Customer Eligibility Check
+    description: Validate customer meets coupon eligibility
+    priority: high
+    condition: |
+      coupon.customer_eligibility = 'all' OR
+      (coupon.customer_eligibility = 'specific_customers' AND
+       customer.id IN coupon.eligible_customer_ids) OR
+      (coupon.customer_eligibility = 'specific_segments' AND
+       customer.segment IN coupon.eligible_segments) OR
+      (coupon.customer_eligibility = 'first_order_only' AND
+       customer.order_count = 0) OR
+      (coupon.customer_eligibility = 'vip_only' AND
+       customer.loyalty_tier IN ('gold', 'platinum', 'diamond'))
+    action: reject_if_violated
+    message: "You are not eligible for this coupon"
+    applies_to: [Coupon, Customer]
+
+  - id: BR-PRO-011
+    name: Product Eligibility Check
+    description: Validate order contains eligible products
+    priority: high
+    condition: |
+      coupon.applies_to = 'all_products' OR
+      (coupon.applies_to = 'specific_products' AND
+       ANY(order_items.product_id IN coupon.product_ids)) OR
+      (coupon.applies_to = 'specific_categories' AND
+       ANY(order_items.product.category_id IN coupon.category_ids))
+    action: reject_if_violated
+    message: "No eligible products in cart"
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRO-012
+    name: Excluded Products Check
+    description: Exclude certain products from coupon
+    priority: high
+    condition: |
+      coupon.excluded_product_ids IS NULL OR
+      order_items.product_id NOT IN coupon.excluded_product_ids
+    action: |
+      eligible_subtotal = SUM(order_items.line_total)
+      WHERE product_id NOT IN excluded_product_ids
+    applies_to: [Coupon, OrderItem]
+
+  - id: BR-PRO-013
+    name: Channel Eligibility
+    description: Coupon valid only on specified channels
+    priority: medium
+    condition: |
+      coupon.channels IS NULL OR
+      order.source IN coupon.channels
+    action: reject_if_violated
+    message: "Coupon not valid on this channel"
+    applies_to: [Coupon, Order]
+
+  # Stacking Rules
+  - id: BR-PRO-020
+    name: Non-Combinable Enforcement
+    description: Non-combinable coupons reject additional coupons
+    priority: high
+    condition: |
+      NOT EXISTS(
+        SELECT 1 FROM applied_coupons
+        WHERE is_combinable = false
+      ) OR
+      new_coupon.is_combinable = true
+    action: reject_if_violated
+    message: "Cannot combine with existing coupon"
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRO-021
+    name: Maximum Coupons Per Order
+    description: Limit number of coupons per order
+    priority: medium
+    condition: COUNT(order.applied_coupons) <= config.max_coupons_per_order
+    action: reject_if_violated
+    message: "Maximum coupons already applied"
+    applies_to: [Order]
+    config:
+      max_coupons_per_order: 3
+
+  - id: BR-PRO-022
+    name: Coupon Type Stacking
+    description: Only one coupon of same type allowed
+    priority: medium
+    condition: |
+      NOT EXISTS(
+        SELECT 1 FROM applied_coupons
+        WHERE type = new_coupon.type
+      )
+    action: reject_if_violated
+    message: "A coupon of this type is already applied"
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRO-023
+    name: Priority-Based Application
+    description: Apply higher priority coupons first
+    priority: medium
+    condition: always
+    action: |
+      applied_coupons = ORDER BY priority DESC
+      FOR each coupon:
+        calculate_discount()
+        apply_to_remaining_subtotal()
+    applies_to: [Coupon, Order]
+
+  # Discount Calculation Rules
+  - id: BR-PRO-030
+    name: Percentage Discount Calculation
+    description: Calculate percentage discount with cap
+    priority: high
+    condition: coupon.type = 'percentage'
+    action: |
+      raw_discount = eligible_subtotal * (coupon.discount_value / 100)
+      discount = MIN(raw_discount, coupon.max_discount_amount)
+    applies_to: [Coupon]
+
+  - id: BR-PRO-031
+    name: Fixed Amount Discount
+    description: Apply fixed discount amount
+    priority: high
+    condition: coupon.type = 'fixed_amount'
+    action: |
+      discount = MIN(coupon.discount_value, eligible_subtotal)
+    applies_to: [Coupon]
+
+  - id: BR-PRO-032
+    name: Free Shipping Discount
+    description: Waive shipping cost
+    priority: high
+    condition: coupon.type = 'free_shipping'
+    action: |
+      order.shipping_amount = 0
+      discount = original_shipping_amount
+    applies_to: [Coupon, Order]
+
+  - id: BR-PRO-033
+    name: Buy X Get Y Discount
+    description: Calculate buy X get Y discount
+    priority: high
+    condition: coupon.type = 'buy_x_get_y'
+    action: |
+      qualifying_quantity = COUNT(eligible_items)
+      free_quantity = FLOOR(qualifying_quantity / coupon.buy_quantity) * coupon.get_quantity
+      discount = free_quantity * lowest_eligible_item_price * (coupon.get_discount_percentage / 100)
+    applies_to: [Coupon, OrderItem]
+
+  - id: BR-PRO-034
+    name: Fixed Price Discount
+    description: Set items to fixed price
+    priority: high
+    condition: coupon.type = 'fixed_price'
+    action: |
+      FOR each eligible_item:
+        discount += (item.unit_price - coupon.discount_value) * item.quantity
+    applies_to: [Coupon, OrderItem]
+
+  # Auto-Apply Rules
+  - id: BR-PRO-040
+    name: Auto-Apply Eligible Coupons
+    description: Automatically apply eligible auto-apply coupons
+    priority: medium
+    condition: |
+      coupon.is_auto_apply = true AND
+      coupon.status = 'active' AND
+      customer_is_eligible AND
+      order_meets_requirements
+    action: |
+      auto_apply_coupon(coupon)
+    applies_to: [Coupon, Order, Cart]
+
+  - id: BR-PRO-041
+    name: Best Coupon Selection
+    description: Auto-select best discount for customer
+    priority: medium
+    condition: config.auto_select_best_coupon = true
+    action: |
+      eligible_coupons = GET_ELIGIBLE_COUPONS()
+      FOR each coupon:
+        calculate_potential_discount()
+      SELECT coupon WITH MAX(discount)
+    applies_to: [Coupon, Order]
+    config:
+      auto_select_best_coupon: false
+
+  # Flash Sale Rules
+  - id: BR-PRO-050
+    name: Flash Sale Priority
+    description: Flash sale prices override other promotions
+    priority: critical
+    condition: |
+      flash_sale.active = true AND
+      NOW() BETWEEN flash_sale.start_time AND flash_sale.end_time
+    action: |
+      product.effective_price = flash_sale.price
+      exclude_from_other_promotions = true
+    applies_to: [Product, FlashSale]
+
+  - id: BR-PRO-051
+    name: Flash Sale Quantity Limit
+    description: Limit purchases per customer during flash sale
+    priority: high
+    condition: |
+      customer_purchased_during_sale < flash_sale.max_per_customer
+    action: reject_if_violated
+    message: "Purchase limit reached for this flash sale"
+    applies_to: [FlashSale, Customer]
+
+  - id: BR-PRO-052
+    name: Flash Sale Stock Limit
+    description: Flash sale ends when stock depleted
+    priority: high
+    condition: flash_sale.remaining_quantity > 0
+    action: |
+      IF remaining_quantity = 0 THEN
+        flash_sale.status = 'sold_out'
+    applies_to: [FlashSale]
+
+  # Referral Rules
+  - id: BR-PRO-060
+    name: Referral Code Validation
+    description: Validate referral code exists and is active
+    priority: medium
+    condition: |
+      referrer.status = 'active' AND
+      referrer.referral_code = provided_code
+    action: |
+      order.referred_by = referrer.id
+    applies_to: [Order, Customer]
+
+  - id: BR-PRO-061
+    name: Referral Reward
+    description: Award referral bonus on first order completion
+    priority: medium
+    condition: |
+      order.status = 'completed' AND
+      order.referred_by IS NOT NULL AND
+      customer.order_count = 1
+    action: |
+      referrer.loyalty_points += config.referral_bonus_points
+      customer.loyalty_points += config.referee_bonus_points
+      TRIGGER customer.referred
+    applies_to: [Order, Customer]
+    config:
+      referral_bonus_points: 500
+      referee_bonus_points: 200
+
+  - id: BR-PRO-062
+    name: Self-Referral Prevention
+    description: Cannot use own referral code
+    priority: high
+    condition: |
+      customer.referral_code != provided_referral_code
+    action: reject_if_violated
+    message: "Cannot use your own referral code"
+    applies_to: [Customer, Order]
+
+  # Loyalty Redemption Rules
+  - id: BR-PRO-070
+    name: Points Redemption Rate
+    description: Convert loyalty points to discount
+    priority: medium
+    condition: |
+      customer.loyalty_points >= points_to_redeem
+    action: |
+      discount = points_to_redeem * config.points_to_currency_rate
+      customer.loyalty_points -= points_to_redeem
+    applies_to: [Customer, Order]
+    config:
+      points_to_currency_rate: 1
+
+  - id: BR-PRO-071
+    name: Minimum Points Redemption
+    description: Minimum points required for redemption
+    priority: medium
+    condition: points_to_redeem >= config.min_points_redemption
+    action: reject_if_violated
+    message: "Minimum points required for redemption"
+    applies_to: [Customer, Order]
+    config:
+      min_points_redemption: 100
+
+  - id: BR-PRO-072
+    name: Maximum Points Per Order
+    description: Limit points redeemable per order
+    priority: medium
+    condition: |
+      points_to_redeem <= config.max_points_per_order OR
+      points_discount <= order.subtotal * config.max_points_percentage
+    action: cap_redemption
+    applies_to: [Customer, Order]
+    config:
+      max_points_per_order: 10000
+      max_points_percentage: 50
+
+validation_order:
+  - BR-PRO-001  # Uniqueness
+  - BR-PRO-002  # Date validation
+  - BR-PRO-003  # Status check
+  - BR-PRO-004  # Total usage
+  - BR-PRO-005  # Per customer usage
+  - BR-PRO-010  # Customer eligibility
+  - BR-PRO-011  # Product eligibility
+  - BR-PRO-020  # Combinability
+  - BR-PRO-030  # Discount calculation
+
+exceptions:
+  - name: VIPCouponOverride
+    description: VIP customers can bypass some restrictions
+    requires: vip_status
+    overrides: [BR-PRO-005, BR-PRO-021]
+
+  - name: EmployeeDiscount
+    description: Employee discount special handling
+    requires: employee_status
+    discount_percentage: 20
+    combinable: true

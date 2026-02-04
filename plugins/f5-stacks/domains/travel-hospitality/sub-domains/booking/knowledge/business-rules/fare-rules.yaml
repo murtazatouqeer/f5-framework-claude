@@ -1,0 +1,544 @@
+name: fare-rules
+display_name: Fare Rules & Restrictions
+display_name_vi: Quy tắc giá vé & Hạn chế
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Business rules governing fare types, booking classes,
+  change/refund rules, and fare restrictions for air travel.
+
+categories:
+  - name: fare_types
+    display_name: Fare Type Rules
+    rules:
+      - id: BR-FARE-T001
+        name: Economy Fare Classes
+        description: |
+          Standard economy fare class hierarchy.
+        classes:
+          full_fare_economy:
+            codes: [Y, B]
+            characteristics:
+              - fully_refundable: yes
+              - changeable: free
+              - upgrade_eligible: yes
+              - mileage_accrual: 100%
+              - advance_purchase: none
+
+          flexible_economy:
+            codes: [M, H, K]
+            characteristics:
+              - refundable: with fee
+              - changeable: with fee
+              - upgrade_eligible: yes
+              - mileage_accrual: 100%
+              - advance_purchase: 3-7 days
+
+          standard_economy:
+            codes: [L, V, S]
+            characteristics:
+              - refundable: taxes only
+              - changeable: with fee + fare diff
+              - upgrade_eligible: limited
+              - mileage_accrual: 75-100%
+              - advance_purchase: 7-14 days
+
+          discount_economy:
+            codes: [Q, N, T]
+            characteristics:
+              - refundable: no
+              - changeable: with fee + fare diff
+              - upgrade_eligible: no
+              - mileage_accrual: 50-75%
+              - advance_purchase: 14-21 days
+
+          deep_discount:
+            codes: [E, G, W]
+            characteristics:
+              - refundable: no
+              - changeable: no or high fee
+              - upgrade_eligible: no
+              - mileage_accrual: 25-50%
+              - advance_purchase: 21+ days
+        priority: critical
+
+      - id: BR-FARE-T002
+        name: Business Class Fare Classes
+        description: |
+          Business class fare hierarchy.
+        classes:
+          full_fare_business:
+            codes: [J, C]
+            characteristics:
+              - fully_refundable: yes
+              - changeable: free
+              - lounge_access: yes
+              - priority_boarding: yes
+              - mileage_accrual: 150-200%
+
+          discounted_business:
+            codes: [D, I, Z]
+            characteristics:
+              - refundable: with fee
+              - changeable: with fee
+              - lounge_access: yes
+              - mileage_accrual: 125-150%
+              - advance_purchase: 7-14 days
+        priority: high
+
+      - id: BR-FARE-T003
+        name: First Class Fare Classes
+        description: |
+          First class fare hierarchy.
+        classes:
+          full_fare_first:
+            codes: [F, A]
+            characteristics:
+              - fully_refundable: yes
+              - changeable: free
+              - all_premium_benefits: yes
+              - mileage_accrual: 200-300%
+
+          discounted_first:
+            codes: [P]
+            characteristics:
+              - refundable: with minimal fee
+              - changeable: free or minimal
+              - mileage_accrual: 150-200%
+        priority: medium
+
+  - name: advance_purchase
+    display_name: Advance Purchase Rules
+    rules:
+      - id: BR-FARE-AP001
+        name: Advance Purchase Requirements
+        description: |
+          How far in advance tickets must be purchased.
+        types:
+          no_restriction:
+            applies_to: [Y, J, F, full_fares]
+            booking_allowed: up_to_departure
+
+          ap3:
+            days_before: 3
+            applies_to: flexible_fares
+
+          ap7:
+            days_before: 7
+            applies_to: standard_fares
+
+          ap14:
+            days_before: 14
+            applies_to: discount_fares
+
+          ap21:
+            days_before: 21
+            applies_to: deep_discount_fares
+
+          ap30_60:
+            days_before: 30-60
+            applies_to: promotional_fares
+        validation:
+          - check_at_booking: required
+          - departure_date - booking_date >= ap_days
+        priority: high
+
+      - id: BR-FARE-AP002
+        name: Early Bird Incentives
+        description: |
+          Discounts for very early booking.
+        tiers:
+          - days_before: 90
+            discount: 10-15%
+          - days_before: 120
+            discount: 15-20%
+          - days_before: 180
+            discount: 20-25%
+        conditions:
+          - subject_to_availability
+          - specific_fare_classes
+          - may_be_non_refundable
+        priority: medium
+
+  - name: minimum_maximum_stay
+    display_name: Stay Requirements
+    rules:
+      - id: BR-FARE-S001
+        name: Minimum Stay Rules
+        description: |
+          Minimum duration requirements.
+        types:
+          no_minimum:
+            applies_to: full_fares
+
+          saturday_night:
+            description: Must include Saturday night at destination
+            applies_to: most_discount_fares
+            validation: return_date - outbound_date includes_saturday
+
+          min_days:
+            days: 3-7
+            applies_to: promotional_fares
+            validation: return_date - arrival_date >= min_days
+        purpose:
+          - prevent_business_traveler_arbitrage
+          - yield_management
+        priority: high
+
+      - id: BR-FARE-S002
+        name: Maximum Stay Rules
+        description: |
+          Maximum trip duration limits.
+        types:
+          no_maximum:
+            applies_to: full_fares
+            limit: ticket_validity (1 year)
+
+          limited_stay:
+            days: 14-30
+            applies_to: promotional_fares
+
+          fixed_return:
+            applies_to: some_special_fares
+            return_must_be: specific_date_range
+        priority: medium
+
+  - name: routing_rules
+    display_name: Routing & Stopover Rules
+    rules:
+      - id: BR-FARE-R001
+        name: Direct vs Connecting
+        description: |
+          Rules for routing on published fares.
+        direct_fare:
+          - must_be: non-stop
+          - connections: not allowed
+
+        connecting_fare:
+          - via_points: specified
+          - backhaul: may be prohibited
+          - circle_trip: special rules
+
+        open_routing:
+          - multiple_options: allowed
+          - mileage_system: within limits
+        priority: medium
+
+      - id: BR-FARE-R002
+        name: Stopover Rules
+        description: |
+          Free and paid stopover allowances.
+        definitions:
+          stopover: stay > 24 hours (international)
+          connection: stay < 24 hours
+        allowances:
+          full_fares:
+            free_stopovers: 1-2
+            additional: purchasable
+          discount_fares:
+            free_stopovers: 0
+            additional: not_allowed or fee
+        pricing:
+          - per_stopover: USD 50-150 equivalent
+        priority: medium
+
+  - name: change_rules
+    display_name: Change & Reissue Rules
+    rules:
+      - id: BR-FARE-CH001
+        name: Date Change Rules
+        description: |
+          Rules for changing travel dates.
+        by_fare_type:
+          full_fare:
+            change_fee: none
+            fare_difference: may_apply
+
+          flexible:
+            change_fee: VND 500,000 - 1,500,000
+            fare_difference: required
+
+          restricted:
+            change_fee: VND 1,500,000 - 3,000,000
+            fare_difference: required
+
+          non_changeable:
+            change_allowed: no
+            alternative: cancel_and_rebook
+        conditions:
+          - within_ticket_validity: required
+          - same_airline: usually required
+          - same_routing: often required
+        priority: high
+
+      - id: BR-FARE-CH002
+        name: Route Change Rules
+        description: |
+          Rules for changing origin/destination.
+        generally:
+          - not_allowed: on most discount fares
+          - treated_as: cancellation + new booking
+        exceptions:
+          - same_city_airports: often allowed
+          - airline_initiated: free change
+        when_allowed:
+          - new_fare_calculation: required
+          - fare_difference: collect or forfeit
+          - change_fee: applies
+        priority: medium
+
+      - id: BR-FARE-CH003
+        name: Name Change Rules
+        description: |
+          Rules for passenger name changes.
+        generally:
+          - not_allowed: name is non-transferable
+          - ticket_is: personal to named passenger
+        exceptions:
+          - spelling_correction: up to 3 characters
+          - title_change: Mr/Ms/Mrs
+          - legal_name_change: with documentation
+        fraud_prevention:
+          - strict_enforcement: prevents resale
+        priority: critical
+
+      - id: BR-FARE-CH004
+        name: Upgrade Rules
+        description: |
+          Rules for purchasing cabin upgrades.
+        types:
+          paid_upgrade:
+            availability: Y, C, F inventory
+            pricing: fare_difference + fee
+
+          miles_upgrade:
+            availability: specific_inventory
+            miles_required: per_chart
+            copay: may_apply
+
+          complimentary_upgrade:
+            eligibility: elite_status
+            availability: at_check_in
+        fare_basis_retention:
+          - original_fare_rules: may_still_apply
+          - mileage_earning: upgraded_cabin_rate
+        priority: medium
+
+  - name: combinability_rules
+    display_name: Fare Combinability Rules
+    rules:
+      - id: BR-FARE-C001
+        name: Round Trip Combinability
+        description: |
+          Rules for combining outbound and return fares.
+        half_round_trip:
+          - definition: one_direction_of_round_trip
+          - pricing: each_direction_priced_separately
+          - rules: each_half_has_own_rules
+        combination_rules:
+          - same_airline: required for some fares
+          - alliance_partners: often combinable
+          - different_cabins: may_be_allowed
+        pricing:
+          - method: sum_of_half_round_trips
+          - special_round_trip_fares: may_be_cheaper
+        priority: high
+
+      - id: BR-FARE-C002
+        name: Open Jaw Rules
+        description: |
+          Rules for open jaw itineraries.
+        types:
+          origin_open_jaw:
+            - depart: city_A
+            - arrive: city_B
+            - return_from: city_B
+            - return_to: city_C (different from A)
+
+          destination_open_jaw:
+            - depart: city_A
+            - arrive: city_B
+            - return_from: city_C (different from B)
+            - return_to: city_A
+
+          double_open_jaw:
+            - both_origin_and_destination_different
+        pricing:
+          - method: half_of_each_round_trip
+          - surface_sector: not_priced_but_counted
+        priority: medium
+
+  - name: fare_construction
+    display_name: Fare Construction Rules
+    rules:
+      - id: BR-FARE-FC001
+        name: Fare Calculation Line
+        description: |
+          Structure of fare calculation.
+        components:
+          - origin: 3-letter code
+          - carrier: 2-letter code
+          - fare_basis: code
+          - destination: 3-letter code
+          - fare_amount: in NUC or local
+          - stopover_charges: if applicable
+          - total_fare: sum
+          - ROE: rate_of_exchange
+          - local_currency: converted_amount
+        display:
+          - technical: for agents
+          - simplified: for customers
+        priority: medium
+
+      - id: BR-FARE-FC002
+        name: Through Fare vs Point-to-Point
+        description: |
+          When to use through fares vs separate tickets.
+        through_fare:
+          - single_ticket: all_segments
+          - benefits: connection_protection, single_check_in
+          - pricing: may_be_cheaper
+
+        separate_tickets:
+          - when: no_through_fare_available
+          - risks: no_connection_protection
+          - pricing: sum_of_point_to_point
+        recommendation:
+          - prefer_through_fare: when_available
+          - warn_customer: if_separate_tickets
+        priority: high
+
+  - name: special_fares
+    display_name: Special Fare Rules
+    rules:
+      - id: BR-FARE-SP001
+        name: Child Fares
+        description: |
+          Fare rules for children.
+        definition:
+          - age: 2-11 years at travel date
+          - documentation: may_be_required
+        pricing:
+          - international: 75% of adult fare
+          - domestic: often same as adult
+          - low_cost_carriers: same as adult
+        seat_assignment:
+          - adjacent_to_adult: preferred
+          - own_seat: required
+        priority: high
+
+      - id: BR-FARE-SP002
+        name: Infant Fares
+        description: |
+          Fare rules for infants.
+        definition:
+          - age: under 2 at travel date
+          - turns_2_during_trip: child_fare_for_return
+        pricing:
+          - lap_infant: 10% of adult fare
+          - with_seat: child fare applies
+        restrictions:
+          - one_infant_per_adult: maximum
+          - bassinet: request_basis
+        priority: high
+
+      - id: BR-FARE-SP003
+        name: Senior Fares
+        description: |
+          Discounted fares for seniors.
+        eligibility:
+          - age: 60+ or 65+ (varies by airline)
+          - verification: ID at check-in
+        discount:
+          - percentage: 5-15%
+          - availability: limited inventory
+        conditions:
+          - may_have: restrictions
+          - not_combinable: with other discounts
+        priority: low
+
+      - id: BR-FARE-SP004
+        name: Student Fares
+        description: |
+          Discounted fares for students.
+        eligibility:
+          - valid_student_id: required
+          - age_limit: varies (usually under 26)
+          - full_time_student: verified
+        benefits:
+          - discount: 10-20%
+          - extra_baggage: sometimes
+          - flexible_dates: sometimes
+        verification:
+          - ISIC_card: internationally recognized
+          - university_ID: domestic
+        priority: low
+
+      - id: BR-FARE-SP005
+        name: Bereavement Fares
+        description: |
+          Emergency fares for family death.
+        eligibility:
+          - immediate_family: death
+          - documentation: death_certificate
+          - last_minute: travel
+        discount:
+          - percentage: 5-15% off walk-up
+          - waived_restrictions: advance_purchase
+        availability:
+          - declining: many airlines discontinued
+          - alternative: compassionate_policy
+        priority: low
+
+fare_filing:
+  - id: FF-001
+    name: ATPCO Filing
+    description: |
+      Fares filed through ATPCO system.
+    components:
+      - fare_amount: base fare
+      - rules: Category 1-50
+      - routings: permitted routing maps
+      - footnotes: additional conditions
+    update_frequency:
+      - fare_changes: multiple times daily
+      - rule_changes: as filed
+
+  - id: FF-002
+    name: Category Rules
+    description: |
+      ATPCO rule categories.
+    key_categories:
+      - cat_5: advance_purchase
+      - cat_6: minimum_stay
+      - cat_7: maximum_stay
+      - cat_8: stopovers
+      - cat_9: transfers
+      - cat_10: combinations
+      - cat_11: blackout_dates
+      - cat_14: travel_restrictions
+      - cat_15: sales_restrictions
+      - cat_16: penalties
+      - cat_25: fare_by_rule
+      - cat_31: voluntary_changes
+      - cat_33: voluntary_refunds
+
+display_requirements:
+  - id: DR-001
+    name: Fare Rules Display
+    description: |
+      How fare rules must be shown to customer.
+    requirements:
+      - pre_booking: summary of key rules
+      - booking_confirmation: full rules link
+      - itinerary: rules reference
+    key_information:
+      - refund_policy: prominent
+      - change_fees: prominent
+      - baggage_allowance: clear
+      - advance_purchase: if_applicable
+    compliance:
+      - consumer_protection: required
+      - language: local_language_available

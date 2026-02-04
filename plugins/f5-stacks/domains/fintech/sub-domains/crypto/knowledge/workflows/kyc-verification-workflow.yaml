@@ -1,0 +1,547 @@
+name: KYCVerificationWorkflow
+display_name: KYC Verification Workflow / Quy trình xác minh KYC
+description: |
+  End-to-end workflow for Know Your Customer verification
+  from document submission to approval.
+
+domain: fintech
+sub_domain: crypto
+workflow_type: compliance
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: User initiates KYC verification
+  outcome: User verified and limits upgraded
+  typical_duration: 5 minutes to 72 hours
+  actors:
+    - user
+    - document_service
+    - ocr_engine
+    - facial_recognition
+    - sanctions_screening
+    - kyc_reviewer
+    - notification_service
+
+# =============================================================================
+# VERIFICATION LEVELS
+# =============================================================================
+verification_levels:
+  basic:
+    description: Email and phone verification
+    requirements:
+      - email_verified
+      - phone_verified
+      - basic_info (name, country)
+    limits:
+      daily_withdrawal: 2 BTC equivalent
+      daily_trading: 10 BTC equivalent
+    auto_approval: true
+    duration: < 1 minute
+
+  advanced:
+    description: Identity document verification
+    requirements:
+      - basic_level_complete
+      - identity_document
+      - selfie_verification
+      - address_proof (optional)
+    limits:
+      daily_withdrawal: 100 BTC equivalent
+      daily_trading: unlimited
+    auto_approval: Possible for low-risk
+    duration: 5 minutes to 24 hours
+
+  vip:
+    description: Enhanced due diligence
+    requirements:
+      - advanced_level_complete
+      - source_of_funds
+      - enhanced_documentation
+      - video_verification (optional)
+    limits:
+      daily_withdrawal: unlimited
+      daily_trading: unlimited
+    auto_approval: Never (always manual)
+    duration: 24-72 hours
+
+# =============================================================================
+# WORKFLOW STEPS - BASIC LEVEL
+# =============================================================================
+basic_verification:
+  - id: WF-KYC-B01
+    name: Email Verification
+    name_vi: Xác minh email
+    actor: user
+    description: |
+      Verify user's email address ownership.
+    actions:
+      - Generate verification token
+      - Send email with verification link
+      - User clicks verification link
+      - Mark email as verified
+    timeout: 24 hours
+    retry: 3 attempts
+
+  - id: WF-KYC-B02
+    name: Phone Verification
+    name_vi: Xác minh số điện thoại
+    actor: user
+    description: |
+      Verify user's phone number ownership.
+    actions:
+      - Generate OTP code
+      - Send SMS/voice call
+      - User enters OTP
+      - Validate and mark verified
+    timeout: 10 minutes
+    retry: 3 attempts
+
+  - id: WF-KYC-B03
+    name: Basic Information
+    name_vi: Thông tin cơ bản
+    actor: user
+    description: |
+      Collect basic user information.
+    required_fields:
+      - full_name
+      - date_of_birth
+      - country_of_residence
+      - nationality
+    validations:
+      - age >= 18
+      - country not restricted
+    on_complete:
+      - Update KYC level to 'basic'
+      - Apply basic limits
+      - Enable trading features
+
+# =============================================================================
+# WORKFLOW STEPS - ADVANCED LEVEL
+# =============================================================================
+advanced_verification:
+  - id: WF-KYC-A01
+    name: Document Selection
+    name_vi: Chọn tài liệu
+    actor: user
+    trigger: User initiates advanced verification
+    description: |
+      User selects document type for verification.
+    document_types:
+      - passport
+      - national_id
+      - drivers_license
+    requirements:
+      - Document not expired
+      - Document from supported country
+      - MRZ readable (for passport)
+    next_step: WF-KYC-A02
+
+  - id: WF-KYC-A02
+    name: Document Upload
+    name_vi: Tải lên tài liệu
+    actor: user
+    description: |
+      User captures/uploads identity document.
+    capture_modes:
+      - camera_capture (preferred)
+      - file_upload (fallback)
+    requirements:
+      - Clear image quality
+      - All corners visible
+      - No glare or shadows
+      - Minimum resolution: 1280x720
+    validations:
+      - File size: 100KB - 10MB
+      - Format: JPEG, PNG
+      - Not previously used
+    next_step: WF-KYC-A03
+
+  - id: WF-KYC-A03
+    name: OCR Extraction
+    name_vi: Trích xuất OCR
+    actor: ocr_engine
+    trigger: Document uploaded
+    description: |
+      Extract information from document using OCR.
+    extracted_fields:
+      passport:
+        - surname
+        - given_names
+        - nationality
+        - date_of_birth
+        - sex
+        - expiry_date
+        - document_number
+        - mrz_line_1
+        - mrz_line_2
+      national_id:
+        - full_name
+        - date_of_birth
+        - id_number
+        - issue_date
+        - expiry_date
+      drivers_license:
+        - full_name
+        - date_of_birth
+        - license_number
+        - expiry_date
+        - address
+    confidence_threshold: 0.85
+    on_low_confidence: Flag for manual review
+    next_step: WF-KYC-A04
+
+  - id: WF-KYC-A04
+    name: Document Authenticity Check
+    name_vi: Kiểm tra tính xác thực tài liệu
+    actor: document_service
+    trigger: OCR complete
+    description: |
+      Verify document is authentic and valid.
+    checks:
+      - MRZ validation (checksums)
+      - Expiry date valid
+      - Document template matching
+      - Security feature detection
+      - Tamper detection
+      - Duplicate document check
+    on_success: WF-KYC-A05
+    on_failure:
+      action: Reject or manual review
+      reasons:
+        - expired_document
+        - tampered_document
+        - unsupported_document
+        - previously_used
+
+  - id: WF-KYC-A05
+    name: Selfie Capture
+    name_vi: Chụp ảnh selfie
+    actor: user
+    description: |
+      User captures selfie for facial verification.
+    requirements:
+      - Face clearly visible
+      - Neutral expression
+      - Good lighting
+      - No glasses/mask
+    liveness_check:
+      - Blink detection
+      - Head movement
+      - Random gesture
+    next_step: WF-KYC-A06
+
+  - id: WF-KYC-A06
+    name: Facial Matching
+    name_vi: Khớp khuôn mặt
+    actor: facial_recognition
+    trigger: Selfie captured
+    description: |
+      Compare selfie with document photo.
+    algorithm: Deep learning facial matching
+    match_threshold: 0.90
+    checks:
+      - Face detection in both images
+      - Similarity score calculation
+      - Liveness verification
+      - Presentation attack detection
+    on_success: WF-KYC-A07
+    on_failure:
+      action: Allow retry or manual review
+      max_retries: 3
+
+  - id: WF-KYC-A07
+    name: Sanctions Screening
+    name_vi: Sàng lọc trừng phạt
+    actor: sanctions_screening
+    trigger: Facial match passed
+    description: |
+      Screen user against sanctions and PEP lists.
+    screening_sources:
+      - OFAC SDN List
+      - UN Consolidated List
+      - EU Sanctions List
+      - PEP databases
+      - Adverse media
+    outcomes:
+      no_match:
+        action: Continue to next step
+      potential_match:
+        action: Flag for manual review
+        priority: high
+      confirmed_match:
+        action: Reject verification
+        report: Compliance team
+
+  - id: WF-KYC-A08
+    name: Risk Assessment
+    name_vi: Đánh giá rủi ro
+    actor: system
+    trigger: Screening complete
+    description: |
+      Calculate user risk score for approval decision.
+    risk_factors:
+      country_risk:
+        low_risk: 0
+        medium_risk: +20
+        high_risk: +50
+      age_risk:
+        under_25: +10
+        25_65: 0
+        over_65: +5
+      pep_status:
+        not_pep: 0
+        pep: +40
+      document_quality:
+        high: 0
+        medium: +10
+        low: +30
+    approval_decision:
+      auto_approve: risk_score < 30
+      manual_review: 30 <= risk_score < 70
+      enhanced_review: risk_score >= 70
+
+  - id: WF-KYC-A09
+    name: Auto Approval
+    name_vi: Phê duyệt tự động
+    actor: system
+    trigger: Low risk score
+    description: |
+      Automatically approve low-risk verifications.
+    conditions:
+      - risk_score < 30
+      - All checks passed
+      - No flags raised
+    actions:
+      - Update KYC level to 'advanced'
+      - Apply new limits
+      - Send approval notification
+    duration: < 5 minutes
+
+  - id: WF-KYC-A10
+    name: Manual Review
+    name_vi: Xét duyệt thủ công
+    actor: kyc_reviewer
+    trigger: Medium/high risk score or flags
+    description: |
+      Human reviewer examines verification request.
+    review_elements:
+      - Document images
+      - OCR results
+      - Facial match score
+      - Screening results
+      - Risk assessment
+    actions:
+      approve:
+        - Set reason
+        - Update KYC level
+        - Notify user
+      reject:
+        - Set rejection reason
+        - Notify user with instructions
+        - Allow resubmission
+      request_info:
+        - Request additional documents
+        - Hold pending user response
+    sla: 24 hours
+    escalation: 48 hours to senior reviewer
+
+# =============================================================================
+# WORKFLOW STEPS - VIP LEVEL
+# =============================================================================
+vip_verification:
+  - id: WF-KYC-V01
+    name: VIP Application
+    name_vi: Đăng ký VIP
+    actor: user
+    description: |
+      User applies for VIP verification level.
+    prerequisites:
+      - Advanced verification complete
+      - Trading volume > threshold
+      - Account age > 30 days
+    next_step: WF-KYC-V02
+
+  - id: WF-KYC-V02
+    name: Source of Funds
+    name_vi: Nguồn tiền
+    actor: user
+    description: |
+      User provides source of funds documentation.
+    accepted_sources:
+      - Employment income
+      - Business ownership
+      - Investments
+      - Inheritance
+      - Sale of property
+    documents:
+      - Bank statements
+      - Pay slips
+      - Tax returns
+      - Business registration
+    next_step: WF-KYC-V03
+
+  - id: WF-KYC-V03
+    name: Enhanced Due Diligence
+    name_vi: Thẩm định nâng cao
+    actor: kyc_reviewer
+    description: |
+      Senior compliance review of VIP application.
+    review_scope:
+      - Source of funds verification
+      - Enhanced screening
+      - Trading pattern analysis
+      - Risk assessment
+    approval_authority: Senior compliance officer
+    sla: 72 hours
+
+# =============================================================================
+# STATE TRANSITIONS
+# =============================================================================
+state_machine:
+  initial: not_started
+  states:
+    not_started:
+      description: No verification initiated
+      transitions:
+        - to: in_progress
+          event: start_verification
+
+    in_progress:
+      description: Verification in progress
+      transitions:
+        - to: pending_documents
+          event: awaiting_upload
+        - to: processing
+          event: documents_submitted
+
+    pending_documents:
+      description: Waiting for document upload
+      transitions:
+        - to: processing
+          event: documents_uploaded
+        - to: expired
+          event: timeout
+
+    processing:
+      description: Automated processing
+      transitions:
+        - to: pending_review
+          event: manual_review_required
+        - to: approved
+          event: auto_approved
+        - to: rejected
+          event: auto_rejected
+
+    pending_review:
+      description: Awaiting manual review
+      transitions:
+        - to: approved
+          event: reviewer_approved
+        - to: rejected
+          event: reviewer_rejected
+        - to: additional_info_required
+          event: info_requested
+
+    additional_info_required:
+      description: Waiting for user to provide more info
+      transitions:
+        - to: processing
+          event: info_provided
+        - to: expired
+          event: timeout
+
+    approved:
+      description: Verification approved
+      terminal: true
+
+    rejected:
+      description: Verification rejected
+      terminal: true
+      allow_resubmission: true
+
+    expired:
+      description: Verification expired
+      terminal: true
+      allow_restart: true
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - name: verification_completion_rate
+      target: > 80%
+      alert: warning at < 70%
+
+    - name: auto_approval_rate
+      target: > 60%
+      alert: info
+
+    - name: average_processing_time
+      target: < 10 minutes (auto)
+      alert: warning at > 30 minutes
+
+    - name: manual_review_sla
+      target: < 24 hours
+      alert: warning at > 12 hours
+
+    - name: rejection_rate
+      target: < 10%
+      alert: warning at > 20%
+
+  alerts:
+    - name: High Rejection Rate
+      condition: rejection_rate > 20%
+      severity: warning
+      action: Review rejection reasons
+
+    - name: Review Queue Backlog
+      condition: pending_review > threshold
+      severity: warning
+      action: Add reviewers
+
+    - name: Potential Fraud Pattern
+      condition: Multiple rejections from same IP/device
+      severity: critical
+      action: Investigate, possible ban
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - verification_started
+    - document_uploaded
+    - ocr_completed
+    - facial_match_result
+    - screening_result
+    - review_started
+    - review_decision
+    - verification_approved
+    - verification_rejected
+  sensitive_data:
+    - Document images (encrypted)
+    - Selfie images (encrypted)
+    - Personal information
+  retention: 5 years after relationship ends
+  access_control: Compliance team only
+
+# =============================================================================
+# RESUBMISSION POLICY
+# =============================================================================
+resubmission:
+  allowed_after_rejection: true
+  cooldown_period: 24 hours
+  max_attempts: 5
+  permanent_rejection:
+    - Fraudulent documents
+    - Sanctions match confirmed
+    - Identity theft confirmed
+  appeal_process:
+    - Support ticket
+    - Additional documentation
+    - Senior review

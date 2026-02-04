@@ -1,0 +1,327 @@
+name: payroll-period
+display_name: Payroll Period
+description: |
+  Represents a payroll period (typically monthly) with associated dates,
+  status, and aggregate statistics for payroll processing.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: PayrollPeriod
+  table_name: payroll_periods
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: period_code
+      type: string
+      length: 10
+      unique: true
+      format: "YYYYMM"
+      example: "202412"
+
+    - name: period_name
+      type: string
+      length: 100
+      example: "December 2024"
+
+    # Status
+    - name: status
+      type: enum
+      values: [open, processing, closed, locked]
+      default: open
+
+    - name: period_type
+      type: enum
+      values: [monthly, bi_weekly, weekly]
+      default: monthly
+
+    # Period Dates
+    - name: period_start
+      type: date
+      required: true
+      description: First day of period
+
+    - name: period_end
+      type: date
+      required: true
+      description: Last day of period
+
+    - name: pay_date
+      type: date
+      required: true
+      description: Scheduled payment date
+
+    - name: cutoff_date
+      type: date
+      required: true
+      description: Last day to submit changes
+
+    # Year Reference
+    - name: fiscal_year
+      type: integer
+      required: true
+
+    - name: fiscal_month
+      type: integer
+      required: true
+
+    - name: fiscal_quarter
+      type: integer
+
+    # Working Days
+    - name: working_days
+      type: integer
+      default: 22
+
+    - name: working_hours
+      type: decimal
+      precision: 6
+      scale: 2
+
+    - name: holidays
+      type: jsonb
+      description: Public holidays in period
+      example: |
+        [
+          {"date": "2024-12-25", "name": "Christmas"}
+        ]
+
+    # Statistics
+    - name: total_employees
+      type: integer
+      default: 0
+
+    - name: processed_employees
+      type: integer
+      default: 0
+
+    - name: total_gross
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_deductions
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_net
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_employer_cost
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Total including employer contributions
+
+    - name: total_tax_withheld
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_insurance_ee
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_insurance_er
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    # Processing Info
+    - name: opened_at
+      type: timestamp
+
+    - name: opened_by
+      type: uuid
+
+    - name: closed_at
+      type: timestamp
+
+    - name: closed_by
+      type: uuid
+
+    - name: locked_at
+      type: timestamp
+
+    - name: locked_by
+      type: uuid
+
+    # Flags
+    - name: is_year_end
+      type: boolean
+      default: false
+
+    - name: includes_bonus
+      type: boolean
+      default: false
+
+    - name: includes_thirteenth
+      type: boolean
+      default: false
+
+    # Notes
+    - name: notes
+      type: text
+
+    # Metadata
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: payroll_runs
+      type: has_many
+      entity: PayrollRun
+      foreign_key: period_id
+
+    - name: payslips
+      type: has_many
+      entity: PaySlip
+      foreign_key: period_id
+
+    - name: tax_calculations
+      type: has_many
+      entity: TaxCalculation
+      foreign_key: period_id
+
+    - name: insurance_contributions
+      type: has_many
+      entity: SocialInsurance
+      foreign_key: period_id
+
+  indexes:
+    - columns: [period_code]
+      unique: true
+    - columns: [status]
+    - columns: [fiscal_year, fiscal_month]
+    - columns: [period_start]
+    - columns: [pay_date]
+
+  state_machine:
+    field: status
+    initial: open
+    transitions:
+      - from: open
+        to: processing
+        action: start_processing
+        guards: [cutoff_date_passed]
+        triggers: [lock_changes]
+
+      - from: processing
+        to: closed
+        action: close_period
+        guards: [all_payslips_finalized]
+        triggers: [calculate_totals, generate_reports]
+
+      - from: closed
+        to: locked
+        action: lock_period
+        guards: [payments_completed]
+        triggers: [archive_records]
+
+      - from: processing
+        to: open
+        action: reopen
+        guards: [no_payments_made, admin_override]
+        triggers: [notify_stakeholders]
+
+  validations:
+    - field: period_end
+      rule: after
+      compare_to: period_start
+      message: "Period end must be after period start"
+
+    - field: pay_date
+      rule: after
+      compare_to: period_end
+      message: "Pay date must be after period end"
+
+    - field: cutoff_date
+      rule: between
+      range: [period_start, period_end]
+      message: "Cutoff date must be within period"
+
+  computed_fields:
+    - name: period_days
+      formula: "period_end - period_start + 1"
+
+    - name: days_until_pay
+      formula: "pay_date - current_date"
+
+    - name: average_gross_per_employee
+      formula: "total_gross / total_employees"
+
+    - name: completion_percentage
+      formula: "(processed_employees / total_employees) * 100"
+
+  hooks:
+    on_create:
+      - set_working_days
+      - load_holidays
+      - calculate_working_hours
+
+    on_status_change:
+      - log_status_change
+      - notify_stakeholders
+      - update_calendar
+
+    on_close:
+      - finalize_statistics
+      - generate_period_report
+      - archive_supporting_documents
+
+  audit:
+    track:
+      - status
+      - total_gross
+      - total_net
+      - closed_at
+      - locked_at
+
+    retention: 10_years
+
+  calendar_integration:
+    events:
+      - type: cutoff_reminder
+        timing: 2_days_before_cutoff
+        recipients: [payroll_admins, managers]
+
+      - type: processing_start
+        timing: cutoff_date
+        recipients: [payroll_admins]
+
+      - type: pay_day
+        timing: pay_date
+        recipients: [all_employees]
+
+compliance:
+  - standard: Vietnam_Labor_Code
+    requirement: Monthly payment within agreed date
+  - standard: Tax_Law
+    requirement: Monthly tax withholding

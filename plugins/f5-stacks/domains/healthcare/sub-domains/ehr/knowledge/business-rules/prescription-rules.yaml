@@ -1,0 +1,591 @@
+# =============================================================================
+# PRESCRIPTION RULES - EHR Sub-domain
+# Quy tắc Kê đơn thuốc
+# =============================================================================
+# Compliance: DEA, State Pharmacy Boards, FDA, ISMP Safety Guidelines
+# =============================================================================
+
+name: PrescriptionRules
+display_name: Prescription Rules / Quy tắc Kê đơn thuốc
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+category: medication_safety
+
+# =============================================================================
+# DEA REQUIREMENTS FOR CONTROLLED SUBSTANCES
+# =============================================================================
+dea_requirements:
+  - id: PRX-DEA-001
+    name: DEA Registration Required
+    description: |
+      Prescriber must have valid DEA registration for controlled substances.
+      Registration must be active and not suspended.
+    regulation: 21 CFR 1301
+    enforcement: mandatory
+    verification:
+      - dea_number_valid: true
+      - registration_active: true
+      - not_suspended_or_revoked: true
+      - schedule_authorized: matches_prescription
+    validation_algorithm:
+      # DEA number format: 2 letters + 7 digits
+      # First letter: A, B, F, G (practitioners) or M (mid-level)
+      # Second letter: first letter of last name
+      # Check digit: sum of (1st+3rd+5th) + 2*(2nd+4th+6th) mod 10 = 7th
+
+  - id: PRX-DEA-002
+    name: Schedule II Prescribing
+    description: |
+      Special requirements for Schedule II controlled substances.
+      Written prescription required, no refills permitted.
+    regulation: 21 CFR 1306.11
+    enforcement: mandatory
+    requirements:
+      - written_or_electronic: required
+      - verbal_orders: emergency_only_72_hour_limit
+      - refills_permitted: 0
+      - quantity_limit: 90_day_supply_max
+      - partial_fill: within_72_hours_only
+    electronic_requirements:
+      - epcs_certified_application: true
+      - two_factor_authentication: true
+      - digital_signature: true
+      - identity_proofing_completed: true
+
+  - id: PRX-DEA-003
+    name: Schedule III-V Prescribing
+    description: |
+      Requirements for Schedule III, IV, and V controlled substances.
+      Oral or written prescriptions permitted with refill limits.
+    regulation: 21 CFR 1306.21
+    enforcement: mandatory
+    requirements:
+      refills:
+        schedule_iii_iv: max_5_refills_in_6_months
+        schedule_v: max_5_refills_in_6_months
+      prescription_validity: 6_months_from_date_written
+      partial_fill: permitted_within_6_months
+
+  - id: PRX-DEA-004
+    name: EPCS Requirements
+    description: |
+      Electronic Prescribing for Controlled Substances requirements.
+      Must meet DEA requirements for identity proofing and authentication.
+    regulation: 21 CFR 1311
+    enforcement: mandatory
+    requirements:
+      application_certification: dea_certified
+      identity_proofing:
+        - in_person_identity_verification
+        - nist_sp_800_63_compliant
+      two_factor_authentication:
+        - something_you_know: password_or_pin
+        - something_you_have: token_or_biometric
+      audit_trail:
+        - all_actions_logged
+        - tamper_evident
+        - retained_2_years
+
+  - id: PRX-DEA-005
+    name: Corresponding Responsibility
+    description: |
+      Prescriber must ensure prescription serves legitimate medical purpose.
+      Red flags for drug diversion must be investigated.
+    regulation: 21 CFR 1306.04
+    enforcement: mandatory
+    red_flags:
+      - patient_traveling_long_distance
+      - cash_payment_only
+      - specific_drug_brand_demanded
+      - lost_stolen_prescription_pattern
+      - multiple_prescribers_same_medication
+      - early_refill_requests
+      - dose_escalation_pattern
+    required_actions:
+      - document_clinical_justification
+      - check_pdmp_database
+      - assess_for_substance_use_disorder
+
+# =============================================================================
+# PRESCRIPTION MONITORING PROGRAM (PMP/PDMP)
+# =============================================================================
+pdmp_requirements:
+  - id: PRX-PMP-001
+    name: PDMP Check Required
+    description: |
+      Query prescription drug monitoring program before prescribing.
+      Most states require check for controlled substances.
+    regulation: State_law_varies
+    enforcement: mandatory
+    check_required_for:
+      - schedule_ii: always
+      - schedule_iii: always
+      - schedule_iv: state_dependent
+      - schedule_v: state_dependent
+    timing:
+      new_patient: before_first_controlled_prescription
+      existing_patient: per_state_requirement_typically_90_days
+      suspicious_activity: before_any_prescription
+
+  - id: PRX-PMP-002
+    name: PDMP Documentation
+    description: |
+      Document PDMP query results in patient record.
+      Note findings and clinical decision making.
+    enforcement: mandatory
+    documentation:
+      - query_date_time
+      - substances_found
+      - prescribers_identified
+      - pharmacies_used
+      - clinical_interpretation
+      - action_taken
+
+  - id: PRX-PMP-003
+    name: Interstate PDMP Sharing
+    description: |
+      Query interstate PDMP data when available.
+      PMP InterConnect and similar programs.
+    enforcement: recommended
+    implementation:
+      - query_bordering_states
+      - query_patient_home_state
+      - document_multistate_results
+
+# =============================================================================
+# DRUG INTERACTION CHECKING
+# =============================================================================
+drug_interaction_rules:
+  - id: PRX-DDI-001
+    name: Drug-Drug Interaction Check
+    description: |
+      Automatic screening for drug-drug interactions.
+      Alert prescriber to clinically significant interactions.
+    enforcement: mandatory
+    severity_levels:
+      - level: contraindicated
+        action: hard_stop_requires_override
+        example: "MAO inhibitor + SSRI"
+      - level: serious
+        action: interruptive_alert
+        example: "Warfarin + NSAID"
+      - level: moderate
+        action: informational_alert
+        example: "Statin + grapefruit"
+      - level: minor
+        action: passive_display
+    override_requirements:
+      - contraindicated: supervisor_approval_required
+      - serious: clinical_justification_required
+      - moderate: acknowledgment_required
+
+  - id: PRX-DDI-002
+    name: Drug-Allergy Interaction
+    description: |
+      Check prescription against documented allergies.
+      Include cross-sensitivity alerts.
+    enforcement: mandatory
+    checks:
+      - exact_allergen_match
+      - class_cross_reactivity
+      - ingredient_sensitivity
+    examples:
+      - penicillin_allergy: alert_for_amoxicillin_ampicillin
+      - sulfa_allergy: alert_for_sulfonamide_antibiotics
+      - aspirin_allergy: alert_for_nsaids_if_severe
+
+  - id: PRX-DDI-003
+    name: Drug-Disease Interaction
+    description: |
+      Check prescription against patient diagnoses.
+      Contraindicated medications for certain conditions.
+    enforcement: mandatory
+    examples:
+      - condition: renal_failure
+        contraindicated: [metformin_if_severe, nsaids, aminoglycosides]
+      - condition: liver_failure
+        contraindicated: [acetaminophen_high_dose, statins]
+      - condition: pregnancy
+        contraindicated: [category_x_drugs, ace_inhibitors, warfarin]
+      - condition: glaucoma
+        contraindicated: [anticholinergics]
+
+  - id: PRX-DDI-004
+    name: Drug-Lab Interaction
+    description: |
+      Check for lab values that affect medication safety.
+      Require recent labs for high-risk medications.
+    enforcement: mandatory
+    examples:
+      - medication: warfarin
+        required_lab: inr
+        frequency: per_protocol
+      - medication: metformin
+        required_lab: creatinine_egfr
+        frequency: annually_or_more
+      - medication: lithium
+        required_lab: lithium_level_renal_thyroid
+        frequency: per_protocol
+      - medication: aminoglycoside
+        required_lab: creatinine_trough_levels
+        frequency: with_each_dose
+
+  - id: PRX-DDI-005
+    name: Drug-Food Interaction
+    description: |
+      Alert for significant drug-food interactions.
+      Include dietary counseling requirements.
+    enforcement: recommended
+    examples:
+      - medication: warfarin
+        interaction: vitamin_k_foods
+        counseling: consistent_intake
+      - medication: maoi
+        interaction: tyramine_foods
+        counseling: strict_avoidance
+      - medication: grapefruit_sensitive
+        interaction: grapefruit_juice
+        counseling: avoid_grapefruit
+
+# =============================================================================
+# DOSE RANGE CHECKING
+# =============================================================================
+dose_checking_rules:
+  - id: PRX-DOSE-001
+    name: Maximum Dose Alert
+    description: |
+      Alert when prescribed dose exceeds maximum recommended.
+      Consider patient factors (age, weight, renal function).
+    enforcement: mandatory
+    factors:
+      - age: pediatric_geriatric_adjustments
+      - weight: weight_based_dosing
+      - renal_function: creatinine_clearance_adjustment
+      - hepatic_function: child_pugh_adjustment
+    override_requirements:
+      - clinical_justification
+      - documented_reason_for_higher_dose
+
+  - id: PRX-DOSE-002
+    name: Pediatric Dosing
+    description: |
+      Weight-based dosing for pediatric patients.
+      Maximum adult dose caps where applicable.
+    enforcement: mandatory
+    requirements:
+      - weight_documented: before_prescribing
+      - mg_per_kg_calculation: displayed
+      - max_dose_cap: adult_maximum
+    high_alert_medications:
+      - insulin
+      - opioids
+      - chemotherapy
+      - anticoagulants
+
+  - id: PRX-DOSE-003
+    name: Geriatric Dosing
+    description: |
+      Start low, go slow for elderly patients.
+      Beers Criteria alerts for potentially inappropriate medications.
+    enforcement: mandatory
+    requirements:
+      - age_threshold: 65_years
+      - beers_criteria_check: true
+      - reduced_starting_dose: recommended
+      - renal_adjustment: required_if_applicable
+    beers_criteria_alerts:
+      - anticholinergics
+      - benzodiazepines
+      - nsaids_long_term
+      - muscle_relaxants
+      - first_generation_antihistamines
+
+  - id: PRX-DOSE-004
+    name: Renal Dose Adjustment
+    description: |
+      Adjust dose for renal impairment.
+      Require creatinine clearance calculation.
+    enforcement: mandatory
+    calculation:
+      method: cockcroft_gault_or_mdrd
+      required_inputs: [creatinine, age, weight, gender]
+    adjustment_thresholds:
+      - egfr_30_to_59: mild_to_moderate_adjustment
+      - egfr_15_to_29: moderate_to_severe_adjustment
+      - egfr_below_15: severe_adjustment_or_contraindicated
+
+  - id: PRX-DOSE-005
+    name: Cumulative Dose Monitoring
+    description: |
+      Track cumulative doses for toxicity risk.
+      Lifetime limits for certain medications.
+    enforcement: mandatory
+    examples:
+      - medication: doxorubicin
+        lifetime_limit: "450-550 mg/m2"
+        toxicity: cardiotoxicity
+      - medication: bleomycin
+        lifetime_limit: "400 units"
+        toxicity: pulmonary_fibrosis
+      - medication: methotrexate
+        cumulative_monitoring: hepatotoxicity_risk
+
+# =============================================================================
+# FORMULARY COMPLIANCE
+# =============================================================================
+formulary_rules:
+  - id: PRX-FORM-001
+    name: Formulary Status Check
+    description: |
+      Display formulary status at time of prescribing.
+      Encourage use of preferred medications.
+    enforcement: recommended
+    status_display:
+      - tier_1_preferred: covered_low_copay
+      - tier_2_non_preferred: covered_higher_copay
+      - tier_3_specialty: covered_with_prior_auth
+      - non_formulary: not_covered
+    therapeutic_alternatives:
+      - display_preferred_alternatives
+      - enable_easy_switch
+
+  - id: PRX-FORM-002
+    name: Prior Authorization Alert
+    description: |
+      Alert when medication requires prior authorization.
+      Initiate PA process from prescribing workflow.
+    enforcement: mandatory
+    process:
+      step_1: Alert at time of prescribing
+      step_2: Offer therapeutic alternatives
+      step_3: If proceeding, initiate PA request
+      step_4: Track PA status
+      step_5: Notify when approved or denied
+
+  - id: PRX-FORM-003
+    name: Step Therapy Requirements
+    description: |
+      Enforce step therapy protocols when applicable.
+      Document failure of first-line agents.
+    enforcement: mandatory
+    documentation:
+      - first_line_attempted
+      - duration_of_trial
+      - reason_for_failure
+      - clinical_justification_for_step_up
+
+# =============================================================================
+# HIGH-ALERT MEDICATION SAFETY
+# =============================================================================
+high_alert_rules:
+  - id: PRX-HIGH-001
+    name: High-Alert Medication Identification
+    description: |
+      Identify and flag high-alert medications.
+      ISMP list of high-alert medications.
+    enforcement: mandatory
+    ismp_high_alert_list:
+      - anticoagulants: [warfarin, heparin, enoxaparin, dabigatran]
+      - insulin: [all_forms]
+      - opioids: [all_forms]
+      - chemotherapy: [all_agents]
+      - neuromuscular_blockers: [all_agents]
+      - concentrated_electrolytes: [potassium_chloride, sodium_chloride_hypertonic]
+    safeguards:
+      - double_verification
+      - independent_check
+      - weight_based_dosing_verification
+
+  - id: PRX-HIGH-002
+    name: Look-Alike Sound-Alike (LASA)
+    description: |
+      Alert for medications that look or sound similar.
+      Tall Man lettering display.
+    enforcement: mandatory
+    examples:
+      - pair: [hydrOXYzine, hydrALAZINE]
+      - pair: [vinBLAStine, vinCRIStine]
+      - pair: [DOPamine, DOBUTamine]
+      - pair: [ePHEDrine, EPINEPHrine]
+    tall_man_display: mandatory
+
+  - id: PRX-HIGH-003
+    name: Opioid Safety
+    description: |
+      Special safeguards for opioid prescribing.
+      Morphine milligram equivalent (MME) calculation.
+    enforcement: mandatory
+    requirements:
+      - mme_calculation: display_total_daily_mme
+      - mme_threshold_50: alert_at_50_mme_daily
+      - mme_threshold_90: hard_stop_at_90_mme_daily
+      - naloxone_coprescribing: recommend_at_50_mme
+      - opioid_naive_check: lower_starting_dose
+    documentation:
+      - pain_assessment
+      - functional_goals
+      - risk_evaluation
+      - informed_consent
+
+  - id: PRX-HIGH-004
+    name: Anticoagulant Safety
+    description: |
+      Safety checks for anticoagulation therapy.
+      INR monitoring and dose adjustment.
+    enforcement: mandatory
+    requirements:
+      - indication_documented
+      - baseline_labs: [inr_pt, cbc, renal_function]
+      - drug_interaction_check: extensive
+      - patient_education: bleeding_signs_diet_interactions
+      - monitoring_plan: documented
+
+# =============================================================================
+# PRESCRIPTION VALIDITY AND FORMAT
+# =============================================================================
+prescription_format:
+  - id: PRX-FMT-001
+    name: Required Prescription Elements
+    description: |
+      All prescriptions must contain required elements.
+      Electronic prescriptions must meet NCPDP SCRIPT standard.
+    enforcement: mandatory
+    required_elements:
+      - patient_name
+      - patient_address
+      - patient_dob
+      - prescriber_name
+      - prescriber_address
+      - prescriber_phone
+      - prescriber_dea_if_controlled
+      - prescriber_npi
+      - drug_name
+      - drug_strength
+      - drug_quantity
+      - directions_for_use
+      - refills_authorized
+      - date_written
+      - prescriber_signature
+
+  - id: PRX-FMT-002
+    name: Prescription Validity Period
+    description: |
+      Maximum time from date written to fill.
+      Varies by controlled substance schedule.
+    enforcement: mandatory
+    validity_periods:
+      non_controlled: 1_year_typical
+      schedule_ii: no_expiration_but_state_may_limit
+      schedule_iii_iv_v: 6_months
+    state_variations:
+      - some_states_limit_schedule_ii_to_30_days
+      - some_states_limit_all_controlled_to_6_months
+
+  - id: PRX-FMT-003
+    name: Sig Clarity Requirements
+    description: |
+      Directions must be clear and complete.
+      Avoid ambiguous abbreviations.
+    enforcement: mandatory
+    requirements:
+      - dose_specified
+      - route_specified
+      - frequency_specified
+      - duration_if_applicable
+      - indication_recommended
+    prohibited:
+      - "as directed"
+      - "as before"
+      - "prn" without indication
+
+# =============================================================================
+# PRESCRIPTION MONITORING AND COMPLIANCE
+# =============================================================================
+monitoring_rules:
+  - id: PRX-MON-001
+    name: Prescription Fill Monitoring
+    description: |
+      Track whether prescriptions are filled.
+      Alert for non-adherence patterns.
+    enforcement: recommended
+    tracking:
+      - fill_status_from_surescripts
+      - gap_in_therapy_alerts
+      - partial_fill_tracking
+    interventions:
+      - patient_outreach_for_gaps
+      - alternative_medication_discussion
+      - cost_barrier_assessment
+
+  - id: PRX-MON-002
+    name: Duplicate Therapy Check
+    description: |
+      Prevent duplicate medications in same class.
+      Allow override with justification.
+    enforcement: mandatory
+    checks:
+      - same_medication_different_prescriber
+      - same_class_duplicate
+      - therapeutic_overlap
+    examples:
+      - two_ace_inhibitors
+      - two_ssri_antidepressants
+      - multiple_opioids_without_justification
+
+  - id: PRX-MON-003
+    name: Prescription Audit Trail
+    description: |
+      Maintain complete audit trail for all prescriptions.
+      Especially critical for controlled substances.
+    enforcement: mandatory
+    tracked_events:
+      - prescription_created
+      - prescription_modified
+      - prescription_signed
+      - prescription_transmitted
+      - prescription_discontinued
+      - prescription_void
+    retention_period: 6_years_minimum
+
+# =============================================================================
+# SPECIAL POPULATIONS
+# =============================================================================
+special_populations:
+  - id: PRX-POP-001
+    name: Pregnancy Prescribing
+    description: |
+      Medication safety assessment for pregnant patients.
+      FDA pregnancy categories and warnings.
+    enforcement: mandatory
+    requirements:
+      - pregnancy_status_documented
+      - fda_category_displayed
+      - teratogenicity_alert
+      - alternative_options_shown
+    category_alerts:
+      - category_d: potential_benefit_may_outweigh_risk
+      - category_x: contraindicated_in_pregnancy
+
+  - id: PRX-POP-002
+    name: Lactation Prescribing
+    description: |
+      Medication safety assessment for breastfeeding.
+      LactMed database integration.
+    enforcement: mandatory
+    requirements:
+      - lactation_status_documented
+      - lactmed_data_displayed
+      - safer_alternatives_suggested
+
+  - id: PRX-POP-003
+    name: Pediatric Prescribing
+    description: |
+      Age-appropriate formulation and dosing.
+      Off-label use documentation.
+    enforcement: mandatory
+    requirements:
+      - age_weight_documented
+      - age_appropriate_formulation
+      - off_label_documentation_if_applicable
+      - liquid_concentration_specified

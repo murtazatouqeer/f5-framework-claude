@@ -1,0 +1,557 @@
+# Deposit Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Earnest money and deposits management
+
+entity:
+  name: Deposit
+  name_vi: Tiền đặt cọc
+  name_ja: 手付金
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Manages earnest money deposits, down payments, and security deposits
+    in real estate transactions. Tracks deposit status, escrow holding,
+    and release conditions.
+
+  # Database Configuration
+  database:
+    table_name: deposits
+    primary_key: id
+    indexes:
+      - columns: [deposit_id]
+        unique: true
+      - columns: [transaction_id]
+      - columns: [offer_id]
+      - columns: [status]
+      - columns: [escrow_account_number]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: deposit_id
+      type: string
+      format: "DEP-{YYYYMMDD}-{XXXXXX}"
+      unique: true
+      description: Human-readable deposit ID
+      example: "DEP-20241215-D1E2F3"
+
+    - name: transaction_id
+      type: uuid
+      required: true
+      foreign_key: transactions.id
+      description: Associated transaction
+
+    - name: offer_id
+      type: uuid
+      nullable: true
+      foreign_key: offers.id
+      description: Associated offer (if earnest money)
+
+    - name: contract_id
+      type: uuid
+      nullable: true
+      foreign_key: contracts.id
+      description: Associated contract
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - pending
+        - received
+        - held_in_escrow
+        - released
+        - forfeited
+        - refunded
+        - disputed
+      default: pending
+      description: Current deposit status
+
+    # Type
+    - name: deposit_type
+      type: enum
+      values:
+        - earnest_money
+        - down_payment
+        - security_deposit
+        - good_faith
+        - option_fee
+      required: true
+      description: Type of deposit
+
+    - name: deposit_purpose
+      type: string
+      description: Purpose description
+
+    # Amount
+    - name: amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Deposit amount
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    - name: percent_of_price
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of purchase price
+
+    # Payer
+    - name: payer_id
+      type: uuid
+      required: true
+      foreign_key: users.id
+      description: Who is paying the deposit
+
+    - name: payer_name
+      type: string
+      required: true
+      description: Payer's name
+
+    - name: payer_type
+      type: enum
+      values:
+        - buyer
+        - tenant
+        - representative
+      default: buyer
+
+    # Payment Details
+    - name: payment_method
+      type: enum
+      values:
+        - bank_transfer
+        - certified_check
+        - personal_check
+        - wire_transfer
+        - cash
+        - escrow_transfer
+      required: true
+      description: Payment method
+
+    - name: payment_reference
+      type: string
+      nullable: true
+      description: Payment reference number
+
+    - name: payment_proof_url
+      type: string
+      nullable: true
+      description: URL to payment proof document
+
+    - name: source_bank
+      type: string
+      nullable: true
+      description: Payer's bank name
+
+    - name: source_account
+      type: string
+      nullable: true
+      description: Last 4 digits of source account
+
+    # Timeline
+    - name: due_date
+      type: date
+      required: true
+      description: When deposit is due
+
+    - name: paid_date
+      type: date
+      nullable: true
+      description: When deposit was paid
+
+    - name: received_date
+      type: timestamp
+      nullable: true
+      description: When deposit was received
+
+    - name: verified_date
+      type: timestamp
+      nullable: true
+      description: When deposit was verified
+
+    - name: verified_by
+      type: uuid
+      nullable: true
+      foreign_key: users.id
+
+    # Receipt
+    - name: receipt_number
+      type: string
+      nullable: true
+      description: Receipt number issued
+
+    - name: receipt_issued_at
+      type: timestamp
+      nullable: true
+
+    - name: receipt_url
+      type: string
+      nullable: true
+      description: URL to receipt document
+
+    # Escrow Holding
+    - name: escrow_holder
+      type: enum
+      values:
+        - buyer_agent
+        - seller_agent
+        - agency
+        - escrow_company
+        - notary
+        - attorney
+        - bank
+      nullable: true
+      description: Who holds the deposit
+
+    - name: escrow_holder_id
+      type: uuid
+      nullable: true
+      description: Escrow holder entity ID
+
+    - name: escrow_holder_name
+      type: string
+      nullable: true
+      description: Name of escrow holder
+
+    - name: escrow_account_number
+      type: string
+      nullable: true
+      description: Escrow account number
+
+    - name: escrow_bank_name
+      type: string
+      nullable: true
+      description: Bank where escrow held
+
+    - name: escrow_id
+      type: uuid
+      nullable: true
+      foreign_key: escrows.id
+      description: Associated escrow entity
+
+    # Release Conditions
+    - name: release_conditions
+      type: jsonb
+      description: Conditions for release
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            condition: { type: string }
+            met: { type: boolean }
+            met_date: { type: string, format: date }
+            evidence: { type: string }
+
+    - name: all_conditions_met
+      type: boolean
+      default: false
+
+    # Release
+    - name: release_to
+      type: enum
+      values:
+        - seller
+        - buyer
+        - split
+      nullable: true
+      description: To whom deposit is released
+
+    - name: release_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+      description: Amount released
+
+    - name: release_date
+      type: date
+      nullable: true
+      description: When released
+
+    - name: release_reference
+      type: string
+      nullable: true
+      description: Release transaction reference
+
+    - name: release_authorized_by
+      type: uuid
+      nullable: true
+      foreign_key: users.id
+
+    # Split Release (if applicable)
+    - name: release_split
+      type: jsonb
+      nullable: true
+      description: Split release details
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            recipient: { type: string }
+            recipient_id: { type: string }
+            amount: { type: number }
+            percent: { type: number }
+            reference: { type: string }
+
+    # Forfeiture
+    - name: forfeiture_reason
+      type: enum
+      values:
+        - buyer_default
+        - contract_breach
+        - contingency_waived
+        - mutual_agreement
+      nullable: true
+      description: Reason if forfeited
+
+    - name: forfeiture_date
+      type: date
+      nullable: true
+
+    - name: forfeiture_details
+      type: text
+      nullable: true
+
+    # Refund
+    - name: refund_reason
+      type: enum
+      values:
+        - contingency_not_met
+        - seller_default
+        - mutual_cancellation
+        - financing_denied
+        - inspection_issues
+        - title_issues
+      nullable: true
+      description: Reason if refunded
+
+    - name: refund_date
+      type: date
+      nullable: true
+
+    - name: refund_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: refund_reference
+      type: string
+      nullable: true
+
+    # Dispute
+    - name: is_disputed
+      type: boolean
+      default: false
+
+    - name: dispute_reason
+      type: text
+      nullable: true
+
+    - name: dispute_filed_date
+      type: date
+      nullable: true
+
+    - name: dispute_resolution
+      type: text
+      nullable: true
+
+    - name: dispute_resolved_date
+      type: date
+      nullable: true
+
+    # Notes
+    - name: notes
+      type: text
+      nullable: true
+      description: Additional notes
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: offer
+      type: belongs_to
+      entity: Offer
+      foreign_key: offer_id
+
+    - name: contract
+      type: belongs_to
+      entity: Contract
+      foreign_key: contract_id
+
+    - name: payer
+      type: belongs_to
+      entity: User
+      foreign_key: payer_id
+
+    - name: escrow
+      type: belongs_to
+      entity: Escrow
+      foreign_key: escrow_id
+
+  # State Machine
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: received
+        trigger: receive_payment
+        action: record_receipt
+
+      - from: received
+        to: held_in_escrow
+        trigger: transfer_to_escrow
+        action: record_escrow_transfer
+
+      - from: [received, held_in_escrow]
+        to: released
+        trigger: release
+        guard: all_conditions_met
+        action: process_release
+
+      - from: [received, held_in_escrow]
+        to: forfeited
+        trigger: forfeit
+        action: process_forfeiture
+
+      - from: [received, held_in_escrow]
+        to: refunded
+        trigger: refund
+        action: process_refund
+
+      - from: [received, held_in_escrow]
+        to: disputed
+        trigger: dispute
+        action: record_dispute
+
+      - from: disputed
+        to: [released, forfeited, refunded]
+        trigger: resolve_dispute
+        action: apply_resolution
+
+  # Business Rules
+  business_rules:
+    - rule: BR-DEP-001
+      name: Minimum earnest money
+      description: Earnest money should be at least 1% of purchase price
+      validation: "deposit_type != 'earnest_money' OR percent_of_price >= 1"
+
+    - rule: BR-DEP-002
+      name: Escrow requirement
+      description: Earnest money must be held in escrow within 3 days
+      validation: "deposit_type != 'earnest_money' OR (received_date IS NULL OR escrow_id IS NOT NULL OR CURRENT_DATE - received_date <= 3)"
+
+    - rule: BR-DEP-003
+      name: Release authorization
+      description: Release requires authorization from both parties or contract terms met
+
+    - rule: BR-DEP-004
+      name: Forfeiture notice
+      description: Forfeiture requires written notice and cure period
+
+  # Validations
+  validations:
+    - field: amount
+      rule: positive
+      message: "Deposit amount must be positive"
+
+    - field: due_date
+      rule: not_past
+      when: status == 'pending'
+      message: "Due date cannot be in the past"
+
+    - field: release_amount
+      rule: lte_field
+      compare_to: amount
+      message: "Release amount cannot exceed deposit"
+
+  # Events
+  events:
+    - name: deposit.received
+      trigger: on_transition_to_received
+      payload: [id, transaction_id, amount, payer_id]
+      notifications:
+        - recipient: seller
+          template: deposit_received
+        - recipient: buyer
+          template: deposit_confirmation
+
+    - name: deposit.released
+      trigger: on_transition_to_released
+      payload: [id, release_to, release_amount]
+
+    - name: deposit.forfeited
+      trigger: on_transition_to_forfeited
+      payload: [id, forfeiture_reason, amount]
+      notifications:
+        - recipient: buyer
+          template: deposit_forfeited
+
+    - name: deposit.refunded
+      trigger: on_transition_to_refunded
+      payload: [id, refund_reason, refund_amount]
+
+    - name: deposit.disputed
+      trigger: on_transition_to_disputed
+      payload: [id, dispute_reason]
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/deposits
+        description: List deposits
+
+      - method: GET
+        path: /api/deposits/{id}
+        description: Get deposit details
+
+      - method: POST
+        path: /api/transactions/{transaction_id}/deposits
+        description: Record deposit
+
+      - method: POST
+        path: /api/deposits/{id}/verify
+        description: Verify deposit received
+
+      - method: POST
+        path: /api/deposits/{id}/release
+        description: Release deposit
+
+      - method: POST
+        path: /api/deposits/{id}/dispute
+        description: Dispute deposit

@@ -1,0 +1,366 @@
+name: referral
+display_name: Employee Referral
+description: |
+  An employee referral of a candidate for a position. Tracks the referral
+  through the hiring process and manages referral bonus payments.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Referral
+  table_name: referrals
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: referral_id
+      type: string
+      length: 20
+      unique: true
+      format: "REF-{YYYYMMDD}-{NNNN}"
+
+    # Referrer (Employee)
+    - name: referrer_employee_id
+      type: uuid
+      required: true
+      description: Employee who made referral
+
+    - name: referrer_user_id
+      type: uuid
+      required: true
+
+    - name: referrer_department_id
+      type: uuid
+
+    # Candidate
+    - name: candidate_id
+      type: uuid
+      description: Created candidate record
+
+    - name: candidate_first_name
+      type: string
+      length: 100
+      required: true
+
+    - name: candidate_last_name
+      type: string
+      length: 100
+      required: true
+
+    - name: candidate_email
+      type: string
+      length: 255
+      required: true
+
+    - name: candidate_phone
+      type: string
+      length: 50
+
+    - name: candidate_linkedin_url
+      type: string
+      length: 500
+
+    - name: candidate_resume_id
+      type: uuid
+      description: Attached resume
+
+    # Referral Details
+    - name: requisition_id
+      type: uuid
+      description: Specific job referred for
+
+    - name: job_title_referred
+      type: string
+      length: 200
+      description: Job title at time of referral
+
+    - name: relationship_to_candidate
+      type: enum
+      values: [former_colleague, friend, family, professional_contact, other]
+      required: true
+
+    - name: years_known
+      type: integer
+
+    - name: referral_note
+      type: text
+      description: Why referring this person
+
+    # Status
+    - name: status
+      type: enum
+      values: [submitted, candidate_created, applied, interviewing, offered, hired, rejected, withdrawn, duplicate]
+      default: submitted
+
+    - name: application_id
+      type: uuid
+      description: Resulting application
+
+    # Bonus
+    - name: bonus_eligible
+      type: boolean
+      default: true
+
+    - name: bonus_amount
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Referral bonus amount
+
+    - name: bonus_currency
+      type: string
+      length: 3
+      default: "USD"
+
+    - name: bonus_structure
+      type: jsonb
+      description: Payment schedule
+      example: |
+        {
+          "on_hire": {"percent": 50, "amount": 2500},
+          "after_90_days": {"percent": 50, "amount": 2500}
+        }
+
+    - name: bonus_status
+      type: enum
+      values: [pending, partial_paid, fully_paid, forfeited, not_eligible]
+      default: pending
+
+    - name: first_payment_at
+      type: timestamp
+
+    - name: first_payment_amount
+      type: decimal
+      precision: 10
+      scale: 2
+
+    - name: second_payment_at
+      type: timestamp
+
+    - name: second_payment_amount
+      type: decimal
+      precision: 10
+      scale: 2
+
+    - name: total_paid
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+
+    # Bonus Conditions
+    - name: retention_period_days
+      type: integer
+      default: 90
+      description: Days candidate must stay for full bonus
+
+    - name: retention_met
+      type: boolean
+      default: false
+
+    - name: retention_check_date
+      type: date
+
+    # Forfeiture
+    - name: forfeited
+      type: boolean
+      default: false
+
+    - name: forfeiture_reason
+      type: text
+
+    - name: forfeiture_date
+      type: date
+
+    # Duplicate Handling
+    - name: is_duplicate
+      type: boolean
+      default: false
+
+    - name: original_referral_id
+      type: uuid
+      description: If duplicate, original referral
+
+    - name: duplicate_detected_at
+      type: timestamp
+
+    # Tracking
+    - name: days_to_hire
+      type: integer
+      description: Days from referral to hire
+
+    - name: hire_date
+      type: date
+
+    # Timestamps
+    - name: submitted_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: referrer_employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: referrer_employee_id
+
+    - name: referrer_user
+      type: belongs_to
+      entity: User
+      foreign_key: referrer_user_id
+
+    - name: candidate
+      type: belongs_to
+      entity: Candidate
+      foreign_key: candidate_id
+
+    - name: requisition
+      type: belongs_to
+      entity: JobRequisition
+      foreign_key: requisition_id
+
+    - name: application
+      type: belongs_to
+      entity: Application
+      foreign_key: application_id
+
+    - name: resume
+      type: belongs_to
+      entity: Resume
+      foreign_key: candidate_resume_id
+
+    - name: original_referral
+      type: belongs_to
+      entity: Referral
+      foreign_key: original_referral_id
+
+  indexes:
+    - columns: [referral_id]
+      unique: true
+    - columns: [referrer_employee_id]
+    - columns: [candidate_email]
+    - columns: [candidate_id]
+    - columns: [status]
+    - columns: [bonus_status]
+    - columns: [submitted_at]
+
+  state_machine:
+    field: status
+    initial: submitted
+    transitions:
+      - from: submitted
+        to: candidate_created
+        action: create_candidate
+        triggers: [notify_referrer]
+
+      - from: candidate_created
+        to: applied
+        action: candidate_applies
+        triggers: [link_application]
+
+      - from: applied
+        to: interviewing
+        action: advance_to_interview
+        triggers: [notify_referrer]
+
+      - from: interviewing
+        to: offered
+        action: make_offer
+        triggers: [notify_referrer]
+
+      - from: offered
+        to: hired
+        action: hire
+        triggers: [initiate_bonus_process, notify_referrer]
+
+      - from: [submitted, candidate_created, applied, interviewing, offered]
+        to: rejected
+        action: reject
+        triggers: [notify_referrer, update_bonus_eligibility]
+
+      - from: [submitted, candidate_created, applied, interviewing, offered]
+        to: withdrawn
+        action: withdraw
+        triggers: [notify_referrer]
+
+      - from: submitted
+        to: duplicate
+        action: mark_duplicate
+        triggers: [link_to_original, notify_referrer]
+
+  bonus_state_machine:
+    field: bonus_status
+    initial: pending
+    transitions:
+      - from: pending
+        to: partial_paid
+        action: pay_first_installment
+        guards: [candidate_hired]
+        triggers: [process_payment, notify_referrer]
+
+      - from: partial_paid
+        to: fully_paid
+        action: pay_second_installment
+        guards: [retention_period_met]
+        triggers: [process_payment, notify_referrer]
+
+      - from: [pending, partial_paid]
+        to: forfeited
+        action: forfeit
+        triggers: [log_reason, notify_referrer]
+
+      - from: pending
+        to: not_eligible
+        action: mark_not_eligible
+        guards: [duplicate_or_not_hired]
+
+  validations:
+    - field: candidate_email
+      rule: format
+      pattern: email
+
+    - field: bonus_amount
+      rule: positive
+      when: bonus_eligible
+      message: "Bonus amount must be positive if eligible"
+
+  hooks:
+    on_submit:
+      - check_for_duplicate
+      - create_candidate_if_new
+      - notify_recruiter
+
+    on_hire:
+      - calculate_bonus_amount
+      - schedule_bonus_payments
+      - update_referrer_stats
+
+    on_retention_date:
+      - check_candidate_still_employed
+      - process_final_bonus_or_forfeit
+
+compliance:
+  - standard: referral_program_policy
+    requirements:
+      - Clear eligibility rules
+      - Defined bonus structure
+      - Retention requirements
+      - Duplicate handling

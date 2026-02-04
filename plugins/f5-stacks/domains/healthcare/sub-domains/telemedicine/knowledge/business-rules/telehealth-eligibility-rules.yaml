@@ -1,0 +1,399 @@
+# Telehealth Eligibility Rules
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Rules for determining telehealth visit eligibility
+
+business_rules:
+  id: telehealth-eligibility-rules
+  name: Telehealth Eligibility Rules
+  name_ja: 遠隔医療適格性ルール
+  description: Rules governing eligibility for telehealth visits
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  categories:
+    - id: condition-eligibility
+      name: Condition Eligibility
+      description: Which conditions are appropriate for telehealth
+
+    - id: patient-eligibility
+      name: Patient Eligibility
+      description: Patient requirements for telehealth
+
+    - id: technical-eligibility
+      name: Technical Eligibility
+      description: Technical requirements for participation
+
+    - id: age-restrictions
+      name: Age Restrictions
+      description: Age-related eligibility rules
+
+  rules:
+    # Condition Eligibility
+    - id: BR-TEL-001
+      name: Appropriate Conditions for Telehealth
+      category: condition-eligibility
+      priority: critical
+      description: Conditions suitable for virtual care
+      
+      eligible_conditions:
+        highly_suitable:
+          - Follow-up visits for stable chronic conditions
+          - Medication management and refills
+          - Mental health counseling and therapy
+          - Minor acute conditions (cold, flu, UTI, pink eye)
+          - Chronic disease management (diabetes, hypertension)
+          - Lab and test result review
+          - Post-procedure follow-up
+          - Dermatology for visible conditions
+          - Nutrition counseling
+          - Smoking cessation counseling
+          - Sleep disorder consultation
+          - Allergy management
+          
+        moderately_suitable:
+          - Initial consultations (non-emergency)
+          - Second opinions
+          - Pre-operative assessments
+          - Specialist referral discussions
+          - Weight management
+          - Physical therapy education
+          
+        not_suitable:
+          - Emergency conditions
+          - Conditions requiring physical examination
+          - Procedures requiring in-person care
+          - Conditions requiring imaging
+          - New chest pain or shortness of breath
+          - Suspected fractures
+          - Severe abdominal pain
+          - Loss of consciousness
+          - Stroke symptoms
+          - Severe allergic reactions
+          
+      validation:
+        on: visit_scheduling
+        action: |
+          IF condition IN not_suitable THEN
+            REJECT with "This condition requires in-person care"
+            RECOMMEND nearest_emergency_or_urgent_care
+          ELSE IF condition IN moderately_suitable THEN
+            WARN "Consider if telehealth is appropriate"
+            REQUIRE provider_confirmation
+
+    - id: BR-TEL-002
+      name: Emergency Condition Screening
+      category: condition-eligibility
+      priority: critical
+      description: Identify emergency conditions requiring immediate care
+      
+      emergency_indicators:
+        - Chest pain or pressure
+        - Difficulty breathing
+        - Sudden severe headache
+        - Facial drooping or arm weakness
+        - Confusion or altered consciousness
+        - Severe bleeding
+        - High fever with rash
+        - Suicidal ideation with plan
+        - Severe allergic reaction
+        - Pregnancy complications (bleeding, contractions)
+        
+      validation:
+        on: [intake_questionnaire, pre_visit_screening]
+        action: |
+          IF any_emergency_indicator THEN
+            BLOCK telehealth_visit
+            DISPLAY "Please call 911 or go to nearest emergency room"
+            LOG emergency_screening_triggered
+            NOTIFY on_call_provider
+
+    # Patient Eligibility
+    - id: BR-TEL-010
+      name: Patient Technical Requirements
+      category: patient-eligibility
+      priority: high
+      description: Technical requirements for telehealth participation
+      
+      requirements:
+        device:
+          required: true
+          options:
+            - Smartphone with front-facing camera
+            - Tablet with camera
+            - Computer with webcam
+          minimum_specs:
+            camera: "720p"
+            microphone: required
+            speaker: required
+            
+        internet:
+          required: true
+          minimum_bandwidth_mbps: 1.5
+          recommended_bandwidth_mbps: 3.0
+          
+        browser:
+          required: true
+          supported:
+            - Chrome 70+
+            - Firefox 65+
+            - Safari 12+
+            - Edge 79+
+          not_supported:
+            - Internet Explorer
+            
+        permissions:
+          camera: required
+          microphone: required
+          notifications: recommended
+          
+      validation:
+        on: device_check
+        action: |
+          RUN device_compatibility_check
+          IF any_requirement_not_met THEN
+            DISPLAY specific_remediation_steps
+            OFFER audio_only_fallback IF video_fails
+
+    - id: BR-TEL-011
+      name: Patient Clinical Requirements
+      category: patient-eligibility
+      priority: high
+      description: Clinical requirements for telehealth participation
+      
+      requirements:
+        condition_stability:
+          description: Condition must be stable enough for remote evaluation
+          
+        communication_ability:
+          description: Ability to communicate symptoms and follow instructions
+          alternatives:
+            - Interpreter services
+            - Caregiver assistance
+            
+        safety_environment:
+          description: Safe private environment for consultation
+          
+      validation:
+        on: pre_visit_assessment
+        action: |
+          ASSESS communication_ability
+          ASSESS environment_privacy
+          IF concerns THEN
+            FLAG for_provider_review
+
+    - id: BR-TEL-012
+      name: Consent Requirements
+      category: patient-eligibility
+      priority: critical
+      description: Informed consent for telehealth services
+      
+      requirements:
+        general_telehealth_consent:
+          required: true
+          content:
+            - Nature of telehealth services
+            - Benefits and limitations
+            - Privacy and security measures
+            - Alternative options (in-person care)
+            - Right to refuse and stop
+            - Emergency procedures
+          validity: "12 months or until revoked"
+          
+        recording_consent:
+          required_when: recording_enabled
+          separate_consent: true
+          
+        state_specific_consent:
+          check: patient_location_state
+          apply: state_specific_requirements
+          
+      validation:
+        on: visit_start
+        action: |
+          IF NOT consent_signed OR consent_expired THEN
+            REQUIRE consent_before_proceeding
+            BLOCK visit_start UNTIL consent_obtained
+
+    # Age Restrictions
+    - id: BR-TEL-020
+      name: Minor Patient Requirements
+      category: age-restrictions
+      priority: high
+      description: Requirements for patients under 18
+      
+      rules:
+        parent_guardian_presence:
+          default: required
+          exceptions:
+            - Emancipated minors (with documentation)
+            - State-specific mature minor laws
+            - Reproductive health (some states)
+            - Mental health (some states, age varies)
+            - Substance abuse treatment (some states)
+            
+        consent_authority:
+          required_from: legal_guardian
+          document: parent_guardian_authorization
+          
+        privacy_considerations:
+          confidential_communications:
+            - May apply for certain sensitive topics
+            - State law dependent
+            
+      validation:
+        on: [scheduling, visit_start]
+        action: |
+          IF patient_age < 18 THEN
+            CHECK emancipation_status
+            CHECK state_specific_minor_laws
+            IF NOT exception_applies THEN
+              REQUIRE guardian_presence
+              VERIFY guardian_identity
+
+    - id: BR-TEL-021
+      name: Elderly Patient Considerations
+      category: age-restrictions
+      priority: medium
+      description: Considerations for elderly patients
+      
+      considerations:
+        technology_assistance:
+          description: May need help with technology
+          options:
+            - Caregiver assistance
+            - Simplified interface
+            - Phone support during connection
+            
+        cognitive_assessment:
+          when: cognitive_concerns_flagged
+          action: May need caregiver present for clinical decisions
+          
+        hearing_visual_accommodations:
+          - Larger text options
+          - Audio amplification
+          - Closed captioning
+          
+      validation:
+        on: scheduling
+        action: |
+          IF patient_age >= 75 OR accessibility_needs_flagged THEN
+            OFFER caregiver_invitation
+            ENABLE accessibility_features
+            SEND simplified_instructions
+
+    # Insurance & Coverage
+    - id: BR-TEL-030
+      name: Insurance Telehealth Coverage
+      category: patient-eligibility
+      priority: high
+      description: Verify telehealth coverage
+      
+      verification_requirements:
+        coverage_check:
+          - Telehealth benefit exists
+          - Provider in network for telehealth
+          - Service type covered
+          - Copay/cost share amount
+          
+        payer_specific_rules:
+          medicare:
+            - Geographic restrictions (some lifted during PHE)
+            - Originating site requirements
+            - Established patient requirements (some services)
+          medicaid:
+            - State-specific rules
+            - May require specific modalities
+          commercial:
+            - Plan-specific coverage
+            - Prior authorization may be required
+            
+      validation:
+        on: scheduling
+        action: |
+          RUN insurance_eligibility_check
+          VERIFY telehealth_coverage
+          CALCULATE patient_responsibility
+          INFORM patient_of_costs BEFORE visit
+
+    # State-Specific Rules
+    - id: BR-TEL-040
+      name: State Telehealth Regulations
+      category: condition-eligibility
+      priority: critical
+      description: State-specific telehealth regulations
+      
+      state_variations:
+        consent_requirements:
+          description: Some states have specific consent language
+          
+        prescribing_restrictions:
+          description: Some states restrict first-visit prescribing
+          examples:
+            - Controlled substances
+            - Certain medications without exam
+            
+        modality_requirements:
+          description: Some states require video (not audio-only)
+          
+        established_patient_rules:
+          description: Some require prior in-person relationship
+          
+      validation:
+        on: [scheduling, prescribing]
+        action: |
+          LOOKUP state_rules(patient_location_state)
+          APPLY state_specific_restrictions
+          WARN provider_of_restrictions
+
+  decision_flow:
+    name: Telehealth Eligibility Decision
+    steps:
+      - step: 1
+        name: Emergency Screening
+        rule: BR-TEL-002
+        outcome_if_triggered: route_to_emergency
+        
+      - step: 2
+        name: Condition Suitability
+        rule: BR-TEL-001
+        outcome_if_unsuitable: recommend_in_person
+        
+      - step: 3
+        name: Patient Age Check
+        rules: [BR-TEL-020, BR-TEL-021]
+        outcome: apply_age_requirements
+        
+      - step: 4
+        name: Technical Readiness
+        rule: BR-TEL-010
+        outcome_if_fail: offer_assistance_or_alternative
+        
+      - step: 5
+        name: Insurance Verification
+        rule: BR-TEL-030
+        outcome: inform_patient_of_coverage
+        
+      - step: 6
+        name: Consent Verification
+        rule: BR-TEL-012
+        outcome_if_missing: obtain_consent
+        
+      - step: 7
+        name: State Compliance
+        rule: BR-TEL-040
+        outcome: apply_state_rules
+        
+      - step: final
+        name: Eligibility Determination
+        outcome: eligible_for_telehealth
+
+  audit:
+    log_all_decisions: true
+    retention_days: 2555
+    required_fields:
+      - patient_id
+      - rule_applied
+      - decision
+      - timestamp
+      - reason

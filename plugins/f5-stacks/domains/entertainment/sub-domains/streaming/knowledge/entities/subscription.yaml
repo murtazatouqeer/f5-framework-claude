@@ -1,0 +1,391 @@
+name: subscription
+display_name: Subscription
+description: |
+  User subscription management for streaming service access.
+  Handles plans, billing cycles, and subscription lifecycle.
+
+domain: entertainment
+subdomain: streaming
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  # Identity
+  - name: id
+    type: uuid
+    required: true
+    description: Unique subscription identifier
+
+  - name: user_id
+    type: uuid
+    required: true
+    description: Subscriber user ID
+
+  - name: subscription_number
+    type: string
+    required: true
+    unique: true
+    description: Human-readable subscription ID
+    example: "SUB-2024-001234"
+
+  # Plan Details
+  - name: plan_id
+    type: uuid
+    required: true
+    description: Subscription plan reference
+
+  - name: plan_type
+    type: enum
+    values: [free, basic, standard, premium, family, student, annual]
+    required: true
+    description: Plan tier
+
+  - name: plan_name
+    type: string
+    required: true
+    description: Plan display name
+
+  # Pricing
+  - name: price_amount
+    type: decimal
+    required: true
+    precision: 10
+    scale: 2
+    description: Subscription price
+
+  - name: currency
+    type: string
+    required: true
+    default: "USD"
+    description: Price currency
+
+  - name: billing_cycle
+    type: enum
+    values: [monthly, quarterly, semi_annual, annual]
+    required: true
+    default: monthly
+    description: Billing frequency
+
+  - name: discount_percent
+    type: decimal
+    required: false
+    description: Applied discount percentage
+
+  - name: discount_reason
+    type: string
+    required: false
+    description: Discount reason/code
+
+  # Features
+  - name: max_streams
+    type: integer
+    required: true
+    default: 1
+    description: Concurrent streams allowed
+
+  - name: max_downloads
+    type: integer
+    required: true
+    default: 0
+    description: Offline downloads allowed
+
+  - name: max_profiles
+    type: integer
+    required: true
+    default: 1
+    description: User profiles allowed
+
+  - name: video_quality
+    type: enum
+    values: [SD, HD, FHD, 4K]
+    required: true
+    description: Maximum video quality
+
+  - name: ads_enabled
+    type: boolean
+    required: true
+    default: true
+    description: Shows advertisements
+
+  - name: features
+    type: array
+    items: string
+    required: false
+    description: Enabled feature flags
+
+  # Dates
+  - name: start_date
+    type: datetime
+    required: true
+    description: Subscription start
+
+  - name: end_date
+    type: datetime
+    required: false
+    description: Subscription end (if not recurring)
+
+  - name: current_period_start
+    type: datetime
+    required: true
+    description: Current billing period start
+
+  - name: current_period_end
+    type: datetime
+    required: true
+    description: Current billing period end
+
+  - name: next_billing_date
+    type: datetime
+    required: false
+    description: Next charge date
+
+  - name: trial_start
+    type: datetime
+    required: false
+    description: Trial period start
+
+  - name: trial_end
+    type: datetime
+    required: false
+    description: Trial period end
+
+  - name: cancelled_at
+    type: datetime
+    required: false
+    description: Cancellation timestamp
+
+  # Payment
+  - name: payment_method_id
+    type: uuid
+    required: false
+    description: Default payment method
+
+  - name: payment_provider
+    type: enum
+    values: [stripe, paypal, apple_pay, google_pay, carrier_billing, bank_transfer]
+    required: true
+    description: Payment processor
+
+  - name: external_subscription_id
+    type: string
+    required: false
+    description: External provider subscription ID
+
+  # Status
+  - name: status
+    type: enum
+    values: [trialing, active, past_due, paused, cancelled, expired]
+    required: true
+    default: trialing
+    description: Subscription status
+
+  - name: auto_renew
+    type: boolean
+    required: true
+    default: true
+    description: Auto-renewal enabled
+
+  - name: pause_reason
+    type: string
+    required: false
+    description: Pause reason if paused
+
+  - name: pause_until
+    type: datetime
+    required: false
+    description: Pause end date
+
+  - name: cancellation_reason
+    type: enum
+    values: [user_requested, payment_failed, fraud, terms_violation, account_closed, plan_change, other]
+    required: false
+    description: Cancellation reason
+
+  - name: cancellation_feedback
+    type: text
+    required: false
+    description: User cancellation feedback
+
+  # Promotions
+  - name: promo_code
+    type: string
+    required: false
+    description: Applied promo code
+
+  - name: referrer_id
+    type: uuid
+    required: false
+    description: Referral source user
+
+  - name: gift_from_user_id
+    type: uuid
+    required: false
+    description: Gift subscription sender
+
+  # Usage Tracking
+  - name: total_watch_minutes
+    type: integer
+    required: false
+    default: 0
+    description: Total minutes watched
+
+  - name: last_activity_at
+    type: datetime
+    required: false
+    description: Last streaming activity
+
+  # Audit
+  - name: created_at
+    type: datetime
+    required: true
+    auto: true
+
+  - name: updated_at
+    type: datetime
+    required: true
+    auto: true
+
+relationships:
+  - name: user
+    type: belongs_to
+    target: user_profile
+    foreign_key: user_id
+    description: Subscriber
+
+  - name: plan
+    type: belongs_to
+    target: subscription_plan
+    foreign_key: plan_id
+    description: Subscription plan
+
+  - name: invoices
+    type: has_many
+    target: invoice
+    foreign_key: subscription_id
+    description: Billing invoices
+
+  - name: payment_method
+    type: belongs_to
+    target: payment_method
+    foreign_key: payment_method_id
+    description: Payment method
+
+state_machine:
+  initial: trialing
+  states:
+    - name: trialing
+      description: Free trial period
+      allowed_transitions: [active, cancelled]
+
+    - name: active
+      description: Active paid subscription
+      allowed_transitions: [past_due, paused, cancelled]
+
+    - name: past_due
+      description: Payment overdue
+      allowed_transitions: [active, cancelled, expired]
+
+    - name: paused
+      description: Temporarily paused
+      allowed_transitions: [active, cancelled]
+
+    - name: cancelled
+      description: Cancelled but active until period end
+      allowed_transitions: [active, expired]
+
+    - name: expired
+      description: Subscription ended
+      allowed_transitions: [active]
+      terminal: false
+
+  transitions:
+    - name: activate
+      from: trialing
+      to: active
+      requires: payment_method_id
+      triggers:
+        - create_invoice
+        - send_welcome_email
+
+    - name: payment_failed
+      from: active
+      to: past_due
+      triggers:
+        - send_payment_failed_email
+        - schedule_retry
+
+    - name: payment_recovered
+      from: past_due
+      to: active
+      triggers:
+        - send_payment_success_email
+
+    - name: pause
+      from: active
+      to: paused
+      requires_role: user
+
+    - name: resume
+      from: paused
+      to: active
+      triggers:
+        - update_billing_cycle
+
+    - name: cancel
+      from: [trialing, active, paused]
+      to: cancelled
+      triggers:
+        - send_cancellation_email
+        - schedule_expiration
+
+    - name: reactivate
+      from: [cancelled, expired]
+      to: active
+      requires: payment_method_id
+      triggers:
+        - create_invoice
+
+    - name: expire
+      from: [cancelled, past_due]
+      to: expired
+      triggers:
+        - revoke_access
+
+indexes:
+  - name: idx_subscription_user
+    fields: [user_id]
+    type: btree
+
+  - name: idx_subscription_status
+    fields: [status]
+    type: btree
+
+  - name: idx_subscription_billing
+    fields: [next_billing_date]
+    type: btree
+
+  - name: idx_subscription_number
+    fields: [subscription_number]
+    type: unique
+
+  - name: idx_subscription_external
+    fields: [payment_provider, external_subscription_id]
+    type: btree
+
+validations:
+  - name: valid_dates
+    condition: "end_date IS NULL OR end_date > start_date"
+    message: "End date must be after start date"
+
+  - name: valid_trial
+    condition: "trial_end IS NULL OR trial_end > trial_start"
+    message: "Trial end must be after trial start"
+
+  - name: valid_pause
+    condition: "status != 'paused' OR pause_until IS NOT NULL"
+    message: "Paused subscription must have resume date"
+
+business_rules:
+  - rule: subscription-billing-rules
+    description: Subscription lifecycle and billing rules

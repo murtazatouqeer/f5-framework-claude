@@ -1,0 +1,406 @@
+name: ShippingWorkflow
+display_name: Shipping and Dispatch Process Workflow
+description: |
+  End-to-end workflow for staging, manifesting, and dispatching shipments.
+  Covers carrier coordination through proof of pickup.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: pack_task.completed
+  conditions:
+    - outbound_order.status == 'packed'
+    - shipping_label_printed
+
+actors:
+  - role: shipper
+    responsibilities:
+      - Stage shipments by carrier
+      - Prepare manifests
+      - Load vehicles
+      - Confirm pickup
+  - role: dock_coordinator
+    responsibilities:
+      - Manage dock schedules
+      - Coordinate carriers
+      - Handle exceptions
+  - role: driver
+    responsibilities:
+      - Sign for pickup
+      - Load trailer
+
+steps:
+  - id: step_01
+    name: Stage by Carrier
+    description: |
+      Move packed shipments to carrier-specific staging lanes.
+      Organize by service level and destination.
+    actor: shipper
+    actions:
+      - action: identify_carrier_lane
+        input: [shipment.carrier, shipment.service]
+        output: staging_lane
+      - action: move_to_lane
+        input: [package, staging_lane]
+        output: package_staged
+      - action: scan_to_lane
+        input: [package_barcode, lane_barcode]
+        output: staging_confirmed
+    validations:
+      - correct carrier lane
+      - package scannable
+    outputs:
+      - staging_lane
+      - staged_at
+    events:
+      - name: shipment.staged
+        payload: [shipment_id, staging_lane]
+    next_step: step_02
+
+  - id: step_02
+    name: Consolidate Multi-Package
+    description: |
+      Consolidate multi-package shipments.
+      Ensure all packages together.
+    actor: shipper
+    conditions:
+      - shipment.total_packages > 1
+    actions:
+      - action: identify_related_packages
+        input: [order_id]
+        output: package_list
+      - action: verify_all_staged
+        input: [package_list, staging_lane]
+        output: all_staged
+      - action: band_together
+        input: [package_list]
+        output: packages_consolidated
+    validations:
+      - all packages accounted for
+    decision:
+      condition: all_staged == false
+      true_path: step_02a
+      false_path: step_03
+    outputs:
+      - packages_consolidated
+
+  - id: step_02a
+    name: Missing Package Search
+    description: |
+      Search for missing packages in multi-piece shipment.
+    actor: shipper
+    actions:
+      - action: identify_missing
+        input: [package_list, staged_packages]
+        output: missing_packages
+      - action: search_pack_stations
+        input: [missing_packages]
+        output: search_result
+      - action: escalate_if_not_found
+        input: [missing_packages]
+        output: escalation_status
+    outputs:
+      - missing_resolution
+    next_step: step_03
+
+  - id: step_03
+    name: Create Manifest
+    description: |
+      Generate carrier manifest for pickup.
+      Include all shipments for carrier/route.
+    actor: dock_coordinator
+    actions:
+      - action: collect_staged_shipments
+        input: [carrier, pickup_time]
+        output: shipments_for_manifest
+      - action: generate_manifest
+        input: [shipments_for_manifest]
+        output: manifest_created
+      - action: transmit_to_carrier
+        input: [manifest]
+        output: manifest_transmitted
+      - action: print_manifest
+        input: [manifest_id]
+        output: manifest_printed
+    validations:
+      - all shipments included
+      - manifest transmitted successfully
+    outputs:
+      - manifest_id
+      - manifest_url
+      - shipment_count
+    events:
+      - name: manifest.created
+        payload: [manifest_id, carrier, shipment_count]
+    next_step: step_04
+
+  - id: step_04
+    name: Assign Dock Door
+    description: |
+      Assign dock door for carrier pickup.
+      Coordinate with dock schedule.
+    actor: dock_coordinator
+    actions:
+      - action: check_dock_availability
+        input: [pickup_time, carrier]
+        output: available_doors
+      - action: assign_door
+        input: [carrier, pickup_time]
+        output: door_assigned
+      - action: update_dock_schedule
+        input: [door_number, carrier, time_window]
+        output: schedule_updated
+    validations:
+      - door available
+      - no conflicts
+    outputs:
+      - dock_door_number
+      - scheduled_time
+    next_step: step_05
+
+  - id: step_05
+    name: Move to Dock
+    description: |
+      Move staged shipments to assigned dock door.
+      Prepare for loading.
+    actor: shipper
+    actions:
+      - action: move_to_dock
+        input: [shipments, dock_door]
+        output: shipments_at_dock
+      - action: organize_for_loading
+        input: [shipments, load_sequence]
+        output: loading_ready
+    validations:
+      - all shipments at dock
+      - organized for efficient loading
+    outputs:
+      - ready_for_pickup
+      - dock_door
+    next_step: step_06
+
+  - id: step_06
+    name: Carrier Check-In
+    description: |
+      Check in carrier driver.
+      Verify credentials and assign door.
+    actor: dock_coordinator
+    actions:
+      - action: verify_driver
+        input: [driver_id, carrier_name]
+        output: driver_verified
+      - action: check_trailer_condition
+        input: [trailer_number]
+        output: trailer_approved
+      - action: issue_dock_pass
+        input: [driver_id, door_number]
+        output: dock_pass_issued
+    validations:
+      - driver authorized
+      - trailer suitable for shipments
+    decision:
+      condition: trailer_approved == false
+      true_path: step_06a
+      false_path: step_07
+    outputs:
+      - driver_checked_in
+      - check_in_time
+
+  - id: step_06a
+    name: Trailer Issue
+    description: |
+      Handle unsuitable trailer condition.
+      Request replacement or hold shipments.
+    actor: dock_coordinator
+    actions:
+      - action: document_issue
+        input: [trailer_number, issue_description]
+        output: issue_documented
+      - action: request_replacement
+        input: [carrier, issue]
+        output: replacement_requested
+      - action: hold_shipments
+        input: [shipments]
+        output: shipments_held
+    outputs:
+      - replacement_eta
+    next_step: step_06
+
+  - id: step_07
+    name: Load Shipments
+    description: |
+      Load packages onto carrier vehicle.
+      Scan each package for confirmation.
+    actor: shipper
+    actions:
+      - action: scan_manifest
+        input: [manifest_barcode]
+        output: manifest_active
+      - action: load_packages
+        input: [packages]
+        output: packages_loaded
+      - action: scan_each_package
+        input: [package_barcode]
+        output: package_scanned
+      - action: verify_load_complete
+        input: [manifest, scanned_packages]
+        output: load_verified
+    validations:
+      - all manifest packages scanned
+      - no extra packages loaded
+    decision:
+      condition: load_verified == false
+      true_path: step_07a
+      false_path: step_08
+    outputs:
+      - packages_loaded_count
+
+  - id: step_07a
+    name: Load Discrepancy
+    description: |
+      Handle missing packages during load.
+      Search or adjust manifest.
+    actor: shipper
+    actions:
+      - action: identify_missing
+        input: [manifest, loaded_packages]
+        output: missing_list
+      - action: search_dock_area
+        input: [missing_list]
+        output: search_result
+      - action: adjust_manifest_if_needed
+        input: [manifest, final_load]
+        output: manifest_adjusted
+    outputs:
+      - load_resolution
+    next_step: step_08
+
+  - id: step_08
+    name: Carrier Signature
+    description: |
+      Obtain carrier signature for pickup.
+      Transfer custody of shipments.
+    actor: driver
+    actions:
+      - action: present_manifest
+        input: [manifest]
+        output: manifest_reviewed
+      - action: capture_signature
+        input: [driver_name]
+        output: signature_captured
+      - action: issue_receipt
+        input: [manifest, signature]
+        output: receipt_issued
+    validations:
+      - signature captured
+      - driver acknowledged package count
+    outputs:
+      - signature_url
+      - custody_transferred
+    events:
+      - name: shipment.picked_up
+        payload: [manifest_id, carrier, package_count, signature]
+    next_step: step_09
+
+  - id: step_09
+    name: Close Manifest
+    description: |
+      Finalize manifest and update records.
+      Confirm all shipments picked up.
+    actor: dock_coordinator
+    actions:
+      - action: close_manifest
+        input: [manifest_id]
+        output: manifest_closed
+      - action: update_shipment_status
+        input: [shipments, 'picked_up']
+        output: statuses_updated
+      - action: release_dock_door
+        input: [dock_door]
+        output: door_released
+    outputs:
+      - manifest_closed_time
+      - shipments_dispatched
+    next_step: step_10
+
+  - id: step_10
+    name: Send Notifications
+    description: |
+      Send shipping notifications to customers.
+      Include tracking information.
+    actor: dock_coordinator
+    actions:
+      - action: generate_notifications
+        input: [shipments]
+        output: notifications_created
+      - action: send_tracking_emails
+        input: [customer_emails, tracking_numbers]
+        output: emails_sent
+      - action: send_sms_notifications
+        input: [customer_phones, tracking_numbers]
+        output: sms_sent
+    outputs:
+      - notifications_sent_count
+    events:
+      - name: shipping.notification_sent
+        payload: [order_id, tracking_number, customer_email]
+
+  - id: step_11
+    name: End of Day Processing
+    description: |
+      Process any shipments that missed pickup.
+      Reconcile daily shipping.
+    actor: dock_coordinator
+    conditions:
+      - end_of_shift
+    actions:
+      - action: identify_unshipped
+        input: [today_date]
+        output: unshipped_orders
+      - action: reschedule_missed
+        input: [unshipped_orders]
+        output: rescheduled
+      - action: generate_daily_report
+        input: [today_date]
+        output: daily_report
+      - action: notify_customer_service
+        input: [unshipped_orders]
+        output: cs_notified
+    outputs:
+      - daily_shipped_count
+      - missed_cutoff_count
+      - daily_report_url
+
+sla:
+  - name: on_time_dispatch
+    description: Shipments dispatched before carrier cutoff
+    target: "> 99%"
+  - name: manifest_accuracy
+    description: Manifest matches actual load
+    target: "100%"
+  - name: dock_turnaround
+    description: Time from carrier arrival to departure
+    target: "< 30 minutes"
+
+exceptions:
+  - name: carrier_no_show
+    handling: Contact carrier, reschedule or use backup
+  - name: missed_cutoff
+    handling: Notify customer, upgrade service if possible
+  - name: trailer_full
+    handling: Split load, schedule additional pickup
+  - name: system_down
+    handling: Manual manifest, paper backup
+
+integrations:
+  - system: Carrier_API
+    purpose: Manifest transmission, tracking updates
+  - system: TMS
+    purpose: Carrier scheduling, dock appointments
+  - system: Notification_System
+    purpose: Customer communications
+  - system: WMS
+    purpose: Shipment status updates

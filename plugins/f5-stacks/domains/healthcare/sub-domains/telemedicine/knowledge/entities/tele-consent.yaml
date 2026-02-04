@@ -1,0 +1,348 @@
+# TeleConsent Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Telehealth-specific consent management
+
+entity:
+  id: tele-consent
+  name: TeleConsent
+  name_ja: 遠隔医療同意書
+  description: Telehealth-specific informed consent with electronic signature support
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: consent_number
+      type: string
+      format: "TC-{YYYYMMDD}-{XXXX}"
+      unique: true
+      indexed: true
+      description: Human-readable consent number
+
+    - name: patient_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: patient.id
+      description: Patient providing consent
+
+    - name: visit_id
+      type: uuid
+      nullable: true
+      indexed: true
+      foreign_key: tele_visit.id
+      description: Associated visit (if visit-specific)
+
+    # Consent Type
+    - name: consent_type
+      type: enum
+      values:
+        - general_telehealth
+        - recording
+        - data_sharing
+        - research
+        - minor_telehealth
+        - mental_health
+        - substance_abuse
+      required: true
+      indexed: true
+      description: Type of consent
+
+    - name: status
+      type: enum
+      values:
+        - pending
+        - viewed
+        - signed
+        - declined
+        - revoked
+        - expired
+      required: true
+      default: pending
+      indexed: true
+      description: Consent status
+
+    # Consent Content
+    - name: consent_version
+      type: string
+      required: true
+      description: Version of consent form
+
+    - name: consent_template_id
+      type: uuid
+      nullable: true
+      foreign_key: consent_template.id
+      description: Template used for consent
+
+    - name: consent_language
+      type: string
+      default: "en"
+      description: Language of consent form
+
+    - name: consent_text
+      type: text
+      required: true
+      description: Full consent text presented
+
+    - name: disclosures
+      type: jsonb
+      default: "[]"
+      description: |
+        Required disclosures:
+        [{
+          type: "risk|limitation|alternative|privacy|billing",
+          title: string,
+          content: string,
+          acknowledged: bool
+        }]
+
+    - name: key_points
+      type: jsonb
+      default: "[]"
+      description: |
+        Summary key points:
+        [string, string, ...]
+
+    # Signature
+    - name: signed_at
+      type: datetime
+      nullable: true
+      description: When consent was signed
+
+    - name: signature_method
+      type: enum
+      values:
+        - electronic
+        - verbal
+        - written
+        - guardian
+      nullable: true
+      description: How consent was obtained
+
+    - name: signature_data
+      type: text
+      nullable: true
+      encrypted: true
+      description: Electronic signature (base64 image or hash)
+
+    - name: signature_ip_address
+      type: string
+      nullable: true
+      description: IP address at signing
+
+    - name: signature_device_info
+      type: jsonb
+      nullable: true
+      description: Device info at signing
+
+    # Verbal Consent (if applicable)
+    - name: verbal_consent_witness_id
+      type: uuid
+      nullable: true
+      foreign_key: user.id
+      description: Staff witnessing verbal consent
+
+    - name: verbal_consent_documented_by
+      type: uuid
+      nullable: true
+      foreign_key: user.id
+      description: Who documented verbal consent
+
+    - name: verbal_consent_notes
+      type: text
+      nullable: true
+      description: Notes on verbal consent process
+
+    # Guardian Consent (for minors)
+    - name: is_minor_patient
+      type: boolean
+      default: false
+      description: Patient is a minor
+
+    - name: guardian_id
+      type: uuid
+      nullable: true
+      foreign_key: guardian.id
+      description: Legal guardian providing consent
+
+    - name: guardian_relationship
+      type: string
+      nullable: true
+      description: Relationship to patient
+
+    # Validity
+    - name: valid_from
+      type: datetime
+      required: true
+      default: now()
+      description: Consent effective date
+
+    - name: valid_until
+      type: datetime
+      nullable: true
+      description: Consent expiration (null = no expiry)
+
+    - name: one_time_use
+      type: boolean
+      default: false
+      description: Valid for single visit only
+
+    # Revocation
+    - name: revoked_at
+      type: datetime
+      nullable: true
+      description: When consent was revoked
+
+    - name: revoked_by
+      type: uuid
+      nullable: true
+      foreign_key: user.id
+      description: Who revoked (patient or authorized person)
+
+    - name: revocation_reason
+      type: string
+      nullable: true
+      description: Reason for revocation
+
+    # Recording-specific (if consent_type = recording)
+    - name: recording_scope
+      type: jsonb
+      nullable: true
+      description: |
+        What recording covers:
+        {
+          audio: bool,
+          video: bool,
+          screen: bool,
+          purposes: ["medical_record", "quality", "training"]
+        }
+
+    # Timestamps
+    - name: presented_at
+      type: datetime
+      nullable: true
+      description: When consent was presented to patient
+
+    - name: viewed_at
+      type: datetime
+      nullable: true
+      description: When patient opened/viewed consent
+
+    - name: view_duration_seconds
+      type: integer
+      nullable: true
+      description: How long patient viewed consent
+
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: datetime
+      required: true
+      default: now()
+      on_update: now()
+
+  relationships:
+    - name: patient
+      type: belongs_to
+      entity: patient
+      foreign_key: patient_id
+
+    - name: visit
+      type: belongs_to
+      entity: tele_visit
+      foreign_key: visit_id
+
+    - name: guardian
+      type: belongs_to
+      entity: guardian
+      foreign_key: guardian_id
+
+    - name: witness
+      type: belongs_to
+      entity: user
+      foreign_key: verbal_consent_witness_id
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: viewed
+        trigger: patient_opens
+        action: set_viewed_at
+        
+      - from: [pending, viewed]
+        to: signed
+        trigger: patient_signs
+        action: set_signed_at
+        guard: all_disclosures_acknowledged
+        
+      - from: [pending, viewed]
+        to: declined
+        trigger: patient_declines
+        
+      - from: signed
+        to: revoked
+        trigger: patient_revokes
+        action: set_revoked_at
+        
+      - from: signed
+        to: expired
+        trigger: validity_expired
+        guard: valid_until < now()
+
+  computed_fields:
+    - name: is_valid
+      expression: |
+        status == 'signed' AND
+        (valid_until IS NULL OR valid_until > now()) AND
+        revoked_at IS NULL
+      type: boolean
+      description: Consent currently valid
+
+    - name: needs_renewal
+      expression: |
+        valid_until IS NOT NULL AND
+        valid_until < now() + interval '30 days'
+      type: boolean
+      description: Needs renewal soon
+
+  indexes:
+    - name: idx_teleconsent_patient
+      columns: [patient_id, consent_type]
+      
+    - name: idx_teleconsent_visit
+      columns: [visit_id]
+      
+    - name: idx_teleconsent_status
+      columns: [status, valid_until]
+
+  validations:
+    - name: guardian_for_minor
+      rule: is_minor_patient == false OR guardian_id IS NOT NULL
+      message: Guardian consent required for minor patients
+
+    - name: verbal_requires_witness
+      rule: signature_method != 'verbal' OR verbal_consent_witness_id IS NOT NULL
+      message: Verbal consent requires witness
+
+    - name: valid_dates
+      rule: valid_until IS NULL OR valid_until > valid_from
+      message: Expiration must be after effective date
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - signed_at
+      - revoked_at
+      - signature_data
+    retention_days: 2555  # 7 years

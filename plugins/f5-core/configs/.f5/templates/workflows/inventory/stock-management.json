@@ -1,0 +1,255 @@
+{
+  "id": "f5-inventory-stock-management",
+  "name": "Stock Management Workflow",
+  "description": "Inventory tracking with stock levels, reorder points, and warehouse management",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "inventory",
+    "category": "stock",
+    "complexity": "medium",
+    "estimatedDuration": "20-25 minutes",
+    "requiredSkills": ["f5-backend", "f5-db"],
+    "mcpServers": ["serena", "context7"],
+    "qualityGates": ["D3", "G2", "G3"],
+    "argumentHint": "Implement stock management with reorder alerts for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "Stock Event"
+      }
+    },
+    {
+      "id": "switch-event",
+      "type": "switch",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Stock Event Type",
+        "description": "Route based on inventory event",
+        "evaluationTarget": "Type of stock event",
+        "cases": [
+          { "id": "case-receive", "label": "Stock Receipt", "condition": "Receiving new stock" },
+          { "id": "case-adjust", "label": "Adjustment", "condition": "Manual stock adjustment" },
+          { "id": "case-transfer", "label": "Transfer", "condition": "Warehouse transfer" },
+          { "id": "case-check", "label": "Level Check", "condition": "Check stock levels" }
+        ]
+      }
+    },
+    {
+      "id": "subagent-receive-stock",
+      "type": "subAgent",
+      "position": { "x": 50, "y": 320 },
+      "data": {
+        "label": "Process Stock Receipt",
+        "description": "Process incoming stock from suppliers",
+        "prompt": "Process stock receipt:\n1. Validate receipt against purchase order\n2. Check quantity and quality\n3. Update stock levels\n4. Record lot numbers and expiry dates\n5. Update inventory valuation (FIFO/LIFO)\n6. Generate receiving report\n7. Close or update PO status",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "variance", "error"]
+      }
+    },
+    {
+      "id": "subagent-adjust-stock",
+      "type": "subAgent",
+      "position": { "x": 200, "y": 320 },
+      "data": {
+        "label": "Adjust Stock",
+        "description": "Process manual stock adjustments",
+        "prompt": "Adjust stock:\n1. Validate adjustment reason code\n2. Calculate adjustment amount\n3. Update stock quantity\n4. Update inventory valuation\n5. Record adjustment with authorization\n6. Create audit trail entry\n7. Trigger recount if large variance",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "requires_approval"]
+      }
+    },
+    {
+      "id": "subagent-transfer-stock",
+      "type": "subAgent",
+      "position": { "x": 350, "y": 320 },
+      "data": {
+        "label": "Transfer Stock",
+        "description": "Transfer stock between locations",
+        "prompt": "Transfer stock:\n1. Validate source location has stock\n2. Create transfer request\n3. Deduct from source location\n4. Set status to 'in_transit'\n5. Generate transfer document\n6. Update destination on receipt\n7. Close transfer record",
+        "agentType": "backend-architect",
+        "outputPorts": ["initiated", "completed", "error"]
+      }
+    },
+    {
+      "id": "subagent-check-levels",
+      "type": "subAgent",
+      "position": { "x": 500, "y": 320 },
+      "data": {
+        "label": "Check Stock Levels",
+        "description": "Check inventory levels against thresholds",
+        "prompt": "Check stock levels:\n1. Get current stock by product/location\n2. Compare against reorder points\n3. Calculate days of supply\n4. Identify items below minimum\n5. Identify items above maximum\n6. Generate stock status report\n7. Return low stock alerts",
+        "agentType": "backend-architect",
+        "outputPorts": ["healthy", "low_stock", "overstock"]
+      }
+    },
+    {
+      "id": "ifelse-low-stock",
+      "type": "ifElse",
+      "position": { "x": 500, "y": 480 },
+      "data": {
+        "label": "Low Stock Alert?",
+        "description": "Check if stock is below reorder point",
+        "condition": "Current stock <= reorder point"
+      }
+    },
+    {
+      "id": "mcp-create-po",
+      "type": "mcp",
+      "position": { "x": 400, "y": 610 },
+      "data": {
+        "label": "Create Purchase Order",
+        "description": "Auto-generate purchase order for low stock",
+        "serverName": "github",
+        "toolName": "create_issue",
+        "mode": "structured",
+        "parameters": {
+          "title": "Auto PO: Low Stock Alert",
+          "body": "Purchase order created for items below reorder point"
+        },
+        "outputPorts": ["created"]
+      }
+    },
+    {
+      "id": "mcp-update-records",
+      "type": "mcp",
+      "position": { "x": 200, "y": 480 },
+      "data": {
+        "label": "Update Inventory Records",
+        "description": "Update inventory tracking system",
+        "serverName": "serena",
+        "toolName": "write_memory",
+        "mode": "structured",
+        "parameters": {
+          "memory_file_name": "inventory-changes",
+          "content": "Stock level changes recorded with timestamps"
+        },
+        "outputPorts": ["updated"]
+      }
+    },
+    {
+      "id": "prompt-generate-report",
+      "type": "prompt",
+      "position": { "x": 300, "y": 740 },
+      "data": {
+        "label": "Generate Stock Report",
+        "description": "Generate inventory status report",
+        "prompt": "Generate stock report:\n- Current stock levels by location\n- Stock movements summary\n- Low stock items list\n- Overstock items list\n- Inventory valuation\n- Days of supply by item",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 300, "y": 870 },
+      "data": {
+        "label": "Stock Operation Complete"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "switch-event",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "switch-event",
+      "target": "subagent-receive-stock",
+      "sourceHandle": "case-receive",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "switch-event",
+      "target": "subagent-adjust-stock",
+      "sourceHandle": "case-adjust",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-4",
+      "source": "switch-event",
+      "target": "subagent-transfer-stock",
+      "sourceHandle": "case-transfer",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-5",
+      "source": "switch-event",
+      "target": "subagent-check-levels",
+      "sourceHandle": "case-check",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "subagent-receive-stock",
+      "target": "mcp-update-records",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-7",
+      "source": "subagent-adjust-stock",
+      "target": "mcp-update-records",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "subagent-transfer-stock",
+      "target": "mcp-update-records",
+      "sourceHandle": "output-completed",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-9",
+      "source": "subagent-check-levels",
+      "target": "ifelse-low-stock",
+      "sourceHandle": "output-low_stock",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-10",
+      "source": "ifelse-low-stock",
+      "target": "mcp-create-po",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "Below Reorder"
+    },
+    {
+      "id": "conn-11",
+      "source": "ifelse-low-stock",
+      "target": "prompt-generate-report",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "OK"
+    },
+    {
+      "id": "conn-12",
+      "source": "mcp-create-po",
+      "target": "prompt-generate-report",
+      "sourceHandle": "output-created",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-13",
+      "source": "mcp-update-records",
+      "target": "prompt-generate-report",
+      "sourceHandle": "output-updated",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-14",
+      "source": "prompt-generate-report",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

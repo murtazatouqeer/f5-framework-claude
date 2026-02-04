@@ -1,0 +1,188 @@
+# Price History Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# Property and listing price change tracking
+
+entity:
+  id: price_history
+  name: Price History
+  name_ja: 価格履歴
+  name_vi: Lịch sử giá
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Tracks price changes for properties and listings over time.
+    Used for market analysis and price trend visualization.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    # References
+    - name: property_id
+      type: uuid
+      foreign_key: property.id
+      required: true
+      indexed: true
+
+    - name: listing_id
+      type: uuid
+      foreign_key: listing.id
+      indexed: true
+
+    # Price Data
+    - name: price
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    - name: price_per_sqm
+      type: decimal
+      precision: 12
+      scale: 2
+
+    - name: previous_price
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: price_change_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: price_change_percent
+      type: decimal
+      precision: 8
+      scale: 4
+
+    # Change Type
+    - name: change_type
+      type: enum
+      values: [initial, increase, decrease, no_change]
+      required: true
+      indexed: true
+
+    - name: change_reason
+      type: enum
+      values: [market_adjustment, time_on_market, negotiation, renovation, appraisal, promotion, correction, other]
+
+    - name: change_notes
+      type: text
+
+    # Source
+    - name: source
+      type: enum
+      values: [listing, appraisal, transaction, estimate, owner_update]
+      default: listing
+
+    # Listing Status at Time
+    - name: listing_status
+      type: string
+      max_length: 50
+
+    - name: listing_type
+      type: enum
+      values: [sale, rent, lease, auction]
+
+    # Market Context
+    - name: days_on_market
+      type: integer
+      description: DOM when price changed
+
+    - name: market_conditions
+      type: enum
+      values: [buyers_market, balanced, sellers_market]
+
+    # Transaction Data (if sold/rented)
+    - name: is_transaction_price
+      type: boolean
+      default: false
+      description: True if this is actual sale/rental price
+
+    - name: transaction_date
+      type: date
+
+    # Changed By
+    - name: changed_by
+      type: uuid
+      foreign_key: user.id
+
+    - name: changed_by_type
+      type: enum
+      values: [owner, agent, system, admin]
+
+    # Timestamps
+    - name: effective_date
+      type: date
+      required: true
+      indexed: true
+      description: Date price became effective
+
+    - name: recorded_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_price_drop
+      formula: "change_type = 'decrease'"
+
+    - name: is_significant_change
+      formula: "ABS(price_change_percent) >= 5"
+
+  relationships:
+    - name: property
+      type: belongs_to
+      entity: property
+      foreign_key: property_id
+
+    - name: listing
+      type: belongs_to
+      entity: listing
+      foreign_key: listing_id
+
+    - name: changed_by_user
+      type: belongs_to
+      entity: user
+      foreign_key: changed_by
+
+  indexes:
+    - fields: [property_id, effective_date]
+      name: idx_property_price_date
+
+    - fields: [listing_id, effective_date]
+      name: idx_listing_price_date
+
+    - fields: [effective_date, change_type]
+      name: idx_date_change_type
+
+    - fields: [is_transaction_price, effective_date]
+      name: idx_transactions
+
+  analytics:
+    - name: price_trend
+      description: Calculate price trend over time
+      aggregation: time_series
+      fields: [price, price_per_sqm]
+      group_by: [property_id]
+      order_by: effective_date
+
+    - name: market_price_index
+      description: Track area price trends
+      aggregation: average
+      fields: [price_per_sqm]
+      group_by: [district, property_type, month]
+
+  audit:
+    enabled: true
+    immutable: true
+    description: Price history records should not be modified

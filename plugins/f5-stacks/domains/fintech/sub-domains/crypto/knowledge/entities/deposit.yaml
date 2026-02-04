@@ -1,0 +1,322 @@
+name: Deposit
+display_name: Deposit / Nạp tiền
+description: |
+  Cryptocurrency deposit transaction from external wallet to
+  user's exchange wallet.
+
+domain: fintech
+sub_domain: crypto
+entity_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique deposit identifier
+
+  # Business Identifier
+  deposit_id:
+    type: string
+    max_length: 20
+    unique: true
+    indexed: true
+    pattern: "DEP-[A-Z0-9]{8}"
+    description: Human-readable deposit ID
+    example: "DEP-A1B2C3D4"
+
+  # References
+  user_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Depositor user
+    reference: users.id
+
+  wallet_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Target wallet
+    reference: wallets.id
+
+  asset_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Deposited asset
+    reference: crypto_assets.id
+
+  # Network Information
+  network:
+    type: enum
+    required: true
+    values:
+      - bitcoin
+      - ethereum
+      - bsc
+      - polygon
+      - solana
+      - tron
+      - avalanche
+      - arbitrum
+      - optimism
+      - ton
+    description: Blockchain network used
+
+  # Status
+  status:
+    type: enum
+    required: true
+    values:
+      - detected
+      - confirming
+      - completed
+      - failed
+      - expired
+    default: detected
+    description: Deposit status
+    definition:
+      detected: Transaction seen on blockchain
+      confirming: Waiting for confirmations
+      completed: Credited to user balance
+      failed: Transaction failed or rejected
+      expired: Timed out without completion
+
+  # Amounts
+  amount:
+    type: decimal
+    precision: 28
+    scale: 8
+    required: true
+    description: Amount deposited
+
+  fee:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Network fee (if applicable)
+
+  credited_amount:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Amount credited to balance (usually same as amount)
+
+  # Blockchain Data
+  from_address:
+    type: string
+    max_length: 200
+    indexed: true
+    description: Sender's external address
+
+  to_address:
+    type: string
+    max_length: 200
+    indexed: true
+    description: User's deposit address on exchange
+
+  tx_hash:
+    type: string
+    max_length: 100
+    indexed: true
+    description: Blockchain transaction hash
+    example: "0x123abc..."
+
+  block_number:
+    type: bigint
+    description: Block number containing transaction
+
+  block_hash:
+    type: string
+    max_length: 100
+    description: Hash of the block
+
+  # Confirmation Tracking
+  confirmations_received:
+    type: integer
+    default: 0
+    description: Current number of confirmations
+
+  confirmations_required:
+    type: integer
+    required: true
+    description: Confirmations needed for completion
+
+  # Timestamps
+  detected_at:
+    type: timestamp
+    description: When transaction was first seen
+
+  confirmed_at:
+    type: timestamp
+    description: When required confirmations reached
+
+  credited_at:
+    type: timestamp
+    description: When balance was credited
+
+  failed_at:
+    type: timestamp
+    description: When deposit failed
+
+  # Metadata
+  memo:
+    type: string
+    max_length: 200
+    description: Memo/tag for certain networks (XRP, XLM)
+
+  contract_address:
+    type: string
+    max_length: 100
+    description: Token contract address (for tokens)
+
+  internal_transfer:
+    type: boolean
+    default: false
+    description: Whether this is internal platform transfer
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: detected
+  transitions:
+    detected:
+      - to: confirming
+        event: first_confirmation
+
+    confirming:
+      - to: completed
+        event: confirmations_complete
+        actions:
+          - credit_balance
+          - send_notification
+      - to: failed
+        event: transaction_failed
+        actions:
+          - log_failure
+          - alert_support
+
+    completed:
+      terminal: true
+
+    failed:
+      terminal: true
+
+    expired:
+      terminal: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  user:
+    type: belongs_to
+    entity: User
+    foreign_key: user_id
+
+  wallet:
+    type: belongs_to
+    entity: Wallet
+    foreign_key: wallet_id
+
+  asset:
+    type: belongs_to
+    entity: CryptoAsset
+    foreign_key: asset_id
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_deposit_user
+    columns: [user_id]
+
+  - name: idx_deposit_tx
+    columns: [tx_hash, network]
+    unique: true
+
+  - name: idx_deposit_address
+    columns: [to_address]
+
+  - name: idx_deposit_status
+    columns: [status]
+
+  - name: idx_deposit_detected
+    columns: [detected_at]
+
+# =============================================================================
+# CONFIRMATION REQUIREMENTS
+# =============================================================================
+confirmation_config:
+  bitcoin:
+    small_amount: { threshold: 0.1, confirmations: 1 }
+    medium_amount: { threshold: 1, confirmations: 3 }
+    large_amount: { threshold: null, confirmations: 6 }
+    average_time: "10 minutes per confirmation"
+
+  ethereum:
+    confirmations: 12
+    average_time: "12 seconds per block"
+
+  bsc:
+    confirmations: 15
+    average_time: "3 seconds per block"
+
+  tron:
+    confirmations: 20
+    average_time: "3 seconds per block"
+
+  solana:
+    confirmations: 32
+    average_time: "400ms per slot"
+
+  polygon:
+    confirmations: 128
+    average_time: "2 seconds per block"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-DEP-001
+    name: Minimum Deposit
+    name_vi: Nạp tối thiểu
+    description: Amount must meet minimum deposit requirement
+    enforcement: validation
+
+  - id: BR-DEP-002
+    name: Confirmation Wait
+    name_vi: Chờ xác nhận
+    description: Credit only after required confirmations
+    enforcement: state_machine
+
+  - id: BR-DEP-003
+    name: Address Verification
+    name_vi: Xác minh địa chỉ
+    description: Only credit to verified deposit addresses
+    enforcement: application_logic
+
+  - id: BR-DEP-004
+    name: Duplicate Detection
+    name_vi: Phát hiện trùng lặp
+    description: Same tx_hash cannot be credited twice
+    enforcement: unique_constraint
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  log_all_operations: true
+  sensitive_fields: []
+  retention_years: 10

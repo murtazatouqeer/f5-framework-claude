@@ -1,0 +1,689 @@
+# =============================================================================
+# DISCHARGE WORKFLOW - EHR Sub-domain
+# Quy trình Xuất viện
+# =============================================================================
+
+name: DischargeWorkflow
+display_name: Discharge Workflow / Quy trình Xuất viện
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: transition
+
+description: |
+  End-to-end workflow for patient discharge from inpatient or observation status.
+  Includes discharge planning, medication reconciliation, patient education,
+  care transition, and follow-up coordination. Aligned with CMS requirements
+  and readmission reduction initiatives.
+
+# =============================================================================
+# DISCHARGE TYPES
+# =============================================================================
+discharge_types:
+  - id: home
+    name: Discharge to Home
+    description: Patient returns home
+    disposition_code: "01"
+
+  - id: home_health
+    name: Discharge with Home Health
+    description: Home with skilled services
+    disposition_code: "06"
+    coordination: home_health_agency
+
+  - id: snf
+    name: Discharge to SNF
+    description: Skilled nursing facility
+    disposition_code: "03"
+    coordination: snf_facility
+
+  - id: rehab
+    name: Discharge to Rehabilitation
+    description: Inpatient rehabilitation
+    disposition_code: "62"
+    coordination: rehab_facility
+
+  - id: ltach
+    name: Discharge to LTACH
+    description: Long-term acute care
+    disposition_code: "63"
+    coordination: ltach_facility
+
+  - id: hospice
+    name: Discharge to Hospice
+    description: Hospice care
+    disposition_code: ["50", "51"]
+    coordination: hospice_agency
+
+  - id: ama
+    name: Against Medical Advice
+    description: Left before treatment complete
+    disposition_code: "07"
+    special_documentation: required
+
+  - id: transfer
+    name: Transfer to Another Facility
+    description: Acute care transfer
+    disposition_code: "02"
+    coordination: receiving_facility
+
+  - id: deceased
+    name: Expired
+    description: Patient died during stay
+    disposition_code: ["20", "40", "41", "42"]
+    special_workflow: death_workflow
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: admitted
+    name: Admitted
+    description: Patient currently admitted
+    allowed_transitions: [discharge_planning_initiated]
+
+  - id: discharge_planning_initiated
+    name: Discharge Planning Initiated
+    description: Discharge planning has begun
+    entry_actions:
+      - assess_discharge_needs
+      - identify_barriers
+      - engage_case_management
+    allowed_transitions: [disposition_determined]
+
+  - id: disposition_determined
+    name: Disposition Determined
+    description: Discharge destination identified
+    entry_actions:
+      - coordinate_with_receiving_facility
+      - verify_acceptance
+    allowed_transitions: [pending_services, ready_for_discharge]
+
+  - id: pending_services
+    name: Pending Services
+    description: Waiting for services to be arranged
+    entry_actions:
+      - order_dme
+      - arrange_transportation
+      - confirm_home_health
+    allowed_transitions: [ready_for_discharge]
+
+  - id: ready_for_discharge
+    name: Ready for Discharge
+    description: All discharge requirements met
+    entry_actions:
+      - final_verification
+      - print_discharge_documents
+    allowed_transitions: [discharge_in_progress]
+
+  - id: discharge_in_progress
+    name: Discharge in Progress
+    description: Discharge education and process underway
+    entry_actions:
+      - provide_education
+      - medication_reconciliation
+      - give_instructions
+    allowed_transitions: [discharged, discharge_hold]
+
+  - id: discharge_hold
+    name: Discharge on Hold
+    description: Discharge temporarily paused
+    reasons:
+      - clinical_change
+      - family_not_available
+      - services_not_ready
+      - insurance_issue
+    allowed_transitions: [discharge_in_progress, admitted]
+
+  - id: discharged
+    name: Discharged
+    description: Patient has left facility
+    entry_actions:
+      - record_discharge_time
+      - close_admission
+      - trigger_billing
+      - send_transition_of_care
+    allowed_transitions: [post_discharge_follow_up]
+
+  - id: post_discharge_follow_up
+    name: Post-Discharge Follow-up
+    description: Follow-up period after discharge
+    allowed_transitions: [completed]
+
+  - id: completed
+    name: Completed
+    description: Discharge process fully completed
+    allowed_transitions: []
+
+# =============================================================================
+# DISCHARGE PLANNING WORKFLOW
+# =============================================================================
+discharge_planning:
+  # Initial Assessment
+  - id: PLAN-001
+    name: Discharge Needs Assessment
+    description: Assess patient's post-discharge needs
+    timing: within_24_hours_of_admission
+    actors: [case_manager, social_worker, rn]
+    assessment_areas:
+      functional_status:
+        - mobility
+        - activities_of_daily_living
+        - instrumental_adls
+        - cognitive_status
+      support_system:
+        - family_caregiver_availability
+        - home_environment
+        - financial_resources
+      medical_needs:
+        - ongoing_treatments
+        - medication_management
+        - skilled_nursing_needs
+        - therapy_needs
+      barriers:
+        - transportation
+        - insurance_coverage
+        - housing_instability
+        - caregiver_burden
+
+  # Daily Planning Updates
+  - id: PLAN-002
+    name: Daily Discharge Planning Review
+    description: Review and update discharge plan
+    timing: daily_multidisciplinary_rounds
+    actors: [care_team]
+    activities:
+      - review_estimated_discharge_date
+      - update_clinical_status
+      - address_barriers
+      - confirm_arrangements
+    documentation:
+      - progress_toward_discharge
+      - outstanding_needs
+      - target_discharge_date
+
+  # Coordination Activities
+  - id: PLAN-003
+    name: Post-Acute Care Coordination
+    description: Arrange post-discharge services
+    actors: [case_manager, social_worker]
+    activities:
+      - identify_appropriate_facilities
+        for: [snf, rehab, ltach, home_health]
+      - verify_insurance_coverage
+      - obtain_authorizations
+      - confirm_bed_availability
+      - arrange_transfer_transportation
+
+# =============================================================================
+# MEDICATION RECONCILIATION WORKFLOW
+# =============================================================================
+medication_reconciliation:
+  # Admission Reconciliation
+  - id: MEDREC-001
+    name: Admission Medication Reconciliation
+    description: Establish accurate home medication list
+    timing: within_24_hours_of_admission
+    actors: [pharmacist, nurse, provider]
+    sources:
+      - patient_interview
+      - medication_bottles
+      - pharmacy_records
+      - pmp_database
+      - prior_discharge_summary
+    documentation:
+      - home_medication_list
+      - discrepancies_resolved
+      - intentional_changes
+
+  # Discharge Reconciliation
+  - id: MEDREC-002
+    name: Discharge Medication Reconciliation
+    description: Compare admission, inpatient, and discharge meds
+    timing: before_discharge
+    actors: [provider, pharmacist]
+    comparison:
+      - home_medications
+      - current_inpatient_medications
+      - intended_discharge_medications
+    decisions_per_medication:
+      - continue_unchanged
+      - continue_with_change
+      - discontinue
+      - new_medication
+    documentation:
+      - reason_for_each_change
+      - patient_education_provided
+
+  # High-Risk Medication Review
+  - id: MEDREC-003
+    name: High-Risk Medication Review
+    description: Extra scrutiny for high-risk medications
+    medications:
+      - anticoagulants
+      - insulin
+      - opioids
+      - diuretics
+      - digoxin
+    review_elements:
+      - indication_documented
+      - appropriate_dose
+      - monitoring_plan
+      - patient_education
+      - follow_up_arranged
+
+# =============================================================================
+# PATIENT EDUCATION WORKFLOW
+# =============================================================================
+patient_education:
+  # Teach-Back Education
+  - id: EDUC-001
+    name: Discharge Education
+    description: Educate patient on discharge instructions
+    actors: [nurse, provider, pharmacist]
+    method: teach_back
+    topics:
+      - diagnosis_explanation:
+          content: what_happened_and_why
+          verify: patient_can_explain
+      - medication_instructions:
+          content: each_medication_purpose_and_dosing
+          verify: patient_demonstrates_understanding
+      - activity_restrictions:
+          content: what_to_do_and_avoid
+          verify: patient_acknowledges
+      - diet_instructions:
+          content: dietary_modifications
+          verify: patient_can_describe
+      - follow_up_appointments:
+          content: when_and_with_whom
+          verify: patient_has_appointments
+      - warning_signs:
+          content: when_to_call_or_return
+          verify: patient_can_list_red_flags
+
+  # Written Instructions
+  - id: EDUC-002
+    name: Written Discharge Instructions
+    description: Provide written discharge materials
+    content:
+      - discharge_summary
+      - medication_list
+      - follow_up_appointments
+      - activity_instructions
+      - diet_instructions
+      - wound_care_if_applicable
+      - warning_signs
+      - contact_numbers
+    format:
+      - patient_friendly_language
+      - appropriate_literacy_level
+      - preferred_language
+    delivery:
+      - paper_copy_provided
+      - patient_portal_access
+      - pharmacy_copy_if_needed
+
+  # Caregiver Education
+  - id: EDUC-003
+    name: Caregiver Education
+    description: Train caregivers on patient care needs
+    actors: [nurse, therapists]
+    topics:
+      - medication_administration
+      - wound_care
+      - feeding_or_nutrition
+      - mobility_assistance
+      - equipment_use
+      - emergency_procedures
+
+# =============================================================================
+# DISCHARGE ORDERS WORKFLOW
+# =============================================================================
+discharge_orders:
+  # Discharge Order Entry
+  - id: DORD-001
+    name: Discharge Order
+    description: Physician order for discharge
+    actors: [provider]
+    order_elements:
+      - discharge_disposition
+      - discharge_condition
+      - diet_at_discharge
+      - activity_level
+      - follow_up_instructions
+      - medications_to_continue
+      - work_school_restrictions
+
+  # Prescription Orders
+  - id: DORD-002
+    name: Discharge Prescriptions
+    description: Order discharge medications
+    actors: [provider]
+    types:
+      - new_prescriptions: e_prescribed
+      - refills_needed: sent_to_pharmacy
+      - controlled_substances: per_dea_requirements
+      - specialty_medications: coordinated_with_specialty_pharmacy
+    verification:
+      - insurance_coverage_checked
+      - patient_affordability_assessed
+      - alternatives_offered_if_needed
+
+  # Equipment and Supplies
+  - id: DORD-003
+    name: DME and Supply Orders
+    description: Order durable medical equipment
+    actors: [provider, case_manager]
+    items:
+      - mobility_equipment: walkers_wheelchairs
+      - oxygen_equipment: concentrators_tanks
+      - wound_care_supplies
+      - ostomy_supplies
+      - feeding_equipment
+    coordination:
+      - verify_insurance_coverage
+      - arrange_delivery_to_home
+      - schedule_setup_and_training
+
+# =============================================================================
+# CARE TRANSITION WORKFLOW
+# =============================================================================
+care_transition:
+  # Transition of Care Summary
+  - id: TRANS-001
+    name: Transition of Care Document
+    description: Create comprehensive transition summary
+    actors: [provider]
+    content:
+      required_elements:
+        - admission_date_and_reason
+        - hospital_course_summary
+        - principal_and_secondary_diagnoses
+        - procedures_performed
+        - discharge_medications
+        - pending_tests_and_results
+        - follow_up_appointments
+        - patient_instructions
+        - advance_directives_status
+      optional_elements:
+        - functional_status
+        - diet_recommendations
+        - activity_restrictions
+    distribution:
+      - patient_and_family: paper_and_portal
+      - primary_care_provider: electronic_and_fax
+      - receiving_facility: with_transfer
+      - specialists: as_appropriate
+
+  # PCP Notification
+  - id: TRANS-002
+    name: PCP Notification
+    description: Notify primary care of discharge
+    actors: [system, care_coordinator]
+    methods:
+      - electronic: direct_secure_messaging
+      - fax: if_no_electronic
+      - phone: for_complex_patients
+    timing:
+      - notification: within_24_hours
+      - full_summary: within_48_hours
+    content:
+      - discharge_date
+      - diagnoses
+      - key_treatments
+      - pending_items
+      - follow_up_needs
+
+  # Facility Transfer
+  - id: TRANS-003
+    name: Facility Transfer Communication
+    description: Communicate with receiving facility
+    for: [snf, rehab, ltach, transfer]
+    actors: [nurse, case_manager]
+    handoff:
+      - phone_report: to_receiving_nurse
+      - written_transfer_form: standard_form
+      - medication_list: verified
+      - clinical_summary: complete
+      - orders: transmitted
+    confirmation:
+      - receiving_facility_acknowledgment
+      - patient_arrival_confirmation
+
+# =============================================================================
+# POST-DISCHARGE FOLLOW-UP
+# =============================================================================
+post_discharge_followup:
+  # Follow-up Call
+  - id: FOLLOW-001
+    name: Post-Discharge Phone Call
+    description: Call patient after discharge
+    actors: [nurse, care_coordinator]
+    timing: within_48_to_72_hours
+    assessment:
+      - arrived_safely
+      - understanding_of_instructions
+      - medication_access_and_adherence
+      - symptom_status
+      - appointment_scheduled
+      - concerns_or_questions
+    documentation:
+      - call_outcome
+      - issues_identified
+      - actions_taken
+
+  # Transition Care Management
+  - id: FOLLOW-002
+    name: Transition Care Management
+    description: Intensive follow-up for high-risk patients
+    criteria:
+      - high_risk_of_readmission
+      - complex_medical_needs
+      - social_determinant_barriers
+      - poor_health_literacy
+    services:
+      - home_visit: within_7_days
+      - frequent_phone_calls
+      - medication_management
+      - appointment_assistance
+      - social_service_coordination
+    duration: 30_days_post_discharge
+
+  # Follow-up Appointment Verification
+  - id: FOLLOW-003
+    name: Follow-up Appointment Tracking
+    description: Ensure follow-up appointments attended
+    actors: [care_coordinator]
+    tracking:
+      - appointment_scheduled: before_discharge
+      - reminder_sent: before_appointment
+      - attendance_verified: after_date
+    escalation:
+      - if_not_scheduled: outreach_to_patient
+      - if_missed: contact_patient_and_provider
+
+# =============================================================================
+# SPECIAL DISCHARGE SCENARIOS
+# =============================================================================
+special_scenarios:
+  - id: SCEN-001
+    name: Against Medical Advice (AMA)
+    description: Patient leaving before treatment complete
+    requirements:
+      - document_risks_explained
+      - offer_alternatives
+      - capacity_assessment
+      - patient_signature_or_refusal
+      - provide_discharge_instructions_anyway
+      - arrange_follow_up_if_accepted
+    documentation:
+      - risks_discussed
+      - patient_understanding
+      - capacity_determination
+      - patient_statement
+      - signature_or_refusal_to_sign
+
+  - id: SCEN-002
+    name: Complex Discharge
+    description: Patients requiring extensive coordination
+    criteria:
+      - multiple_chronic_conditions
+      - new_technology_dependent
+      - high_readmission_risk
+      - significant_functional_decline
+    enhanced_planning:
+      - family_meeting
+      - multidisciplinary_conference
+      - pre_discharge_home_visit
+      - extended_education_sessions
+      - caregiver_training_certification
+
+  - id: SCEN-003
+    name: Behavioral Health Discharge
+    description: Psychiatric or substance abuse discharge
+    special_considerations:
+      - safety_assessment
+      - outpatient_appointment_before_discharge
+      - medication_supply_consideration
+      - crisis_resources_provided
+      - confidentiality_protections
+    follow_up:
+      - 24_hour_phone_contact
+      - warm_handoff_to_outpatient
+
+  - id: SCEN-004
+    name: Pediatric Discharge
+    description: Discharge of minor patients
+    special_considerations:
+      - parent_guardian_education
+      - school_coordination
+      - medication_formulations
+      - pediatric_follow_up_arranged
+      - car_seat_if_applicable
+
+  - id: SCEN-005
+    name: Death and Bereavement
+    description: Handling patient death
+    workflow:
+      - pronouncement_of_death
+      - death_certificate
+      - family_notification_and_support
+      - autopsy_discussion_if_applicable
+      - organ_donation_referral_if_applicable
+      - belongings_release
+      - bereavement_resources
+
+# =============================================================================
+# READMISSION PREVENTION
+# =============================================================================
+readmission_prevention:
+  - id: PREVENT-001
+    name: Readmission Risk Assessment
+    description: Identify patients at high risk for readmission
+    timing: at_admission_and_daily
+    tools:
+      - lace_score
+      - hospital_score
+      - epic_risk_score
+    high_risk_criteria:
+      - prior_readmissions
+      - heart_failure
+      - copd
+      - diabetes
+      - complex_medications
+      - poor_social_support
+
+  - id: PREVENT-002
+    name: High-Risk Patient Interventions
+    description: Additional interventions for high-risk patients
+    interventions:
+      - pharmacy_consultation
+      - social_work_assessment
+      - home_health_referral
+      - transition_care_management
+      - primary_care_follow_up_within_7_days
+      - teach_back_education
+      - medication_reconciliation_by_pharmacist
+
+  - id: PREVENT-003
+    name: Readmission Review
+    description: Review all readmissions for improvement
+    process:
+      - identify_readmissions_within_30_days
+      - root_cause_analysis
+      - categorize_preventability
+      - identify_improvement_opportunities
+      - implement_changes
+
+# =============================================================================
+# INTEGRATIONS
+# =============================================================================
+integrations:
+  - id: INT-001
+    name: Post-Acute Care Referral
+    description: Send referrals to post-acute facilities
+    standards: fhir_referral
+    content: clinical_summary_and_needs
+
+  - id: INT-002
+    name: Prescription Transmission
+    description: Send discharge prescriptions
+    standards: ncpdp_script
+    destination: patient_pharmacy
+
+  - id: INT-003
+    name: DME Ordering
+    description: Order durable medical equipment
+    integration: dme_vendor_portal
+
+  - id: INT-004
+    name: Home Health Referral
+    description: Refer to home health agencies
+    standards: fhir_or_hl7
+    content: orders_and_clinical_summary
+
+  - id: INT-005
+    name: PCP Notification
+    description: Notify primary care provider
+    standards: direct_secure_messaging
+    timing: within_24_hours
+
+# =============================================================================
+# METRICS
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: Length of Stay
+    description: Admission to discharge duration
+    benchmark: by_drg
+
+  - id: MET-002
+    name: 30-Day Readmission Rate
+    description: Unplanned readmissions within 30 days
+    target: "< national benchmark"
+
+  - id: MET-003
+    name: Discharge Before Noon Rate
+    description: Patients discharged before noon
+    target: "> 50%"
+
+  - id: MET-004
+    name: Discharge Summary Timeliness
+    description: Summary complete within 48 hours
+    target: "100%"
+
+  - id: MET-005
+    name: Follow-up Appointment Rate
+    description: PCP follow-up within 7 days
+    target: "> 80%"
+
+  - id: MET-006
+    name: Post-Discharge Call Completion
+    description: Patients reached within 72 hours
+    target: "> 90%"
+
+  - id: MET-007
+    name: Medication Reconciliation Accuracy
+    description: Accurate medication list at discharge
+    target: "> 95%"

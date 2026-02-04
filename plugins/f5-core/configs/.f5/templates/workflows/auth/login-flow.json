@@ -1,0 +1,357 @@
+{
+  "id": "f5-auth-login-flow",
+  "name": "Login Authentication Workflow",
+  "description": "Secure login flow with optional MFA, rate limiting, and session management",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "auth",
+    "category": "authentication",
+    "complexity": "complex",
+    "estimatedDuration": "20-30 minutes",
+    "requiredSkills": ["f5-backend", "f5-security", "f5-db"],
+    "mcpServers": ["github", "sequential-thinking", "serena"],
+    "qualityGates": ["D3", "D4", "G2", "G2.5", "G3"],
+    "argumentHint": "Implement secure login with MFA support for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "Start Login"
+      }
+    },
+    {
+      "id": "prompt-rate-limit",
+      "type": "prompt",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Check Rate Limit",
+        "description": "Verify login attempt is within rate limits",
+        "prompt": "Check rate limiting for login attempt:\n1. Get client IP address\n2. Check failed attempts in last 15 minutes\n3. If > 5 attempts, enforce lockout\n4. Return rate limit status and remaining attempts",
+        "outputPorts": ["allowed", "blocked"]
+      }
+    },
+    {
+      "id": "ifelse-rate-limit",
+      "type": "ifElse",
+      "position": { "x": 300, "y": 280 },
+      "data": {
+        "label": "Rate Limit OK?",
+        "description": "Check if user is within allowed login attempts",
+        "condition": "Verify failed attempts < 5 in sliding window"
+      }
+    },
+    {
+      "id": "subagent-validate-credentials",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 410 },
+      "data": {
+        "label": "Validate Credentials",
+        "description": "Verify username/email and password against stored credentials",
+        "prompt": "Validate user credentials:\n1. Find user by email/username\n2. Verify password hash using bcrypt.compare\n3. Check account status (active, locked, pending)\n4. Record login attempt (success/failure)\n5. Return validation result with user data if valid",
+        "agentType": "security-engineer",
+        "outputPorts": ["valid", "invalid", "locked"]
+      }
+    },
+    {
+      "id": "prompt-rate-limit-error",
+      "type": "prompt",
+      "position": { "x": 500, "y": 410 },
+      "data": {
+        "label": "Return Rate Limit Error",
+        "description": "Return rate limit exceeded response",
+        "prompt": "Return rate limit error response:\n- HTTP 429 Too Many Requests\n- Include Retry-After header\n- Provide lockout duration\n- Log security event",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "askuser-mfa",
+      "type": "askUserQuestion",
+      "position": { "x": 150, "y": 540 },
+      "data": {
+        "label": "MFA Required?",
+        "description": "Check if user has MFA enabled and prompt for code",
+        "question": "User has MFA enabled. How should we verify?",
+        "selectionMode": "predefined",
+        "options": [
+          {
+            "id": "totp",
+            "label": "TOTP (Authenticator App)",
+            "description": "Use time-based one-time password from authenticator app"
+          },
+          {
+            "id": "sms",
+            "label": "SMS Code",
+            "description": "Send verification code via SMS"
+          },
+          {
+            "id": "email",
+            "label": "Email Code",
+            "description": "Send verification code via email"
+          }
+        ],
+        "multiSelect": false
+      }
+    },
+    {
+      "id": "switch-mfa-type",
+      "type": "switch",
+      "position": { "x": 150, "y": 700 },
+      "data": {
+        "label": "MFA Type Selection",
+        "description": "Route to appropriate MFA verification method",
+        "evaluationTarget": "Selected MFA verification method",
+        "cases": [
+          { "id": "case-totp", "label": "TOTP", "condition": "User selected TOTP verification" },
+          { "id": "case-sms", "label": "SMS", "condition": "User selected SMS verification" },
+          { "id": "case-email", "label": "Email", "condition": "User selected email verification" }
+        ]
+      }
+    },
+    {
+      "id": "subagent-verify-totp",
+      "type": "subAgent",
+      "position": { "x": 0, "y": 860 },
+      "data": {
+        "label": "Verify TOTP",
+        "description": "Verify TOTP code from authenticator app",
+        "prompt": "Verify TOTP code:\n1. Get user's TOTP secret\n2. Generate expected codes (current + 1 window)\n3. Compare submitted code\n4. Invalidate used code\n5. Return verification result",
+        "agentType": "security-engineer",
+        "outputPorts": ["valid", "invalid"]
+      }
+    },
+    {
+      "id": "subagent-send-sms",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 860 },
+      "data": {
+        "label": "Send SMS Code",
+        "description": "Generate and send SMS verification code",
+        "prompt": "Send SMS verification:\n1. Generate 6-digit code\n2. Store code with 5-minute expiry\n3. Send via SMS gateway\n4. Return send status",
+        "agentType": "backend-architect",
+        "outputPorts": ["sent", "failed"]
+      }
+    },
+    {
+      "id": "subagent-send-email",
+      "type": "subAgent",
+      "position": { "x": 300, "y": 860 },
+      "data": {
+        "label": "Send Email Code",
+        "description": "Generate and send email verification code",
+        "prompt": "Send email verification:\n1. Generate 6-digit code\n2. Store code with 10-minute expiry\n3. Send via email service\n4. Return send status",
+        "agentType": "backend-architect",
+        "outputPorts": ["sent", "failed"]
+      }
+    },
+    {
+      "id": "subagent-create-session",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 1020 },
+      "data": {
+        "label": "Create Session",
+        "description": "Create authenticated session with JWT tokens",
+        "prompt": "Create user session:\n1. Generate access token (15 min expiry)\n2. Generate refresh token (7 day expiry)\n3. Store session in Redis\n4. Set secure HTTP-only cookies\n5. Return token pair",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "error"]
+      }
+    },
+    {
+      "id": "qualitygate-security",
+      "type": "qualityGate",
+      "position": { "x": 150, "y": 1150 },
+      "data": {
+        "label": "G2.5: Security Review",
+        "description": "Security review of authentication implementation",
+        "gateId": "G2.5",
+        "gateName": "Security Review Gate",
+        "checklistItems": [
+          "Password hashing uses bcrypt with adequate rounds",
+          "Tokens are cryptographically secure",
+          "Rate limiting prevents brute force",
+          "Session management follows OWASP guidelines",
+          "MFA implementation is secure"
+        ],
+        "outputPorts": ["passed", "failed"]
+      }
+    },
+    {
+      "id": "prompt-success",
+      "type": "prompt",
+      "position": { "x": 150, "y": 1280 },
+      "data": {
+        "label": "Return Login Success",
+        "description": "Return successful login response with tokens",
+        "prompt": "Create login success response:\n- Return HTTP 200 OK\n- Include access token and expiry\n- Include refresh token (HTTP-only cookie)\n- Include user profile (exclude sensitive data)\n- Log successful authentication event",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "prompt-invalid-creds",
+      "type": "prompt",
+      "position": { "x": 350, "y": 540 },
+      "data": {
+        "label": "Return Invalid Credentials",
+        "description": "Return generic authentication error",
+        "prompt": "Return authentication error:\n- HTTP 401 Unauthorized\n- Generic message (don't reveal if user exists)\n- Log failed attempt\n- Increment rate limit counter",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 150, "y": 1410 },
+      "data": {
+        "label": "Login Successful"
+      }
+    },
+    {
+      "id": "end-rate-limit",
+      "type": "end",
+      "position": { "x": 500, "y": 540 },
+      "data": {
+        "label": "Rate Limited"
+      }
+    },
+    {
+      "id": "end-auth-failed",
+      "type": "end",
+      "position": { "x": 350, "y": 670 },
+      "data": {
+        "label": "Authentication Failed"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "prompt-rate-limit",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "prompt-rate-limit",
+      "target": "ifelse-rate-limit",
+      "sourceHandle": "output-allowed",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "ifelse-rate-limit",
+      "target": "subagent-validate-credentials",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "Within Limit"
+    },
+    {
+      "id": "conn-4",
+      "source": "ifelse-rate-limit",
+      "target": "prompt-rate-limit-error",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "Exceeded"
+    },
+    {
+      "id": "conn-5",
+      "source": "prompt-rate-limit-error",
+      "target": "end-rate-limit",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "subagent-validate-credentials",
+      "target": "askuser-mfa",
+      "sourceHandle": "output-valid",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-7",
+      "source": "subagent-validate-credentials",
+      "target": "prompt-invalid-creds",
+      "sourceHandle": "output-invalid",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "prompt-invalid-creds",
+      "target": "end-auth-failed",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-9",
+      "source": "askuser-mfa",
+      "target": "switch-mfa-type",
+      "sourceHandle": "output-totp",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-10",
+      "source": "switch-mfa-type",
+      "target": "subagent-verify-totp",
+      "sourceHandle": "case-totp",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-11",
+      "source": "switch-mfa-type",
+      "target": "subagent-send-sms",
+      "sourceHandle": "case-sms",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-12",
+      "source": "switch-mfa-type",
+      "target": "subagent-send-email",
+      "sourceHandle": "case-email",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-13",
+      "source": "subagent-verify-totp",
+      "target": "subagent-create-session",
+      "sourceHandle": "output-valid",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-14",
+      "source": "subagent-send-sms",
+      "target": "subagent-create-session",
+      "sourceHandle": "output-sent",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-15",
+      "source": "subagent-send-email",
+      "target": "subagent-create-session",
+      "sourceHandle": "output-sent",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-16",
+      "source": "subagent-create-session",
+      "target": "qualitygate-security",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-17",
+      "source": "qualitygate-security",
+      "target": "prompt-success",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-18",
+      "source": "prompt-success",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

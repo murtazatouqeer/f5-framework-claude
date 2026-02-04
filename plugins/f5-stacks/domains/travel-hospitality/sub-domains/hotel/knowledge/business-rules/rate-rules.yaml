@@ -1,0 +1,442 @@
+name: rate-rules
+display_name: Rate Management Business Rules
+display_name_vi: Quy tắc quản lý giá
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Business rules governing rate plan management, pricing strategies,
+  rate parity, and revenue optimization.
+
+description_vi: |
+  Quy tắc nghiệp vụ quản lý bảng giá, chiến lược định giá,
+  đồng giá và tối ưu hóa doanh thu.
+
+rule_categories:
+  - rate_setup
+  - rate_calculation
+  - rate_parity
+  - yield_management
+  - discount
+
+rules:
+  # ===== RATE SETUP RULES =====
+  - id: BR-RT-S001
+    name: Rate Plan Validity
+    name_vi: Hiệu lực bảng giá
+    category: rate_setup
+    priority: critical
+    description: |
+      Rate plans must have valid configuration before activation.
+    condition: |
+      rate_plan.base_rate > 0 AND
+      rate_plan.effective_date IS NOT NULL AND
+      rate_plan.applicable_room_types.count > 0 AND
+      rate_plan.rate_code IS UNIQUE within property
+    action: |
+      IF invalid_configuration:
+        BLOCK activation
+        LIST missing_requirements
+    applies_to: [rate_plan]
+    enforcement: automatic
+
+  - id: BR-RT-S002
+    name: Rate Hierarchy
+    name_vi: Cấp bậc giá
+    category: rate_setup
+    priority: high
+    description: |
+      Rates must follow logical hierarchy: Rack > BAR > Corporate > Promotional.
+    condition: |
+      rack_rate >= bar_rate >= corporate_rate >= promotional_rate
+    action: |
+      IF hierarchy_violated:
+        WARN revenue_manager
+        REQUIRE approval for exception
+    applies_to: [rate_plan]
+    enforcement: warning
+
+  - id: BR-RT-S003
+    name: Floor Rate Protection
+    name_vi: Bảo vệ giá sàn
+    category: rate_setup
+    priority: critical
+    description: |
+      No rate can be set below the defined floor rate.
+    condition: |
+      rate_amount >= property.floor_rate OR
+      rate_amount >= room_type.min_rate
+    action: |
+      IF below_floor:
+        REJECT rate
+        DISPLAY "Rate below minimum allowed: {floor_rate}"
+    applies_to: [rate_plan, inventory]
+    enforcement: automatic
+
+  - id: BR-RT-S004
+    name: Seasonal Rate Boundaries
+    name_vi: Giới hạn giá theo mùa
+    category: rate_setup
+    priority: medium
+    description: |
+      Seasonal rates must fall within defined boundaries.
+    condition: |
+      FOR season IN [peak, shoulder, low]:
+        rate WITHIN season.rate_range
+    action: |
+      IF outside_boundary:
+        REQUIRE manager_approval
+        LOG rate_exception
+    applies_to: [rate_plan]
+    enforcement: approval_required
+
+  # ===== RATE CALCULATION RULES =====
+  - id: BR-RT-C001
+    name: Extra Person Charges
+    name_vi: Phí khách thêm
+    category: rate_calculation
+    priority: high
+    description: |
+      Calculate extra person charges beyond base occupancy.
+    condition: |
+      guests > room_type.base_occupancy
+    action: |
+      extra_adults = adults - base_occupancy
+      extra_children = children (if exceeds free_children)
+
+      CALCULATE:
+        extra_charge = (extra_adults * rate_plan.extra_adult_rate) +
+                      (extra_children * rate_plan.extra_child_rate)
+      ADD to daily_rate
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RT-C002
+    name: Length of Stay Pricing
+    name_vi: Giá theo thời gian lưu trú
+    category: rate_calculation
+    priority: medium
+    description: |
+      Apply LOS-based rate adjustments for extended stays.
+    condition: |
+      reservation.nights >= los_discount.min_nights
+    action: |
+      APPLY discount_percentage OR
+      USE los_rate_tier
+
+      EXAMPLE:
+        7+ nights: 10% discount
+        14+ nights: 15% discount
+        30+ nights: negotiate_special_rate
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RT-C003
+    name: Package Rate Calculation
+    name_vi: Tính giá gói
+    category: rate_calculation
+    priority: high
+    description: |
+      Calculate package rates including all components.
+    condition: |
+      rate_plan.rate_type = 'package'
+    action: |
+      CALCULATE:
+        package_rate = room_component +
+                      meal_component +
+                      service_components -
+                      package_discount
+
+      DISPLAY component_breakdown to guest
+      POST each_component separately to folio
+    applies_to: [rate_plan, reservation]
+    enforcement: automatic
+
+  - id: BR-RT-C004
+    name: Tax Calculation
+    name_vi: Tính thuế
+    category: rate_calculation
+    priority: critical
+    description: |
+      Calculate applicable taxes based on jurisdiction.
+    condition: |
+      ALWAYS apply (legal requirement)
+    action: |
+      CALCULATE:
+        room_tax = rate * room_tax_rate
+        occupancy_tax = rate * occupancy_rate (if applicable)
+        tourism_tax = fixed_amount_per_night (if applicable)
+        service_charge = (rate + taxes) * service_rate
+
+      total_taxes = SUM(all_applicable_taxes)
+
+      IF tax_inclusive_rate:
+        EXTRACT taxes from displayed_rate
+      ELSE:
+        ADD taxes to displayed_rate
+    applies_to: [reservation, charge]
+    enforcement: automatic
+
+  - id: BR-RT-C005
+    name: Currency Conversion
+    name_vi: Quy đổi tiền tệ
+    category: rate_calculation
+    priority: high
+    description: |
+      Convert rates to booking currency using current rates.
+    condition: |
+      reservation.currency != property.base_currency
+    action: |
+      FETCH current_exchange_rate
+      CONVERT rate to booking_currency
+      LOCK exchange_rate at booking_time
+      STORE both original and converted amounts
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  # ===== RATE PARITY RULES =====
+  - id: BR-RT-P001
+    name: Best Rate Guarantee
+    name_vi: Đảm bảo giá tốt nhất
+    category: rate_parity
+    priority: critical
+    description: |
+      Direct booking rate must not exceed OTA rates (if BRG active).
+    condition: |
+      property.best_rate_guarantee = TRUE
+    action: |
+      MONITOR rates across channels
+      IF direct_rate > ota_rate:
+        ALERT revenue_manager
+        AUTO_ADJUST direct_rate (if configured)
+
+      IF guest_finds_lower_rate:
+        MATCH rate AND
+        APPLY additional_discount (typically 10%)
+    applies_to: [rate_plan, channel]
+    enforcement: monitoring
+
+  - id: BR-RT-P002
+    name: Rate Parity Compliance
+    name_vi: Tuân thủ đồng giá
+    category: rate_parity
+    priority: high
+    description: |
+      Maintain rate parity across distribution channels per agreements.
+    condition: |
+      IF channel.rate_parity_required = TRUE:
+        channel_rate = direct_rate (for same room/rate)
+    action: |
+      PUSH same rate to parity_channels
+      ALLOW variance for member_rates (private)
+      MONITOR parity violations
+      REPORT breaches to revenue_manager
+    applies_to: [rate_plan, channel]
+    enforcement: automatic
+
+  - id: BR-RT-P003
+    name: Wholesale Rate Protection
+    name_vi: Bảo vệ giá bán buôn
+    category: rate_parity
+    priority: high
+    description: |
+      Wholesale (net) rates must not appear on public channels.
+    condition: |
+      rate_plan.rate_type = 'wholesale'
+    action: |
+      RESTRICT to wholesale_channels_only
+      PROHIBIT display on retail channels
+      MONITOR for rate leakage
+      AUDIT wholesale_partners
+    applies_to: [rate_plan, channel]
+    enforcement: automatic
+
+  # ===== YIELD MANAGEMENT RULES =====
+  - id: BR-RT-Y001
+    name: Demand-Based Pricing
+    name_vi: Định giá theo nhu cầu
+    category: yield_management
+    priority: high
+    description: |
+      Adjust rates based on occupancy and demand forecast.
+    condition: |
+      EVALUATE: occupancy_level, demand_forecast, day_of_week
+    action: |
+      IF occupancy < 50%:
+        OPEN all_rate_levels
+        CONSIDER promotions
+      IF occupancy 50-75%:
+        CLOSE deep_discounts
+        MAINTAIN BAR
+      IF occupancy > 75%:
+        CLOSE discounts
+        CONSIDER rate_increase
+      IF occupancy > 90%:
+        RACK_RATE_ONLY
+        CLOSE lower_rate_plans
+    applies_to: [inventory, rate_plan]
+    enforcement: recommendation
+
+  - id: BR-RT-Y002
+    name: Hurdle Rate Management
+    name_vi: Quản lý giá ngưỡng
+    category: yield_management
+    priority: high
+    description: |
+      Set and enforce minimum rate thresholds based on demand.
+    condition: |
+      booking_rate >= inventory.hurdle_rate
+    action: |
+      IF rate < hurdle:
+        REJECT booking at this rate
+        OFFER next_available_rate >= hurdle
+
+      DYNAMICALLY adjust hurdle based on:
+        - Current occupancy
+        - Pickup pace
+        - Competitor pricing
+        - Historical demand
+    applies_to: [reservation, inventory]
+    enforcement: automatic
+
+  - id: BR-RT-Y003
+    name: Restriction Management
+    name_vi: Quản lý hạn chế
+    category: yield_management
+    priority: medium
+    description: |
+      Automatically apply restrictions based on demand.
+    condition: |
+      demand_level = 'high' OR 'peak'
+    action: |
+      APPLY restrictions:
+        - Increase MIN_LOS
+        - Enable CTA/CTD
+        - Close_low_rate_plans
+        - Require_guarantee
+
+      RELAX restrictions when demand drops
+    applies_to: [inventory]
+    enforcement: automatic
+
+  - id: BR-RT-Y004
+    name: Last Room Availability
+    name_vi: Phòng cuối cùng
+    category: yield_management
+    priority: high
+    description: |
+      Ensure premium pricing for last available rooms.
+    condition: |
+      available_rooms <= last_room_threshold (typically 2)
+    action: |
+      APPLY last_room_premium (typically rack_rate)
+      CLOSE all discount_rates
+      REQUIRE full_prepayment
+      ALERT revenue_manager
+    applies_to: [inventory, rate_plan]
+    enforcement: automatic
+
+  # ===== DISCOUNT RULES =====
+  - id: BR-RT-D001
+    name: Promotional Discount Limits
+    name_vi: Giới hạn giảm giá khuyến mãi
+    category: discount
+    priority: high
+    description: |
+      Cap maximum discount from rack rate.
+    condition: |
+      discount_percentage <= max_discount_allowed
+    action: |
+      IF discount > max_allowed:
+        REQUIRE gm_approval
+        LOG exception
+
+      max_discounts:
+        standard: 30%
+        flash_sale: 40%
+        employee: 50%
+        complimentary: 100% (special_approval)
+    applies_to: [rate_plan]
+    enforcement: approval_required
+
+  - id: BR-RT-D002
+    name: Cumulative Discount Rules
+    name_vi: Quy tắc giảm giá cộng dồn
+    category: discount
+    priority: medium
+    description: |
+      Control stacking of multiple discounts.
+    condition: |
+      multiple_discounts_applied
+    action: |
+      DEFAULT: discounts_not_stackable
+
+      IF stackable_allowed:
+        max_cumulative = 35%
+        APPLY in order: loyalty > corporate > promotional
+
+      PREVENT double_dipping
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RT-D003
+    name: Loyalty Discount Application
+    name_vi: Áp dụng giảm giá thành viên
+    category: discount
+    priority: high
+    description: |
+      Apply member discounts based on loyalty tier.
+    condition: |
+      guest.loyalty_tier IS NOT NULL
+    action: |
+      APPLY tier_discount:
+        member: 5%
+        silver: 10%
+        gold: 15%
+        platinum: 20%
+        diamond: 25%
+
+      COMBINE with member_rate (if more favorable)
+      CHOOSE better_of: discount OR member_rate
+    applies_to: [reservation, guest_profile]
+    enforcement: automatic
+
+  - id: BR-RT-D004
+    name: Advance Purchase Discount
+    name_vi: Giảm giá đặt sớm
+    category: discount
+    priority: medium
+    description: |
+      Apply discounts for early bookings with restrictions.
+    condition: |
+      days_until_arrival >= advance_purchase.min_days
+    action: |
+      APPLY discount based on advance_days:
+        21+ days: 10% discount
+        30+ days: 15% discount
+        60+ days: 20% discount
+
+      REQUIRE: non_refundable OR limited_modification
+      COLLECT: full_prepayment
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+rate_audit:
+  requirements:
+    - log_all_rate_changes
+    - track_who_changed_what
+    - maintain_rate_history
+    - alert_significant_changes
+
+reporting:
+  daily:
+    - rate_variance_report
+    - parity_compliance_report
+    - yield_performance
+  weekly:
+    - competitor_rate_analysis
+    - discount_utilization
+  monthly:
+    - rate_strategy_effectiveness
+    - revenue_optimization_review

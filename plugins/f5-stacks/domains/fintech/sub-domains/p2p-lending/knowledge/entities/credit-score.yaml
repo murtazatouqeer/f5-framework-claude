@@ -1,0 +1,597 @@
+name: Credit Score
+display_name: Credit Score / Điểm tín dụng
+description: |
+  Credit score entity tracking borrower credit assessments including
+  scoring components, grade assignment, and historical changes.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: CreditScore
+  name_vi: Điểm tín dụng
+  table_name: credit_scores
+
+  primary_key: id
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique credit score identifier
+
+    - name: score_reference
+      type: string
+      format: "SCR-YYYYMMDD-XXXXXX"
+      unique: true
+      indexed: true
+      description: Score reference number
+      example: "SCR-20250115-000001"
+
+    # References
+    - name: borrower_id
+      type: uuid
+      required: true
+      references: borrowers.id
+      indexed: true
+      description: The borrower being scored
+
+    - name: loan_application_id
+      type: uuid
+      references: loan_applications.id
+      description: Associated loan application if applicable
+
+    # Score Results
+    - name: total_score
+      type: integer
+      required: true
+      min: 300
+      max: 850
+      indexed: true
+      description: Total credit score
+
+    - name: grade
+      type: enum
+      values: [A, B, C, D, E, F]
+      required: true
+      indexed: true
+      description: Risk grade based on score
+
+    - name: sub_grade
+      type: string
+      pattern: "^[A-F][1-5]$"
+      required: true
+      description: Sub-grade for finer classification
+      example: "A1"
+
+    - name: risk_level
+      type: enum
+      values: [very_low, low, medium, high, very_high]
+      description: Risk level classification
+
+    # Score Components (based on model)
+    - name: payment_history_score
+      type: integer
+      min: 0
+      max: 100
+      description: Payment history component (35% weight)
+
+    - name: credit_utilization_score
+      type: integer
+      min: 0
+      max: 100
+      description: Credit utilization component (30% weight)
+
+    - name: credit_age_score
+      type: integer
+      min: 0
+      max: 100
+      description: Length of credit history (15% weight)
+
+    - name: credit_mix_score
+      type: integer
+      min: 0
+      max: 100
+      description: Types of credit used (10% weight)
+
+    - name: new_credit_score
+      type: integer
+      min: 0
+      max: 100
+      description: Recent credit inquiries (10% weight)
+
+    # Additional Scoring Factors
+    - name: income_stability_score
+      type: integer
+      min: 0
+      max: 100
+      description: Income stability assessment
+
+    - name: employment_score
+      type: integer
+      min: 0
+      max: 100
+      description: Employment stability assessment
+
+    - name: debt_to_income_score
+      type: integer
+      min: 0
+      max: 100
+      description: Debt-to-income ratio assessment
+
+    - name: bank_behavior_score
+      type: integer
+      min: 0
+      max: 100
+      description: Banking behavior assessment
+
+    - name: fraud_risk_score
+      type: integer
+      min: 0
+      max: 100
+      description: Fraud risk assessment (0=low risk)
+
+    # Raw Data Inputs
+    - name: on_time_payments
+      type: integer
+      default: 0
+      description: Number of on-time payments
+
+    - name: late_payments
+      type: integer
+      default: 0
+      description: Number of late payments
+
+    - name: defaults
+      type: integer
+      default: 0
+      description: Number of defaults
+
+    - name: total_credit_lines
+      type: integer
+      default: 0
+      description: Number of credit lines
+
+    - name: oldest_credit_months
+      type: integer
+      default: 0
+      description: Age of oldest credit line in months
+
+    - name: credit_utilization_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Current credit utilization %
+
+    - name: recent_inquiries
+      type: integer
+      default: 0
+      description: Credit inquiries in last 6 months
+
+    - name: debt_to_income_ratio
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Current DTI ratio
+
+    # External Data
+    - name: external_bureau_score
+      type: integer
+      description: Score from external bureau (CIC)
+
+    - name: external_bureau_date
+      type: date
+      description: Date of external bureau pull
+
+    - name: external_bureau_source
+      type: string
+      max_length: 50
+      description: External bureau name
+
+    - name: has_external_defaults
+      type: boolean
+      default: false
+      description: Defaults in external records
+
+    - name: has_external_collections
+      type: boolean
+      default: false
+      description: Collections in external records
+
+    # Risk Pricing
+    - name: base_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Base interest rate
+
+    - name: risk_premium
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Additional risk premium
+
+    - name: recommended_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "base_rate + risk_premium"
+      description: Recommended interest rate
+
+    - name: recommended_max_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Recommended maximum loan amount
+
+    # Scoring Metadata
+    - name: model_version
+      type: string
+      max_length: 20
+      required: true
+      description: Scoring model version used
+      example: "v2.3.1"
+
+    - name: scoring_type
+      type: enum
+      values: [initial, periodic, application, manual, refresh]
+      required: true
+      description: Type of scoring event
+
+    - name: data_completeness
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of data available for scoring
+
+    - name: confidence_level
+      type: enum
+      values: [low, medium, high]
+      description: Confidence in score accuracy
+
+    # Score Validity
+    - name: valid_from
+      type: timestamp
+      default: now()
+      description: When score becomes valid
+
+    - name: valid_until
+      type: timestamp
+      description: When score expires
+
+    - name: is_current
+      type: boolean
+      default: true
+      indexed: true
+      description: Whether this is the current score
+
+    # Approval Recommendation
+    - name: recommendation
+      type: enum
+      values: [approve, manual_review, decline]
+      description: System recommendation
+
+    - name: recommendation_reason
+      type: string
+      max_length: 500
+      description: Reason for recommendation
+
+    - name: risk_flags
+      type: jsonb
+      description: Risk indicators flagged
+      example: '["high_dti", "recent_defaults"]'
+
+    # Score Change Tracking
+    - name: previous_score
+      type: integer
+      description: Previous credit score
+
+    - name: score_change
+      type: integer
+      computed: "total_score - COALESCE(previous_score, total_score)"
+      description: Change from previous score
+
+    - name: previous_grade
+      type: enum
+      values: [A, B, C, D, E, F]
+      description: Previous grade
+
+    - name: grade_changed
+      type: boolean
+      computed: "grade != previous_grade"
+      description: Whether grade changed
+
+    # Processing Details
+    - name: scored_by
+      type: enum
+      values: [system, manual, hybrid]
+      default: system
+      description: How score was generated
+
+    - name: reviewer_id
+      type: uuid
+      references: users.id
+      description: Manual reviewer if applicable
+
+    - name: review_notes
+      type: text
+      description: Notes from manual review
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      indexed: true
+      description: When score was generated
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: borrower
+      type: belongs_to
+      entity: Borrower
+      foreign_key: borrower_id
+
+    - name: loan_application
+      type: belongs_to
+      entity: LoanApplication
+      foreign_key: loan_application_id
+
+    - name: reviewer
+      type: belongs_to
+      entity: User
+      foreign_key: reviewer_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_credit_score_borrower
+      columns: [borrower_id, created_at desc]
+
+    - name: idx_credit_score_current
+      columns: [borrower_id]
+      where: "is_current = true"
+
+    - name: idx_credit_score_grade
+      columns: [grade]
+
+    - name: idx_credit_score_application
+      columns: [loan_application_id]
+
+# =============================================================================
+# SCORING MODEL
+# =============================================================================
+scoring_model:
+  name: "P2P Credit Scoring Model"
+  version: "2.3"
+
+  components:
+    payment_history:
+      weight: 0.35
+      factors:
+        - on_time_payment_rate
+        - late_payment_count
+        - default_history
+        - collection_history
+      scoring_rules:
+        - "100% on-time → 100 points"
+        - "Each late payment → -5 points"
+        - "Each default → -20 points"
+
+    credit_utilization:
+      weight: 0.30
+      factors:
+        - current_utilization_ratio
+        - average_utilization
+        - max_utilization
+      scoring_rules:
+        - "<10% → 100 points"
+        - "10-30% → 90 points"
+        - "30-50% → 70 points"
+        - ">50% → 50 points"
+        - ">80% → 30 points"
+
+    credit_age:
+      weight: 0.15
+      factors:
+        - oldest_account_age
+        - average_account_age
+        - recent_accounts
+      scoring_rules:
+        - ">5 years → 100 points"
+        - "3-5 years → 85 points"
+        - "1-3 years → 70 points"
+        - "<1 year → 50 points"
+
+    credit_mix:
+      weight: 0.10
+      factors:
+        - account_types_count
+        - installment_vs_revolving
+      scoring_rules:
+        - "3+ types → 100 points"
+        - "2 types → 75 points"
+        - "1 type → 50 points"
+
+    new_credit:
+      weight: 0.10
+      factors:
+        - recent_inquiries
+        - new_accounts_count
+      scoring_rules:
+        - "0 inquiries → 100 points"
+        - "1-2 inquiries → 90 points"
+        - "3-5 inquiries → 70 points"
+        - ">5 inquiries → 50 points"
+
+  score_calculation:
+    formula: |
+      total_score = 300 + (
+        payment_history_score * 0.35 +
+        credit_utilization_score * 0.30 +
+        credit_age_score * 0.15 +
+        credit_mix_score * 0.10 +
+        new_credit_score * 0.10
+      ) * 5.5
+
+    range:
+      minimum: 300
+      maximum: 850
+
+# =============================================================================
+# GRADE MAPPING
+# =============================================================================
+grade_mapping:
+  A:
+    score_range: [760, 850]
+    sub_grades:
+      A1: [820, 850]
+      A2: [800, 819]
+      A3: [780, 799]
+      A4: [770, 779]
+      A5: [760, 769]
+    risk_level: very_low
+    base_rate: 8.0
+    risk_premium: 0.0
+    description: "Excellent credit - lowest risk"
+
+  B:
+    score_range: [700, 759]
+    sub_grades:
+      B1: [740, 759]
+      B2: [730, 739]
+      B3: [720, 729]
+      B4: [710, 719]
+      B5: [700, 709]
+    risk_level: low
+    base_rate: 8.0
+    risk_premium: 2.0
+    description: "Good credit - low risk"
+
+  C:
+    score_range: [640, 699]
+    sub_grades:
+      C1: [680, 699]
+      C2: [670, 679]
+      C3: [660, 669]
+      C4: [650, 659]
+      C5: [640, 649]
+    risk_level: medium
+    base_rate: 8.0
+    risk_premium: 5.0
+    description: "Fair credit - moderate risk"
+
+  D:
+    score_range: [580, 639]
+    sub_grades:
+      D1: [620, 639]
+      D2: [610, 619]
+      D3: [600, 609]
+      D4: [590, 599]
+      D5: [580, 589]
+    risk_level: high
+    base_rate: 8.0
+    risk_premium: 8.0
+    description: "Below average credit - higher risk"
+
+  E:
+    score_range: [500, 579]
+    sub_grades:
+      E1: [560, 579]
+      E2: [545, 559]
+      E3: [530, 544]
+      E4: [515, 529]
+      E5: [500, 514]
+    risk_level: high
+    base_rate: 8.0
+    risk_premium: 12.0
+    description: "Poor credit - high risk"
+
+  F:
+    score_range: [300, 499]
+    sub_grades:
+      F1: [450, 499]
+      F2: [420, 449]
+      F3: [390, 419]
+      F4: [360, 389]
+      F5: [300, 359]
+    risk_level: very_high
+    base_rate: 8.0
+    risk_premium: 18.0
+    description: "Very poor credit - very high risk"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  scoring:
+    - rule: "Score must be recalculated for each loan application"
+      enforcement: system
+
+    - rule: "Minimum data completeness 70% for scoring"
+      enforcement: system
+
+    - rule: "External bureau check required for amounts > 50M VND"
+      enforcement: system
+
+  validity:
+    - rule: "Score valid for 30 days for loan applications"
+      enforcement: system
+
+    - rule: "Periodic rescoring every 6 months for active borrowers"
+      enforcement: system
+
+  manual_review:
+    - rule: "Scores < 500 require manual review"
+      enforcement: system
+
+    - rule: "Any fraud flags require manual review"
+      enforcement: system
+
+    - rule: "First-time borrowers with thin file require review"
+      enforcement: system
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: total_score
+    rules:
+      - min: 300
+        message: "Score cannot be below 300"
+      - max: 850
+        message: "Score cannot exceed 850"
+
+  - field: grade
+    rules:
+      - custom: "grade_matches_score(total_score, grade)"
+        message: "Grade must match score range"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - borrower_id
+    - total_score
+    - external_bureau_score
+  retention_years: 7

@@ -1,0 +1,549 @@
+name: ScrapRecord
+display_name: Scrap Record / Biên bản hủy
+description: |
+  Document recording material scrap, write-off, or disposal.
+  Captures reason, quantities, values, and approval workflow
+  for inventory shrinkage and quality rejections.
+
+domain: manufacturing
+subdomain: inventory
+category: transaction
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: scrap_number
+    type: string
+    required: true
+    description: Scrap document number
+    validation:
+      pattern: "^SCR-[0-9]{4}-[0-9]{6}$"
+    example: "SCR-2024-000789"
+
+  - name: status
+    type: enum
+    required: true
+    description: Document status
+    validation:
+      values: [draft, pending_approval, approved, rejected, posted, cancelled]
+    default: draft
+
+  - name: scrap_type
+    type: enum
+    required: true
+    description: Type of scrap
+    validation:
+      values:
+        - quality_rejection    # Failed quality inspection
+        - expired              # Shelf life expired
+        - damaged              # Physical damage
+        - obsolete             # Obsolete material
+        - production_waste     # Manufacturing waste
+        - sample               # Samples/testing
+        - adjustment           # Inventory adjustment
+        - disposal             # Environmental disposal
+    default: quality_rejection
+
+  # Material
+  - name: material_id
+    type: uuid
+    required: true
+    description: Material being scrapped
+
+  - name: plant_id
+    type: uuid
+    required: true
+    description: Plant
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+    description: Warehouse
+
+  - name: location_id
+    type: uuid
+    required: true
+    description: Stock location
+
+  # Batch/Serial
+  - name: batch_number
+    type: string
+    required: false
+    description: Batch number (if batch managed)
+    validation:
+      max_length: 20
+
+  - name: serial_numbers
+    type: array
+    required: false
+    description: Serial numbers (if serial managed)
+    items:
+      type: string
+      max_length: 40
+
+  # Quantity
+  - name: quantity
+    type: decimal
+    required: true
+    description: Scrap quantity
+    validation:
+      min: 0.001
+      precision: 3
+
+  - name: unit_of_measure
+    type: string
+    required: true
+    description: Unit of measure
+    validation:
+      max_length: 10
+
+  # Value
+  - name: unit_cost
+    type: decimal
+    required: true
+    description: Unit cost at time of scrap
+    validation:
+      min: 0
+      precision: 4
+
+  - name: total_value
+    type: decimal
+    required: true
+    description: Total scrap value
+    validation:
+      precision: 2
+    computed: true
+    formula: "quantity * unit_cost"
+
+  - name: currency
+    type: string
+    required: true
+    description: Value currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: salvage_value
+    type: decimal
+    required: false
+    description: Expected salvage/recovery value
+    validation:
+      min: 0
+      precision: 2
+    default: 0
+
+  - name: net_loss
+    type: decimal
+    required: false
+    description: Net loss after salvage
+    computed: true
+    formula: "total_value - salvage_value"
+
+  # Reason
+  - name: reason_code
+    type: string
+    required: true
+    description: Scrap reason code
+    validation:
+      max_length: 10
+
+  - name: reason_description
+    type: string
+    required: true
+    description: Detailed reason
+    validation:
+      max_length: 500
+
+  - name: root_cause
+    type: enum
+    required: false
+    description: Root cause category
+    validation:
+      values:
+        - supplier_quality     # Supplier defect
+        - production_defect    # Manufacturing defect
+        - handling_damage      # Handling/storage damage
+        - shelf_life           # Expiry
+        - design_change        # Engineering change
+        - customer_return      # Returned damaged
+        - natural_disaster     # Force majeure
+        - unknown              # Unknown cause
+
+  - name: corrective_action
+    type: string
+    required: false
+    description: Corrective action taken
+    validation:
+      max_length: 500
+
+  # Reference
+  - name: reference_type
+    type: enum
+    required: false
+    description: Source reference type
+    validation:
+      values: [quality_inspection, goods_receipt, production_order,
+               inventory_count, customer_return, manual]
+
+  - name: reference_id
+    type: uuid
+    required: false
+    description: Reference document ID
+
+  - name: reference_number
+    type: string
+    required: false
+    description: Reference document number
+    validation:
+      max_length: 30
+
+  # Quality reference
+  - name: inspection_id
+    type: uuid
+    required: false
+    description: Quality inspection reference
+
+  - name: defect_code
+    type: string
+    required: false
+    description: Defect code from inspection
+    validation:
+      max_length: 20
+
+  - name: nonconformance_id
+    type: uuid
+    required: false
+    description: NCR reference
+
+  # Supplier chargeback
+  - name: supplier_chargeback
+    type: boolean
+    required: false
+    description: Charge back to supplier
+    default: false
+
+  - name: supplier_id
+    type: uuid
+    required: false
+    description: Supplier to charge
+
+  - name: chargeback_amount
+    type: decimal
+    required: false
+    description: Amount to charge supplier
+    validation:
+      min: 0
+      precision: 2
+
+  - name: chargeback_status
+    type: enum
+    required: false
+    description: Chargeback status
+    validation:
+      values: [pending, claimed, accepted, rejected, paid]
+
+  # Disposal
+  - name: disposal_method
+    type: enum
+    required: false
+    description: Method of disposal
+    validation:
+      values:
+        - recycle             # Recycling
+        - sell_as_scrap       # Sell as scrap material
+        - return_to_supplier  # Return to supplier
+        - rework              # Rework/reprocess
+        - donate              # Donation
+        - destroy             # Destruction
+        - hazardous_disposal  # Special disposal
+
+  - name: disposal_vendor_id
+    type: uuid
+    required: false
+    description: Disposal vendor
+
+  - name: disposal_certificate
+    type: string
+    required: false
+    description: Disposal certificate number
+    validation:
+      max_length: 50
+
+  - name: disposal_date
+    type: date
+    required: false
+    description: Actual disposal date
+
+  - name: environmental_impact
+    type: string
+    required: false
+    description: Environmental impact notes
+    validation:
+      max_length: 500
+
+  # Dates
+  - name: scrap_date
+    type: date
+    required: true
+    description: Date of scrap
+
+  - name: posting_date
+    type: date
+    required: false
+    description: Accounting posting date
+
+  # Account assignment
+  - name: cost_center
+    type: string
+    required: false
+    description: Cost center for scrap expense
+    validation:
+      max_length: 10
+
+  - name: gl_account
+    type: string
+    required: false
+    description: G/L account for posting
+    validation:
+      max_length: 10
+
+  # Approval
+  - name: approval_required
+    type: boolean
+    required: true
+    description: Requires approval
+    default: true
+
+  - name: approval_level
+    type: integer
+    required: false
+    description: Required approval level (based on value)
+    validation:
+      min: 1
+      max: 5
+
+  - name: approved_by
+    type: uuid
+    required: false
+    description: Approver
+
+  - name: approved_at
+    type: timestamp
+    required: false
+    description: Approval timestamp
+
+  - name: rejection_reason
+    type: string
+    required: false
+    description: Rejection reason
+    validation:
+      max_length: 200
+
+  # Attachments
+  - name: attachments
+    type: array
+    required: false
+    description: Supporting documents (photos, reports)
+    items:
+      type: object
+      properties:
+        name: string
+        type: string
+        url: string
+
+  # Notes
+  - name: notes
+    type: string
+    required: false
+    description: Additional notes
+    validation:
+      max_length: 1000
+
+  # Posting
+  - name: posted
+    type: boolean
+    required: true
+    description: Posted to inventory
+    default: false
+
+  - name: posted_by
+    type: uuid
+    required: false
+    description: User who posted
+
+  - name: posted_at
+    type: timestamp
+    required: false
+    description: Posting timestamp
+
+  - name: gl_document_number
+    type: string
+    required: false
+    description: GL posting document
+    validation:
+      max_length: 20
+
+  - name: transaction_id
+    type: uuid
+    required: false
+    description: Inventory transaction created
+
+  # Audit
+  - name: created_by
+    type: uuid
+    required: true
+    description: User who created
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+  - name: cancelled_by
+    type: uuid
+    required: false
+    description: User who cancelled
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: Cancellation timestamp
+
+  - name: cancellation_reason
+    type: string
+    required: false
+    description: Cancellation reason
+    validation:
+      max_length: 200
+
+relationships:
+  - name: material
+    type: belongs_to
+    entity: Material
+    required: true
+    description: Material being scrapped
+
+  - name: location
+    type: belongs_to
+    entity: StockLocation
+    required: true
+    description: Stock location
+
+  - name: supplier
+    type: belongs_to
+    entity: Supplier
+    required: false
+    description: Supplier for chargeback
+
+  - name: inspection
+    type: belongs_to
+    entity: QualityInspection
+    required: false
+    description: Related inspection
+
+  - name: transaction
+    type: belongs_to
+    entity: InventoryTransaction
+    required: false
+    description: Inventory transaction
+
+indexes:
+  - [scrap_number]
+  - [status]
+  - [scrap_type]
+  - [material_id]
+  - [plant_id, warehouse_id]
+  - [scrap_date]
+  - [batch_number]
+  - [supplier_id]
+  - [root_cause]
+  - [created_by]
+
+state_machine:
+  initial: draft
+  states:
+    draft:
+      description: Being prepared
+      transitions:
+        - to: pending_approval
+          trigger: submit
+          condition: approval_required
+        - to: approved
+          trigger: submit
+          condition: NOT approval_required
+        - to: cancelled
+          trigger: cancel
+    pending_approval:
+      description: Awaiting approval
+      transitions:
+        - to: approved
+          trigger: approve
+          action: set_approval_info
+        - to: rejected
+          trigger: reject
+          action: set_rejection_reason
+        - to: cancelled
+          trigger: cancel
+    rejected:
+      description: Approval rejected
+      transitions:
+        - to: draft
+          trigger: revise
+        - to: cancelled
+          trigger: cancel
+    approved:
+      description: Approved for posting
+      transitions:
+        - to: posted
+          trigger: post
+          action: create_inventory_transaction
+        - to: cancelled
+          trigger: cancel
+    posted:
+      description: Posted to inventory
+      final: true
+    cancelled:
+      description: Document cancelled
+      final: true
+
+business_rules:
+  - BR-SCR-001: Scrap number auto-generated as SCR-YYYY-NNNNNN
+  - BR-SCR-002: Cannot scrap more than available quantity
+  - BR-SCR-003: Approval level based on total value thresholds
+  - BR-SCR-004: Batch number required for batch-managed materials
+  - BR-SCR-005: Serial numbers count must match quantity
+  - BR-SCR-006: Supplier required if supplier_chargeback = true
+  - BR-SCR-007: Disposal method required before posting
+  - BR-SCR-008: Posting date cannot be in closed period
+  - BR-SCR-009: Hazardous materials require special disposal
+  - BR-SCR-010: Photos required for damage claims > threshold
+
+events:
+  - name: scrap.created
+    payload: [id, scrap_number, material_id, quantity, total_value]
+    description: Scrap record created
+
+  - name: scrap.approved
+    payload: [id, scrap_number, approved_by, total_value]
+    description: Scrap approved
+
+  - name: scrap.posted
+    payload: [id, scrap_number, transaction_id, total_value]
+    description: Scrap posted to inventory
+
+  - name: scrap.chargeback_created
+    payload: [id, scrap_number, supplier_id, chargeback_amount]
+    description: Supplier chargeback created
+
+  - name: scrap.disposed
+    payload: [id, scrap_number, disposal_method, disposal_date]
+    description: Material disposed

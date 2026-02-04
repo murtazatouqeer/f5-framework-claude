@@ -1,0 +1,408 @@
+name: overtime
+display_name: Overtime Record
+description: |
+  Tracks employee overtime work hours with calculation of premium pay
+  rates per Vietnam Labor Code regulations.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Overtime
+  table_name: overtime_records
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: employee_id
+      type: uuid
+      required: true
+
+    - name: payslip_id
+      type: uuid
+
+    - name: period_id
+      type: uuid
+      required: true
+
+    # OT Request Info
+    - name: request_id
+      type: string
+      length: 20
+      format: "OT-{YYYYMMDD}-{NNN}"
+
+    - name: request_date
+      type: date
+      required: true
+
+    - name: requested_by
+      type: uuid
+
+    - name: approved_by
+      type: uuid
+
+    - name: approved_at
+      type: timestamp
+
+    # Work Period
+    - name: work_date
+      type: date
+      required: true
+
+    - name: start_time
+      type: time
+      required: true
+
+    - name: end_time
+      type: time
+      required: true
+
+    - name: break_minutes
+      type: integer
+      default: 0
+
+    # Day Classification
+    - name: day_type
+      type: enum
+      values: [weekday, weekend, holiday]
+      required: true
+
+    - name: holiday_name
+      type: string
+      length: 100
+      description: If holiday, which one
+
+    - name: is_night_shift
+      type: boolean
+      default: false
+      description: Work between 22:00-06:00
+
+    # Hours Breakdown
+    - name: total_hours
+      type: decimal
+      precision: 5
+      scale: 2
+      required: true
+
+    - name: regular_ot_hours
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Weekday OT (150%)
+
+    - name: weekend_hours
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Weekend OT (200%)
+
+    - name: holiday_hours
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Holiday OT (300%)
+
+    - name: night_hours
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Night shift hours (+30%)
+
+    # Rates
+    - name: base_hourly_rate
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Standard hourly rate
+
+    - name: regular_ot_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 150
+      description: 150% for weekday OT
+
+    - name: weekend_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 200
+      description: 200% for weekend
+
+    - name: holiday_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 300
+      description: 300% for holidays
+
+    - name: night_premium
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 30
+      description: Additional 30% for night
+
+    # Amounts
+    - name: regular_ot_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: weekend_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: holiday_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: night_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: total_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    # Limits Tracking
+    - name: mtd_hours
+      type: decimal
+      precision: 6
+      scale: 2
+      default: 0
+      description: Month-to-date OT hours
+
+    - name: ytd_hours
+      type: decimal
+      precision: 7
+      scale: 2
+      default: 0
+      description: Year-to-date OT hours
+
+    - name: exceeds_daily_limit
+      type: boolean
+      default: false
+      description: Exceeded 4 hours/day
+
+    - name: exceeds_monthly_limit
+      type: boolean
+      default: false
+      description: Exceeded 40 hours/month
+
+    - name: exceeds_yearly_limit
+      type: boolean
+      default: false
+      description: Exceeded 200 hours/year
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, pending_approval, approved, rejected, processed, cancelled]
+      default: draft
+
+    - name: rejection_reason
+      type: text
+
+    # Metadata
+    - name: reason
+      type: text
+      required: true
+      description: Business justification
+
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: payslip
+      type: belongs_to
+      entity: PaySlip
+      foreign_key: payslip_id
+
+    - name: period
+      type: belongs_to
+      entity: PayrollPeriod
+      foreign_key: period_id
+
+    - name: approver
+      type: belongs_to
+      entity: User
+      foreign_key: approved_by
+
+  indexes:
+    - columns: [request_id]
+      unique: true
+    - columns: [employee_id, work_date]
+    - columns: [employee_id, period_id]
+    - columns: [status]
+    - columns: [work_date]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending_approval
+        action: submit
+        guards: [has_justification, within_limits]
+        triggers: [notify_approver]
+
+      - from: pending_approval
+        to: approved
+        action: approve
+        guards: [approver_authorized]
+        triggers: [update_mtd_ytd, notify_employee]
+
+      - from: pending_approval
+        to: rejected
+        action: reject
+        guards: [has_rejection_reason]
+        triggers: [notify_employee]
+
+      - from: approved
+        to: processed
+        action: process
+        guards: [payroll_run_active]
+        triggers: [calculate_amounts, add_to_payslip]
+
+      - from: [draft, pending_approval]
+        to: cancelled
+        action: cancel
+        triggers: [log_cancellation]
+
+  ot_rates_vietnam:
+    weekday_overtime:
+      rate_percent: 150
+      applicable: "After normal hours on working days"
+
+    weekend:
+      rate_percent: 200
+      applicable: "Work on weekly rest days"
+
+    holiday:
+      rate_percent: 300
+      applicable: "Work on public holidays or paid leave"
+
+    night_shift:
+      rate_percent: 130
+      applicable: "Work between 22:00-06:00"
+      additional_note: "Compounds with OT rate"
+
+    night_overtime:
+      weekday_night: 180  # 150% + 30%
+      weekend_night: 260  # 200% + 60% (200% x 30%)
+      holiday_night: 390  # 300% + 90% (300% x 30%)
+
+  legal_limits:
+    daily:
+      max_hours: 4
+      exception: "Special cases with labor authority approval"
+
+    monthly:
+      max_hours: 40
+      exception: "Can extend to 60 with conditions"
+
+    yearly:
+      standard: 200
+      extended: 300
+      condition: "With labor authority registration"
+
+  validations:
+    - field: total_hours
+      rule: positive
+      message: "Total hours must be positive"
+
+    - field: total_hours
+      rule: max
+      value: 12
+      message: "Single OT session cannot exceed 12 hours"
+
+    - field: work_date
+      rule: not_future
+      message: "Cannot record OT for future dates"
+
+  computed_fields:
+    - name: total_hours
+      formula: "(end_time - start_time - break_minutes) / 60"
+
+    - name: regular_ot_amount
+      formula: "regular_ot_hours * base_hourly_rate * (regular_ot_rate / 100)"
+
+    - name: weekend_amount
+      formula: "weekend_hours * base_hourly_rate * (weekend_rate / 100)"
+
+    - name: holiday_amount
+      formula: "holiday_hours * base_hourly_rate * (holiday_rate / 100)"
+
+    - name: night_amount
+      formula: "night_hours * base_hourly_rate * (night_premium / 100)"
+
+    - name: total_amount
+      formula: "regular_ot_amount + weekend_amount + holiday_amount + night_amount"
+
+  hooks:
+    on_submit:
+      - validate_justification
+      - check_limits
+      - calculate_mtd_ytd
+
+    on_approve:
+      - update_employee_ot_balance
+      - log_approval
+
+    on_process:
+      - calculate_all_amounts
+      - create_earning_entry
+      - update_payslip
+
+  audit:
+    track:
+      - status
+      - approved_by
+      - total_hours
+      - total_amount
+
+    retention: 5_years
+
+compliance:
+  - standard: Vietnam_Labor_Code_2019
+    article: Article_107
+    requirement: OT rates and limits
+  - standard: Decree_145_2020
+    requirement: Detailed OT regulations

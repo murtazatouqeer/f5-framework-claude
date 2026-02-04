@@ -1,0 +1,517 @@
+name: Invoice
+display_name: Invoice / Hóa đơn
+description: |
+  Represents a billing invoice for subscription charges, usage fees, and one-time purchases.
+  Core entity for SaaS billing and revenue tracking.
+
+domain: saas-platform
+entity_type: transaction
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: invoice_number
+    type: string
+    required: true
+    unique: true
+    max_length: 50
+    description: Human-readable invoice number
+    description_vi: Số hóa đơn dễ đọc
+    pattern: "^INV-\\d{4}-\\d{5}$"
+    example: "INV-2024-00001"
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    required: true
+    description: Tenant being billed
+    description_vi: Khách thuê được lập hóa đơn
+
+  - name: subscription_id
+    type: uuid
+    foreign_key: subscription.id
+    description: Associated subscription
+    description_vi: Đăng ký liên quan
+
+  # Status
+  - name: status
+    type: enum
+    values: [draft, open, paid, void, uncollectible]
+    default: draft
+    description: Invoice status
+    description_vi: Trạng thái hóa đơn
+
+  # Billing Period
+  - name: billing_period_start
+    type: date
+    description: Start of billing period
+    description_vi: Bắt đầu kỳ thanh toán
+
+  - name: billing_period_end
+    type: date
+    description: End of billing period
+    description_vi: Kết thúc kỳ thanh toán
+
+  - name: invoice_date
+    type: date
+    required: true
+    description: Date invoice was issued
+    description_vi: Ngày phát hành hóa đơn
+
+  - name: due_date
+    type: date
+    required: true
+    description: Payment due date
+    description_vi: Ngày đáo hạn thanh toán
+
+  # Amounts
+  - name: subtotal
+    type: decimal
+    precision: 10
+    scale: 2
+    required: true
+    description: Sum of line items before discounts and tax
+    description_vi: Tổng các mục trước giảm giá và thuế
+
+  - name: discount_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+    description: Total discounts applied
+    description_vi: Tổng giảm giá được áp dụng
+
+  - name: tax_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+    description: Total tax amount
+    description_vi: Tổng số tiền thuế
+
+  - name: total
+    type: decimal
+    precision: 10
+    scale: 2
+    required: true
+    description: Final invoice total
+    description_vi: Tổng hóa đơn cuối cùng
+    formula: "subtotal - discount_amount + tax_amount"
+
+  - name: amount_paid
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+    description: Amount already paid
+    description_vi: Số tiền đã thanh toán
+
+  - name: amount_due
+    type: decimal
+    precision: 10
+    scale: 2
+    description: Remaining amount due
+    description_vi: Số tiền còn phải thanh toán
+    formula: "total - amount_paid"
+
+  - name: currency
+    type: string
+    max_length: 3
+    default: "USD"
+    description: Invoice currency (ISO 4217)
+    description_vi: Tiền tệ hóa đơn
+
+  # Line Items
+  - name: line_items
+    type: json
+    required: true
+    description: Invoice line items
+    description_vi: Các mục hóa đơn
+    schema:
+      type: array
+      items:
+        id: string
+        description: string
+        quantity: number
+        unit_price: number
+        amount: number
+        type: enum [subscription, seat, usage, proration, credit, one_time]
+        period_start: date
+        period_end: date
+        metadata: object
+
+  # Tax Details
+  - name: tax_details
+    type: json
+    description: Tax breakdown
+    description_vi: Chi tiết thuế
+    schema:
+      tax_id: string
+      tax_rate: number
+      taxable_amount: number
+      tax_type: string (vat, sales_tax, gst)
+      tax_jurisdiction: string
+
+  # Billing Details
+  - name: billing_name
+    type: string
+    max_length: 255
+    description: Billing entity name
+    description_vi: Tên đối tượng thanh toán
+
+  - name: billing_email
+    type: email
+    description: Email for invoice delivery
+    description_vi: Email nhận hóa đơn
+
+  - name: billing_address
+    type: json
+    description: Billing address
+    description_vi: Địa chỉ thanh toán
+    schema:
+      line1: string
+      line2: string
+      city: string
+      state: string
+      postal_code: string
+      country: string
+
+  # Payment
+  - name: payment_method_id
+    type: uuid
+    foreign_key: payment_method.id
+    description: Payment method used
+    description_vi: Phương thức thanh toán đã sử dụng
+
+  - name: paid_at
+    type: timestamp
+    description: When invoice was paid
+    description_vi: Thời điểm hóa đơn được thanh toán
+
+  - name: payment_intent_id
+    type: string
+    max_length: 255
+    description: Payment processor intent ID
+    description_vi: ID intent của bộ xử lý thanh toán
+
+  # Dunning
+  - name: attempt_count
+    type: integer
+    default: 0
+    description: Number of payment attempts
+    description_vi: Số lần thử thanh toán
+
+  - name: next_attempt_at
+    type: timestamp
+    description: Next scheduled payment attempt
+    description_vi: Lần thử thanh toán tiếp theo
+
+  - name: last_attempt_at
+    type: timestamp
+    description: Last payment attempt time
+    description_vi: Thời điểm thử thanh toán cuối
+
+  - name: last_failure_reason
+    type: string
+    max_length: 500
+    description: Reason for last failed attempt
+    description_vi: Lý do thất bại lần cuối
+
+  # Documents
+  - name: pdf_url
+    type: url
+    description: URL to download PDF invoice
+    description_vi: URL tải hóa đơn PDF
+
+  - name: hosted_invoice_url
+    type: url
+    description: URL to view invoice online
+    description_vi: URL xem hóa đơn trực tuyến
+
+  # Notes
+  - name: memo
+    type: text
+    description: Internal memo/notes
+    description_vi: Ghi chú nội bộ
+
+  - name: customer_notes
+    type: text
+    description: Notes visible to customer
+    description_vi: Ghi chú hiển thị cho khách hàng
+
+  - name: footer
+    type: text
+    description: Invoice footer text
+    description_vi: Văn bản chân trang hóa đơn
+
+  # External Integration
+  - name: external_invoice_id
+    type: string
+    max_length: 255
+    description: ID in external billing system (Stripe)
+    description_vi: ID trong hệ thống thanh toán bên ngoài
+
+  # Metadata
+  - name: metadata
+    type: json
+    description: Additional invoice data
+    description_vi: Dữ liệu hóa đơn bổ sung
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: updated_at
+    type: timestamp
+    auto: true
+
+  - name: finalized_at
+    type: timestamp
+    description: When invoice was finalized
+    description_vi: Thời điểm hóa đơn được hoàn tất
+
+  - name: voided_at
+    type: timestamp
+    description: When invoice was voided
+    description_vi: Thời điểm hóa đơn bị hủy
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Tenant being invoiced
+
+  - name: subscription
+    type: belongs_to
+    target: Subscription
+    foreign_key: subscription_id
+    description: Related subscription
+
+  - name: payment_method
+    type: belongs_to
+    target: PaymentMethod
+    foreign_key: payment_method_id
+    description: Payment method used
+
+  - name: payments
+    type: has_many
+    target: Payment
+    foreign_key: invoice_id
+    description: Payment transactions
+
+  - name: credit_notes
+    type: has_many
+    target: CreditNote
+    foreign_key: invoice_id
+    description: Credit notes issued against this invoice
+
+state_machine:
+  field: status
+  initial: draft
+  states:
+    draft:
+      description: Invoice being prepared
+      description_vi: Hóa đơn đang được chuẩn bị
+    open:
+      description: Finalized and awaiting payment
+      description_vi: Đã hoàn tất và chờ thanh toán
+    paid:
+      description: Fully paid
+      description_vi: Đã thanh toán đầy đủ
+    void:
+      description: Cancelled, no payment expected
+      description_vi: Đã hủy, không mong đợi thanh toán
+    uncollectible:
+      description: Written off as bad debt
+      description_vi: Xóa nợ như nợ xấu
+
+  transitions:
+    - from: draft
+      to: open
+      event: finalize
+      description: Finalize invoice for payment
+      actions:
+        - generate_invoice_number
+        - calculate_totals
+        - generate_pdf
+        - set finalized_at
+        - send_invoice_email
+
+    - from: open
+      to: paid
+      event: mark_paid
+      description: Payment received
+      conditions:
+        - amount_paid >= total
+      actions:
+        - set paid_at
+        - send_receipt_email
+        - update_subscription_payment_date
+
+    - from: open
+      to: void
+      event: void
+      description: Cancel invoice
+      actions:
+        - set voided_at
+        - reverse_usage_charges
+        - send_void_notification
+
+    - from: open
+      to: uncollectible
+      event: write_off
+      description: Write off as bad debt
+      conditions:
+        - attempt_count >= max_attempts
+        - days_past_due >= write_off_threshold
+      actions:
+        - record_bad_debt
+        - notify_finance_team
+
+indexes:
+  - name: idx_invoice_number
+    columns: [invoice_number]
+    unique: true
+
+  - name: idx_invoice_tenant
+    columns: [tenant_id]
+    description: Tenant's invoices
+
+  - name: idx_invoice_tenant_status
+    columns: [tenant_id, status]
+    description: Filter tenant invoices by status
+
+  - name: idx_invoice_subscription
+    columns: [subscription_id]
+    description: Subscription's invoices
+
+  - name: idx_invoice_status_due
+    columns: [status, due_date]
+    where: "status = 'open'"
+    description: Overdue invoice queries
+
+  - name: idx_invoice_external
+    columns: [external_invoice_id]
+    unique: true
+    where: "external_invoice_id IS NOT NULL"
+
+business_rules:
+  - id: BR-INV-001
+    name: Invoice Number Sequential
+    description: Invoice numbers are sequential per year
+    description_vi: Số hóa đơn tuần tự theo năm
+    format: "INV-YYYY-NNNNN"
+
+  - id: BR-INV-002
+    name: Finalized Immutable
+    description: Finalized invoices cannot be modified, only voided
+    description_vi: Hóa đơn đã hoàn tất không thể sửa đổi, chỉ có thể hủy
+
+  - id: BR-INV-003
+    name: Due Date Calculation
+    description: Due date is invoice date + payment terms (default 30 days)
+    description_vi: Ngày đáo hạn là ngày hóa đơn + điều khoản thanh toán (mặc định 30 ngày)
+    parameters:
+      default_payment_terms: 30
+
+  - id: BR-INV-010
+    name: Generate Before Period End
+    description: Subscription invoices generated 7 days before period end
+    description_vi: Hóa đơn đăng ký được tạo 7 ngày trước khi kết thúc kỳ
+    parameters:
+      days_before: 7
+
+  - id: BR-INV-011
+    name: Auto-Charge on Due Date
+    description: Attempt to charge invoice on due date
+    description_vi: Cố gắng tính phí hóa đơn vào ngày đáo hạn
+
+  - id: BR-INV-012
+    name: Retry Schedule
+    description: Failed payment retry on day 1, 3, 7, 14
+    description_vi: Thử lại thanh toán thất bại vào ngày 1, 3, 7, 14
+    parameters:
+      retry_days: [1, 3, 7, 14]
+
+  - id: BR-INV-020
+    name: Tax Calculation
+    description: Tax calculated based on tenant location and tax status
+    description_vi: Thuế tính dựa trên vị trí khách thuê và tình trạng thuế
+
+  - id: BR-INV-021
+    name: B2B Tax Exemption
+    description: B2B with valid VAT ID exempt from VAT
+    description_vi: B2B với mã VAT hợp lệ được miễn VAT
+
+computed_fields:
+  - name: is_overdue
+    formula: "status = 'open' AND due_date < CURRENT_DATE"
+    description: Invoice is past due
+
+  - name: days_overdue
+    formula: "DATEDIFF(CURRENT_DATE, due_date) WHERE status = 'open'"
+    description: Number of days past due
+
+  - name: is_past_grace_period
+    formula: "days_overdue > 7"
+    description: Past grace period
+
+events:
+  - name: invoice.created
+    payload: [invoice_id, tenant_id, total]
+
+  - name: invoice.finalized
+    payload: [invoice_id, invoice_number, total, due_date]
+    triggers: [generate_pdf, send_invoice_email]
+
+  - name: invoice.paid
+    payload: [invoice_id, amount, payment_method]
+    triggers: [send_receipt, update_subscription]
+
+  - name: invoice.payment_failed
+    payload: [invoice_id, attempt_count, failure_reason]
+    triggers: [send_payment_failed_email, schedule_retry]
+
+  - name: invoice.overdue
+    payload: [invoice_id, days_overdue]
+    triggers: [send_overdue_reminder, alert_account_manager]
+
+  - name: invoice.voided
+    payload: [invoice_id, reason]
+    triggers: [send_void_notification]
+
+line_item_types:
+  - type: subscription
+    description: Recurring subscription charge
+    fields: [plan_name, billing_cycle, period]
+
+  - type: seat
+    description: Additional seat charge
+    fields: [seat_count, price_per_seat]
+
+  - type: usage
+    description: Usage-based charge
+    fields: [metric, quantity, rate, period]
+
+  - type: proration
+    description: Prorated charge for mid-cycle changes
+    fields: [description, days, original_amount]
+
+  - type: credit
+    description: Credit applied (negative amount)
+    fields: [reason, original_invoice_id]
+
+  - type: one_time
+    description: One-time charge (setup fee, etc.)
+    fields: [description]
+
+  - type: discount
+    description: Discount line item
+    fields: [coupon_code, discount_type, discount_value]

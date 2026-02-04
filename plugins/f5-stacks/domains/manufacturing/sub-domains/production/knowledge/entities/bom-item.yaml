@@ -1,0 +1,254 @@
+name: bom-item
+display_name: BOM Item
+display_name_vi: Mục định mức vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: entity
+
+description: |
+  Individual line item in a Bill of Materials representing a material,
+  component, co-product, or by-product with quantity and specifications.
+
+description_vi: |
+  Dòng chi tiết trong định mức vật tư đại diện cho nguyên vật liệu,
+  linh kiện, sản phẩm phụ hoặc sản phẩm kèm với số lượng và thông số kỹ thuật.
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      required: true
+
+    - name: bom_id
+      type: uuid
+      required: true
+      description: Parent BOM
+      description_vi: Định mức cha
+
+    - name: sequence_number
+      type: integer
+      required: true
+      description: Line sequence
+      description_vi: Số thứ tự
+
+    - name: item_type
+      type: enum
+      required: true
+      default: material
+      values:
+        - material: Input material consumed
+        - component: Sub-assembly component
+        - co_product: Secondary output product
+        - by_product: Incidental output
+        - phantom: Explodes to components
+      description_vi: Loại mục
+
+  material:
+    - name: material_id
+      type: uuid
+      required: true
+      description: Material/component product reference
+      description_vi: Tham chiếu vật tư
+
+    - name: material_code
+      type: string
+      description: Material code (denormalized)
+      description_vi: Mã vật tư
+
+    - name: material_name
+      type: string
+      description: Material name (denormalized)
+      description_vi: Tên vật tư
+
+  quantity:
+    - name: quantity_per
+      type: decimal
+      required: true
+      precision: 15
+      scale: 6
+      description: Quantity per base quantity of parent
+      description_vi: Số lượng trên mỗi đơn vị sản phẩm
+
+    - name: unit_of_measure
+      type: string
+      required: true
+      description: Unit of measure
+      description_vi: Đơn vị tính
+
+    - name: scrap_percent
+      type: decimal
+      default: 0
+      min: 0
+      max: 100
+      description: Expected scrap percentage
+      description_vi: Tỷ lệ phế liệu
+
+    - name: fixed_quantity
+      type: boolean
+      default: false
+      description: Fixed quantity regardless of batch size
+      description_vi: Số lượng cố định
+
+    - name: formula
+      type: string
+      description: Calculation formula if variable
+      description_vi: Công thức tính
+
+  source:
+    - name: supply_type
+      type: enum
+      default: stock
+      values:
+        - stock: Issue from inventory
+        - direct_purchase: Purchase for order
+        - phantom: Explode to components
+        - floor_stock: Bulk floor stock
+      description_vi: Nguồn cấp
+
+    - name: warehouse_id
+      type: uuid
+      description: Default warehouse for issue
+      description_vi: Kho mặc định
+
+    - name: location_id
+      type: uuid
+      description: Default location within warehouse
+
+  operation_link:
+    - name: operation_id
+      type: uuid
+      description: Operation that consumes this material
+      description_vi: Công đoạn tiêu thụ
+
+    - name: operation_sequence
+      type: integer
+      description: Operation sequence number
+
+    - name: backflush
+      type: boolean
+      default: true
+      description: Auto-consume on operation completion
+      description_vi: Tự động trừ kho
+
+    - name: issue_point
+      type: enum
+      default: operation_start
+      values:
+        - order_release: Issue when WO released
+        - operation_start: Issue when operation starts
+        - operation_complete: Issue when operation completes
+      description_vi: Thời điểm xuất kho
+
+  substitutes:
+    - name: has_substitute
+      type: boolean
+      default: false
+      description: Has substitute materials
+      description_vi: Có vật tư thay thế
+
+    - name: substitute_items
+      type: array
+      item_type: object
+      properties:
+        material_id:
+          type: uuid
+        priority:
+          type: integer
+        conversion_factor:
+          type: decimal
+      description: List of substitute materials
+
+  effectivity:
+    - name: effective_from
+      type: date
+      description: Component effectivity start
+      description_vi: Hiệu lực từ ngày
+
+    - name: effective_to
+      type: date
+      description: Component effectivity end
+      description_vi: Hiệu lực đến ngày
+
+  co_by_product:
+    - name: output_ratio
+      type: decimal
+      description: Output ratio for co/by-products
+      description_vi: Tỷ lệ sản phẩm phụ
+
+    - name: cost_allocation_percent
+      type: decimal
+      description: Cost allocation for co-products
+
+  notes:
+    - name: notes
+      type: text
+      description: Additional notes
+      description_vi: Ghi chú
+
+    - name: engineering_notes
+      type: text
+      description: Engineering specifications
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: uuid
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+relationships:
+  - name: bom
+    type: belongs_to
+    entity: bom
+    foreign_key: bom_id
+    description: Parent BOM
+
+  - name: material
+    type: belongs_to
+    entity: product
+    foreign_key: material_id
+    description: Material/component product
+
+  - name: operation
+    type: belongs_to
+    entity: operation
+    foreign_key: operation_id
+    description: Consuming operation
+
+  - name: warehouse
+    type: belongs_to
+    entity: warehouse
+    foreign_key: warehouse_id
+    description: Default warehouse
+
+indexes:
+  - columns: [bom_id, sequence_number]
+    unique: true
+  - columns: [bom_id, material_id]
+  - columns: [material_id]
+  - columns: [operation_id]
+
+validation_rules:
+  - rule: "quantity_per > 0"
+    message: "Quantity must be positive"
+
+  - rule: "item_type IN ('co_product', 'by_product') OR quantity_per > 0"
+    message: "Input items require positive quantity"
+
+  - rule: "scrap_percent >= 0 AND scrap_percent < 100"
+    message: "Scrap percent must be between 0 and 99"
+
+  - rule: "effective_to IS NULL OR effective_to >= effective_from"
+    message: "End date must be on or after start date"
+
+computed_fields:
+  - name: gross_quantity
+    formula: "quantity_per * (1 + scrap_percent / 100)"
+    description: Quantity including scrap allowance
+    description_vi: Số lượng bao gồm phế liệu

@@ -1,0 +1,538 @@
+name: Payment Workflow
+display_name: Payment Workflow / Quy trình thanh toán
+description: |
+  Payment processing workflow handling multiple payment methods,
+  authorization, capture, and refund operations.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: checkout.payment_initiated
+    source: Checkout
+    condition: order.total_amount > 0
+
+actors:
+  - name: Customer
+    role: primary
+    description: Person making the payment
+  - name: Payment Gateway
+    role: external
+    description: Payment processing service
+  - name: Bank
+    role: external
+    description: Issuing/acquiring bank
+  - name: System
+    role: automated
+    description: Internal payment service
+
+payment_methods:
+  - id: credit_card
+    name: Credit Card / Thẻ tín dụng
+    flow: authorize_then_capture
+    supports_3ds: true
+    supports_refund: true
+    processing_time: instant
+
+  - id: debit_card
+    name: Debit Card / Thẻ ghi nợ
+    flow: direct_capture
+    supports_3ds: true
+    supports_refund: true
+    processing_time: instant
+
+  - id: bank_transfer
+    name: Bank Transfer / Chuyển khoản
+    flow: async_confirmation
+    supports_refund: manual
+    processing_time: 1-3 business days
+
+  - id: cod
+    name: Cash on Delivery / Thanh toán khi nhận hàng
+    flow: deferred_capture
+    supports_refund: manual
+    processing_time: at_delivery
+
+  - id: e_wallet
+    name: E-Wallet / Ví điện tử
+    flow: direct_capture
+    providers: [momo, zalopay, vnpay]
+    supports_refund: true
+    processing_time: instant
+
+  - id: qr_code
+    name: QR Code Payment / Thanh toán QR
+    flow: async_confirmation
+    supports_refund: true
+    processing_time: instant
+
+  - id: bnpl
+    name: Buy Now Pay Later / Trả góp
+    flow: authorize_then_capture
+    providers: [fundiin, kredivo]
+    supports_refund: true
+    processing_time: instant
+
+steps:
+  # Initialization
+  - id: INIT_PAYMENT
+    name: Initialize Payment
+    description: Create payment record
+    actor: System
+    type: automated
+    actions:
+      - Generate payment number
+      - Create payment record
+      - Set initial status to pending
+      - Log payment initiation
+    inputs:
+      - order_id
+      - amount
+      - currency
+      - payment_method
+    outputs:
+      - payment_id
+      - payment_number
+    validations:
+      - rule: BR-PAY-001
+        description: Generate payment number
+    on_success: ROUTE_BY_METHOD
+    on_failure: PAYMENT_INIT_ERROR
+
+  - id: ROUTE_BY_METHOD
+    name: Route by Payment Method
+    description: Route to appropriate payment flow
+    actor: System
+    type: decision
+    routing:
+      - condition: method IN ('credit_card', 'debit_card')
+        next: CARD_PAYMENT_FLOW
+      - condition: method = 'bank_transfer'
+        next: BANK_TRANSFER_FLOW
+      - condition: method = 'cod'
+        next: COD_FLOW
+      - condition: method IN ('momo', 'zalopay', 'vnpay')
+        next: EWALLET_FLOW
+      - condition: method = 'qr_code'
+        next: QR_PAYMENT_FLOW
+      - condition: method IN ('fundiin', 'kredivo')
+        next: BNPL_FLOW
+
+  # Card Payment Flow
+  - id: CARD_PAYMENT_FLOW
+    name: Card Payment Processing
+    description: Process card payment
+    actor: Payment Gateway
+    type: subprocess
+    steps:
+      - id: TOKENIZE_CARD
+        name: Tokenize Card
+        actions:
+          - Tokenize card details
+          - Store token securely
+        on_failure: CARD_ERROR
+
+      - id: FRAUD_CHECK
+        name: Fraud Detection
+        actions:
+          - Run fraud scoring
+          - Check velocity rules
+          - Verify CVV/AVS
+        on_high_risk: REJECT_PAYMENT
+
+      - id: THREE_DS_CHECK
+        name: 3D Secure Check
+        condition: amount > threshold OR high_risk
+        actions:
+          - Initiate 3DS challenge
+          - Redirect to bank page
+          - Await authentication
+        on_success: AUTHORIZE_CARD
+        on_failure: THREEDS_FAILED
+
+      - id: AUTHORIZE_CARD
+        name: Authorize Payment
+        actions:
+          - Send authorization request
+          - Receive auth code
+          - Store authorization
+        outputs:
+          - authorization_code
+          - authorized_amount
+        on_success: AUTH_SUCCESS
+        on_failure: AUTH_FAILED
+
+    outputs:
+      - payment_status
+      - authorization_code
+    on_success: AUTH_SUCCESS
+    on_failure: PAYMENT_FAILED
+
+  # Bank Transfer Flow
+  - id: BANK_TRANSFER_FLOW
+    name: Bank Transfer Processing
+    description: Process bank transfer payment
+    actor: System
+    type: subprocess
+    steps:
+      - id: GENERATE_TRANSFER_DETAILS
+        name: Generate Transfer Details
+        actions:
+          - Generate unique reference code
+          - Select receiving bank account
+          - Calculate payment deadline
+        outputs:
+          - bank_account
+          - reference_code
+          - deadline
+
+      - id: SHOW_TRANSFER_INSTRUCTIONS
+        name: Show Instructions
+        actions:
+          - Display bank details
+          - Show reference code
+          - Set payment deadline
+        ui_elements:
+          - bank_details_panel
+          - copy_reference_button
+          - deadline_countdown
+
+      - id: AWAIT_TRANSFER
+        name: Await Transfer Confirmation
+        type: wait
+        timeout: 24 hours
+        actions:
+          - Poll for transfer confirmation
+          - Check bank webhook
+        on_confirmed: TRANSFER_CONFIRMED
+        on_timeout: TRANSFER_TIMEOUT
+
+      - id: TRANSFER_CONFIRMED
+        name: Transfer Confirmed
+        actions:
+          - Verify amount matches
+          - Update payment status
+          - Notify customer
+
+    outputs:
+      - payment_status
+      - confirmation_time
+    on_success: PAYMENT_CAPTURED
+    on_failure: TRANSFER_FAILED
+
+  # COD Flow
+  - id: COD_FLOW
+    name: COD Processing
+    description: Process cash on delivery
+    actor: System
+    type: subprocess
+    steps:
+      - id: VALIDATE_COD
+        name: Validate COD Eligibility
+        actions:
+          - Check order amount against COD limit
+          - Verify delivery address supports COD
+          - Check customer COD history
+        validations:
+          - rule: BR-ORD-014
+            description: COD limit check
+
+      - id: CREATE_COD_ORDER
+        name: Create COD Order
+        actions:
+          - Set payment_status to 'pending'
+          - Set collection_amount
+          - Flag for carrier collection
+        outputs:
+          - cod_collection_amount
+
+      - id: AWAIT_DELIVERY
+        name: Await Delivery Collection
+        type: wait
+        trigger: shipment.delivered
+        actions:
+          - Carrier collects payment
+          - Update payment status
+        on_collected: COD_COLLECTED
+        on_refused: COD_REFUSED
+
+    outputs:
+      - payment_status
+    on_success: PAYMENT_CAPTURED
+    on_failure: COD_FAILED
+
+  # E-Wallet Flow
+  - id: EWALLET_FLOW
+    name: E-Wallet Processing
+    description: Process e-wallet payment
+    actor: Payment Gateway
+    type: subprocess
+    steps:
+      - id: INIT_EWALLET
+        name: Initialize E-Wallet Payment
+        actions:
+          - Call provider API
+          - Get payment URL/deeplink
+        outputs:
+          - payment_url
+          - deeplink
+
+      - id: REDIRECT_TO_WALLET
+        name: Redirect to Wallet
+        actions:
+          - Redirect customer to wallet app
+          - Show QR code (optional)
+
+      - id: AWAIT_WALLET_CONFIRMATION
+        name: Await Confirmation
+        type: wait
+        timeout: 15 minutes
+        actions:
+          - Listen for webhook
+          - Poll for status
+        on_success: WALLET_CONFIRMED
+        on_timeout: WALLET_TIMEOUT
+
+    outputs:
+      - payment_status
+      - provider_transaction_id
+    on_success: PAYMENT_CAPTURED
+    on_failure: EWALLET_FAILED
+
+  # QR Payment Flow
+  - id: QR_PAYMENT_FLOW
+    name: QR Code Payment
+    description: Process QR code payment
+    actor: System
+    type: subprocess
+    steps:
+      - id: GENERATE_QR
+        name: Generate QR Code
+        actions:
+          - Generate VietQR or provider QR
+          - Set expiration time
+        outputs:
+          - qr_code_data
+          - qr_image_url
+          - expires_at
+
+      - id: DISPLAY_QR
+        name: Display QR Code
+        actions:
+          - Show QR code to customer
+          - Start countdown timer
+        ui_elements:
+          - qr_code_image
+          - countdown_timer
+          - refresh_button
+
+      - id: AWAIT_QR_SCAN
+        name: Await QR Scan
+        type: wait
+        timeout: 10 minutes
+        actions:
+          - Listen for payment notification
+          - Poll for confirmation
+        on_confirmed: QR_CONFIRMED
+        on_timeout: QR_TIMEOUT
+
+    outputs:
+      - payment_status
+    on_success: PAYMENT_CAPTURED
+    on_failure: QR_FAILED
+
+  # BNPL Flow
+  - id: BNPL_FLOW
+    name: Buy Now Pay Later
+    description: Process BNPL payment
+    actor: Payment Gateway
+    type: subprocess
+    steps:
+      - id: CHECK_BNPL_ELIGIBILITY
+        name: Check Eligibility
+        actions:
+          - Send customer info to provider
+          - Get approval/limit
+        outputs:
+          - approved
+          - credit_limit
+          - available_plans
+
+      - id: SELECT_PLAN
+        name: Select Payment Plan
+        type: interactive
+        actions:
+          - Display available plans
+          - Customer selects plan
+        ui_elements:
+          - plan_selector
+          - payment_schedule
+          - terms_checkbox
+
+      - id: CREATE_BNPL_ORDER
+        name: Create BNPL Order
+        actions:
+          - Send order to provider
+          - Get contract details
+        outputs:
+          - bnpl_contract_id
+          - payment_schedule
+
+    outputs:
+      - payment_status
+      - bnpl_contract_id
+    on_success: PAYMENT_CAPTURED
+    on_failure: BNPL_FAILED
+
+  # Common Success/Failure States
+  - id: AUTH_SUCCESS
+    name: Authorization Success
+    description: Payment authorized successfully
+    actor: System
+    type: automated
+    actions:
+      - Update payment status to 'authorized'
+      - Store authorization details
+      - Set authorization expiry
+    outputs:
+      - payment.status = 'authorized'
+    events:
+      - payment.authorized
+    on_next: DECIDE_CAPTURE
+
+  - id: DECIDE_CAPTURE
+    name: Decide Capture Timing
+    description: Decide when to capture
+    actor: System
+    type: decision
+    routing:
+      - condition: config.auto_capture = true
+        next: CAPTURE_PAYMENT
+      - condition: config.capture_on_ship = true
+        next: AWAIT_SHIPMENT
+      - default: MANUAL_CAPTURE_QUEUE
+
+  - id: CAPTURE_PAYMENT
+    name: Capture Payment
+    description: Capture authorized payment
+    actor: Payment Gateway
+    type: automated
+    actions:
+      - Send capture request
+      - Update payment status
+      - Record transaction
+    inputs:
+      - payment_id
+      - capture_amount
+    outputs:
+      - captured_amount
+      - capture_transaction_id
+    validations:
+      - rule: BR-PAY-002
+        description: Cannot exceed authorized amount
+    on_success: PAYMENT_CAPTURED
+    on_failure: CAPTURE_FAILED
+
+  - id: PAYMENT_CAPTURED
+    name: Payment Captured
+    description: Payment successfully captured
+    actor: System
+    type: automated
+    actions:
+      - Update payment status to 'captured'
+      - Update order payment_status
+      - Calculate net amount
+      - Trigger payment.captured event
+    outputs:
+      - payment.status = 'captured'
+    events:
+      - payment.captured
+    on_next: COMPLETE_PAYMENT
+
+  - id: PAYMENT_FAILED
+    name: Payment Failed
+    description: Payment processing failed
+    actor: System
+    type: error_handler
+    actions:
+      - Update payment status to 'failed'
+      - Log failure details
+      - Notify customer
+      - Offer retry options
+    outputs:
+      - payment.status = 'failed'
+    events:
+      - payment.failed
+    recovery:
+      - Allow retry with same method
+      - Allow different payment method
+
+  - id: COMPLETE_PAYMENT
+    name: Complete Payment
+    description: Finalize payment process
+    actor: System
+    type: automated
+    actions:
+      - Update order payment status
+      - Send receipt
+      - Continue to order confirmation
+
+refund_workflow:
+  - id: INIT_REFUND
+    name: Initialize Refund
+    description: Start refund process
+    conditions:
+      - payment.status = 'captured'
+      - refund_amount <= payment.refundable_amount
+    actions:
+      - Create refund record
+      - Calculate refund amount
+    validations:
+      - rule: BR-PAY-003
+        description: Cannot exceed captured amount
+
+  - id: PROCESS_REFUND
+    name: Process Refund
+    description: Process refund through gateway
+    actions:
+      - Send refund request to gateway
+      - Await confirmation
+    on_success: REFUND_SUCCESS
+    on_failure: REFUND_FAILED
+
+  - id: REFUND_SUCCESS
+    name: Refund Success
+    description: Refund processed successfully
+    actions:
+      - Update payment refunded_amount
+      - Update order refunded_amount
+      - Notify customer
+    events:
+      - payment.refunded
+
+notifications:
+  - event: payment.authorized
+    recipient: system
+    template: payment_auth_notification
+
+  - event: payment.captured
+    recipient: customer
+    channels: [email]
+    template: payment_receipt
+
+  - event: payment.failed
+    recipient: customer
+    channels: [email, sms]
+    template: payment_failed_notification
+
+  - event: payment.refunded
+    recipient: customer
+    channels: [email]
+    template: refund_confirmation
+
+security:
+  - PCI_DSS_compliance: required
+  - card_data_storage: tokenized_only
+  - 3ds_version: "2.0"
+  - fraud_detection: enabled
+  - velocity_checks: enabled

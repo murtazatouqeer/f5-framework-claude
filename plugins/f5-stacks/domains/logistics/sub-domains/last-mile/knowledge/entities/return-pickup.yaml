@@ -1,0 +1,429 @@
+name: ReturnPickup
+display_name: Return Pickup
+description: |
+  Reverse logistics pickup from recipient.
+  Handles returns, exchanges, and customer-initiated pickups.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: return_pickups
+  primary_key: id
+  indexes:
+    - columns: [return_id]
+      unique: true
+    - columns: [original_delivery_id]
+    - columns: [status]
+    - columns: [scheduled_date]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: return_id
+    type: string
+    description: Human-readable return ID
+    pattern: "RTN-[A-Z0-9]{8}"
+    example: "RTN-A1B2C3D4"
+    required: true
+    unique: true
+
+  - name: original_delivery_id
+    type: uuid
+    description: Original delivery being returned
+
+  - name: original_order_id
+    type: uuid
+    description: Original order reference
+
+  # Status
+  - name: status
+    type: enum
+    description: Return pickup status
+    values:
+      - requested
+      - scheduled
+      - assigned
+      - pickup_pending
+      - picked_up
+      - in_transit
+      - received_at_hub
+      - processing
+      - completed
+      - cancelled
+    default: requested
+
+  # Return type
+  - name: return_type
+    type: enum
+    description: Type of return
+    values:
+      - customer_return
+      - exchange
+      - warranty_claim
+      - defective
+      - wrong_item
+      - damaged
+      - refused_delivery
+      - undeliverable
+    required: true
+
+  - name: return_reason
+    type: enum
+    description: Reason for return
+    values:
+      - changed_mind
+      - wrong_item_ordered
+      - wrong_item_received
+      - damaged_in_transit
+      - defective_product
+      - not_as_described
+      - better_price_found
+      - no_longer_needed
+      - size_fit_issue
+      - quality_issue
+      - other
+
+  - name: return_reason_notes
+    type: text
+    description: Additional return reason details
+    max_length: 500
+
+  # Pickup location
+  - name: pickup_address
+    type: object
+    description: Where to pickup
+    properties:
+      address_line1:
+        type: string
+      address_line2:
+        type: string
+      city:
+        type: string
+      district:
+        type: string
+      postal_code:
+        type: string
+      lat:
+        type: decimal
+      lng:
+        type: decimal
+
+  - name: pickup_instructions
+    type: text
+    description: Pickup instructions
+    max_length: 500
+
+  - name: contact_name
+    type: string
+    description: Contact person name
+    max_length: 100
+
+  - name: contact_phone
+    type: string
+    description: Contact phone number
+
+  # Scheduling
+  - name: scheduled_date
+    type: date
+    description: Scheduled pickup date
+
+  - name: scheduled_slot_id
+    type: uuid
+    description: Scheduled time slot
+
+  - name: time_window_start
+    type: time
+    description: Pickup window start
+
+  - name: time_window_end
+    type: time
+    description: Pickup window end
+
+  # Assignment
+  - name: delivery_agent_id
+    type: uuid
+    description: Assigned pickup agent
+
+  - name: zone_id
+    type: uuid
+    description: Pickup zone
+
+  # Timing
+  - name: requested_at
+    type: timestamp
+    description: When return was requested
+    required: true
+
+  - name: assigned_at
+    type: timestamp
+    description: When agent was assigned
+
+  - name: picked_up_at
+    type: timestamp
+    description: When parcel was picked up
+
+  - name: received_at_hub_at
+    type: timestamp
+    description: When received at hub
+
+  - name: completed_at
+    type: timestamp
+    description: When return process completed
+
+  # Items
+  - name: items
+    type: array
+    description: Items being returned
+    items:
+      type: object
+      properties:
+        item_id:
+          type: uuid
+        sku:
+          type: string
+        name:
+          type: string
+        quantity:
+          type: integer
+        reason:
+          type: string
+        condition:
+          type: enum
+          values: [unopened, opened, used, damaged]
+
+  - name: total_items
+    type: integer
+    description: Total items to pickup
+
+  # Package details
+  - name: expected_weight_kg
+    type: decimal
+    description: Expected package weight
+    precision: 8
+    scale: 3
+
+  - name: actual_weight_kg
+    type: decimal
+    description: Actual weight at pickup
+    precision: 8
+    scale: 3
+
+  - name: package_condition
+    type: enum
+    description: Package condition at pickup
+    values:
+      - good
+      - acceptable
+      - damaged
+      - heavily_damaged
+
+  # Verification
+  - name: verification_required
+    type: boolean
+    description: Need to verify items
+    default: true
+
+  - name: verification_completed
+    type: boolean
+    description: Verification was done
+    default: false
+
+  - name: items_verified
+    type: boolean
+    description: All items verified correct
+
+  - name: verification_notes
+    type: text
+    description: Verification notes
+    max_length: 500
+
+  - name: verification_photos
+    type: array
+    description: Photos of items
+    items:
+      type: string
+      format: uri
+
+  # Proof of pickup
+  - name: pickup_photo_url
+    type: string
+    description: Photo of picked up package
+    format: uri
+
+  - name: customer_signature_url
+    type: string
+    description: Customer signature
+    format: uri
+
+  # Refund
+  - name: refund_eligible
+    type: boolean
+    description: Eligible for refund
+    default: true
+
+  - name: refund_amount
+    type: decimal
+    description: Refund amount
+    precision: 12
+    scale: 2
+
+  - name: refund_status
+    type: enum
+    description: Refund processing status
+    values:
+      - pending
+      - approved
+      - processed
+      - rejected
+
+  # Destination
+  - name: destination_hub_id
+    type: uuid
+    description: Hub for return processing
+
+  - name: destination_warehouse_id
+    type: uuid
+    description: Final warehouse destination
+
+  # QC Result
+  - name: qc_status
+    type: enum
+    description: Quality check status
+    values:
+      - pending
+      - passed
+      - failed
+      - partial
+
+  - name: qc_notes
+    type: text
+    description: QC findings
+    max_length: 500
+
+  - name: qc_completed_at
+    type: timestamp
+    description: When QC was completed
+
+  - name: restockable
+    type: boolean
+    description: Can be restocked
+
+  # Fees
+  - name: pickup_fee
+    type: decimal
+    description: Pickup fee charged
+    precision: 10
+    scale: 2
+
+  - name: fee_waived
+    type: boolean
+    description: Fee was waived
+    default: false
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: original_delivery
+    type: belongs_to
+    entity: Delivery
+    foreign_key: original_delivery_id
+
+  - name: agent
+    type: belongs_to
+    entity: DeliveryAgent
+    foreign_key: delivery_agent_id
+
+  - name: zone
+    type: belongs_to
+    entity: DeliveryZone
+    foreign_key: zone_id
+
+state_machine:
+  initial: requested
+  states:
+    - name: requested
+      description: Return pickup requested
+    - name: scheduled
+      description: Pickup scheduled
+    - name: assigned
+      description: Agent assigned
+    - name: pickup_pending
+      description: Agent en route
+    - name: picked_up
+      description: Items picked up
+    - name: in_transit
+      description: En route to hub
+    - name: received_at_hub
+      description: Received at hub
+    - name: processing
+      description: QC and processing
+    - name: completed
+      description: Return completed
+    - name: cancelled
+      description: Return cancelled
+
+  transitions:
+    - from: requested
+      to: scheduled
+      event: schedule
+
+    - from: scheduled
+      to: assigned
+      event: assign_agent
+
+    - from: assigned
+      to: pickup_pending
+      event: dispatch
+
+    - from: pickup_pending
+      to: picked_up
+      event: pickup
+
+    - from: picked_up
+      to: in_transit
+      event: depart
+
+    - from: in_transit
+      to: received_at_hub
+      event: receive_at_hub
+
+    - from: received_at_hub
+      to: processing
+      event: start_qc
+
+    - from: processing
+      to: completed
+      event: complete
+
+    - from: [requested, scheduled, assigned]
+      to: cancelled
+      event: cancel
+
+events:
+  - name: return.requested
+    description: Return pickup requested
+    payload: [return_id, order_id]
+
+  - name: return.picked_up
+    description: Items picked up
+    payload: [return_id, agent_id]
+
+  - name: return.completed
+    description: Return process completed
+    payload: [return_id, refund_amount]

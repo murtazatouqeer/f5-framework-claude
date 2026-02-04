@@ -1,0 +1,302 @@
+name: Safety Rules
+display_name: Tour Safety Rules / Quy tắc an toàn tour
+description: |
+  Rules governing tour safety, participant requirements,
+  waivers, emergency procedures, and insurance.
+
+domain: travel-hospitality
+subdomain: tour
+category: safety
+
+rules:
+  # Age & Health Restrictions
+  - id: BR-SAF-001
+    name: Minimum Age Requirement
+    description: Enforce minimum age for activities
+    priority: critical
+    condition: |
+      ALL participants.age >= activity.min_age
+    action: reject_if_violated
+    message: "Minimum age of {min_age} years required for this activity"
+    applies_to: [TourBooking, Participant, Activity]
+
+  - id: BR-SAF-002
+    name: Maximum Age Restriction
+    description: Enforce maximum age for extreme activities
+    priority: high
+    condition: |
+      activity.risk_level = 'extreme' AND
+      ALL participants.age <= activity.max_age
+    action: reject_if_violated
+    message: "Maximum age of {max_age} years for this activity"
+    applies_to: [TourBooking, Participant, Activity]
+
+  - id: BR-SAF-003
+    name: Health Declaration Required
+    description: Require health declaration for high-risk activities
+    priority: critical
+    condition: |
+      activity.risk_level IN ('high', 'extreme')
+    action: |
+      require_health_declaration()
+      check_health_restrictions()
+    applies_to: [TourBooking, Activity]
+
+  - id: BR-SAF-004
+    name: Health Restriction Check
+    description: Block participants with restricted health conditions
+    priority: critical
+    condition: |
+      participant.medical_conditions INTERSECT activity.health_restrictions = EMPTY
+    action: reject_if_violated
+    message: "This activity is not recommended for participants with: {restrictions}"
+    applies_to: [Participant, Activity]
+
+  # Physical Requirements
+  - id: BR-SAF-010
+    name: Weight Limits
+    description: Enforce weight limits for safety-critical activities
+    priority: critical
+    condition: |
+      activity.activity_type IN ('air_sport', 'adventure') AND
+      participant.weight_kg >= activity.min_weight_kg AND
+      participant.weight_kg <= activity.max_weight_kg
+    action: reject_if_violated
+    message: "Weight must be between {min_weight} and {max_weight} kg"
+    applies_to: [Participant, Activity]
+
+  - id: BR-SAF-011
+    name: Height Requirements
+    description: Enforce height requirements for certain activities
+    priority: high
+    condition: |
+      participant.height_cm >= activity.min_height_cm
+    action: reject_if_violated
+    message: "Minimum height of {min_height} cm required"
+    applies_to: [Participant, Activity]
+
+  - id: BR-SAF-012
+    name: Swimming Ability
+    description: Require swimming ability for water activities
+    priority: critical
+    condition: |
+      activity.activity_type = 'water_sport' AND
+      participant.can_swim = true
+    action: reject_if_violated
+    message: "Swimming ability required for this activity"
+    applies_to: [Participant, Activity]
+
+  # Waiver Requirements
+  - id: BR-SAF-020
+    name: Waiver Required
+    description: Require signed waiver for risky activities
+    priority: critical
+    condition: |
+      activity.waiver_required = true AND
+      participant.waiver_signed = true
+    action: reject_if_violated
+    message: "Liability waiver must be signed before participation"
+    applies_to: [Participant, Activity]
+
+  - id: BR-SAF-021
+    name: Waiver Before Tour
+    description: Waiver must be signed before tour start
+    priority: critical
+    condition: |
+      activity.risk_level IN ('high', 'extreme')
+    action: |
+      require_waiver_24h_before()
+      remind_if_not_signed()
+    applies_to: [TourBooking, Activity]
+
+  - id: BR-SAF-022
+    name: Minor Waiver
+    description: Parent/guardian must sign waiver for minors
+    priority: critical
+    condition: |
+      participant.age < 18 AND
+      participant.waiver_signed_by = 'parent_guardian'
+    action: reject_if_violated
+    message: "Parent/guardian signature required for participants under 18"
+    applies_to: [Participant]
+
+  # Certification Requirements
+  - id: BR-SAF-030
+    name: Certification Validation
+    description: Validate required certifications for activities
+    priority: critical
+    condition: |
+      activity.certifications_required IS NOT NULL AND
+      participant.certifications CONTAINS activity.certifications_required
+    action: reject_if_violated
+    message: "Required certification: {certification_name}"
+    applies_to: [Participant, Activity]
+    example:
+      - activity: "Scuba Diving"
+        certification: "PADI Open Water"
+
+  - id: BR-SAF-031
+    name: Certification Expiry Check
+    description: Ensure certifications are not expired
+    priority: high
+    condition: |
+      participant.certifications.expiry_date > tour_date
+    action: reject_if_violated
+    message: "Certification expired. Please renew before booking"
+    applies_to: [Participant]
+
+  # Guide & Instructor Safety
+  - id: BR-SAF-040
+    name: First Aid Certified Guide
+    description: Guide must be first aid certified for adventure tours
+    priority: critical
+    condition: |
+      tour.tour_type IN ('adventure', 'wildlife', 'hiking') AND
+      guide.first_aid_certified = true AND
+      guide.first_aid_expiry > tour_date
+    action: reject_if_violated
+    message: "First aid certified guide required"
+    applies_to: [Guide, TourSchedule]
+
+  - id: BR-SAF-041
+    name: Instructor Ratio
+    description: Maintain safe instructor-to-participant ratio
+    priority: critical
+    condition: |
+      activity.difficulty_level = 'extreme'
+    action: |
+      required_ratio = activity.instructor_ratio
+      ensure_sufficient_instructors()
+    applies_to: [Activity, TourSchedule]
+    config:
+      ratios:
+        easy: "1:20"
+        moderate: "1:12"
+        challenging: "1:8"
+        extreme: "1:4"
+
+  - id: BR-SAF-042
+    name: Guide Background Check
+    description: Guide must pass background check
+    priority: critical
+    condition: |
+      guide.background_check_status = 'passed'
+    action: reject_assignment_if_violated
+    message: "Guide must have valid background check"
+    applies_to: [Guide]
+
+  # Equipment & Safety Gear
+  - id: BR-SAF-050
+    name: Safety Equipment Check
+    description: Verify all safety equipment before activity
+    priority: critical
+    condition: |
+      activity.safety_equipment_provided IS NOT NULL
+    action: |
+      create_equipment_checklist()
+      require_pre_activity_check()
+    applies_to: [Activity, TourSchedule]
+
+  - id: BR-SAF-051
+    name: Equipment Sizing
+    description: Collect sizing info for proper equipment fitting
+    priority: high
+    condition: |
+      activity.equipment_rental_available = true
+    action: |
+      require_size_info()
+      validate_before_departure()
+    applies_to: [Participant, Activity]
+
+  # Safety Briefing
+  - id: BR-SAF-060
+    name: Mandatory Safety Briefing
+    description: Conduct safety briefing before high-risk activities
+    priority: critical
+    condition: |
+      activity.safety_briefing_required = true
+    action: |
+      schedule_briefing()
+      duration >= activity.safety_briefing_duration_minutes
+      document_attendance()
+    applies_to: [Activity, TourSchedule]
+
+  - id: BR-SAF-061
+    name: Briefing Language
+    description: Safety briefing in participant's language
+    priority: high
+    condition: |
+      activity.risk_level IN ('high', 'extreme')
+    action: |
+      ensure_interpreter_if_needed()
+      provide_written_safety_info()
+    applies_to: [TourBooking, Activity]
+
+  # Insurance Requirements
+  - id: BR-SAF-070
+    name: Activity Insurance
+    description: Ensure insurance coverage for activities
+    priority: critical
+    condition: |
+      activity.insurance_included = true OR
+      participant.has_travel_insurance = true
+    action: recommend_if_not_covered
+    message: "Travel insurance strongly recommended for this activity"
+    applies_to: [TourBooking, Activity]
+
+  - id: BR-SAF-071
+    name: Operator Liability Insurance
+    description: Supplier must have valid liability insurance
+    priority: critical
+    condition: |
+      supplier.liability_insurance.expiry_date > NOW()
+    action: reject_if_violated
+    message: "Operator insurance expired"
+    applies_to: [Supplier]
+
+  # Emergency Procedures
+  - id: BR-SAF-080
+    name: Emergency Contact Required
+    description: Require emergency contact for all participants
+    priority: high
+    condition: |
+      activity.risk_level IN ('high', 'extreme')
+    action: |
+      require_emergency_contact()
+    applies_to: [Participant, Activity]
+
+  - id: BR-SAF-081
+    name: Emergency Plan Required
+    description: High-risk activities must have emergency plan
+    priority: critical
+    condition: |
+      activity.risk_level IN ('high', 'extreme')
+    action: |
+      verify_emergency_procedures()
+      ensure_communication_equipment()
+    applies_to: [Activity, TourSchedule]
+
+  # Weather Safety
+  - id: BR-SAF-090
+    name: Weather Cancellation
+    description: Cancel outdoor activities in dangerous weather
+    priority: critical
+    condition: |
+      weather_alert = 'severe' OR
+      wind_speed > activity.max_wind_speed OR
+      visibility < activity.min_visibility
+    action: |
+      cancel_schedule()
+      notify_all_participants()
+      process_full_refunds()
+    applies_to: [TourSchedule, Activity]
+
+validation_order:
+  - BR-SAF-001
+  - BR-SAF-002
+  - BR-SAF-003
+  - BR-SAF-010
+  - BR-SAF-020
+  - BR-SAF-030
+  - BR-SAF-040
+  - BR-SAF-070

@@ -1,0 +1,418 @@
+name: check-out-workflow
+display_name: Guest Check-out Workflow
+display_name_vi: Quy trình trả phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Complete check-out workflow including folio review, payment settlement,
+  key return, and room status update. Supports express and mobile checkout.
+
+description_vi: |
+  Quy trình trả phòng hoàn chỉnh bao gồm xem lại hóa đơn, thanh toán,
+  trả chìa khóa và cập nhật trạng thái phòng. Hỗ trợ trả phòng nhanh và di động.
+
+workflow:
+  id: WF-CHK-OUT
+  name: Guest Check-out
+  type: sequential_with_branches
+
+  trigger:
+    types:
+      - guest_departure
+      - express_checkout
+      - mobile_checkout
+      - early_departure
+      - late_checkout
+
+  actors:
+    - guest: Departing customer
+    - front_desk: Front desk agent
+    - system: PMS
+    - housekeeping: Room turnover
+    - cashier: Payment processing
+
+  states:
+    - checkout_initiated
+    - folio_reviewed
+    - charges_finalized
+    - payment_settled
+    - keys_returned
+    - checked_out
+
+steps:
+  - id: STEP-01
+    name: Checkout Initiation
+    name_vi: Bắt đầu trả phòng
+    description: Guest initiates checkout process
+    state: checkout_initiated
+    actor: guest | front_desk
+    inputs:
+      - room_number: required
+      - guest_name: verification
+    process:
+      - load_reservation:
+          status: checked_in
+      - verify_guest_identity:
+          match: room_number + name
+      - check_departure_status:
+          expected: today
+          IF early_departure:
+            adjust_dates
+          IF late_checkout:
+            verify_approval
+      - retrieve_folio:
+          all_folios: if_multiple
+    outputs:
+      - reservation_id
+      - folio_id
+      - guest_profile
+    next: STEP-02
+
+  - id: STEP-02
+    name: Late Posting Check
+    name_vi: Kiểm tra phí chưa ghi
+    description: Ensure all charges are posted
+    state: checkout_initiated
+    actor: system
+    process:
+      - query_outstanding_charges:
+          outlets:
+            - restaurant
+            - bar
+            - room_service
+            - spa
+            - minibar
+            - telephone
+            - parking
+      - post_pending_charges:
+          automatically: if_interface_active
+      - check_minibar:
+          IF not_recently_checked:
+            flag: for_verification
+            options:
+              - honor_system (trust_guest)
+              - physical_check (delay_checkout)
+      - post_room_charges:
+          IF morning_checkout_before_NA:
+            post: today_room_charge
+    outputs:
+      - all_charges_posted: boolean
+      - pending_verification: array
+    on_pending_charges: STEP-02B
+    next: STEP-03
+
+  - id: STEP-02B
+    name: Charge Verification
+    name_vi: Xác minh phí
+    description: Verify disputed or pending charges
+    state: checkout_initiated
+    actor: front_desk
+    condition: disputed_or_pending_charges
+    process:
+      - present_pending_charges:
+          to_guest: for_confirmation
+      - IF guest_disputes:
+          - investigate_charge
+          - IF valid: explain_to_guest
+          - IF error: remove_or_adjust
+      - IF minibar_disputed:
+          options:
+            - accept_guest_statement
+            - housekeeping_verify
+      - document_disputes:
+          for: record_keeping
+    outputs:
+      - charges_confirmed
+      - adjustments_made
+    next: STEP-03
+
+  - id: STEP-03
+    name: Folio Presentation
+    name_vi: Trình bày hóa đơn
+    description: Present complete folio to guest
+    state: folio_reviewed
+    actor: front_desk
+    display:
+      folio_summary:
+        - stay_dates
+        - room_number
+        - rate_information
+        - itemized_charges:
+            - room_charges
+            - taxes
+            - F&B_charges
+            - other_charges
+        - payments_received:
+            - deposits
+            - interim_payments
+        - adjustments
+        - current_balance
+    process:
+      - print_or_email_folio:
+          format: detailed_statement
+      - explain_charges:
+          if_requested
+      - answer_questions:
+          resolve_concerns
+    inputs:
+      - guest_acknowledgment: required
+    outputs:
+      - folio_reviewed: boolean
+      - balance_due: amount
+    next: STEP-04
+
+  - id: STEP-04
+    name: Payment Settlement
+    name_vi: Thanh toán
+    description: Collect payment for outstanding balance
+    state: charges_finalized
+    actor: front_desk | cashier
+    process:
+      - calculate_final_balance:
+          charges - payments = balance
+      - IF balance > 0:
+          collect_payment:
+            preferred: card_on_file
+            alternative: cash, new_card
+          process_payment:
+            authorize_and_capture
+      - IF balance < 0:
+          process_refund:
+            to: original_payment_method
+            OR: cash_if_requested
+      - IF balance = 0:
+          no_collection_needed
+      - generate_receipt:
+          itemized: true
+          include: payment_method
+    inputs:
+      - payment_method: if_balance_due
+      - payment_amount: auto_or_specified
+    outputs:
+      - payment_reference
+      - receipt_number
+      - balance_settled: boolean
+    on_card_decline: request_alternative
+    next: STEP-05
+
+  - id: STEP-05
+    name: Folio Closure
+    name_vi: Đóng hóa đơn
+    description: Close folio and finalize accounting
+    state: payment_settled
+    actor: system
+    process:
+      - close_folio:
+          status: closed
+          closed_at: timestamp
+          closed_by: agent_id
+      - generate_invoice:
+          number: auto_sequential
+          format: tax_compliant
+      - IF direct_bill:
+          transfer_to_city_ledger:
+            create: AR_entry
+            link: company_account
+      - archive_folio:
+          retain: per_retention_policy
+      - update_statistics:
+          revenue_by_category
+          guest_spending_history
+    outputs:
+      - folio_status: closed
+      - invoice_number
+      - city_ledger_reference (if_applicable)
+    next: STEP-06
+
+  - id: STEP-06
+    name: Key Return
+    name_vi: Trả chìa khóa
+    description: Collect and deactivate room keys
+    state: keys_returned
+    actor: front_desk
+    process:
+      - collect_keys:
+          count: issued_keys
+          verify: all_returned
+      - IF keys_not_returned:
+          options:
+            - accept_declaration (most_common)
+            - charge_key_fee (rare)
+      - deactivate_keys:
+          in_system: automatic
+      - collect_other_items:
+          parking_ticket
+          spa_locker_key
+          golf_cart_key
+    outputs:
+      - keys_returned: count
+      - keys_deactivated: boolean
+    next: STEP-07
+
+  - id: STEP-07
+    name: Checkout Completion
+    name_vi: Hoàn tất trả phòng
+    description: Finalize checkout and update systems
+    state: checked_out
+    actor: system | front_desk
+    process:
+      - update_reservation_status:
+          new_status: checked_out
+          actual_departure: timestamp
+      - update_room_status:
+          new_status: vacant_dirty
+          queue_for: housekeeping
+      - release_room:
+          for: next_guest
+      - update_guest_profile:
+          - last_stay_date
+          - total_stays
+          - total_revenue
+          - preferences_noted
+      - update_loyalty:
+          - nights_earned
+          - points_earned
+          - tier_progress
+      - send_departure_communications:
+          - thank_you_email
+          - feedback_survey (delayed_24h)
+          - receipt_email (if_requested)
+    outputs:
+      - checkout_complete: boolean
+      - checked_out_at: timestamp
+      - checked_out_by: agent_id
+    next: STEP-08
+
+  - id: STEP-08
+    name: Post-Checkout Tasks
+    name_vi: Nhiệm vụ sau trả phòng
+    description: Trigger follow-up activities
+    state: checked_out
+    actor: system
+    process:
+      - notify_housekeeping:
+          room: departed
+          priority: based_on_arrivals
+      - update_availability:
+          channel_sync: inventory_update
+      - IF lost_and_found:
+          process: per_procedure
+      - schedule_survey:
+          delay: 24_hours
+          type: satisfaction_survey
+      - marketing_tasks:
+          add_to: remarketing_list
+          send: special_offers (if_opted_in)
+    outputs:
+      - housekeeping_notified
+      - survey_scheduled
+    next: END
+
+special_flows:
+  express_checkout:
+    trigger: guest_enrolled_or_requests
+    eligibility:
+      - valid_card_on_file
+      - no_disputed_charges
+      - balance_within_authorization
+    process:
+      - guest_drops_key (or_keeps)
+      - system_auto_checkouts:
+          at: scheduled_departure_time
+      - charge_card_on_file:
+          for: final_balance
+      - email_receipt:
+          to: guest_email
+      - IF charge_fails:
+          flag: for_follow_up
+          attempt: contact_guest
+
+  mobile_checkout:
+    trigger: app_checkout
+    process:
+      - guest_reviews_folio: in_app
+      - guest_confirms_charges: in_app
+      - payment_processed: via_app
+      - digital_receipt: in_app
+      - key_deactivated: automatic
+      - room_vacated: guest_confirms
+      - keys: kept_or_dropbox
+
+  late_checkout:
+    trigger: departure_after_standard_time
+    process:
+      - check_authorization:
+          complimentary: loyalty_benefit
+          charged: late_checkout_fee
+      - extend_key_validity
+      - notify_housekeeping: revised_time
+      - IF no_authorization:
+          charge: half_day_or_full_day
+          based_on: time_departed
+
+  early_departure:
+    trigger: leaving_before_departure_date
+    process:
+      - verify_early_departure
+      - adjust_reservation:
+          nights: actual_stay
+      - recalculate_charges:
+          IF prepaid: check_refund_policy
+          IF flexible: adjust_to_actual
+      - handle_penalties:
+          per: rate_plan_policy
+      - release_future_inventory
+
+  disputed_checkout:
+    trigger: guest_disputes_folio
+    process:
+      - pause_checkout
+      - investigate_with_guest
+      - retrieve_supporting_docs
+      - resolve_or_escalate
+      - document_outcome
+      - complete_checkout
+
+group_checkout:
+  master_folio:
+    - review_with_coordinator
+    - verify_routing_correct
+    - settle_per_contract
+  individual_folios:
+    - incidentals_by_guest
+    - batch_processing_option
+
+post_checkout_handling:
+  late_charges:
+    discovery: after_checkout
+    process:
+      - post_to_city_ledger
+      - attempt_card_charge
+      - send_notification
+      - collection_if_needed
+
+  refunds:
+    discovery: overcharge_found
+    process:
+      - calculate_refund
+      - process_to_original_payment
+      - notify_guest
+      - document_reason
+
+metrics:
+  - name: average_checkout_time
+    target: "< 3 minutes"
+
+  - name: express_checkout_adoption
+    target: "> 40%"
+
+  - name: folio_dispute_rate
+    target: "< 5%"
+
+  - name: post_checkout_survey_response
+    target: "> 20%"
+
+  - name: guest_satisfaction_checkout
+    target: "> 4.5/5"

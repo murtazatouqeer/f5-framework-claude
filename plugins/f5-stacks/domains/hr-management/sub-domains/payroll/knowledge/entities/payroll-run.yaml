@@ -1,0 +1,410 @@
+name: payroll-run
+display_name: Payroll Run
+description: |
+  Represents a single payroll processing run within a period. Tracks
+  calculation status, approvals, and payment processing.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: PayrollRun
+  table_name: payroll_runs
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: run_id
+      type: string
+      length: 20
+      unique: true
+      format: "RUN-{YYYYMMDD}-{NNN}"
+
+    - name: period_id
+      type: uuid
+      required: true
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, calculating, calculated, review, approved, processing_payment, paid, cancelled, void]
+      default: draft
+
+    - name: run_type
+      type: enum
+      values: [regular, off_cycle, bonus, thirteenth_month, final_settlement, correction]
+      default: regular
+
+    # Scope
+    - name: employee_scope
+      type: enum
+      values: [all, department, selected, individual]
+      default: all
+
+    - name: scope_filter
+      type: jsonb
+      description: Criteria for employee selection
+      example: |
+        {
+          "departments": ["dept_001", "dept_002"],
+          "positions": [],
+          "employees": [],
+          "exclude_employees": []
+        }
+
+    - name: employees_included
+      type: jsonb
+      description: List of employee IDs included
+
+    - name: employees_count
+      type: integer
+      default: 0
+
+    - name: employees_processed
+      type: integer
+      default: 0
+
+    - name: employees_with_errors
+      type: integer
+      default: 0
+
+    # Calculation Details
+    - name: calculation_started_at
+      type: timestamp
+
+    - name: calculation_completed_at
+      type: timestamp
+
+    - name: calculated_by
+      type: uuid
+
+    - name: calculation_duration_seconds
+      type: integer
+
+    # Totals
+    - name: gross_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: earnings_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: deductions_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: net_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: tax_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: insurance_ee_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: insurance_er_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: employer_cost_total
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    # Breakdown by Category
+    - name: earnings_breakdown
+      type: jsonb
+      description: Totals by earning type
+      example: |
+        {
+          "BASIC": 500000000,
+          "HOUSING": 50000000,
+          "TRANSPORT": 25000000,
+          "MEAL": 36500000
+        }
+
+    - name: deductions_breakdown
+      type: jsonb
+      description: Totals by deduction type
+      example: |
+        {
+          "SI_EE": 40000000,
+          "HI_EE": 7500000,
+          "UI_EE": 5000000,
+          "PIT": 45000000
+        }
+
+    # Variance Analysis
+    - name: variance_from_previous
+      type: jsonb
+      description: Comparison to previous run
+      example: |
+        {
+          "gross_change": 5000000,
+          "gross_change_percent": 1.5,
+          "headcount_change": 2,
+          "new_employees": ["emp_001"],
+          "terminated_employees": []
+        }
+
+    # Review and Approval
+    - name: reviewed_by
+      type: uuid
+
+    - name: reviewed_at
+      type: timestamp
+
+    - name: review_notes
+      type: text
+
+    - name: approved_by
+      type: uuid
+
+    - name: approved_at
+      type: timestamp
+
+    - name: approval_notes
+      type: text
+
+    - name: approval_chain
+      type: jsonb
+      description: Multi-level approval tracking
+      example: |
+        [
+          {"level": 1, "approver_id": "xxx", "approved_at": "...", "status": "approved"},
+          {"level": 2, "approver_id": "yyy", "approved_at": "...", "status": "approved"}
+        ]
+
+    # Payment Processing
+    - name: payment_date
+      type: date
+
+    - name: bank_file_id
+      type: uuid
+
+    - name: payment_status
+      type: enum
+      values: [pending, file_generated, submitted, processing, completed, partial, failed]
+      default: pending
+
+    - name: payment_reference
+      type: string
+      length: 100
+
+    - name: payment_completed_at
+      type: timestamp
+
+    # Error Handling
+    - name: errors
+      type: jsonb
+      description: Processing errors
+      example: |
+        [
+          {
+            "employee_id": "xxx",
+            "error_code": "MISSING_BANK",
+            "message": "Bank account not configured",
+            "severity": "error"
+          }
+        ]
+
+    - name: warnings
+      type: jsonb
+      description: Processing warnings
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: created_by
+      type: uuid
+
+  relationships:
+    - name: period
+      type: belongs_to
+      entity: PayrollPeriod
+      foreign_key: period_id
+
+    - name: payslips
+      type: has_many
+      entity: PaySlip
+      foreign_key: payroll_run_id
+
+    - name: bank_file
+      type: belongs_to
+      entity: BankFile
+      foreign_key: bank_file_id
+
+    - name: calculator
+      type: belongs_to
+      entity: User
+      foreign_key: calculated_by
+
+    - name: approver
+      type: belongs_to
+      entity: User
+      foreign_key: approved_by
+
+  indexes:
+    - columns: [run_id]
+      unique: true
+    - columns: [period_id]
+    - columns: [status]
+    - columns: [run_type]
+    - columns: [payment_date]
+    - columns: [created_at]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: calculating
+        action: start_calculation
+        guards: [period_open, employees_selected]
+        triggers: [lock_employee_changes, start_calculation_job]
+
+      - from: calculating
+        to: calculated
+        action: complete_calculation
+        guards: [calculation_complete]
+        triggers: [generate_summary, flag_anomalies]
+
+      - from: calculating
+        to: draft
+        action: cancel_calculation
+        triggers: [cleanup_partial_results]
+
+      - from: calculated
+        to: review
+        action: submit_for_review
+        triggers: [notify_reviewers, generate_variance_report]
+
+      - from: review
+        to: calculated
+        action: request_changes
+        triggers: [notify_calculator, log_feedback]
+
+      - from: review
+        to: approved
+        action: approve
+        guards: [all_approvals_received]
+        triggers: [finalize_payslips, notify_finance]
+
+      - from: approved
+        to: processing_payment
+        action: process_payment
+        guards: [bank_file_generated]
+        triggers: [submit_bank_file, notify_bank]
+
+      - from: processing_payment
+        to: paid
+        action: confirm_payment
+        guards: [payment_confirmed]
+        triggers: [update_payslips, send_payslip_notifications]
+
+      - from: processing_payment
+        to: approved
+        action: payment_failed
+        triggers: [log_failure, notify_finance]
+
+      - from: [draft, calculated, review]
+        to: cancelled
+        action: cancel
+        guards: [no_payments_made]
+        triggers: [cleanup, notify_stakeholders]
+
+      - from: paid
+        to: void
+        action: void_run
+        guards: [admin_override, within_void_window]
+        triggers: [reverse_entries, notify_all]
+
+  validations:
+    - field: employees_count
+      rule: positive
+      when: status not in [draft]
+      message: "Must have at least one employee"
+
+    - field: net_total
+      rule: equals
+      compare_to: "gross_total - deductions_total"
+      tolerance: 1
+      message: "Net total calculation mismatch"
+
+  hooks:
+    on_calculate:
+      - process_each_employee
+      - calculate_totals
+      - check_for_anomalies
+      - generate_variance
+
+    on_approve:
+      - finalize_all_payslips
+      - lock_period_changes
+      - prepare_bank_file
+
+    on_payment_complete:
+      - mark_payslips_paid
+      - send_notifications
+      - update_ytd_records
+
+  audit:
+    track:
+      - status
+      - approved_by
+      - approved_at
+      - gross_total
+      - net_total
+      - payment_status
+
+    retention: 10_years
+
+  reports:
+    - name: payroll_summary
+      description: Run summary with totals
+
+    - name: variance_report
+      description: Changes from previous period
+
+    - name: department_breakdown
+      description: Costs by department
+
+    - name: exception_report
+      description: Errors and warnings

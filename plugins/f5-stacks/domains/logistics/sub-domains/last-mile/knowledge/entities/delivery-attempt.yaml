@@ -1,0 +1,285 @@
+name: DeliveryAttempt
+display_name: Delivery Attempt
+description: |
+  Record of each delivery attempt for a delivery.
+  Captures attempt details, outcome, and evidence.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: delivery_attempts
+  primary_key: id
+  indexes:
+    - columns: [delivery_id]
+    - columns: [delivery_agent_id]
+    - columns: [status]
+    - columns: [attempted_at]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: delivery_id
+    type: uuid
+    description: Reference to delivery
+    required: true
+
+  - name: attempt_number
+    type: integer
+    description: Attempt sequence number (1, 2, 3...)
+    required: true
+    minimum: 1
+
+  # Status
+  - name: status
+    type: enum
+    description: Attempt outcome
+    values:
+      - successful
+      - failed
+      - partial
+    required: true
+
+  - name: attempted_at
+    type: timestamp
+    description: When attempt was made
+    required: true
+
+  - name: completed_at
+    type: timestamp
+    description: When attempt was completed
+
+  # Agent
+  - name: delivery_agent_id
+    type: uuid
+    description: Agent who made the attempt
+    required: true
+
+  # Location
+  - name: attempted_location
+    type: object
+    description: Location where attempt was made
+    properties:
+      lat:
+        type: decimal
+        precision: 10
+        scale: 8
+      lng:
+        type: decimal
+        precision: 11
+        scale: 8
+      accuracy_m:
+        type: integer
+
+  - name: distance_from_address_m
+    type: integer
+    description: Distance from delivery address in meters
+
+  - name: arrived_at_location
+    type: timestamp
+    description: When agent arrived at location
+
+  # Failure details
+  - name: failure_reason
+    type: enum
+    description: Reason for failed attempt
+    values:
+      - not_home
+      - wrong_address
+      - address_not_found
+      - refused
+      - access_denied
+      - gate_locked
+      - doorbell_not_working
+      - damaged_package
+      - recipient_unavailable
+      - cod_not_ready
+      - id_not_available
+      - business_closed
+      - weather
+      - unsafe_area
+      - other
+
+  - name: failure_notes
+    type: text
+    description: Additional failure details
+    max_length: 500
+
+  - name: failure_category
+    type: enum
+    description: Category of failure
+    values:
+      - recipient_issue
+      - address_issue
+      - access_issue
+      - package_issue
+      - payment_issue
+      - external_issue
+    computed_from: failure_reason
+
+  # Action taken
+  - name: action_taken
+    type: enum
+    description: Action after failed attempt
+    values:
+      - left_at_door
+      - left_with_neighbor
+      - left_at_reception
+      - left_in_mailbox
+      - left_at_safe_place
+      - left_at_locker
+      - returned_to_hub
+      - returned_to_vehicle
+      - rescheduled
+      - contacted_recipient
+
+  - name: neighbor_name
+    type: string
+    description: Name of neighbor if left with neighbor
+    max_length: 100
+
+  - name: neighbor_unit
+    type: string
+    description: Neighbor's unit/apartment number
+    max_length: 20
+
+  # Evidence
+  - name: photo_url
+    type: string
+    description: Photo of attempt/location
+    format: uri
+
+  - name: audio_note_url
+    type: string
+    description: Voice note recording
+    format: uri
+
+  - name: video_url
+    type: string
+    description: Video evidence if any
+    format: uri
+
+  # Contact attempts
+  - name: call_attempted
+    type: boolean
+    description: Tried to call recipient
+    default: false
+
+  - name: call_answered
+    type: boolean
+    description: Recipient answered call
+    default: false
+
+  - name: sms_sent
+    type: boolean
+    description: SMS sent to recipient
+    default: false
+
+  - name: doorbell_rung
+    type: boolean
+    description: Doorbell was rung
+    default: false
+
+  - name: knocked_on_door
+    type: boolean
+    description: Knocked on door
+    default: false
+
+  - name: wait_time_minutes
+    type: integer
+    description: Time waited at location
+
+  # Timing
+  - name: time_spent_minutes
+    type: integer
+    description: Total time spent on attempt
+
+  - name: travel_time_minutes
+    type: integer
+    description: Time to reach location
+
+  # Notice
+  - name: notice_left
+    type: boolean
+    description: Physical notice left
+    default: false
+
+  - name: notice_type
+    type: enum
+    description: Type of notice left
+    values:
+      - door_tag
+      - card
+      - sticker
+
+  # Rescheduling
+  - name: rescheduled_to
+    type: date
+    description: Rescheduled delivery date
+
+  - name: rescheduled_slot_id
+    type: uuid
+    description: Rescheduled slot
+
+  - name: rescheduled_by
+    type: enum
+    description: Who requested reschedule
+    values:
+      - agent
+      - recipient
+      - system
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: delivery
+    type: belongs_to
+    entity: Delivery
+    foreign_key: delivery_id
+
+  - name: agent
+    type: belongs_to
+    entity: DeliveryAgent
+    foreign_key: delivery_agent_id
+
+  - name: rescheduled_slot
+    type: belongs_to
+    entity: DeliverySlot
+    foreign_key: rescheduled_slot_id
+
+business_rules:
+  - rule: BR-ATT-001
+    description: Photo required for failed attempts
+    validation: status = 'successful' OR photo_url IS NOT NULL
+
+  - rule: BR-ATT-002
+    description: Failure reason required for failed attempts
+    validation: status = 'successful' OR failure_reason IS NOT NULL
+
+  - rule: BR-ATT-003
+    description: Location must be near address
+    validation: distance_from_address_m <= 200
+
+events:
+  - name: attempt.created
+    description: Delivery attempt recorded
+    payload: [attempt_id, delivery_id, status]
+
+  - name: attempt.failed
+    description: Failed attempt recorded
+    payload: [attempt_id, failure_reason, action_taken]

@@ -1,0 +1,299 @@
+name: Inventory
+display_name: Inventory / Tồn kho
+description: |
+  Tracks stock levels for products and variants at specific locations.
+  Manages available quantity, reservations, and reorder thresholds.
+  Supports multi-location inventory for warehouses and stores.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the inventory record
+
+  - name: product_id
+    type: uuid
+    required: true
+    description: Reference to product
+
+  - name: variant_id
+    type: uuid
+    required: false
+    description: Reference to product variant (null for non-variant products)
+
+  - name: location_id
+    type: uuid
+    required: true
+    description: Warehouse or store location ID
+
+  - name: sku
+    type: string
+    required: true
+    description: SKU for quick reference
+    validation:
+      pattern: "^[A-Z0-9-]{3,50}$"
+
+  - name: quantity
+    type: integer
+    required: true
+    description: Total physical quantity in stock
+    validation:
+      min: 0
+    default: 0
+
+  - name: reserved_quantity
+    type: integer
+    required: true
+    description: Quantity reserved for pending orders
+    validation:
+      min: 0
+    default: 0
+
+  - name: available_quantity
+    type: integer
+    required: true
+    description: Quantity available for sale (quantity - reserved)
+    validation:
+      min: 0
+    default: 0
+
+  - name: incoming_quantity
+    type: integer
+    required: true
+    description: Expected incoming stock (from purchase orders)
+    validation:
+      min: 0
+    default: 0
+
+  - name: reorder_point
+    type: integer
+    required: false
+    description: Stock level that triggers reorder alert
+    validation:
+      min: 0
+
+  - name: reorder_quantity
+    type: integer
+    required: false
+    description: Suggested quantity to reorder
+    validation:
+      min: 0
+
+  - name: safety_stock
+    type: integer
+    required: false
+    description: Minimum stock to maintain as buffer
+    validation:
+      min: 0
+    default: 0
+
+  - name: max_stock
+    type: integer
+    required: false
+    description: Maximum stock level (overstock alert threshold)
+    validation:
+      min: 0
+
+  - name: unit_cost
+    type: decimal
+    required: false
+    description: Cost per unit for valuation
+    validation:
+      min: 0
+
+  - name: total_value
+    type: decimal
+    required: false
+    description: Total inventory value (quantity * unit_cost)
+    validation:
+      min: 0
+
+  - name: bin_location
+    type: string
+    required: false
+    description: Physical bin/shelf location in warehouse
+    validation:
+      max_length: 50
+    example: "A-12-3"
+
+  - name: status
+    type: enum
+    required: true
+    description: Inventory tracking status
+    validation:
+      values: [active, discontinued, on_hold]
+    default: active
+
+  - name: track_inventory
+    type: boolean
+    required: true
+    description: Whether to track inventory for this item
+    default: true
+
+  - name: allow_backorder
+    type: boolean
+    required: true
+    description: Allow orders when out of stock
+    default: false
+
+  - name: last_counted_at
+    type: timestamp
+    required: false
+    description: Last physical inventory count
+
+  - name: last_received_at
+    type: timestamp
+    required: false
+    description: Last stock receipt date
+
+  - name: last_sold_at
+    type: timestamp
+    required: false
+    description: Last sale date
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: product
+    type: belongs_to
+    entity: Product
+    required: true
+    description: Associated product
+
+  - name: variant
+    type: belongs_to
+    entity: ProductVariant
+    required: false
+    description: Associated variant (if applicable)
+
+  - name: location
+    type: belongs_to
+    entity: Location
+    required: true
+    description: Warehouse/store location
+
+  - name: stock_movements
+    type: has_many
+    entity: StockMovement
+    required: false
+    description: History of stock changes
+
+  - name: reservations
+    type: has_many
+    entity: InventoryReservation
+    required: false
+    description: Active stock reservations
+
+state_machine:
+  initial: active
+  states:
+    - name: active
+      description: Inventory is actively tracked
+    - name: discontinued
+      description: Product discontinued, sell remaining stock
+    - name: on_hold
+      description: Inventory temporarily frozen
+  transitions:
+    - from: active
+      to: discontinued
+      trigger: discontinue
+      description: Mark as discontinued
+    - from: active
+      to: on_hold
+      trigger: hold
+      description: Freeze inventory temporarily
+    - from: on_hold
+      to: active
+      trigger: release
+      description: Release inventory hold
+    - from: discontinued
+      to: active
+      trigger: reactivate
+      description: Reactivate discontinued inventory
+
+indexes:
+  - [sku]
+  - [product_id]
+  - [variant_id]
+  - [location_id]
+  - [product_id, location_id]
+  - [product_id, variant_id, location_id]
+  - [available_quantity]
+  - [status]
+
+business_rules:
+  - BR-INV-001: available_quantity = quantity - reserved_quantity
+  - BR-INV-002: available_quantity cannot be negative (unless allow_backorder)
+  - BR-INV-003: reserved_quantity cannot exceed quantity
+  - BR-INV-004: Alert when available_quantity <= reorder_point
+  - BR-INV-005: Alert when quantity > max_stock (overstock)
+  - BR-INV-006: total_value = quantity * unit_cost
+  - BR-INV-007: All stock changes must create StockMovement record
+  - BR-INV-008: Cannot sell from location with status = on_hold
+  - BR-INV-009: Unique constraint on (product_id, variant_id, location_id)
+  - BR-INV-010: If track_inventory = false, ignore quantity checks
+
+computed_fields:
+  - name: available_quantity
+    formula: quantity - reserved_quantity
+    description: Sellable quantity
+
+  - name: total_value
+    formula: quantity * unit_cost
+    description: Total inventory valuation
+
+  - name: is_low_stock
+    formula: available_quantity <= reorder_point
+    description: Low stock indicator
+
+  - name: is_out_of_stock
+    formula: available_quantity <= 0
+    description: Out of stock indicator
+
+  - name: is_overstock
+    formula: quantity > max_stock
+    description: Overstock indicator
+
+  - name: days_of_stock
+    formula: available_quantity / average_daily_sales
+    description: Estimated days until stockout
+
+events:
+  - name: inventory.low_stock
+    payload: [id, sku, available_quantity, reorder_point, location_id]
+    description: Fired when stock falls to reorder point
+
+  - name: inventory.out_of_stock
+    payload: [id, sku, location_id]
+    description: Fired when stock reaches zero
+
+  - name: inventory.overstock
+    payload: [id, sku, quantity, max_stock, location_id]
+    description: Fired when stock exceeds maximum
+
+  - name: inventory.adjusted
+    payload: [id, sku, old_quantity, new_quantity, reason]
+    description: Fired when inventory is adjusted
+
+  - name: inventory.received
+    payload: [id, sku, quantity_received, location_id]
+    description: Fired when stock is received
+
+  - name: inventory.reserved
+    payload: [id, sku, quantity_reserved, order_id]
+    description: Fired when stock is reserved for order
+
+  - name: inventory.released
+    payload: [id, sku, quantity_released, reason]
+    description: Fired when reservation is released

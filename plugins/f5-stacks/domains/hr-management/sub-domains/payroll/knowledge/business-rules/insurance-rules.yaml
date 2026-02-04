@@ -1,0 +1,460 @@
+name: insurance-rules
+display_name: Social Insurance Rules
+description: |
+  Business rules for social insurance (BHXH), health insurance (BHYT),
+  and unemployment insurance (BHTN) calculations per Vietnam regulations.
+
+domain: hr-management
+subdomain: payroll
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Participation Eligibility
+  - id: INS-001
+    name: mandatory_participation
+    description: Determine mandatory insurance participation requirement
+    category: eligibility
+    priority: critical
+
+    mandatory_when:
+      labor_contract:
+        - type: indefinite
+          participation: [bhxh, bhyt, bhtn]
+
+        - type: definite
+          duration: ">= 1 month"
+          participation: [bhxh, bhyt, bhtn]
+
+        - type: seasonal
+          duration: ">= 1 month"
+          participation: [bhxh, bhyt, bhtn]
+
+    exempt_when:
+      - condition: "contract_duration < 1 month"
+        applies_to: all
+
+      - condition: "employee_type = 'intern'"
+        applies_to: all
+
+      - condition: "age > retirement_age AND receiving_pension"
+        applies_to: [bhxh, bhtn]
+        exception: "BHYT mandatory for employer"
+
+      - condition: "foreign_worker_with_home_country_coverage"
+        applies_to: [bhxh]
+        documentation: required
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_2
+
+  # Contribution Base Rules
+  - id: INS-002
+    name: contribution_base_calculation
+    description: Calculate the salary base for insurance contributions
+    category: calculation
+    priority: critical
+
+    included_in_base:
+      - salary_from_contract
+      - position_allowance
+      - responsibility_allowance
+      - other_regular_allowances_per_contract
+
+    excluded_from_base:
+      - one_time_bonuses
+      - meal_allowance
+      - transport_allowance
+      - housing_allowance
+      - phone_allowance
+      - overtime_pay
+      - hazard_allowance
+      - attendance_bonus
+
+    calculation:
+      formula: |
+        contribution_base = salary_from_contract
+                          + position_allowance
+                          + responsibility_allowance
+                          + other_regular_allowances
+
+    compliance:
+      - standard: Decree_115_2015
+        article: Article_17
+
+  # Contribution Base Limits
+  - id: INS-003
+    name: contribution_base_limits
+    description: Apply minimum and maximum limits to contribution base
+    category: calculation
+    priority: critical
+
+    minimum_base:
+      value: regional_minimum_wage
+      by_region:
+        region_1: 4680000
+        region_2: 4160000
+        region_3: 3640000
+        region_4: 3250000
+
+    maximum_base:
+      formula: "20 * regional_minimum_wage"
+      by_region:
+        region_1: 93600000
+        region_2: 83200000
+        region_3: 72800000
+        region_4: 65000000
+
+    calculation:
+      formula: |
+        actual_base = MIN(MAX(contribution_base, minimum_base), maximum_base)
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_89
+
+  # BHXH Contribution Rates
+  - id: INS-004
+    name: bhxh_contribution_rates
+    description: Social insurance contribution rates
+    category: calculation
+    priority: critical
+
+    rates_2024:
+      employee:
+        total: 8.0
+        breakdown:
+          retirement_death: 8.0
+
+      employer:
+        total: 17.5
+        breakdown:
+          retirement_death: 14.0
+          sickness_maternity: 3.0
+          occupational_accident_disease: 0.5
+
+    calculation:
+      employee_amount: "contribution_base * 0.08"
+      employer_amount: "contribution_base * 0.175"
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_85
+      - standard: Decree_58_2020
+
+  # BHYT Contribution Rates
+  - id: INS-005
+    name: bhyt_contribution_rates
+    description: Health insurance contribution rates
+    category: calculation
+    priority: critical
+
+    rates_2024:
+      employee: 1.5
+      employer: 3.0
+      total: 4.5
+
+    calculation:
+      employee_amount: "contribution_base * 0.015"
+      employer_amount: "contribution_base * 0.03"
+
+    compliance:
+      - standard: Health_Insurance_Law_2008
+        article: Article_12
+      - standard: Decree_146_2018
+
+  # BHTN Contribution Rates
+  - id: INS-006
+    name: bhtn_contribution_rates
+    description: Unemployment insurance contribution rates
+    category: calculation
+    priority: critical
+
+    rates_2024:
+      employee: 1.0
+      employer: 1.0
+      state: 1.0
+      total: 3.0
+
+    eligibility:
+      - labor_contract: ">= 3 months"
+      - employer_size: ">= 10 employees"
+
+    maximum_base:
+      formula: "20 * regional_minimum_wage"
+      note: "Same as BHXH maximum"
+
+    calculation:
+      employee_amount: "MIN(contribution_base, max_base) * 0.01"
+      employer_amount: "MIN(contribution_base, max_base) * 0.01"
+
+    compliance:
+      - standard: Employment_Law_2013
+        article: Article_43
+      - standard: Decree_28_2015
+
+  # Proration Rules
+  - id: INS-007
+    name: insurance_proration
+    description: Prorate insurance for partial month participation
+    category: calculation
+    priority: high
+
+    new_employee:
+      condition: "start_date >= 2nd of month"
+      calculation: |
+        IF start_date <= 15th THEN
+          contribution = full_month
+        ELSE
+          contribution = 0  # Start next month
+        END
+
+    termination:
+      condition: "end_date < last day of month"
+      calculation: |
+        contribution = full_month  # Full contribution for partial month
+
+    note: "Insurance contributions are monthly, not daily prorated"
+
+    compliance:
+      - standard: Circular_59_2015
+
+  # Registration and Reporting
+  - id: INS-008
+    name: registration_requirements
+    description: Insurance registration and change reporting
+    category: compliance
+    priority: critical
+
+    new_employee:
+      deadline: "Within 30 days of start date"
+      form: "TK1-TS"
+      documents:
+        - labor_contract
+        - id_card_copy
+        - household_registration
+        - photos
+
+    changes:
+      salary_change:
+        deadline: "Within month of change"
+        form: "D02-TS"
+
+      position_change:
+        deadline: "Within month of change"
+        form: "D02-TS"
+
+      termination:
+        deadline: "Within 30 days"
+        form: "D02-TS"
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_97
+
+  # Monthly Declaration
+  - id: INS-009
+    name: monthly_declaration
+    description: Monthly insurance contribution declaration
+    category: compliance
+    priority: critical
+
+    deadline: "By 20th of month"
+    form: "D02-TS"
+
+    contents:
+      - employee_list
+      - contribution_amounts
+      - changes_in_month
+
+    payment_deadline: "By end of month"
+
+    late_payment:
+      interest_rate: "2% per month on late amount"
+      penalty: "As per BHXH regulations"
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_87
+
+  # Exemptions and Reductions
+  - id: INS-010
+    name: insurance_exemptions
+    description: Temporary exemptions from insurance contributions
+    category: exemption
+    priority: medium
+
+    exemptions:
+      maternity_leave:
+        duration: "4-6 months depending on type"
+        employer_contribution: exempted
+        employee_contribution: exempted
+        benefit: "Maternity allowance from BHXH"
+
+      sick_leave:
+        duration: "Per medical certificate"
+        employer_contribution: continue
+        employee_contribution: continue
+        benefit: "Sick pay from BHXH (75% of salary)"
+
+      work_injury:
+        duration: "Treatment period"
+        employer_contribution: continue
+        employee_contribution: exempted
+        benefit: "Work injury allowance"
+
+    compliance:
+      - standard: BHXH_Law_2014
+        articles: [31, 39, 48]
+
+  # Retirement Age
+  - id: INS-011
+    name: retirement_age_rules
+    description: Retirement age for BHXH purposes
+    category: eligibility
+    priority: medium
+
+    retirement_age_2024:
+      male: 61
+      female: 56.4
+
+    retirement_age_progression:
+      - year: 2024
+        male: 61.0
+        female: 56.4
+
+      - year: 2025
+        male: 61.25
+        female: 56.8
+
+      - year: 2030
+        male: 62.25
+        female: 58.8
+
+      - final_target:
+        year: 2035
+        male: 62
+        female: 60
+
+    early_retirement:
+      condition: "Hazardous work or disability"
+      reduction: "Up to 5 years before normal age"
+
+    compliance:
+      - standard: Labor_Code_2019
+        article: Article_169
+
+  # Insurance Card Management
+  - id: INS-012
+    name: insurance_card_management
+    description: Health insurance card issuance and validity
+    category: process
+    priority: medium
+
+    new_card:
+      timeline: "Within 10 working days of registration"
+      validity: "Per contribution period"
+
+    renewal:
+      automatic: "If continuous contribution"
+      gap_handling: "New card if gap > 3 months"
+
+    lost_card:
+      replacement: "Apply to BHXH office"
+      fee: "As per current regulations"
+
+  # Year-End Adjustment
+  - id: INS-013
+    name: year_end_adjustment
+    description: Annual insurance contribution reconciliation
+    category: compliance
+    priority: high
+
+    activities:
+      - reconcile_contributions_vs_declarations
+      - verify_employee_records
+      - process_adjustments
+      - prepare_annual_report
+
+    deadline: "January of following year"
+
+    common_adjustments:
+      - salary_changes_not_reported
+      - new_employees_late_registration
+      - terminations_late_reporting
+      - calculation_errors
+
+  # Contribution Recovery
+  - id: INS-014
+    name: contribution_recovery
+    description: Recovery of missed or underpaid contributions
+    category: compliance
+    priority: high
+
+    scenarios:
+      underpayment:
+        action: "Make up difference plus interest"
+        interest: "2% per month"
+        deadline: "As directed by BHXH"
+
+      unreported_employee:
+        action: "Backpay contributions from start date"
+        interest: "2% per month"
+        penalty: "Additional administrative penalty"
+
+      overpayment:
+        action: "Credit to future contributions"
+        refund: "Not typically refunded"
+
+    compliance:
+      - standard: BHXH_Law_2014
+        article: Article_122
+
+rule_dependencies:
+  INS-001:
+    determines: [INS-004, INS-005, INS-006]
+    reason: "Eligibility determines which contributions apply"
+
+  INS-002:
+    requires: []
+    provides_to: [INS-003, INS-004, INS-005, INS-006]
+    reason: "Base calculation needed before rate application"
+
+  INS-003:
+    requires: [INS-002]
+    provides_to: [INS-004, INS-005, INS-006]
+    reason: "Limits applied before rate calculation"
+
+execution_order:
+  - phase: eligibility
+    rules: [INS-001, INS-011]
+
+  - phase: base_calculation
+    rules: [INS-002, INS-003]
+
+  - phase: contribution_calculation
+    rules: [INS-004, INS-005, INS-006, INS-007, INS-010]
+
+  - phase: compliance
+    rules: [INS-008, INS-009, INS-012, INS-013, INS-014]
+
+compliance_summary:
+  - standard: BHXH_Law_2014
+    articles: [2, 85, 87, 89, 97, 122]
+
+  - standard: Health_Insurance_Law_2008
+    articles: [12]
+
+  - standard: Employment_Law_2013
+    articles: [43]
+
+  - standard: Decree_115_2015
+    subject: Contribution_base
+
+  - standard: Decree_58_2020
+    subject: BHXH_rates
+
+  - standard: Circular_59_2015
+    subject: Implementation_guidance

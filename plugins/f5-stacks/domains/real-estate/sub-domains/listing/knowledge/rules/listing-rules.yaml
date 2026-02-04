@@ -1,0 +1,295 @@
+# Listing Rules
+# F5 Framework v2.0 - Real Estate/Listing
+# Business rules for property listings
+
+rules:
+  domain: real-estate
+  subdomain: listing
+  category: listing
+  version: "1.0.0"
+
+  description: |
+    Business rules governing property listing creation, publication,
+    management, and lifecycle. Ensures listing quality, compliance,
+    and fair housing standards.
+
+  # Publication Rules
+  publication:
+    - id: LST-PUB-001
+      name: Minimum Photo Requirement
+      name_vi: Yêu cầu ảnh tối thiểu
+      description: Listings must have minimum photos before publication
+      condition: |
+        property.media.where(type='photo', status='approved').count >=
+        CASE
+          WHEN listing.featured = true THEN 10
+          WHEN listing.premium = true THEN 8
+          ELSE 5
+        END
+      action: block_publication
+      message: "Insufficient photos. Required: {required}, Current: {current}"
+      severity: error
+
+    - id: LST-PUB-002
+      name: Primary Photo Required
+      name_vi: Yêu cầu ảnh chính
+      description: Listing must have a designated primary photo
+      condition: "property.media.where(is_primary=true, status='approved').exists"
+      action: block_publication
+      message: "Primary photo must be set"
+      severity: error
+
+    - id: LST-PUB-003
+      name: Description Length
+      name_vi: Độ dài mô tả
+      description: Listing description must meet minimum length
+      condition: |
+        LENGTH(listing.description) >=
+        CASE
+          WHEN listing.featured = true THEN 500
+          WHEN listing.premium = true THEN 300
+          ELSE 100
+        END
+      action: block_publication
+      message: "Description too short. Minimum: {required} characters"
+      severity: error
+
+    - id: LST-PUB-004
+      name: Price Required
+      name_vi: Yêu cầu giá
+      description: Listing must have price unless hidden
+      condition: "listing.asking_price > 0 OR listing.price_display IN ('call_for_price', 'price_on_application')"
+      action: block_publication
+      message: "Price is required for publication"
+      severity: error
+
+    - id: LST-PUB-005
+      name: Agent License Verification
+      name_vi: Xác minh giấy phép môi giới
+      description: Agent must have valid license to publish
+      condition: "agent.license_verified = true AND agent.license_expiry > TODAY()"
+      action: block_publication
+      message: "Agent license expired or not verified"
+      severity: error
+
+  # Content Rules
+  content:
+    - id: LST-CNT-001
+      name: Fair Housing Compliance
+      name_vi: Tuân thủ luật nhà ở công bằng
+      description: Listing content must not violate fair housing laws
+      condition: |
+        NOT CONTAINS_ANY(LOWER(listing.title + listing.description), [
+          'no children', 'adults only', 'no families',
+          'christian only', 'muslim only', 'buddhist only',
+          'vietnamese only', 'foreigners only',
+          'single only', 'couples only', 'no pets allowed'
+        ])
+      action: require_review
+      message: "Content may violate fair housing guidelines"
+      severity: warning
+      auto_flag: true
+
+    - id: LST-CNT-002
+      name: Contact Information in Description
+      name_vi: Thông tin liên hệ trong mô tả
+      description: Description should not contain direct contact info
+      condition: |
+        NOT MATCHES(listing.description, '(\+?\d{10,})|([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})')
+      action: auto_redact
+      message: "Contact information detected and removed"
+      severity: info
+
+    - id: LST-CNT-003
+      name: Prohibited Words
+      name_vi: Từ bị cấm
+      description: Filter prohibited/spam words from listing
+      condition: |
+        NOT CONTAINS_ANY(LOWER(listing.title + listing.description), [
+          'urgent sale', 'below market', 'must sell today',
+          'bank foreclosure', 'motivated seller'
+        ])
+      action: require_review
+      message: "Content contains potentially misleading claims"
+      severity: warning
+
+    - id: LST-CNT-004
+      name: Title Uniqueness
+      name_vi: Tiêu đề duy nhất
+      description: Listing title should be unique per property
+      condition: |
+        NOT EXISTS(
+          SELECT 1 FROM listing
+          WHERE property_id = NEW.property_id
+          AND id != NEW.id
+          AND status = 'active'
+          AND SIMILARITY(title, NEW.title) > 0.8
+        )
+      action: warn
+      message: "Similar listing title already exists for this property"
+      severity: warning
+
+  # Pricing Rules
+  pricing:
+    - id: LST-PRC-001
+      name: Price Sanity Check
+      name_vi: Kiểm tra giá hợp lý
+      description: Price should be within reasonable market range
+      condition: |
+        listing.price_per_sqm BETWEEN
+          market_average_price_per_sqm(property.district, property.property_type) * 0.3
+          AND market_average_price_per_sqm(property.district, property.property_type) * 3.0
+      action: require_review
+      message: "Price appears unusual compared to market average"
+      severity: warning
+
+    - id: LST-PRC-002
+      name: Price Change Limit
+      name_vi: Giới hạn thay đổi giá
+      description: Single price change should not exceed threshold
+      condition: |
+        ABS((NEW.asking_price - OLD.asking_price) / OLD.asking_price) <= 0.20
+      action: require_approval
+      message: "Price change exceeds 20%. Approval required."
+      severity: warning
+      trigger: on_update
+
+    - id: LST-PRC-003
+      name: Price Reduction Tracking
+      name_vi: Theo dõi giảm giá
+      description: Track and flag price reductions
+      condition: "NEW.asking_price < OLD.asking_price"
+      action: record_history
+      message: "Price reduction recorded"
+      severity: info
+      trigger: on_update
+
+  # Status Rules
+  status:
+    - id: LST-STS-001
+      name: Duplicate Active Listing
+      name_vi: Tin đăng trùng lặp
+      description: Only one active listing per property per type
+      condition: |
+        NOT EXISTS(
+          SELECT 1 FROM listing
+          WHERE property_id = NEW.property_id
+          AND id != NEW.id
+          AND listing_type = NEW.listing_type
+          AND status = 'active'
+        )
+      action: block
+      message: "Active listing already exists for this property"
+      severity: error
+
+    - id: LST-STS-002
+      name: Auto-Expire
+      name_vi: Tự động hết hạn
+      description: Listings expire after duration
+      condition: "listing.expires_at < NOW() AND listing.status = 'active'"
+      action: update_status
+      new_status: expired
+      message: "Listing expired"
+      severity: info
+      trigger: scheduled
+      schedule: "0 */1 * * *"  # Every hour
+
+    - id: LST-STS-003
+      name: Renewal Limit
+      name_vi: Giới hạn gia hạn
+      description: Limit number of listing renewals
+      condition: "listing.renewed_count < 5"
+      action: allow_renewal
+      message: "Maximum renewal limit reached"
+      severity: warning
+
+  # Agent Rules
+  agent:
+    - id: LST-AGT-001
+      name: Max Active Listings
+      name_vi: Số tin đăng tối đa
+      description: Limit active listings per agent by tier
+      condition: |
+        (SELECT COUNT(*) FROM listing WHERE agent_id = NEW.agent_id AND status = 'active') <
+        CASE agent.subscription_tier
+          WHEN 'basic' THEN 10
+          WHEN 'professional' THEN 50
+          WHEN 'premium' THEN 200
+          WHEN 'enterprise' THEN 1000
+        END
+      action: block
+      message: "Active listing limit reached for subscription tier"
+      severity: error
+
+    - id: LST-AGT-002
+      name: Exclusive Listing Period
+      name_vi: Thời gian độc quyền
+      description: Exclusive listings cannot be listed elsewhere
+      condition: |
+        NOT (listing.exclusive_listing = true AND
+             EXISTS(SELECT 1 FROM listing WHERE property_id = NEW.property_id AND agency_id != NEW.agency_id AND status = 'active'))
+      action: block
+      message: "Property has exclusive listing with another agency"
+      severity: error
+
+  # Quality Rules
+  quality:
+    - id: LST-QTY-001
+      name: Photo Quality Score
+      name_vi: Điểm chất lượng ảnh
+      description: Featured listings need high quality photos
+      condition: |
+        listing.featured = false OR
+        (SELECT AVG(quality_score) FROM property_media WHERE property_id = property.id AND media_type = 'photo') >= 0.7
+      action: block_feature
+      message: "Photo quality score too low for featured listing"
+      severity: warning
+
+    - id: LST-QTY-002
+      name: Required Fields Completeness
+      name_vi: Độ hoàn thiện trường bắt buộc
+      description: Check all required fields are filled
+      condition: |
+        listing.title IS NOT NULL AND
+        listing.description IS NOT NULL AND
+        listing.asking_price IS NOT NULL AND
+        property.total_area_sqm IS NOT NULL AND
+        property.address IS NOT NULL
+      action: block_publication
+      message: "Required fields incomplete"
+      severity: error
+
+  # Syndication Rules
+  syndication:
+    - id: LST-SYN-001
+      name: MLS Data Compliance
+      name_vi: Tuân thủ dữ liệu MLS
+      description: Listings for MLS must meet data standards
+      condition: |
+        NOT ('mls' IN listing.syndicated_to) OR (
+          listing.mls_number IS NOT NULL AND
+          property.latitude IS NOT NULL AND
+          property.longitude IS NOT NULL AND
+          LENGTH(listing.description) >= 200
+        )
+      action: block_syndication
+      message: "MLS syndication requires complete data"
+      severity: error
+
+  enforcement:
+    auto_enforce: true
+    violation_tracking: true
+    appeal_process: true
+    review_queue: true
+
+  notifications:
+    on_violation:
+      - channel: email
+        recipient: agent
+        severity: [error, warning]
+      - channel: dashboard
+        recipient: agent
+        severity: [error, warning, info]
+      - channel: email
+        recipient: admin
+        severity: [error]

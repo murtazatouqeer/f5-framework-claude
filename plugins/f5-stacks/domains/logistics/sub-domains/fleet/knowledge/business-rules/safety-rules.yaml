@@ -1,0 +1,346 @@
+name: SafetyRules
+display_name: Safety Rules
+description: |
+  Business rules for fleet safety management.
+  Covers driver behavior, incident handling, and safety compliance.
+
+domain: logistics
+subdomain: fleet
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # Driver Safety Score Rules
+  - id: BR-SF-001
+    name: Minimum Safety Score
+    description: Drivers must maintain minimum safety score of 50
+    severity: warning
+    category: driver_safety
+    condition: |
+      driver.safety_score >= 50
+    warning_message: "Driver safety score below minimum threshold"
+    action: schedule_coaching
+    applies_to: [daily_review, trip_assignment]
+
+  - id: BR-SF-002
+    name: Critical Safety Score
+    description: Suspend drivers with safety score below 30
+    severity: critical
+    category: driver_safety
+    condition: |
+      driver.safety_score >= 30
+    error_message: "Driver suspended due to critically low safety score"
+    action: suspend_driver
+    applies_to: [daily_review, trip_assignment]
+
+  - id: BR-SF-003
+    name: Safety Score Decline Alert
+    description: Alert when safety score drops more than 15 points in a week
+    severity: warning
+    category: driver_safety
+    condition: |
+      driver.safety_score_7d_change >= -15
+    warning_message: "Significant safety score decline detected"
+    action: schedule_immediate_review
+    applies_to: [daily_review]
+
+  # Behavior Event Rules
+  - id: BR-SF-004
+    name: Critical Behavior Event Response
+    description: Critical behavior events require immediate manager notification
+    severity: critical
+    category: behavior
+    condition: |
+      behavior_event.severity == 'critical'
+    action: notify_safety_manager_immediately
+    applies_to: [real_time_monitoring]
+
+  - id: BR-SF-005
+    name: Speeding Threshold
+    description: Speeding 15+ mph over limit is high severity
+    severity: critical
+    category: behavior
+    condition: |
+      IF behavior_event.event_type == 'speeding' THEN
+        behavior_event.speed_over_limit_kmh < 25
+    error_message: "Excessive speeding detected"
+    action: [notify_dispatcher, record_incident]
+    applies_to: [real_time_monitoring]
+
+  - id: BR-SF-006
+    name: Repeat Behavior Events
+    description: 3+ similar events in 24 hours triggers intervention
+    severity: warning
+    category: behavior
+    condition: |
+      COUNT(behavior_events WHERE
+        driver_id == current_driver AND
+        event_type == current_event_type AND
+        occurred_at >= now() - 24h
+      ) < 3
+    warning_message: "Repeat behavior pattern detected"
+    action: pull_driver_for_coaching
+    applies_to: [real_time_monitoring]
+
+  - id: BR-SF-007
+    name: Fatigue Detection Response
+    description: Fatigue detection requires immediate stop
+    severity: critical
+    category: behavior
+    condition: |
+      behavior_event.event_type != 'fatigue_detected'
+    error_message: "Driver fatigue detected - immediate rest required"
+    action: [notify_dispatch, require_30min_break]
+    applies_to: [real_time_monitoring]
+
+  # Incident Response Rules
+  - id: BR-SF-008
+    name: Incident Reporting Time
+    description: All incidents must be reported within 1 hour
+    severity: critical
+    category: incident
+    condition: |
+      incident.reported_at - incident.occurred_at <= 1h
+    error_message: "Incident not reported within required timeframe"
+    applies_to: [incident_report]
+
+  - id: BR-SF-009
+    name: Injury Incident Protocol
+    description: Incidents with injuries require immediate emergency response
+    severity: critical
+    category: incident
+    condition: |
+      IF incident.injuries_reported THEN
+        incident.emergency_services_called
+    error_message: "Emergency services must be called for injury incidents"
+    applies_to: [incident_report]
+
+  - id: BR-SF-010
+    name: DOT Reportable Incident
+    description: Fatalities and serious injuries require DOT reporting
+    severity: critical
+    category: incident
+    condition: |
+      IF incident.fatalities > 0 OR
+         incident.serious_injuries OR
+         incident.vehicle_towed THEN
+        incident.dot_reportable = true
+    action: initiate_dot_reporting
+    applies_to: [incident_report]
+    regulation: "FMCSA 390.15"
+
+  - id: BR-SF-011
+    name: Incident Investigation Required
+    description: Major and critical incidents require formal investigation
+    severity: critical
+    category: incident
+    condition: |
+      IF incident.severity IN ['major', 'critical'] THEN
+        incident.investigation_required = true AND
+        incident.investigator_id IS NOT NULL
+    error_message: "Formal investigation required for major incidents"
+    applies_to: [incident_update]
+
+  # Vehicle Safety Rules
+  - id: BR-SF-012
+    name: Safety Equipment Check
+    description: Safety equipment must be present and functional
+    severity: critical
+    category: vehicle_safety
+    condition: |
+      vehicle.fire_extinguisher_valid AND
+      vehicle.first_aid_kit_present AND
+      vehicle.warning_triangles_present
+    error_message: "Required safety equipment missing or expired"
+    applies_to: [pre_trip_inspection]
+
+  - id: BR-SF-013
+    name: Out of Service Vehicle
+    description: Out of service vehicles cannot be dispatched
+    severity: critical
+    category: vehicle_safety
+    condition: |
+      vehicle.status != 'out_of_service'
+    error_message: "Vehicle is out of service and cannot be dispatched"
+    applies_to: [trip_assignment]
+
+  - id: BR-SF-014
+    name: Critical Defect Response
+    description: Critical defects require immediate vehicle shutdown
+    severity: critical
+    category: vehicle_safety
+    condition: |
+      NOT EXISTS inspection_defect WHERE
+        defect.severity == 'critical' AND
+        defect.status == 'open'
+    error_message: "Vehicle has unresolved critical safety defect"
+    action: set_out_of_service
+    applies_to: [inspection_completion]
+
+  # Training and Certification Rules
+  - id: BR-SF-015
+    name: Safety Training Current
+    description: Drivers must complete annual safety training
+    severity: warning
+    category: training
+    condition: |
+      driver.last_safety_training >= today() - 365
+    warning_message: "Driver safety training not current"
+    action: schedule_training
+    applies_to: [monthly_review]
+
+  - id: BR-SF-016
+    name: Defensive Driving Certification
+    description: All drivers should have defensive driving certification
+    severity: recommendation
+    category: training
+    condition: |
+      driver.defensive_driving_certified
+    recommendation: "Schedule driver for defensive driving course"
+    applies_to: [quarterly_review]
+
+  - id: BR-SF-017
+    name: Hazmat Training Current
+    description: Hazmat drivers must have current hazmat training
+    severity: critical
+    category: training
+    condition: |
+      IF driver.hazmat_certified THEN
+        driver.hazmat_training_date >= today() - 730  # 2 years
+    error_message: "Hazmat training not current"
+    applies_to: [trip_assignment]
+    regulation: "DOT Hazmat Training 49 CFR 172"
+
+  # Hours of Service Safety
+  - id: BR-SF-018
+    name: Fatigued Driver Detection
+    description: Detect potentially fatigued drivers based on hours
+    severity: warning
+    category: hos_safety
+    condition: |
+      driver.available_drive_hours >= 2
+    warning_message: "Driver approaching fatigue threshold"
+    action: monitor_closely
+    applies_to: [trip_monitoring]
+
+  - id: BR-SF-019
+    name: Night Driving Restrictions
+    description: New drivers restricted from overnight trips first 90 days
+    severity: warning
+    category: hos_safety
+    condition: |
+      IF driver.hire_date >= today() - 90 THEN
+        trip.has_night_driving == false
+    warning_message: "New driver not cleared for night driving"
+    applies_to: [trip_assignment]
+
+  # Speed Limit Compliance
+  - id: BR-SF-020
+    name: Speed Limit Zones
+    description: Enforce reduced speeds in school and work zones
+    severity: critical
+    category: speed
+    condition: |
+      IF current_location IN speed_restricted_zone THEN
+        current_speed <= zone_speed_limit
+    error_message: "Speed limit violation in restricted zone"
+    action: immediate_alert_driver
+    applies_to: [real_time_monitoring]
+
+  # Weather and Road Conditions
+  - id: BR-SF-021
+    name: Adverse Weather Protocol
+    description: Reduce operations during severe weather
+    severity: warning
+    category: conditions
+    condition: |
+      weather.severity NOT IN ['severe', 'extreme']
+    warning_message: "Severe weather conditions - consider delaying trip"
+    action: weather_advisory
+    applies_to: [dispatch]
+
+  - id: BR-SF-022
+    name: Road Closure Compliance
+    description: Avoid roads with active closures or severe conditions
+    severity: critical
+    category: conditions
+    condition: |
+      NOT route.has_road_closures
+    error_message: "Route includes closed or hazardous roads"
+    action: reroute_required
+    applies_to: [trip_planning, trip_monitoring]
+
+safety_score_calculation:
+  base_score: 100
+  decay_period_days: 90
+  event_impacts:
+    harsh_brake:
+      low: -2
+      medium: -5
+      high: -10
+    harsh_acceleration:
+      low: -2
+      medium: -5
+      high: -10
+    harsh_cornering:
+      low: -2
+      medium: -5
+      high: -10
+    speeding:
+      low: -3
+      medium: -8
+      high: -15
+      critical: -25
+    distracted_driving:
+      low: -5
+      medium: -10
+      high: -20
+    fatigue_detected:
+      high: -15
+      critical: -30
+    seatbelt_violation:
+      medium: -10
+      high: -20
+    phone_usage:
+      medium: -10
+      high: -20
+    accident:
+      at_fault: -30
+      not_at_fault: -10
+
+thresholds:
+  excellent: 90
+  good: 75
+  acceptable: 50
+  poor: 30
+  critical: 0
+
+escalation_matrix:
+  safety_score_drop:
+    - threshold: 75
+      action: monitoring
+    - threshold: 50
+      action: coaching_required
+    - threshold: 30
+      action: suspension_pending_review
+
+  behavior_events_per_week:
+    - count: 3
+      action: coaching
+    - count: 5
+      action: formal_warning
+    - count: 10
+      action: suspension
+
+reporting:
+  daily:
+    - fleet_safety_summary
+    - critical_events
+  weekly:
+    - driver_scores
+    - behavior_trends
+    - incident_summary
+  monthly:
+    - safety_performance_report
+    - training_compliance
+    - vehicle_safety_status

@@ -1,0 +1,272 @@
+name: recruiter
+display_name: Recruiter
+description: |
+  Recruiter or talent acquisition specialist profile. Tracks assignments,
+  workload, performance metrics, and specializations.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Recruiter
+  table_name: recruiters
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: user_id
+      type: uuid
+      required: true
+      unique: true
+      description: Link to user account
+
+    - name: employee_id
+      type: uuid
+      required: true
+      description: Link to employee record
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, inactive, on_leave]
+      default: active
+
+    - name: recruiter_type
+      type: enum
+      values: [internal, agency, contractor, coordinator]
+      default: internal
+
+    # Profile
+    - name: title
+      type: string
+      length: 200
+
+    - name: department_id
+      type: uuid
+
+    - name: manager_id
+      type: uuid
+      description: Recruiting manager
+
+    - name: location_id
+      type: uuid
+
+    # Specializations
+    - name: specializations
+      type: jsonb
+      description: Areas of expertise
+      example: |
+        {
+          "functions": ["engineering", "product", "design"],
+          "levels": ["senior", "executive"],
+          "industries": ["fintech", "saas"],
+          "regions": ["APAC", "US"]
+        }
+
+    - name: technical_recruiter
+      type: boolean
+      default: false
+
+    - name: executive_recruiter
+      type: boolean
+      default: false
+
+    # Capacity
+    - name: max_requisitions
+      type: integer
+      default: 15
+      description: Maximum concurrent requisitions
+
+    - name: current_requisitions_count
+      type: integer
+      default: 0
+
+    - name: utilization_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: true
+
+    - name: available_capacity
+      type: integer
+      computed: true
+
+    # Workload
+    - name: active_candidates_count
+      type: integer
+      default: 0
+
+    - name: interviews_this_week
+      type: integer
+      default: 0
+
+    - name: offers_pending_count
+      type: integer
+      default: 0
+
+    # Performance Metrics
+    - name: metrics_period
+      type: string
+      length: 20
+      description: e.g., "2024-Q1", "2024-01"
+
+    - name: hires_count
+      type: integer
+      default: 0
+
+    - name: hires_target
+      type: integer
+
+    - name: time_to_fill_avg_days
+      type: decimal
+      precision: 6
+      scale: 2
+
+    - name: time_to_hire_avg_days
+      type: decimal
+      precision: 6
+      scale: 2
+
+    - name: offer_acceptance_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of offers accepted
+
+    - name: quality_of_hire_score
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Based on new hire performance
+
+    - name: candidate_satisfaction_score
+      type: decimal
+      precision: 3
+      scale: 2
+      description: Average candidate experience rating
+
+    - name: hiring_manager_satisfaction_score
+      type: decimal
+      precision: 3
+      scale: 2
+
+    # Source Effectiveness
+    - name: source_performance
+      type: jsonb
+      description: Hires by source channel
+      example: |
+        {
+          "linkedin": {"applications": 100, "hires": 5, "rate": 5.0},
+          "referral": {"applications": 30, "hires": 8, "rate": 26.7},
+          "career_site": {"applications": 200, "hires": 3, "rate": 1.5}
+        }
+
+    # Tools & Access
+    - name: linkedin_recruiter_seat
+      type: boolean
+      default: false
+
+    - name: job_boards_access
+      type: jsonb
+      description: Which job boards they can post to
+
+    - name: approval_limits
+      type: jsonb
+      description: What they can approve
+      example: |
+        {
+          "can_approve_offers": false,
+          "offer_limit_usd": 100000,
+          "can_reject_candidates": true
+        }
+
+    # Agency Details (if external)
+    - name: agency_id
+      type: uuid
+      description: If agency recruiter, which agency
+
+    - name: agency_fee_percent
+      type: decimal
+      precision: 5
+      scale: 2
+
+    - name: agency_contract_end_date
+      type: date
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: User
+      foreign_key: user_id
+
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: manager
+      type: belongs_to
+      entity: Recruiter
+      foreign_key: manager_id
+
+    - name: department
+      type: belongs_to
+      entity: Department
+      foreign_key: department_id
+
+    - name: assigned_requisitions
+      type: has_many
+      entity: JobRequisition
+      foreign_key: assigned_recruiter_id
+
+    - name: assigned_applications
+      type: has_many
+      entity: Application
+      foreign_key: assigned_recruiter_id
+
+    - name: agency
+      type: belongs_to
+      entity: Agency
+      foreign_key: agency_id
+
+  indexes:
+    - columns: [user_id]
+      unique: true
+    - columns: [employee_id]
+    - columns: [status]
+    - columns: [recruiter_type]
+
+  computed_fields:
+    - name: utilization_percent
+      formula: "(current_requisitions_count / max_requisitions) * 100"
+
+    - name: available_capacity
+      formula: "max_requisitions - current_requisitions_count"
+
+  hooks:
+    after_hire_recorded:
+      - update_hires_count
+      - recalculate_metrics
+      - update_source_performance
+
+    daily_refresh:
+      - recalculate_workload_counts
+      - update_capacity_metrics

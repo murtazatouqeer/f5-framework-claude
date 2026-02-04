@@ -1,0 +1,366 @@
+name: Shipping Rules
+display_name: Shipping Rules / Quy tắc vận chuyển
+description: |
+  Business rules governing shipping calculations, carrier selection, and delivery.
+  Includes rate calculation, free shipping thresholds, and delivery validation.
+
+domain: e-commerce
+category: shipping
+
+rules:
+  # Shipping Address Rules
+  - id: BR-SHP-001
+    name: Address Validation Required
+    description: Shipping address must be valid before shipping
+    priority: critical
+    condition: |
+      shipping_address.address_line1 IS NOT NULL AND
+      shipping_address.city IS NOT NULL AND
+      shipping_address.country IS NOT NULL
+    action: reject_if_violated
+    message: "Invalid shipping address"
+    applies_to: [Order, Address]
+
+  - id: BR-SHP-002
+    name: Vietnam Address Requirements
+    description: Vietnam addresses require ward and district
+    priority: high
+    condition: |
+      shipping_address.country != 'VN' OR
+      (shipping_address.ward IS NOT NULL AND
+       shipping_address.district IS NOT NULL)
+    action: reject_if_violated
+    message: "Ward and district required for Vietnam addresses"
+    applies_to: [Address]
+
+  - id: BR-SHP-003
+    name: Phone Required for Shipping
+    description: Contact phone required for shipping
+    priority: high
+    condition: shipping_address.phone IS NOT NULL
+    action: reject_if_violated
+    message: "Phone number required for delivery"
+    applies_to: [Address, Order]
+
+  - id: BR-SHP-004
+    name: Delivery Zone Check
+    description: Verify address is in serviceable delivery zone
+    priority: high
+    condition: |
+      shipping_address IN serviceable_zones OR
+      carrier.delivers_to(shipping_address)
+    action: reject_if_violated
+    message: "Delivery not available to this address"
+    applies_to: [Address, Order]
+
+  # Shipping Rate Rules
+  - id: BR-SHP-010
+    name: Weight-Based Shipping
+    description: Calculate shipping based on total weight
+    priority: high
+    condition: config.shipping_calculation = 'weight'
+    action: |
+      total_weight = SUM(order_items.weight * order_items.quantity)
+      shipping_rate = GET_RATE(carrier, zone, total_weight)
+    applies_to: [Order, Shipment]
+
+  - id: BR-SHP-011
+    name: Dimensional Weight
+    description: Use dimensional weight if greater than actual weight
+    priority: medium
+    condition: config.use_dimensional_weight = true
+    action: |
+      dim_weight = (length * width * height) / config.dim_factor
+      billable_weight = MAX(actual_weight, dim_weight)
+    applies_to: [Shipment]
+    config:
+      dim_factor: 5000
+
+  - id: BR-SHP-012
+    name: Flat Rate Shipping
+    description: Apply flat rate shipping per order
+    priority: medium
+    condition: config.shipping_calculation = 'flat_rate'
+    action: |
+      shipping_amount = config.flat_rate_amount
+    applies_to: [Order]
+    config:
+      flat_rate_amount: 30000
+
+  - id: BR-SHP-013
+    name: Zone-Based Shipping
+    description: Calculate shipping based on delivery zone
+    priority: high
+    condition: config.shipping_calculation = 'zone'
+    action: |
+      zone = GET_ZONE(shipping_address)
+      shipping_amount = zone.base_rate + (zone.per_kg_rate * weight_kg)
+    applies_to: [Order, Shipment]
+
+  - id: BR-SHP-014
+    name: Item-Based Shipping
+    description: Calculate shipping per item
+    priority: medium
+    condition: config.shipping_calculation = 'per_item'
+    action: |
+      shipping_amount = SUM(product.shipping_cost * quantity)
+    applies_to: [Order, OrderItem]
+
+  # Free Shipping Rules
+  - id: BR-SHP-020
+    name: Free Shipping Threshold
+    description: Free shipping when order exceeds threshold
+    priority: high
+    condition: order.subtotal >= config.free_shipping_threshold
+    action: |
+      order.shipping_amount = 0
+      order.free_shipping_applied = true
+    applies_to: [Order]
+    config:
+      free_shipping_threshold: 500000
+
+  - id: BR-SHP-021
+    name: Free Shipping Products
+    description: Products marked free shipping ship free
+    priority: medium
+    condition: ALL(order_items.product.free_shipping = true)
+    action: |
+      order.shipping_amount = 0
+    applies_to: [Order, Product]
+
+  - id: BR-SHP-022
+    name: Membership Free Shipping
+    description: Premium members get free shipping
+    priority: medium
+    condition: |
+      customer.loyalty_tier IN ('platinum', 'diamond') OR
+      customer.has_premium_membership = true
+    action: |
+      order.shipping_amount = 0
+    applies_to: [Order, Customer]
+
+  - id: BR-SHP-023
+    name: Promotional Free Shipping
+    description: Free shipping via coupon
+    priority: high
+    condition: |
+      EXISTS(applied_coupons WHERE type = 'free_shipping')
+    action: |
+      order.shipping_amount = 0
+    applies_to: [Order, Coupon]
+
+  # Carrier Selection Rules
+  - id: BR-SHP-030
+    name: Carrier Availability Check
+    description: Check carrier serves destination
+    priority: critical
+    condition: carrier.serves(shipping_address)
+    action: include_in_available_carriers
+    applies_to: [Carrier, Address]
+
+  - id: BR-SHP-031
+    name: Carrier Weight Limits
+    description: Exclude carriers that cannot handle weight
+    priority: high
+    condition: |
+      shipment.total_weight <= carrier.max_weight
+    action: include_in_available_carriers
+    applies_to: [Carrier, Shipment]
+
+  - id: BR-SHP-032
+    name: COD Carrier Support
+    description: Filter carriers supporting COD for COD orders
+    priority: high
+    condition: |
+      order.payment_method != 'cod' OR
+      carrier.supports_cod = true
+    action: include_in_available_carriers
+    applies_to: [Carrier, Order]
+
+  - id: BR-SHP-033
+    name: Express Carrier Filter
+    description: Filter for express delivery capable carriers
+    priority: medium
+    condition: |
+      order.shipping_method != 'express' OR
+      carrier.supports_express = true
+    action: include_in_available_carriers
+    applies_to: [Carrier, Order]
+
+  - id: BR-SHP-034
+    name: Cheapest Carrier Selection
+    description: Auto-select cheapest available carrier
+    priority: low
+    condition: config.auto_select_carrier = 'cheapest'
+    action: |
+      selected_carrier = MIN(available_carriers.rate)
+    applies_to: [Order, Carrier]
+
+  # Delivery Rules
+  - id: BR-SHP-040
+    name: Estimated Delivery Calculation
+    description: Calculate estimated delivery date
+    priority: high
+    condition: shipment.shipped = true
+    action: |
+      estimated_delivery = NOW() + carrier.delivery_sla(zone)
+      IF express THEN estimated_delivery -= 1 day
+    applies_to: [Shipment]
+
+  - id: BR-SHP-041
+    name: Delivery Attempt Limit
+    description: Maximum delivery attempts before return
+    priority: high
+    condition: shipment.delivery_attempts >= config.max_delivery_attempts
+    action: |
+      shipment.status = 'returning'
+      TRIGGER shipment.returning_to_sender
+    applies_to: [Shipment]
+    config:
+      max_delivery_attempts: 3
+
+  - id: BR-SHP-042
+    name: Delivery Window
+    description: Standard delivery time windows
+    priority: medium
+    condition: always
+    action: |
+      delivery_windows = [
+        '08:00-12:00',
+        '12:00-18:00',
+        '18:00-21:00'
+      ]
+    applies_to: [Shipment]
+
+  - id: BR-SHP-043
+    name: Weekend Delivery
+    description: Handle weekend delivery restrictions
+    priority: medium
+    condition: |
+      delivery_date.is_weekend AND
+      carrier.delivers_weekends = false
+    action: |
+      delivery_date = next_business_day(delivery_date)
+    applies_to: [Shipment]
+
+  # Shipment Tracking Rules
+  - id: BR-SHP-050
+    name: Tracking Number Required
+    description: Tracking number required before shipping
+    priority: critical
+    condition: |
+      shipment.status = 'shipped' AND
+      shipment.tracking_number IS NOT NULL
+    action: reject_if_violated
+    message: "Tracking number required"
+    applies_to: [Shipment]
+
+  - id: BR-SHP-051
+    name: Tracking Update Frequency
+    description: Update tracking status periodically
+    priority: medium
+    condition: |
+      shipment.status IN ('shipped', 'in_transit', 'out_for_delivery')
+    action: |
+      poll_carrier_api(interval = '1 hour')
+      update_tracking_events()
+    applies_to: [Shipment]
+
+  - id: BR-SHP-052
+    name: Delivery Notification
+    description: Notify customer of delivery status changes
+    priority: high
+    condition: shipment.status_changed = true
+    action: |
+      SEND notification(customer, status_update)
+    applies_to: [Shipment, Customer]
+
+  # Special Handling Rules
+  - id: BR-SHP-060
+    name: Fragile Item Handling
+    description: Mark shipment as fragile for fragile items
+    priority: high
+    condition: ANY(order_items.product.is_fragile = true)
+    action: |
+      shipment.handling_instructions += 'FRAGILE'
+      shipment.insurance_required = true
+    applies_to: [Shipment, Product]
+
+  - id: BR-SHP-061
+    name: Temperature Control
+    description: Require temperature-controlled shipping
+    priority: critical
+    condition: ANY(order_items.product.requires_cold_chain = true)
+    action: |
+      filter_carriers(supports_cold_chain = true)
+      shipment.handling_instructions += 'TEMPERATURE CONTROLLED'
+    applies_to: [Shipment, Product, Carrier]
+
+  - id: BR-SHP-062
+    name: Hazmat Shipping
+    description: Special handling for hazardous materials
+    priority: critical
+    condition: ANY(order_items.product.is_hazmat = true)
+    action: |
+      filter_carriers(supports_hazmat = true)
+      require_hazmat_documentation()
+      shipment.handling_instructions += 'HAZMAT'
+    applies_to: [Shipment, Product, Carrier]
+
+  - id: BR-SHP-063
+    name: Oversized Item Handling
+    description: Special handling for oversized items
+    priority: high
+    condition: |
+      ANY(order_items.product.is_oversized = true) OR
+      shipment.dimensions > carrier.standard_max
+    action: |
+      filter_carriers(supports_oversized = true)
+      apply_oversized_surcharge()
+    applies_to: [Shipment, Product, Carrier]
+
+  # Insurance Rules
+  - id: BR-SHP-070
+    name: Insurance Threshold
+    description: Require insurance for high-value shipments
+    priority: high
+    condition: order.total_amount >= config.insurance_threshold
+    action: |
+      shipment.insurance_required = true
+      shipment.declared_value = order.total_amount
+    applies_to: [Shipment, Order]
+    config:
+      insurance_threshold: 2000000
+
+  - id: BR-SHP-071
+    name: Insurance Cost
+    description: Calculate insurance cost
+    priority: medium
+    condition: shipment.insurance_required = true
+    action: |
+      insurance_cost = shipment.declared_value * config.insurance_rate
+      shipping_amount += insurance_cost
+    applies_to: [Shipment]
+    config:
+      insurance_rate: 0.01
+
+validation_order:
+  - BR-SHP-001  # Address validation
+  - BR-SHP-002  # Vietnam requirements
+  - BR-SHP-003  # Phone required
+  - BR-SHP-004  # Zone check
+  - BR-SHP-030  # Carrier availability
+  - BR-SHP-010  # Rate calculation
+  - BR-SHP-020  # Free shipping
+  - BR-SHP-040  # Delivery estimation
+
+exceptions:
+  - name: LocalPickup
+    description: Allow local pickup bypassing shipping
+    shipping_amount: 0
+    requires: pickup_location_enabled
+
+  - name: DropshipOverride
+    description: Dropship orders use supplier shipping
+    requires: dropship_enabled
+    carrier: supplier_default

@@ -1,0 +1,437 @@
+name: attendance
+display_name: Attendance
+description: |
+  Daily attendance record entity tracking employee work hours,
+  check-in/out times, breaks, overtime, and attendance status.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+compliance:
+  vietnam_labor_code:
+    working_hours:
+      standard_day: "8 hours"
+      standard_week: "48 hours max"
+      rest_break: "30-60 minutes after 6 hours"
+      weekly_rest: "Minimum 24 consecutive hours"
+    overtime:
+      daily_limit: "Not exceeding 50% of normal hours"
+      monthly_limit: "40 hours"
+      yearly_limit: "200 hours (300 special cases)"
+
+entity:
+  name: Attendance
+  table_name: attendance_records
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: employee_id
+        type: uuid
+        required: true
+        foreign_key: employees.id
+        description: "Employee"
+
+      - name: date
+        type: date
+        required: true
+        description: "Attendance date"
+
+      - name: status
+        type: enum
+        required: true
+        default: "pending"
+        values:
+          - present
+          - absent
+          - leave
+          - holiday
+          - half_day
+          - work_from_home
+          - field_work
+          - training
+          - pending
+        description: "Attendance status"
+
+    # Schedule
+    schedule:
+      - name: shift_id
+        type: uuid
+        foreign_key: shifts.id
+        description: "Assigned shift"
+
+      - name: scheduled_start
+        type: time
+        description: "Scheduled start time"
+
+      - name: scheduled_end
+        type: time
+        description: "Scheduled end time"
+
+      - name: scheduled_hours
+        type: decimal
+        description: "Scheduled working hours"
+
+      - name: is_working_day
+        type: boolean
+        default: true
+        description: "Whether this is a working day"
+
+      - name: is_holiday
+        type: boolean
+        default: false
+        description: "Whether this is a public holiday"
+
+      - name: holiday_name
+        type: string
+        description: "Name of holiday if applicable"
+
+    # Check-in/out
+    time_tracking:
+      - name: check_in_time
+        type: timestamp
+        description: "Actual check-in time"
+
+      - name: check_out_time
+        type: timestamp
+        description: "Actual check-out time"
+
+      - name: first_check_in
+        type: timestamp
+        description: "First check-in of the day"
+
+      - name: last_check_out
+        type: timestamp
+        description: "Last check-out of the day"
+
+      - name: check_in_source
+        type: enum
+        values:
+          - biometric
+          - card_swipe
+          - mobile_app
+          - web_portal
+          - manual
+          - system
+        description: "Check-in method"
+
+      - name: check_out_source
+        type: enum
+        values:
+          - biometric
+          - card_swipe
+          - mobile_app
+          - web_portal
+          - manual
+          - system
+        description: "Check-out method"
+
+    # Location
+    location:
+      - name: work_location
+        type: enum
+        values:
+          - office
+          - remote
+          - field
+          - client_site
+          - training_venue
+        description: "Work location type"
+
+      - name: check_in_location_id
+        type: uuid
+        foreign_key: work_locations.id
+        description: "Check-in location"
+
+      - name: check_in_latitude
+        type: decimal
+        precision: 10
+        scale: 8
+        description: "Check-in GPS latitude"
+
+      - name: check_in_longitude
+        type: decimal
+        precision: 11
+        scale: 8
+        description: "Check-in GPS longitude"
+
+      - name: check_out_latitude
+        type: decimal
+        precision: 10
+        scale: 8
+        description: "Check-out GPS latitude"
+
+      - name: check_out_longitude
+        type: decimal
+        precision: 11
+        scale: 8
+        description: "Check-out GPS longitude"
+
+      - name: location_verified
+        type: boolean
+        description: "Whether location is within geofence"
+
+    # Work Hours
+    hours:
+      - name: total_work_hours
+        type: decimal
+        precision: 5
+        scale: 2
+        description: "Total hours worked"
+
+      - name: regular_hours
+        type: decimal
+        precision: 5
+        scale: 2
+        description: "Regular working hours"
+
+      - name: effective_hours
+        type: decimal
+        precision: 5
+        scale: 2
+        description: "Effective hours (excluding breaks)"
+
+    # Breaks
+    breaks:
+      - name: break_records
+        type: jsonb
+        description: "Array of break periods"
+        schema:
+          type: array
+          items:
+            break_start: timestamp
+            break_end: timestamp
+            duration_minutes: integer
+            break_type: string  # lunch, tea, personal
+
+      - name: total_break_minutes
+        type: integer
+        default: 0
+        description: "Total break time in minutes"
+
+      - name: lunch_break_taken
+        type: boolean
+        description: "Whether lunch break was taken"
+
+    # Overtime
+    overtime:
+      - name: overtime_hours
+        type: decimal
+        precision: 5
+        scale: 2
+        default: 0
+        description: "Total overtime hours"
+
+      - name: overtime_type
+        type: enum
+        values:
+          - weekday
+          - weekend
+          - holiday
+          - night
+        description: "Type of overtime"
+
+      - name: overtime_approved
+        type: boolean
+        default: false
+        description: "Whether overtime is approved"
+
+      - name: overtime_approval_id
+        type: uuid
+        description: "Reference to overtime approval"
+
+    # Issues
+    issues:
+      - name: late_minutes
+        type: integer
+        default: 0
+        description: "Minutes late"
+
+      - name: early_departure_minutes
+        type: integer
+        default: 0
+        description: "Minutes left early"
+
+      - name: is_late
+        type: boolean
+        computed: true
+        formula: "late_minutes > grace_period"
+        description: "Whether marked as late"
+
+      - name: is_early_out
+        type: boolean
+        computed: true
+        description: "Whether left early"
+
+      - name: missing_check_in
+        type: boolean
+        default: false
+        description: "Check-in was missing"
+
+      - name: missing_check_out
+        type: boolean
+        default: false
+        description: "Check-out was missing"
+
+      - name: regularization_status
+        type: enum
+        values: [not_required, pending, approved, rejected]
+        description: "Status of attendance regularization"
+
+    # Leave Reference
+    leave_info:
+      - name: leave_request_id
+        type: uuid
+        foreign_key: leave_requests.id
+        description: "Associated leave request"
+
+      - name: leave_type
+        type: string
+        description: "Type of leave if on leave"
+
+      - name: half_day_leave
+        type: enum
+        values: [none, first_half, second_half]
+        default: "none"
+        description: "Half day leave indicator"
+
+    # Notes
+    notes:
+      - name: notes
+        type: text
+        description: "General notes"
+
+      - name: manager_notes
+        type: text
+        description: "Notes from manager"
+
+      - name: exception_reason
+        type: text
+        description: "Reason for any exceptions"
+
+    # Approval
+    approval:
+      - name: verified
+        type: boolean
+        default: false
+        description: "Whether attendance is verified"
+
+      - name: verified_by
+        type: uuid
+        foreign_key: employees.id
+        description: "Who verified"
+
+      - name: verified_at
+        type: timestamp
+        description: "When verified"
+
+      - name: locked
+        type: boolean
+        default: false
+        description: "Whether record is locked for payroll"
+
+    # System
+    system:
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: sync_source
+        type: string
+        description: "Source system for synced data"
+
+      - name: external_id
+        type: string
+        description: "ID in external system"
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+      description: "Employee"
+
+    - name: shift
+      type: belongs_to
+      entity: Shift
+      foreign_key: shift_id
+      description: "Assigned shift"
+
+    - name: leave_request
+      type: belongs_to
+      entity: LeaveRequest
+      foreign_key: leave_request_id
+      description: "Associated leave"
+
+  indexes:
+    - columns: [employee_id, date]
+      unique: true
+    - columns: [employee_id]
+    - columns: [date]
+    - columns: [status]
+    - columns: [is_late]
+    - columns: [locked]
+
+  validations:
+    - field: check_out_time
+      rule: "must_be_after_check_in"
+      message: "Check-out must be after check-in"
+
+    - field: overtime_hours
+      rule: "daily_limit_4_hours"
+      message: "Daily overtime cannot exceed 4 hours"
+
+  hooks:
+    before_create:
+      - set_scheduled_times
+      - check_holiday
+      - check_leave
+
+    after_check_in:
+      - calculate_late_minutes
+      - verify_location
+
+    after_check_out:
+      - calculate_work_hours
+      - calculate_overtime
+      - check_early_departure
+
+    before_lock:
+      - validate_completeness
+      - require_regularization
+
+  scheduled_jobs:
+    - name: auto_mark_absent
+      schedule: "daily at 10:00"
+      action: "mark_no_shows_absent"
+
+    - name: sync_biometric
+      schedule: "every 15 minutes"
+      action: "import_biometric_data"
+
+    - name: calculate_daily_summary
+      schedule: "daily at 23:59"
+      action: "calculate_daily_totals"
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - check_in_time
+      - check_out_time
+      - total_work_hours
+      - overtime_hours
+    retention: "5 years"

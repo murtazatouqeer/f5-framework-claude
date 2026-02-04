@@ -1,0 +1,521 @@
+name: download_management_rules
+display_name: Download Management Rules
+description: |
+  Business rules for offline content downloads, DRM licensing,
+  storage management, and expiration handling.
+
+domain: entertainment
+subdomain: streaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - download_eligibility
+  - storage_management
+  - drm_licensing
+  - expiration_rules
+  - smart_downloads
+
+rules:
+  # ============================================
+  # Download Eligibility
+  # ============================================
+  - id: DMR-001
+    name: Download Feature by Plan
+    description: Control download availability by subscription tier
+    category: download_eligibility
+    severity: critical
+
+    parameters:
+      plan_downloads:
+        free: 0
+        basic: 5
+        standard: 15
+        premium: 25
+        family: 50  # shared across profiles
+
+    conditions:
+      when:
+        - event: download_request
+      then:
+        - field: subscription.plan_type
+          operator: not_equals
+          value: free
+        - field: current_downloads
+          operator: less_than
+          reference: max_downloads
+
+    actions:
+      on_violation:
+        - block_download
+        - show_limit_message
+        - offer_upgrade
+
+    error_message: "Download limit reached. Delete downloads or upgrade your plan."
+
+  - id: DMR-002
+    name: Content Download Rights
+    description: Verify content has download rights
+    category: download_eligibility
+    severity: critical
+
+    conditions:
+      when:
+        - event: download_request
+      then:
+        - field: content.is_downloadable
+          operator: equals
+          value: true
+        - field: content.license.download_allowed
+          operator: equals
+          value: true
+
+    actions:
+      on_violation:
+        - block_download
+        - show_not_available_message
+        - log_blocked_attempt
+
+    error_message: "This title is not available for download"
+
+  - id: DMR-003
+    name: Device Download Eligibility
+    description: Verify device supports downloads
+    category: download_eligibility
+    severity: high
+
+    parameters:
+      supported_devices:
+        - mobile_ios
+        - mobile_android
+        - tablet_ios
+        - tablet_android
+
+    conditions:
+      when:
+        - event: download_request
+      then:
+        - field: device.type
+          operator: in
+          values: [mobile_ios, mobile_android, tablet_ios, tablet_android]
+        - field: device.storage_available
+          operator: greater_than
+          reference: estimated_file_size
+
+    actions:
+      on_violation:
+        - block_download
+        - show_device_unsupported_message
+
+    error_message: "Downloads not supported on this device"
+
+  - id: DMR-004
+    name: Geographic Download Restriction
+    description: Downloads only available in licensed territories
+    category: download_eligibility
+    severity: critical
+
+    conditions:
+      when:
+        - event: download_request
+      then:
+        - field: user.country
+          operator: in
+          reference: content.license.download_territories
+
+    actions:
+      on_violation:
+        - block_download
+        - show_geo_restriction_message
+
+    error_message: "Downloads not available in your region"
+
+  # ============================================
+  # Storage Management
+  # ============================================
+  - id: DMR-010
+    name: Quality-Based Download Size
+    description: Manage download sizes by quality selection
+    category: storage_management
+    severity: medium
+
+    parameters:
+      quality_sizes:
+        SD:
+          average_per_hour_mb: 500
+          max_per_hour_mb: 800
+        HD:
+          average_per_hour_mb: 1500
+          max_per_hour_mb: 2500
+        FHD:
+          average_per_hour_mb: 3000
+          max_per_hour_mb: 5000
+
+    conditions:
+      when:
+        - event: download_request
+
+    actions:
+      on_request:
+        - estimate_file_size
+        - check_available_storage
+        - warn_if_low_storage
+        - suggest_lower_quality_if_needed
+
+  - id: DMR-011
+    name: Total Download Storage Limit
+    description: Limit total storage used by downloads
+    category: storage_management
+    severity: medium
+
+    parameters:
+      max_storage_gb: 50
+      warning_threshold_percent: 80
+
+    conditions:
+      when:
+        - field: total_download_size
+          operator: greater_than
+          value: "40 GB"
+
+    actions:
+      on_threshold:
+        - show_storage_warning
+        - suggest_cleanup
+        - prevent_new_downloads_at_limit
+
+  - id: DMR-012
+    name: Download Queue Management
+    description: Manage concurrent download operations
+    category: storage_management
+    severity: low
+
+    parameters:
+      max_concurrent_downloads: 3
+      max_queue_size: 10
+
+    conditions:
+      when:
+        - event: download_request
+        - field: active_downloads
+          operator: greater_than_or_equal
+          value: 3
+
+    actions:
+      on_limit:
+        - add_to_queue
+        - show_queue_position
+        - process_when_slot_available
+
+  # ============================================
+  # DRM Licensing
+  # ============================================
+  - id: DMR-020
+    name: Offline DRM License Acquisition
+    description: Acquire offline license before download
+    category: drm_licensing
+    severity: critical
+
+    conditions:
+      when:
+        - event: download_start
+
+    actions:
+      on_start:
+        - request_offline_license
+        - verify_license_validity
+        - store_license_securely
+        - bind_license_to_device
+      on_failure:
+        - block_download
+        - log_license_error
+        - retry_license_acquisition
+
+  - id: DMR-021
+    name: License Renewal for Downloads
+    description: Renew download licenses when possible
+    category: drm_licensing
+    severity: high
+
+    parameters:
+      renewal_window_days: 3
+      requires_internet: true
+
+    conditions:
+      when:
+        - field: license_expires_in
+          operator: less_than
+          value: "3 days"
+        - field: download.status
+          operator: equals
+          value: completed
+
+    actions:
+      on_expiring:
+        - attempt_license_renewal
+        - notify_user_of_expiration
+        - prompt_to_go_online
+      on_renewal_success:
+        - update_license_expiry
+        - update_download_expiry
+
+  - id: DMR-022
+    name: DRM Security Level
+    description: Enforce minimum DRM security for downloads
+    category: drm_licensing
+    severity: critical
+
+    parameters:
+      minimum_security_levels:
+        SD: L3
+        HD: L2
+        FHD: L1
+
+    conditions:
+      when:
+        - event: download_request
+      then:
+        - field: device.drm_security_level
+          operator: greater_than_or_equal
+          reference: required_level_for_quality
+
+    actions:
+      on_violation:
+        - downgrade_quality
+        - inform_user_of_limitation
+
+    error_message: "Your device supports up to {max_quality} quality downloads"
+
+  # ============================================
+  # Expiration Rules
+  # ============================================
+  - id: DMR-030
+    name: Download Retention Period
+    description: Downloads expire after retention period
+    category: expiration_rules
+    severity: high
+
+    parameters:
+      retention_days: 30
+      extension_on_renewal: true
+
+    conditions:
+      when:
+        - event: download_complete
+
+    actions:
+      on_complete:
+        - set_expiration_date: "now + 30 days"
+        - schedule_expiration_reminder
+      on_subscription_renewal:
+        - extend_all_downloads: 30 days
+        - notify_extension
+
+  - id: DMR-031
+    name: First Playback Deadline
+    description: Must start watching within window
+    category: expiration_rules
+    severity: medium
+
+    parameters:
+      first_play_window_days: 30
+
+    conditions:
+      when:
+        - field: download.first_played_at
+          operator: is_null
+        - field: download.age_days
+          operator: greater_than
+          value: 30
+
+    actions:
+      on_expiration:
+        - expire_download
+        - delete_content_files
+        - revoke_license
+        - notify_user
+
+  - id: DMR-032
+    name: Playback Completion Window
+    description: Must complete within window after starting
+    category: expiration_rules
+    severity: medium
+
+    parameters:
+      completion_window_hours: 48
+
+    conditions:
+      when:
+        - field: download.first_played_at
+          operator: is_not_null
+        - field: download.hours_since_first_play
+          operator: greater_than
+          value: 48
+
+    actions:
+      on_expiration:
+        - expire_download
+        - show_completion_window_message
+        - offer_redownload
+
+    message: "Playback window expired. Re-download to continue watching."
+
+  - id: DMR-033
+    name: License Expiration Handling
+    description: Handle expired DRM licenses
+    category: expiration_rules
+    severity: critical
+
+    conditions:
+      when:
+        - field: download.license_expires_at
+          operator: less_than
+          value: now()
+
+    actions:
+      on_expiration:
+        - block_offline_playback
+        - prompt_go_online
+        - attempt_license_renewal
+      on_renewal_impossible:
+        - expire_download
+        - notify_user
+
+  # ============================================
+  # Smart Downloads
+  # ============================================
+  - id: DMR-040
+    name: Auto-Download Next Episode
+    description: Automatically download next unwatched episodes
+    category: smart_downloads
+    severity: low
+
+    parameters:
+      episodes_ahead: 3
+      trigger_on_wifi_only: true
+
+    conditions:
+      when:
+        - field: profile.smart_downloads_enabled
+          operator: equals
+          value: true
+        - field: content_type
+          operator: equals
+          value: series
+
+    actions:
+      on_episode_complete:
+        - identify_next_episodes
+        - check_storage_available
+        - queue_smart_downloads
+        - download_on_wifi
+
+  - id: DMR-041
+    name: Auto-Delete Watched Downloads
+    description: Remove downloads after watching
+    category: smart_downloads
+    severity: low
+
+    parameters:
+      delete_after_hours: 24
+      confirm_before_delete: false
+
+    conditions:
+      when:
+        - field: profile.auto_delete_enabled
+          operator: equals
+          value: true
+        - field: download.is_completed
+          operator: equals
+          value: true
+        - field: download.hours_since_complete
+          operator: greater_than
+          value: 24
+
+    actions:
+      on_trigger:
+        - delete_download_files
+        - revoke_license
+        - update_storage_usage
+        - log_auto_delete
+
+  - id: DMR-042
+    name: Predictive Downloads
+    description: Pre-download likely-to-watch content
+    category: smart_downloads
+    severity: low
+
+    parameters:
+      confidence_threshold: 0.8
+      max_predictive_downloads: 3
+
+    conditions:
+      when:
+        - field: profile.predictive_downloads_enabled
+          operator: equals
+          value: true
+        - field: device.on_wifi
+          operator: equals
+          value: true
+        - field: device.charging
+          operator: equals
+          value: true
+
+    actions:
+      on_trigger:
+        - predict_next_content
+        - filter_by_confidence
+        - queue_predictive_downloads
+        - respect_storage_limits
+
+automation:
+  - name: expiration_checker
+    description: Check and process expired downloads
+    trigger:
+      type: schedule
+      cron: "0 * * * *"
+    action:
+      - find_expired_downloads
+      - process_expirations
+      - send_notifications
+      - cleanup_files
+
+  - name: smart_download_processor
+    description: Process smart download queue
+    trigger:
+      type: schedule
+      cron: "0 3 * * *"  # 3 AM daily
+    condition:
+      - field: device.on_wifi
+        operator: equals
+        value: true
+    action:
+      - process_smart_download_queue
+      - respect_bandwidth_limits
+
+  - name: license_renewal_checker
+    description: Proactively renew expiring licenses
+    trigger:
+      type: schedule
+      cron: "0 6 * * *"
+    action:
+      - find_expiring_licenses
+      - attempt_renewals
+      - notify_failed_renewals
+
+metrics:
+  - name: download_completion_rate
+    calculation: "(completed_downloads / initiated_downloads) * 100"
+
+  - name: offline_playback_rate
+    calculation: "(offline_plays / total_plays) * 100"
+
+  - name: average_download_size_mb
+    calculation: "AVG(download_file_sizes)"
+
+  - name: license_renewal_success_rate
+    calculation: "(successful_renewals / renewal_attempts) * 100"
+
+  - name: smart_download_accuracy
+    calculation: "(watched_smart_downloads / total_smart_downloads) * 100"

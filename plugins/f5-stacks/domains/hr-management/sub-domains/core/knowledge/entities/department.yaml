@@ -1,0 +1,301 @@
+name: department
+display_name: Department
+description: |
+  Organizational unit entity representing company structure including
+  divisions, departments, teams, and units with hierarchical relationships.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Department
+  table_name: departments
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: department_code
+        type: string
+        required: true
+        unique: true
+        max_length: 20
+        format: "DEPT-XXX"
+        description: "Department code"
+
+      - name: name
+        type: string
+        required: true
+        max_length: 200
+        description: "Department name"
+
+      - name: name_en
+        type: string
+        max_length: 200
+        description: "Department name in English"
+
+      - name: description
+        type: text
+        description: "Department description and responsibilities"
+
+      - name: status
+        type: enum
+        required: true
+        default: "active"
+        values: [active, inactive, merged, dissolved]
+        description: "Department status"
+
+    # Classification
+    classification:
+      - name: department_type
+        type: enum
+        required: true
+        values:
+          - company
+          - division
+          - department
+          - team
+          - unit
+          - project
+        description: "Type of organizational unit"
+
+      - name: function
+        type: enum
+        values:
+          - operations
+          - support
+          - revenue
+          - cost_center
+        description: "Functional classification"
+
+    # Hierarchy
+    hierarchy:
+      - name: parent_department_id
+        type: uuid
+        foreign_key: departments.id
+        description: "Parent department for hierarchy"
+
+      - name: level
+        type: integer
+        computed: true
+        description: "Hierarchy level (1 = top)"
+
+      - name: path
+        type: string
+        computed: true
+        description: "Full hierarchy path for queries"
+        example: "/company/division/department"
+
+      - name: sort_order
+        type: integer
+        default: 0
+        description: "Display order among siblings"
+
+    # Leadership
+    leadership:
+      - name: head_of_department_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Department head/manager"
+
+      - name: deputy_ids
+        type: jsonb
+        description: "Array of deputy manager IDs"
+
+      - name: assistant_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Department assistant/secretary"
+
+    # Budget
+    budget:
+      - name: cost_center
+        type: string
+        max_length: 20
+        description: "Cost center code for accounting"
+
+      - name: budget_year
+        type: integer
+        description: "Budget fiscal year"
+
+      - name: annual_budget
+        type: decimal
+        precision: 15
+        scale: 2
+        description: "Annual budget allocation"
+
+      - name: headcount_budget
+        type: integer
+        description: "Budgeted headcount"
+
+    # Statistics
+    statistics:
+      - name: current_headcount
+        type: integer
+        computed: true
+        description: "Current active employee count"
+
+      - name: total_headcount
+        type: integer
+        computed: true
+        description: "Total including sub-departments"
+
+      - name: open_positions
+        type: integer
+        computed: true
+        description: "Number of open positions"
+
+      - name: vacancy_rate
+        type: decimal
+        computed: true
+        formula: "(headcount_budget - current_headcount) / headcount_budget * 100"
+        description: "Vacancy rate percentage"
+
+    # Contact
+    contact:
+      - name: location
+        type: string
+        description: "Physical location/floor"
+
+      - name: phone
+        type: string
+        description: "Department phone number"
+
+      - name: email
+        type: email
+        description: "Department email address"
+
+    # System
+    system:
+      - name: effective_date
+        type: date
+        description: "Date department became active"
+
+      - name: end_date
+        type: date
+        description: "Date department was dissolved/merged"
+
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: created_by
+        type: uuid
+        foreign_key: users.id
+
+      - name: updated_by
+        type: uuid
+        foreign_key: users.id
+
+  relationships:
+    - name: parent_department
+      type: belongs_to
+      entity: Department
+      foreign_key: parent_department_id
+      description: "Parent organizational unit"
+
+    - name: child_departments
+      type: has_many
+      entity: Department
+      foreign_key: parent_department_id
+      description: "Child organizational units"
+
+    - name: head_of_department
+      type: belongs_to
+      entity: Employee
+      foreign_key: head_of_department_id
+      description: "Department head"
+
+    - name: employees
+      type: has_many
+      entity: Employee
+      foreign_key: department_id
+      description: "Employees in this department"
+
+    - name: positions
+      type: has_many
+      entity: Position
+      foreign_key: department_id
+      description: "Positions in this department"
+
+  computed_fields:
+    - name: full_path_name
+      formula: "Concatenated names from root to this department"
+      example: "Company > Division > Department"
+
+    - name: all_employee_ids
+      formula: "Employee IDs including sub-departments"
+
+  indexes:
+    - columns: [department_code]
+      unique: true
+    - columns: [parent_department_id]
+    - columns: [head_of_department_id]
+    - columns: [status]
+    - columns: [cost_center]
+
+  validations:
+    - field: parent_department_id
+      rule: "cannot_create_circular_reference"
+      message: "Cannot set parent that would create circular hierarchy"
+
+    - field: head_of_department_id
+      rule: "must_be_in_department_or_parent"
+      message: "Department head should be from department hierarchy"
+
+  hooks:
+    before_create:
+      - generate_department_code
+      - calculate_level
+
+    after_create:
+      - update_parent_statistics
+      - notify_hr_admin
+
+    before_update:
+      - validate_hierarchy_change
+      - recalculate_path
+
+    after_update:
+      - update_all_child_paths
+      - sync_cost_center_to_employees
+
+    before_delete:
+      - check_no_active_employees
+      - check_no_child_departments
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - name
+      - parent_department_id
+      - head_of_department_id
+      - status
+    retention: "permanent"
+
+  hierarchy_queries:
+    get_ancestors:
+      description: "Get all parent departments up to root"
+      sql: "WITH RECURSIVE ancestors AS (...)"
+
+    get_descendants:
+      description: "Get all child departments recursively"
+      sql: "WITH RECURSIVE descendants AS (...)"
+
+    get_siblings:
+      description: "Get departments at same level with same parent"
+
+    get_tree:
+      description: "Get full organization tree"

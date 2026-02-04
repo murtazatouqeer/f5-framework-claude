@@ -1,0 +1,517 @@
+name: leave-workflow
+display_name: Leave Request Workflow
+description: |
+  End-to-end workflow for processing employee leave requests
+  from submission through approval to post-leave return.
+
+domain: hr-management
+subdomain: core
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-LEV-001
+  name: "Leave Request Processing"
+  trigger: "leave_request_submitted"
+
+  participants:
+    roles:
+      - employee
+      - manager
+      - department_head
+      - hr_admin
+      - delegate
+
+  leave_types:
+    - annual_leave
+    - sick_leave
+    - maternity_leave
+    - paternity_leave
+    - bereavement_leave
+    - marriage_leave
+    - unpaid_leave
+    - compensatory_leave
+
+  stages:
+    - id: request
+      name: "Leave Request Submission"
+      description: "Employee submits leave request"
+      owner: employee
+
+      tasks:
+        - id: LEV-REQ-001
+          name: "Check Balance"
+          description: "Verify sufficient leave balance"
+          assignee: system
+          automatic: true
+
+          validation:
+            - has_sufficient_balance
+            - not_exceeded_annual_limit
+            - not_in_blackout_period
+
+          on_failure:
+            - notify_employee
+            - block_submission
+
+        - id: LEV-REQ-002
+          name: "Submit Request"
+          description: "Employee submits leave request form"
+          assignee: employee
+
+          required_fields:
+            - leave_type
+            - start_date
+            - end_date
+            - reason (optional)
+            - handover_person (if_required)
+            - contact_during_leave
+
+          attachments:
+            sick_leave:
+              condition: ">3 days"
+              required: "medical_certificate"
+
+            maternity_leave:
+              required: "pregnancy_certificate"
+
+            bereavement_leave:
+              required: "death_certificate"
+
+        - id: LEV-REQ-003
+          name: "Check Conflicts"
+          description: "Check for team leave conflicts"
+          assignee: system
+          automatic: true
+
+          checks:
+            - team_availability
+            - project_deadlines
+            - meeting_conflicts
+
+          warnings:
+            - concurrent_team_leave
+            - critical_project_phase
+            - important_meetings
+
+    - id: approval
+      name: "Approval Process"
+      description: "Manager reviews and approves request"
+      owner: manager
+
+      approval_matrix:
+        standard_leave:
+          up_to_3_days:
+            approvers: [manager]
+
+          4_to_14_days:
+            approvers: [manager, department_head]
+
+          over_14_days:
+            approvers: [manager, department_head, hr_admin]
+
+        emergency_leave:
+          all_durations:
+            approvers: [manager]
+            post_approval: [hr_admin]
+
+        maternity_paternity:
+          all_durations:
+            approvers: [manager, hr_admin]
+            notification: [payroll]
+
+      tasks:
+        - id: LEV-APR-001
+          name: "Manager Review"
+          description: "Manager reviews leave request"
+          assignee: manager
+          sla: "24 hours"
+
+          review_criteria:
+            - team_coverage
+            - project_impact
+            - leave_pattern
+            - balance_available
+
+          actions:
+            approve:
+              - update_status
+              - notify_employee
+              - route_to_next (if_required)
+
+            reject:
+              - provide_reason
+              - notify_employee
+
+            request_info:
+              - specify_information_needed
+              - notify_employee
+
+        - id: LEV-APR-002
+          name: "Department Head Review"
+          description: "Department head reviews extended leave"
+          assignee: department_head
+          condition: "leave_days >= 4"
+          sla: "24 hours"
+
+          review_focus:
+            - departmental_impact
+            - coverage_plan
+            - budget_impact (for_replacement)
+
+        - id: LEV-APR-003
+          name: "HR Review"
+          description: "HR reviews long or special leave"
+          assignee: hr_admin
+          condition: "leave_days >= 14 OR special_leave"
+          sla: "24 hours"
+
+          review_focus:
+            - compliance_check
+            - policy_adherence
+            - documentation_complete
+
+    - id: approval_timeout
+      name: "Approval Timeout Handling"
+      description: "Handle requests not actioned in time"
+      owner: system
+
+      rules:
+        - id: LEV-TMO-001
+          name: "First Reminder"
+          trigger: "12_hours_no_action"
+          action: "send_reminder_to_approver"
+
+        - id: LEV-TMO-002
+          name: "Second Reminder"
+          trigger: "20_hours_no_action"
+          action: "send_urgent_reminder_to_approver"
+
+        - id: LEV-TMO-003
+          name: "Escalation"
+          trigger: "24_hours_no_action"
+          action: "escalate_to_next_level"
+
+        - id: LEV-TMO-004
+          name: "Auto-Approval"
+          trigger: "48_hours_no_action"
+          action: "auto_approve"
+          condition: "emergency_leave_only"
+          notification: "to_all_approvers"
+
+    - id: post_approval
+      name: "Post-Approval Processing"
+      description: "Actions after leave is approved"
+      owner: system
+
+      tasks:
+        - id: LEV-PST-001
+          name: "Update Leave Balance"
+          description: "Deduct from available balance"
+          assignee: system
+          automatic: true
+
+          actions:
+            - deduct_balance
+            - record_transaction
+            - update_calendar
+
+        - id: LEV-PST-002
+          name: "Update Calendar"
+          description: "Block calendar and set OOO"
+          assignee: system
+          automatic: true
+
+          actions:
+            - create_calendar_block
+            - set_out_of_office
+            - update_team_calendar
+
+        - id: LEV-PST-003
+          name: "Notify Stakeholders"
+          description: "Inform relevant parties"
+          assignee: system
+          automatic: true
+
+          notifications:
+            - team_members
+            - delegate
+            - meeting_organizers
+
+        - id: LEV-PST-004
+          name: "Setup Handover"
+          description: "Facilitate handover to delegate"
+          assignee: employee
+          condition: "leave_days >= 3"
+          due: "before_leave_start"
+
+          handover_items:
+            - pending_tasks
+            - important_contacts
+            - escalation_procedures
+            - access_delegation
+
+    - id: during_leave
+      name: "During Leave Period"
+      description: "Monitoring during leave"
+      owner: system
+
+      tasks:
+        - id: LEV-DUR-001
+          name: "Start Date Check"
+          description: "Confirm leave has started"
+          trigger: "leave_start_date"
+
+          actions:
+            - verify_no_attendance
+            - confirm_status_change
+            - activate_delegate_access
+
+        - id: LEV-DUR-002
+          name: "Monitor Leave Extension"
+          description: "Handle extension requests"
+          trigger: "extension_requested"
+
+          process:
+            - verify_balance
+            - route_for_approval
+            - update_records
+
+        - id: LEV-DUR-003
+          name: "Early Return"
+          description: "Handle early return from leave"
+          trigger: "early_return_requested"
+
+          process:
+            - verify_request
+            - credit_unused_days
+            - update_calendar
+            - notify_stakeholders
+
+    - id: return
+      name: "Return from Leave"
+      description: "Employee returns from leave"
+      owner: employee
+
+      tasks:
+        - id: LEV-RET-001
+          name: "Attendance Resumption"
+          description: "Employee checks in after leave"
+          assignee: employee
+          trigger: "day_after_leave_end"
+
+          validation:
+            - attendance_recorded
+            - within_expected_date
+
+          actions:
+            - update_status_to_active
+            - deactivate_delegate_access
+            - clear_out_of_office
+
+        - id: LEV-RET-002
+          name: "Submit Documentation"
+          description: "Submit required documents"
+          assignee: employee
+          condition: "documentation_required"
+          due: "+3 days"
+
+          documents:
+            sick_leave:
+              - medical_certificate
+              - hospital_discharge (if_applicable)
+
+            maternity:
+              - birth_certificate
+
+        - id: LEV-RET-003
+          name: "Verify Documentation"
+          description: "HR verifies submitted documents"
+          assignee: hr_admin
+          condition: "documentation_submitted"
+          sla: "2_business_days"
+
+          actions:
+            valid:
+              - mark_verified
+              - close_leave_record
+
+            invalid:
+              - request_correction
+              - convert_to_unpaid (if_no_valid_docs)
+
+    - id: no_show
+      name: "No-Show Handling"
+      description: "Handle failure to return from leave"
+      owner: hr_admin
+
+      tasks:
+        - id: LEV-NOS-001
+          name: "No Return Alert"
+          description: "Employee did not return"
+          trigger: "no_attendance_after_leave_end"
+
+          actions:
+            - alert_manager
+            - alert_hr
+            - attempt_contact
+
+        - id: LEV-NOS-002
+          name: "Contact Employee"
+          description: "Attempt to reach employee"
+          assignee: manager
+          sla: "same_day"
+
+          methods:
+            - phone_call
+            - emergency_contact
+            - email
+
+        - id: LEV-NOS-003
+          name: "Extended Absence"
+          description: "Handle continued no-show"
+          trigger: "3_consecutive_days_no_contact"
+
+          actions:
+            - mark_as_unauthorized_absence
+            - initiate_absence_management
+            - send_formal_notice
+
+  cancellation:
+    id: cancellation_flow
+    name: "Leave Cancellation"
+    trigger: "cancellation_requested"
+
+    rules:
+      by_employee:
+        before_leave_starts:
+          allowed: true
+          approval: "automatic"
+          balance_credit: "immediate"
+
+        during_leave:
+          allowed: true
+          approval: "automatic"
+          balance_credit: "remaining_days"
+
+      by_employer:
+        before_leave_starts:
+          allowed: true
+          requires: "business_justification"
+          compensation: "travel_expenses_if_incurred"
+
+        during_leave:
+          allowed: "exceptional_only"
+          approval: "hr_director"
+          compensation: "required"
+
+    process:
+      - submit_cancellation_request
+      - verify_eligibility
+      - process_refund
+      - update_calendar
+      - notify_stakeholders
+
+  special_flows:
+    emergency_leave:
+      description: "Urgent leave with immediate effect"
+
+      process:
+        - verbal_notification_to_manager
+        - manager_verbal_approval
+        - formal_request_within_24_hours
+        - post_facto_documentation
+
+      post_approval:
+        - hr_review
+        - documentation_verification
+        - balance_adjustment
+
+    sick_leave_extension:
+      description: "Extending sick leave during illness"
+
+      process:
+        - notify_manager
+        - submit_extension_request
+        - provide_medical_update
+        - approval_process
+
+      documentation:
+        - ongoing_medical_certificate
+        - expected_return_date
+
+    maternity_leave:
+      description: "6-month maternity leave"
+
+      pre_leave:
+        - advance_notice "30 days"
+        - submit_pregnancy_certificate
+        - plan_replacement
+        - handover_plan
+
+      during_leave:
+        - benefit_continuation
+        - periodic_check_ins (optional)
+        - return_planning
+
+      return:
+        - nursing_break_arrangement
+        - flexible_work_discussion
+        - gradual_return_option
+
+  integration:
+    payroll:
+      - leave_days_for_calculation
+      - sick_leave_for_SI_claim
+      - unpaid_leave_deduction
+
+    attendance:
+      - leave_status_sync
+      - attendance_exception
+
+    calendar:
+      - out_of_office
+      - team_calendar_update
+
+    project_management:
+      - resource_availability
+      - task_reassignment
+
+notifications:
+  - event: leave_submitted
+    recipients: [approver]
+    template: "leave_request_pending"
+
+  - event: leave_approved
+    recipients: [employee, team]
+    template: "leave_approved"
+
+  - event: leave_rejected
+    recipients: [employee]
+    template: "leave_rejected"
+
+  - event: leave_starting
+    timing: [1]
+    recipients: [employee, team]
+    template: "leave_reminder"
+
+  - event: leave_ending
+    timing: [1]
+    recipients: [employee]
+    template: "return_reminder"
+
+  - event: approval_pending
+    timing: [12, 20]
+    recipients: [approver]
+    template: "approval_reminder"
+
+audit:
+  enabled: true
+  tracked_events:
+    - submissions
+    - approvals
+    - rejections
+    - cancellations
+    - extensions
+  retention: "5 years"

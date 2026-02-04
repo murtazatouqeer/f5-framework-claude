@@ -1,0 +1,393 @@
+# Tele-Visit Scheduling Workflow
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Workflow for scheduling telehealth appointments
+
+workflow:
+  id: tele-visit-scheduling
+  name: Telehealth Visit Scheduling
+  name_ja: 遠隔診療予約
+  description: End-to-end workflow for scheduling telehealth appointments
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - patient_requests_appointment
+      - provider_initiates_follow_up
+      - referral_received
+      - system_schedules_recurring
+
+  actors:
+    - id: patient
+      role: Patient
+      description: Person seeking telehealth care
+      
+    - id: provider
+      role: Healthcare Provider
+      description: Physician, NP, PA, or other provider
+      
+    - id: scheduler
+      role: Scheduling Staff
+      description: Staff handling appointment scheduling
+      
+    - id: system
+      role: Scheduling System
+      description: Automated scheduling platform
+
+  preconditions:
+    - Patient has active account in system
+    - Provider is configured for telehealth
+    - Patient has verified contact information
+    - Insurance information on file (if applicable)
+
+  steps:
+    - step: 1
+      id: initiate_scheduling
+      name: Initiate Scheduling Request
+      actor: patient
+      description: Patient initiates appointment request
+      
+      actions:
+        - Select "Schedule Telehealth Visit"
+        - Choose visit type (new/follow-up/urgent)
+        - Select specialty or specific provider (if known)
+        
+      ui_elements:
+        - Visit type selector
+        - Provider search/select
+        - Specialty filter
+        
+      next_step: 2
+
+    - step: 2
+      id: check_provider_availability
+      name: Check Provider Availability
+      actor: system
+      description: Query available appointment slots
+      
+      actions:
+        - Query provider_availability for selected criteria
+        - Filter by patient's state (licensing)
+        - Apply visit duration requirements
+        - Generate available slot list
+        
+      business_rules:
+        - BR-LIC-001: Provider licensed in patient's state
+        
+      integrations:
+        - provider_availability_service
+        - licensing_verification_service
+        
+      outputs:
+        - available_slots: list of datetime options
+        
+      next_step: 3
+      on_no_availability:
+        action: offer_waitlist_or_alternatives
+        next_step: 2a
+
+    - step: 2a
+      id: handle_no_availability
+      name: Handle No Availability
+      actor: system
+      description: When no slots available
+      
+      actions:
+        - Offer to join waitlist
+        - Suggest alternative providers
+        - Suggest alternative times/dates
+        - Offer on-demand visit if available
+        
+      next_step: 2 (loop) or exit
+
+    - step: 3
+      id: verify_telehealth_eligibility
+      name: Verify Telehealth Eligibility
+      actor: system
+      description: Confirm visit appropriate for telehealth
+      
+      actions:
+        - Present chief complaint options
+        - Run eligibility screening
+        - Check for emergency indicators
+        
+      business_rules:
+        - BR-TEL-001: Condition eligibility
+        - BR-TEL-002: Emergency screening
+        
+      validations:
+        - Chief complaint not in emergency list
+        - Condition suitable for telehealth
+        
+      on_emergency_detected:
+        action: |
+          Display emergency warning
+          Provide emergency resources
+          Block telehealth scheduling
+        next_step: exit_emergency
+        
+      on_not_eligible:
+        action: |
+          Explain why telehealth not appropriate
+          Offer in-person scheduling
+        next_step: exit_in_person
+        
+      next_step: 4
+
+    - step: 4
+      id: collect_visit_information
+      name: Collect Visit Information
+      actor: patient
+      description: Gather details about visit reason
+      
+      actions:
+        - Collect chief complaint details
+        - Collect symptom information
+        - Collect relevant medical history updates
+        - Upload any relevant images (if applicable)
+        
+      form_fields:
+        - chief_complaint: text (required)
+        - symptom_duration: select
+        - symptom_severity: scale 1-10
+        - relevant_conditions: checkbox list
+        - current_medications: text
+        - allergies_update: text
+        - images: file upload (optional)
+        
+      validations:
+        - Chief complaint minimum 10 characters
+        
+      next_step: 5
+
+    - step: 5
+      id: verify_insurance
+      name: Verify Insurance Coverage
+      actor: system
+      description: Check telehealth insurance coverage
+      
+      actions:
+        - Retrieve patient insurance info
+        - Check telehealth benefit
+        - Verify provider in network
+        - Calculate patient responsibility
+        
+      business_rules:
+        - BR-BIL-030: Medicare telehealth rules
+        - BR-BIL-031: Medicaid telehealth rules
+        - BR-BIL-032: Commercial parity
+        
+      integrations:
+        - insurance_eligibility_service
+        - benefits_verification_service
+        
+      outputs:
+        - coverage_verified: boolean
+        - copay_amount: decimal
+        - coinsurance: decimal
+        - deductible_remaining: decimal
+        
+      on_no_coverage:
+        action: |
+          Inform patient of self-pay options
+          Display estimated cost
+          Offer financial assistance info
+          
+      next_step: 6
+
+    - step: 6
+      id: confirm_patient_location
+      name: Confirm Patient Location
+      actor: patient
+      description: Verify patient's location for licensing
+      
+      actions:
+        - Confirm patient's state
+        - Confirm patient will be in this state during visit
+        - Collect location type (home, office, etc.)
+        
+      ui_elements:
+        - State selector
+        - Location type dropdown
+        - Confirmation checkbox
+        
+      business_rules:
+        - BR-LIC-001: Provider state licensure
+        
+      validations:
+        - State confirmed matches scheduling criteria
+        - Provider licensed in confirmed state
+        
+      next_step: 7
+
+    - step: 7
+      id: select_appointment_slot
+      name: Select Appointment Slot
+      actor: patient
+      description: Patient selects preferred time
+      
+      actions:
+        - Display available slots (from step 2)
+        - Patient selects preferred time
+        - Display appointment details
+        
+      ui_elements:
+        - Calendar view
+        - Time slot buttons
+        - Appointment summary
+        
+      next_step: 8
+
+    - step: 8
+      id: book_appointment
+      name: Book Appointment
+      actor: system
+      description: Create the appointment record
+      
+      actions:
+        - Reserve time slot
+        - Create tele_visit record
+        - Generate visit_id
+        - Create video_session placeholder
+        - Associate with patient and provider
+        
+      database_operations:
+        - INSERT tele_visit
+        - UPDATE provider_availability (increment booked_count)
+        - INSERT appointment_notification
+        
+      on_slot_no_longer_available:
+        action: Return to step 7 with apology message
+        
+      outputs:
+        - visit_id: uuid
+        - confirmation_number: string
+        
+      next_step: 9
+
+    - step: 9
+      id: collect_payment
+      name: Collect Payment
+      actor: patient
+      description: Collect copay if applicable
+      
+      conditions:
+        - copay_amount > 0
+        - practice_collects_upfront = true
+        
+      actions:
+        - Display payment amount
+        - Collect payment method
+        - Process payment
+        - Generate receipt
+        
+      integrations:
+        - payment_processor
+        
+      on_payment_failure:
+        options:
+          - Retry payment
+          - Use different card
+          - Pay at time of service
+          
+      skip_if: No copay or deferred payment
+      
+      next_step: 10
+
+    - step: 10
+      id: send_confirmation
+      name: Send Confirmation
+      actor: system
+      description: Send appointment confirmation
+      
+      actions:
+        - Generate confirmation email
+        - Generate SMS confirmation
+        - Include visit link
+        - Include preparation instructions
+        - Add to patient's calendar
+        
+      notification_content:
+        - Appointment date/time
+        - Provider name
+        - Visit type
+        - Visit link
+        - Preparation instructions
+        - Cancellation policy
+        - Contact information
+        
+      delivery_channels:
+        - email: required
+        - sms: if_opted_in
+        - push: if_app_installed
+        
+      next_step: 11
+
+    - step: 11
+      id: schedule_reminders
+      name: Schedule Reminders
+      actor: system
+      description: Set up automated reminders
+      
+      actions:
+        - Schedule 24-hour reminder
+        - Schedule 1-hour reminder
+        - Schedule 15-minute reminder
+        - Schedule device check reminder
+        
+      reminder_schedule:
+        - time: 24 hours before
+          content: appointment_reminder_24h
+          channels: [email, sms]
+          
+        - time: 1 hour before
+          content: appointment_reminder_1h
+          channels: [sms, push]
+          
+        - time: 15 minutes before
+          content: appointment_reminder_15m
+          include: join_link, device_check_prompt
+          channels: [sms, push]
+          
+      next_step: complete
+
+  completion:
+    status: appointment_scheduled
+    outputs:
+      - visit_id
+      - confirmation_number
+      - scheduled_time
+      - provider_name
+      - visit_link
+      
+    next_workflow: pre-visit-workflow
+    trigger_condition: 30 minutes before appointment
+
+  error_handling:
+    system_error:
+      action: |
+        Log error
+        Display friendly message
+        Offer to call scheduling
+        Save progress for recovery
+        
+    timeout:
+      duration: 15 minutes
+      action: |
+        Save current progress
+        Allow resume later
+        Release held slot
+
+  metrics:
+    track:
+      - scheduling_completion_rate
+      - average_scheduling_time
+      - abandonment_step
+      - slot_utilization
+      - eligibility_rejection_rate
+
+  audit:
+    log_all_steps: true
+    include_phi: false
+    retention_days: 2555

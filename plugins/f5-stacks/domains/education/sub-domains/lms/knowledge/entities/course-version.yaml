@@ -1,0 +1,154 @@
+# Course Version Entity
+# F5 Framework v2.0 - Education/LMS
+# Version control for course content
+
+entity:
+  id: course-version
+  name: Course Version
+  name_ja: コースバージョン
+  description: Version history and snapshots of course content
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    course_id:
+      type: uuid
+      references: course
+      required: true
+      
+    version_number:
+      type: string
+      pattern: "^\\d+\\.\\d+\\.\\d+$"
+      examples: ["1.0.0", "1.1.0", "2.0.0"]
+      
+    version_type:
+      type: enum
+      values: [major, minor, patch]
+      description: Semantic versioning type
+      
+    status:
+      type: enum
+      values: [draft, published, superseded, archived]
+      default: draft
+      
+    title:
+      type: string
+      max_length: 200
+      
+    description:
+      type: text
+      description: What changed in this version
+      
+    # Content Snapshot
+    content_snapshot:
+      type: json
+      description: Complete course structure at this version
+      
+    # Metadata
+    modules_count:
+      type: integer
+      
+    lessons_count:
+      type: integer
+      
+    total_duration_minutes:
+      type: integer
+      
+    # Change Tracking
+    changes_summary:
+      type: array
+      items:
+        type: object
+        properties:
+          change_type: [added, modified, removed]
+          entity_type: [module, lesson, content, quiz]
+          entity_id: uuid
+          description: string
+          
+    # Release Information
+    release_notes:
+      type: text
+      supports_markdown: true
+      
+    is_breaking_change:
+      type: boolean
+      default: false
+      description: Requires learner acknowledgment
+      
+    # Migration
+    migration_strategy:
+      type: enum
+      values: [auto_migrate, learner_choice, reset_progress, no_migration]
+      default: auto_migrate
+      
+    migration_mapping:
+      type: json
+      description: Mapping of old to new content IDs
+      
+    # Timestamps
+    created_by:
+      type: uuid
+      references: user
+      
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    published_at:
+      type: datetime
+      
+    superseded_at:
+      type: datetime
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: published
+        action: publish_version
+        triggers:
+          - supersede_previous_version
+          - notify_enrolled_learners
+          
+      - from: published
+        to: superseded
+        action: supersede
+        triggers:
+          - update_active_enrollments
+          
+      - from: superseded
+        to: archived
+        action: archive
+
+  relationships:
+    course:
+      type: belongs_to
+      entity: course
+      foreign_key: course_id
+      
+    creator:
+      type: belongs_to
+      entity: user
+      foreign_key: created_by
+      
+    enrollments:
+      type: has_many
+      entity: enrollment
+      foreign_key: course_version_id
+
+  indexes:
+    - columns: [course_id, version_number]
+      unique: true
+    - columns: [course_id, status]
+    - columns: [published_at]
+
+  audit:
+    enabled: true
+    track_changes: true
+    retention_days: 3650

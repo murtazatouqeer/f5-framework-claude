@@ -1,0 +1,702 @@
+name: loading_rules
+display_name: Loading Rules
+description: |
+  Business rules governing the application of premium loadings
+  for medical conditions, occupations, and other risk factors.
+
+domain: insurance
+subdomain: underwriting
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - loading_types
+  - condition_loadings
+  - occupation_loadings
+  - combination_rules
+  - limit_rules
+  - reduction_schedules
+
+rules:
+  # Loading Type Rules
+  - id: BR-LDG-001
+    name: Loading Type Definitions
+    category: loading_types
+    description: |
+      Define the types of loadings that can be applied
+      and their calculation methods.
+    priority: critical
+
+    types:
+      percentage_loading:
+        description: Percentage increase to base premium
+        calculation: "Additional = Base_Premium × (Loading% / 100)"
+        applies_to:
+          - life_coverage
+          - critical_illness
+          - disability
+          - medical
+        typical_range: "25% - 200%"
+        example:
+          base_premium: 10000000
+          loading_percent: 50
+          additional_premium: 5000000
+          total_premium: 15000000
+
+      flat_extra:
+        description: Fixed amount per 1000 sum insured
+        calculation: "Additional = (Sum_Insured / 1000) × Flat_Rate"
+        applies_to:
+          - life_coverage_mortality_only
+          - accidental_death
+        typical_range: "1 - 15 per 1000"
+        example:
+          sum_insured: 1000000000
+          flat_rate: 2.5
+          additional_premium: 2500000
+
+      temporary_loading:
+        description: Loading for limited duration
+        types:
+          - temporary_percentage
+          - temporary_flat
+        duration_options:
+          - fixed_years  # 1-10 years
+          - until_age  # until age 50, 60, etc.
+          - until_event  # until recovery confirmed
+        typical_use:
+          - recent_surgery
+          - recovering_illness
+          - temporary_occupation
+
+      reducing_loading:
+        description: Loading that decreases over time
+        calculation: "Year_N_Loading = Initial_Loading × Reduction_Factor"
+        typical_schedule:
+          year_1: 100%
+          year_2: 75%
+          year_3: 50%
+          year_4: 25%
+          year_5_plus: 0%
+        typical_use:
+          - weight_loss_achievement
+          - smoking_cessation
+          - condition_improvement
+
+  - id: BR-LDG-002
+    name: Loading Basis Selection
+    category: loading_types
+    description: |
+      Rules for determining whether to use percentage
+      or flat extra loading.
+    priority: high
+
+    selection_rules:
+      use_percentage:
+        conditions:
+          - morbidity_risk  # illness risk
+          - general_health_conditions
+          - lifestyle_factors
+          - most_medical_conditions
+        rationale: "Risk scales with coverage amount"
+
+      use_flat_extra:
+        conditions:
+          - mortality_risk_only
+          - hazardous_activities
+          - specific_mortality_hazards
+          - cancer_history
+        rationale: "Fixed additional mortality regardless of sum"
+
+      use_combination:
+        conditions:
+          - complex_risk_profiles
+          - multiple_risk_types
+        example: "Cancer history: 50% loading + 5/1000 flat extra"
+
+  # Condition Loading Rules
+  - id: BR-LDG-010
+    name: Cardiovascular Condition Loadings
+    category: condition_loadings
+    description: |
+      Standard loadings for cardiovascular conditions.
+    priority: high
+
+    conditions:
+      hypertension:
+        controlled:
+          loading: 25
+          type: percentage
+          applies_to: [life, ci, disability]
+        uncontrolled:
+          loading: 75
+          type: percentage
+          applies_to: [life, ci, disability]
+          exclusion_alternative: cardiovascular_exclusion
+        severe:
+          action: decline
+          exception: exclusion_only
+
+      hyperlipidemia:
+        controlled:
+          loading: 0
+          type: percentage
+          applies_to: []
+          notes: No loading if controlled
+        uncontrolled:
+          loading: 25
+          type: percentage
+          applies_to: [life, ci]
+
+      coronary_artery_disease:
+        mild:
+          loading: 75
+          type: percentage
+          applies_to: [life, ci, disability]
+        moderate:
+          loading: 100
+          type: percentage
+          applies_to: [life, ci, disability]
+        severe:
+          action: decline
+
+      arrhythmia:
+        benign:
+          loading: 0
+          type: percentage
+          notes: Monitor only
+        significant:
+          loading: 50
+          type: percentage
+          applies_to: [life, ci]
+        serious:
+          loading: 100
+          type: percentage
+          exclusion_possible: true
+
+      heart_attack_history:
+        within_2_years:
+          action: postpone
+          review: 24_months
+        2_to_5_years:
+          loading: 150
+          type: percentage
+          applies_to: [life, ci, disability]
+        over_5_years:
+          loading: 100
+          type: percentage
+          condition: stable_with_testing
+
+  - id: BR-LDG-011
+    name: Metabolic Condition Loadings
+    category: condition_loadings
+    description: |
+      Standard loadings for metabolic conditions.
+    priority: high
+
+    conditions:
+      diabetes_type_2:
+        well_controlled:
+          hba1c_below: 7.0
+          loading: 50
+          type: percentage
+          applies_to: [life, ci, disability]
+        moderately_controlled:
+          hba1c_range: "7.0-8.0"
+          loading: 75
+          type: percentage
+          applies_to: [life, ci, disability]
+        poorly_controlled:
+          hba1c_above: 8.0
+          loading: 100
+          type: percentage
+          exclusion_possible: diabetes_complications
+        with_complications:
+          action: decline
+          exception: heavy_loading_with_exclusions
+
+      diabetes_type_1:
+        well_controlled:
+          loading: 75
+          type: percentage
+          applies_to: [life, ci, disability]
+        with_complications:
+          action: decline
+
+      obesity:
+        bmi_30_35:
+          loading: 25
+          type: percentage
+          applies_to: [life, ci, disability]
+        bmi_35_40:
+          loading: 50
+          type: percentage
+          applies_to: [life, ci, disability]
+        bmi_above_40:
+          loading: 100
+          type: percentage
+          or_decline: based_on_comorbidities
+
+      thyroid_disorder:
+        controlled:
+          loading: 0
+          type: percentage
+          notes: No loading if stable
+        uncontrolled:
+          loading: 25
+          type: percentage
+          applies_to: [life, ci]
+
+  - id: BR-LDG-012
+    name: Cancer History Loadings
+    category: condition_loadings
+    description: |
+      Standard loadings for cancer history.
+    priority: critical
+
+    conditions:
+      cancer_general:
+        within_5_years:
+          action: decline
+          exception: very_early_stage_certain_types
+        5_to_10_years:
+          loading: 100
+          type: percentage
+          flat_extra: 5
+          applies_to: [life, ci]
+        over_10_years:
+          loading: 50
+          type: percentage
+          applies_to: [life, ci]
+          condition: no_recurrence
+
+      early_stage_skin_cancer:
+        basal_cell:
+          loading: 0
+          type: percentage
+          exclusion: skin_cancer
+          notes: Exclusion may apply
+        squamous_cell_early:
+          loading: 25
+          type: percentage
+          applies_to: [life, ci]
+          exclusion: skin_cancer
+
+      breast_cancer:
+        stage_0_1:
+          after_5_years:
+            loading: 75
+            flat_extra: 3
+          after_10_years:
+            loading: 25
+            flat_extra: 0
+        stage_2:
+          after_5_years:
+            loading: 100
+            flat_extra: 5
+          after_10_years:
+            loading: 50
+            flat_extra: 2
+        stage_3_4:
+          action: decline
+          exception: case_by_case_after_10_years
+
+      thyroid_cancer:
+        papillary_follicular:
+          after_2_years:
+            loading: 25
+            applies_to: [life, ci]
+          after_5_years:
+            loading: 0
+            notes: Standard if no recurrence
+
+  - id: BR-LDG-013
+    name: Mental Health Condition Loadings
+    category: condition_loadings
+    description: |
+      Standard loadings for mental health conditions.
+    priority: high
+
+    conditions:
+      depression:
+        single_episode_recovered:
+          loading: 0
+          type: percentage
+          condition: stable_2_years
+        recurrent_controlled:
+          loading: 25
+          type: percentage
+          applies_to: [life, disability]
+          exclusion: mental_health_disability
+        current_treatment:
+          loading: 50
+          type: percentage
+          applies_to: [life, disability]
+          exclusion: mental_health
+        severe:
+          action: postpone
+          review: 12_months
+
+      anxiety_disorder:
+        mild_controlled:
+          loading: 0
+          type: percentage
+          notes: Standard terms
+        moderate:
+          loading: 25
+          type: percentage
+          applies_to: [life, disability]
+        severe_or_hospitalized:
+          action: postpone
+          review: 12_months
+
+      bipolar_disorder:
+        controlled:
+          loading: 75
+          type: percentage
+          applies_to: [life, disability]
+          exclusion: mental_health
+        uncontrolled:
+          action: decline
+
+      suicide_attempt_history:
+        within_5_years:
+          action: decline
+        5_to_10_years:
+          loading: 100
+          type: percentage
+          exclusion: suicide_extended
+        over_10_years:
+          loading: 50
+          type: percentage
+          condition: stable_with_report
+
+  # Occupation Loading Rules
+  - id: BR-LDG-020
+    name: Occupation Class Loadings
+    category: occupation_loadings
+    description: |
+      Standard loadings by occupation class.
+    priority: high
+
+    class_loadings:
+      class_1:
+        description: Professional/Office
+        life_loading: 0
+        disability_loading: 0
+        accident_loading: 0
+
+      class_2:
+        description: Semi-professional/Light manual
+        life_loading: 0
+        disability_loading: 10
+        accident_loading: 10
+
+      class_3:
+        description: Skilled manual
+        life_loading: 10
+        disability_loading: 25
+        accident_loading: 25
+
+      class_4:
+        description: Heavy manual
+        life_loading: 25
+        disability_loading: 50
+        accident_loading: 50
+
+      class_5:
+        description: Hazardous
+        life_loading: 50
+        disability_loading: 100
+        accident_loading: 100
+        exclusion_possible: occupational_disability
+
+      declined:
+        description: Uninsurable occupations
+        action: decline
+        examples:
+          - professional_diver_deep
+          - explosive_handler
+          - underground_miner
+          - professional_stunt
+
+  - id: BR-LDG-021
+    name: Specific Occupation Loadings
+    category: occupation_loadings
+    description: |
+      Loadings for specific occupations beyond class rating.
+    priority: medium
+
+    specific_loadings:
+      aviation:
+        commercial_pilot:
+          life_flat_extra: 2.5
+          applies_to: [life, accidental_death]
+        private_pilot:
+          life_flat_extra: 5
+          applies_to: [life, accidental_death]
+          exclusion_alternative: aviation_exclusion
+        cabin_crew:
+          life_loading: 25
+          applies_to: [life]
+
+      offshore:
+        oil_rig_worker:
+          life_loading: 50
+          life_flat_extra: 3
+          disability_loading: 100
+          applies_to: [life, disability, accident]
+
+      military:
+        active_combat:
+          action: exclude_or_decline
+          exclusion: war_military
+        non_combat:
+          life_loading: 25
+          applies_to: [life, accidental_death]
+
+      entertainment:
+        professional_athlete:
+          disability_loading: 100
+          exclusion: sports_injury
+        stunt_performer:
+          action: decline
+
+  # Combination Rules
+  - id: BR-LDG-030
+    name: Multiple Loading Combination
+    category: combination_rules
+    description: |
+      Rules for combining multiple loadings.
+    priority: critical
+
+    combination_methods:
+      independent_conditions:
+        method: additive
+        formula: "Total = Loading_A + Loading_B + Loading_C"
+        example:
+          condition_a: "Back condition +25%"
+          condition_b: "Eye condition +15%"
+          total: "+40%"
+
+      related_conditions:
+        method: multiplicative
+        formula: "Total = ((1 + L_A) × (1 + L_B) - 1) × 100"
+        example:
+          condition_a: "Diabetes +50%"
+          condition_b: "Hypertension +25%"
+          calculation: "(1.50 × 1.25 - 1) × 100"
+          total: "+87.5%"
+          rounded: "+90%"
+
+      synergistic_pairs:
+        pairs:
+          - conditions: [diabetes, hypertension]
+            additional: 25
+          - conditions: [diabetes, obesity]
+            additional: 25
+          - conditions: [smoking, respiratory]
+            additional: 50
+          - conditions: [smoking, cardiovascular]
+            additional: 50
+
+    flat_extra_combination:
+      method: additive
+      note: Flat extras always add together
+
+  - id: BR-LDG-031
+    name: Loading Priority Rules
+    category: combination_rules
+    description: |
+      Priority when multiple loading approaches possible.
+    priority: medium
+
+    priority_order:
+      1: decline
+      2: postpone
+      3: exclude_with_loading
+      4: exclude_without_loading
+      5: loading_only
+
+    selection_guidance:
+      when_decline_borderline:
+        consider:
+          - heavy_loading_with_exclusion
+          - reduced_coverage
+          - postponement
+
+      when_exclusion_vs_loading:
+        prefer_exclusion:
+          - isolated_condition
+          - low_probability_claim
+          - customer_preference
+        prefer_loading:
+          - general_health_concern
+          - multiple_related_risks
+          - better_coverage_value
+
+  # Limit Rules
+  - id: BR-LDG-040
+    name: Maximum Loading Limits
+    category: limit_rules
+    description: |
+      Maximum loadings by authority level.
+    priority: critical
+
+    limits_by_authority:
+      underwriter:
+        max_percentage: 50
+        max_flat_extra: 5
+        can_apply_temporary: true
+        can_apply_exclusion: standard_only
+
+      senior_underwriter:
+        max_percentage: 100
+        max_flat_extra: 10
+        can_apply_temporary: true
+        can_apply_exclusion: all
+        can_decline: with_approval
+
+      chief_underwriter:
+        max_percentage: 150
+        max_flat_extra: 15
+        can_apply_temporary: true
+        can_apply_exclusion: all
+        can_decline: true
+
+      committee:
+        max_percentage: 200
+        max_flat_extra: unlimited
+        can_apply_temporary: true
+        can_apply_exclusion: all
+        can_decline: true
+        can_exceed_limits: with_reinsurance
+
+  - id: BR-LDG-041
+    name: Product-Specific Loading Limits
+    category: limit_rules
+    description: |
+      Maximum loadings by product type.
+    priority: high
+
+    product_limits:
+      term_life:
+        max_percentage: 200
+        max_flat_extra: 15
+        above_limit_action: decline
+
+      whole_life:
+        max_percentage: 150
+        max_flat_extra: 10
+        above_limit_action: counter_offer_term
+
+      critical_illness:
+        max_percentage: 100
+        above_limit_action: exclude_or_decline
+
+      disability_income:
+        max_percentage: 100
+        above_limit_action: exclude_or_decline
+
+      medical_expense:
+        max_percentage: 100
+        above_limit_action: exclude_or_decline
+        alternative: waiting_period_extension
+
+  # Reduction Schedule Rules
+  - id: BR-LDG-050
+    name: Temporary Loading Reduction
+    category: reduction_schedules
+    description: |
+      Standard reduction schedules for temporary loadings.
+    priority: medium
+
+    schedules:
+      linear_reduction:
+        description: Equal reduction each year
+        example:
+          initial: 100
+          years: 4
+          schedule:
+            year_1: 100
+            year_2: 75
+            year_3: 50
+            year_4: 25
+            year_5_plus: 0
+
+      accelerated_reduction:
+        description: Faster initial reduction
+        example:
+          initial: 100
+          schedule:
+            year_1: 100
+            year_2: 50
+            year_3: 25
+            year_4_plus: 0
+
+      delayed_reduction:
+        description: Reduction starts later
+        example:
+          initial: 100
+          schedule:
+            year_1_2: 100
+            year_3: 75
+            year_4: 50
+            year_5: 25
+            year_6_plus: 0
+
+  - id: BR-LDG-051
+    name: Loading Review and Removal
+    category: reduction_schedules
+    description: |
+      Rules for reviewing and removing loadings.
+    priority: medium
+
+    review_triggers:
+      automatic_review:
+        - temporary_loading_end_date
+        - scheduled_reduction_date
+        - policy_anniversary
+
+      applicant_request:
+        minimum_period: 2_years
+        evidence_required:
+          - updated_medical
+          - treatment_records
+          - specialist_opinion
+        fee: may_apply
+
+    removal_criteria:
+      condition_resolved:
+        evidence: medical_confirmation
+        authority: senior_underwriter
+        retroactive: no
+
+      condition_improved:
+        evidence: objective_improvement
+        authority: underwriter
+        partial_reduction: yes
+
+      period_elapsed:
+        automatic: for_temporary_loadings
+        authority: system
+
+    removal_process:
+      1: Receive request or trigger
+      2: Gather updated evidence
+      3: Underwriter assessment
+      4: Approval by appropriate authority
+      5: Premium adjustment from next due date
+      6: Notification to policyholder
+
+audit_requirements:
+  - Loading rationale must be documented
+  - Combined loadings require calculation breakdown
+  - Reductions require evidence documentation
+  - Random audit of 10% of loading decisions
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

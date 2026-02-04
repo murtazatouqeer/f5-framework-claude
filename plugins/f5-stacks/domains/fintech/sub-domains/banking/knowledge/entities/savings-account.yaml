@@ -1,0 +1,512 @@
+name: SavingsAccount
+display_name: Savings Account / Tài khoản tiết kiệm
+description: |
+  Specialized savings and fixed deposit account with interest calculation,
+  term management, and maturity handling. Extends BankAccount with
+  savings-specific attributes and rules.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique savings account identifier
+
+  account_id:
+    type: uuid
+    required: true
+    references: BankAccount
+    description: Link to base bank account
+
+  account_holder_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: AccountHolder
+
+  # ---------------------------------------------------------------------------
+  # Savings Type
+  # ---------------------------------------------------------------------------
+  savings_type:
+    type: enum
+    values: [demand, term, recurring]
+    required: true
+    description: Type of savings product
+    description_vi: Loại tiết kiệm
+    value_descriptions:
+      demand: "On-demand savings, withdraw anytime / Tiết kiệm không kỳ hạn"
+      term: "Fixed term deposit / Tiết kiệm có kỳ hạn"
+      recurring: "Regular deposit savings / Tiết kiệm gửi góp"
+
+  product_code:
+    type: string
+    max_length: 20
+    required: true
+    description: Bank's savings product code
+    description_vi: Mã sản phẩm tiết kiệm
+
+  product_name:
+    type: string
+    max_length: 100
+    description: Product display name
+
+  # ---------------------------------------------------------------------------
+  # Principal & Interest
+  # ---------------------------------------------------------------------------
+  principal_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Original deposit amount
+    description_vi: Số tiền gốc
+
+  current_balance:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Current balance including interest
+    description_vi: Số dư hiện tại
+
+  interest_rate:
+    type: decimal
+    precision: 5
+    scale: 4
+    required: true
+    description: Annual interest rate (e.g., 0.0650 = 6.5%)
+    description_vi: Lãi suất năm
+
+  interest_rate_type:
+    type: enum
+    values: [fixed, floating, tiered]
+    default: fixed
+    description: How interest rate is determined
+    value_descriptions:
+      fixed: "Fixed rate for entire term"
+      floating: "Rate adjusts with market"
+      tiered: "Rate varies by balance tier"
+
+  interest_calculation_method:
+    type: enum
+    values: [simple, compound_monthly, compound_quarterly, compound_annually]
+    default: simple
+    description: Interest calculation method
+    description_vi: Phương pháp tính lãi
+
+  interest_payment_frequency:
+    type: enum
+    values: [at_maturity, monthly, quarterly, annually]
+    default: at_maturity
+    description: When interest is paid
+    description_vi: Kỳ trả lãi
+
+  accrued_interest:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Interest accrued but not yet paid
+    description_vi: Lãi dự thu
+
+  total_interest_earned:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Total interest earned to date
+    description_vi: Tổng lãi đã nhận
+
+  last_interest_calculation_at:
+    type: timestamp
+    nullable: true
+    description: Last interest calculation date
+
+  last_interest_payment_at:
+    type: timestamp
+    nullable: true
+    description: Last interest payment date
+
+  # ---------------------------------------------------------------------------
+  # Term Information (for fixed deposits)
+  # ---------------------------------------------------------------------------
+  term_months:
+    type: integer
+    nullable: true
+    description: Deposit term in months
+    description_vi: Kỳ hạn (tháng)
+
+  start_date:
+    type: date
+    required: true
+    description: Deposit start date
+    description_vi: Ngày bắt đầu
+
+  maturity_date:
+    type: date
+    nullable: true
+    description: Maturity date for term deposits
+    description_vi: Ngày đáo hạn
+
+  # ---------------------------------------------------------------------------
+  # Maturity Handling
+  # ---------------------------------------------------------------------------
+  auto_renew:
+    type: boolean
+    default: true
+    description: Auto-renew on maturity
+    description_vi: Tự động tái tục
+
+  renewal_term_months:
+    type: integer
+    nullable: true
+    description: Term for auto-renewal (defaults to original term)
+
+  renewal_interest_rate:
+    type: decimal
+    precision: 5
+    scale: 4
+    nullable: true
+    description: Rate for renewal (null = current market rate)
+
+  maturity_instruction:
+    type: enum
+    values: [renew_principal_only, renew_principal_and_interest, transfer_to_checking, hold_in_account]
+    default: renew_principal_and_interest
+    description: What to do on maturity
+    description_vi: Chỉ định khi đáo hạn
+
+  maturity_transfer_account_id:
+    type: uuid
+    nullable: true
+    references: BankAccount
+    description: Account to transfer maturity proceeds
+
+  renewal_count:
+    type: integer
+    default: 0
+    description: Number of times renewed
+
+  # ---------------------------------------------------------------------------
+  # Recurring Deposit (for recurring savings)
+  # ---------------------------------------------------------------------------
+  recurring_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Monthly recurring deposit amount
+    description_vi: Số tiền gửi góp hàng tháng
+
+  recurring_day:
+    type: integer
+    nullable: true
+    minimum: 1
+    maximum: 28
+    description: Day of month for recurring deposit
+
+  recurring_source_account_id:
+    type: uuid
+    nullable: true
+    references: BankAccount
+    description: Source account for recurring deposits
+
+  missed_deposits:
+    type: integer
+    default: 0
+    description: Number of missed recurring deposits
+
+  max_missed_deposits:
+    type: integer
+    default: 3
+    description: Maximum allowed missed deposits before penalty
+
+  # ---------------------------------------------------------------------------
+  # Withdrawal Rules
+  # ---------------------------------------------------------------------------
+  allow_partial_withdrawal:
+    type: boolean
+    default: false
+    description: Allow partial withdrawal before maturity
+    description_vi: Cho phép rút một phần
+
+  early_withdrawal_penalty_rate:
+    type: decimal
+    precision: 5
+    scale: 4
+    default: 0
+    description: Penalty rate for early withdrawal
+    description_vi: Lãi suất phạt rút trước hạn
+
+  early_withdrawal_interest_rate:
+    type: decimal
+    precision: 5
+    scale: 4
+    nullable: true
+    description: Interest rate applied on early withdrawal
+    description_vi: Lãi suất khi rút trước hạn
+
+  minimum_balance_to_earn_interest:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Minimum balance required to earn interest
+
+  # ---------------------------------------------------------------------------
+  # Status
+  # ---------------------------------------------------------------------------
+  status:
+    type: enum
+    values: [active, matured, closed, early_withdrawn]
+    default: active
+    indexed: true
+    description: Savings account status
+    description_vi: Trạng thái
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  opened_at:
+    type: timestamp
+    required: true
+
+  matured_at:
+    type: timestamp
+    nullable: true
+
+  closed_at:
+    type: timestamp
+    nullable: true
+
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  bank_account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: account_id
+
+  account_holder:
+    type: belongs_to
+    entity: AccountHolder
+    foreign_key: account_holder_id
+
+  source_account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: recurring_source_account_id
+    description: Source for recurring deposits
+
+  maturity_account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: maturity_transfer_account_id
+    description: Account for maturity proceeds
+
+  interest_transactions:
+    type: has_many
+    entity: CardTransaction
+    foreign_key: savings_account_id
+    description: Interest payment transactions
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: active
+
+  states:
+    active:
+      description: "Savings deposit is active and earning interest"
+      allowed_operations: [view, early_withdraw]
+
+    matured:
+      description: "Term deposit has matured"
+      allowed_operations: [view, withdraw, renew]
+
+    closed:
+      description: "Account closed with full withdrawal"
+      allowed_operations: [view]
+
+    early_withdrawn:
+      description: "Withdrawn before maturity with penalty"
+      allowed_operations: [view]
+
+  transitions:
+    - from: active
+      to: matured
+      event: mature
+      conditions:
+        - "Current date >= maturity_date"
+      actions:
+        - "Calculate final interest"
+        - "Execute maturity instruction"
+
+    - from: active
+      to: early_withdrawn
+      event: early_withdraw
+      conditions:
+        - "Current date < maturity_date"
+      actions:
+        - "Apply early withdrawal penalty"
+        - "Calculate interest at penalty rate"
+
+    - from: [active, matured]
+      to: closed
+      event: close
+      actions:
+        - "Transfer balance to designated account"
+        - "Generate closure statement"
+
+    - from: matured
+      to: active
+      event: renew
+      conditions:
+        - "auto_renew = true OR manual renewal requested"
+      actions:
+        - "Set new term and maturity date"
+        - "Apply renewal interest rate"
+        - "Increment renewal_count"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-SAV-001
+    name: Interest Calculation - Simple
+    description: Simple interest for term deposits
+    description_vi: Tính lãi đơn cho tiền gửi có kỳ hạn
+    rule: |
+      interest = principal_amount * interest_rate * (term_months / 12)
+
+  - id: BR-SAV-002
+    name: Interest Calculation - Compound Monthly
+    description: Monthly compound interest
+    description_vi: Lãi kép hàng tháng
+    rule: |
+      interest = principal_amount * ((1 + interest_rate/12)^term_months - 1)
+
+  - id: BR-SAV-003
+    name: Early Withdrawal Penalty
+    description: Interest reduced on early withdrawal
+    description_vi: Giảm lãi khi rút trước hạn
+    rule: |
+      IF withdrawal_date < maturity_date THEN
+        applied_rate = early_withdrawal_interest_rate (typically demand rate)
+        forfeit_rate = interest_rate - early_withdrawal_interest_rate
+
+  - id: BR-SAV-004
+    name: Auto-Renewal
+    description: Auto-renew term deposits at maturity
+    description_vi: Tự động tái tục khi đáo hạn
+    rule: |
+      IF auto_renew = true AND maturity_instruction IN ('renew_principal_only', 'renew_principal_and_interest')
+      THEN create new term with current market rate
+
+  - id: BR-SAV-005
+    name: Recurring Deposit Penalty
+    description: Penalty for missed recurring deposits
+    description_vi: Phạt khi bỏ lỡ kỳ gửi góp
+    rule: |
+      IF missed_deposits > max_missed_deposits
+      THEN terminate recurring savings with reduced interest
+
+  - id: BR-SAV-006
+    name: Daily Interest Accrual
+    description: Accrue interest daily for demand savings
+    description_vi: Tích lũy lãi hàng ngày
+    rule: |
+      daily_interest = current_balance * (interest_rate / 365)
+      accrued_interest += daily_interest
+
+# =============================================================================
+# INTEREST RATE SCHEDULE
+# =============================================================================
+interest_rate_schedule:
+  demand_savings:
+    description: On-demand savings rates
+    rates:
+      - min_balance: 0
+        max_balance: 50000000
+        rate: 0.001  # 0.1%
+      - min_balance: 50000000
+        max_balance: 500000000
+        rate: 0.003  # 0.3%
+      - min_balance: 500000000
+        rate: 0.005  # 0.5%
+
+  term_deposits:
+    description: Fixed term deposit rates (as of reference)
+    rates:
+      - term_months: 1
+        rate: 0.035  # 3.5%
+      - term_months: 3
+        rate: 0.045  # 4.5%
+      - term_months: 6
+        rate: 0.055  # 5.5%
+      - term_months: 9
+        rate: 0.060  # 6.0%
+      - term_months: 12
+        rate: 0.065  # 6.5%
+      - term_months: 18
+        rate: 0.065  # 6.5%
+      - term_months: 24
+        rate: 0.065  # 6.5%
+      - term_months: 36
+        rate: 0.065  # 6.5%
+
+  early_withdrawal_rate:
+    description: Rate applied when withdrawing before maturity
+    rate: 0.001  # 0.1% (demand rate)
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_savings_account_holder
+    fields: [account_holder_id]
+
+  - name: idx_savings_status
+    fields: [status]
+
+  - name: idx_savings_maturity
+    fields: [maturity_date]
+    where: "status = 'active'"
+
+  - name: idx_savings_type
+    fields: [savings_type]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  events:
+    - savings_opened
+    - interest_calculated
+    - interest_paid
+    - matured
+    - renewed
+    - early_withdrawn
+    - closed

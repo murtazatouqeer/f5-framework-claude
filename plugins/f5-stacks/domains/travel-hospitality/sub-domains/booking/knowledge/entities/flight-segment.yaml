@@ -1,0 +1,356 @@
+name: flight-segment
+display_name: Flight Segment
+display_name_vi: Chặng bay
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Individual flight segment within a flight booking.
+  Represents a single takeoff-to-landing leg of a journey.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: flight_id
+    type: uuid
+    foreign_key: flight.id
+    required: true
+
+  - name: segment_number
+    type: integer
+    min: 1
+    required: true
+    description: Sequence within flight (1, 2, 3...)
+
+  # Status
+  - name: status
+    type: enum
+    values: [confirmed, cancelled, schedule_changed, flown]
+    default: confirmed
+
+  # Flight Information
+  - name: flight_number
+    type: string
+    required: true
+    description: e.g., "VN123"
+
+  - name: airline_code
+    type: string
+    length: 2
+    required: true
+    description: IATA airline code
+
+  - name: airline_name
+    type: string
+    required: true
+
+  - name: operating_airline_code
+    type: string
+    length: 2
+    nullable: true
+    description: If codeshare, actual operator
+
+  - name: operating_flight_number
+    type: string
+    nullable: true
+
+  - name: aircraft_type
+    type: string
+    nullable: true
+    description: e.g., "Boeing 787-9"
+
+  - name: aircraft_code
+    type: string
+    length: 3
+    nullable: true
+    description: IATA aircraft code (e.g., 789)
+
+  # Origin
+  - name: origin_airport
+    type: string
+    length: 3
+    required: true
+    description: IATA code
+
+  - name: origin_airport_name
+    type: string
+
+  - name: origin_city
+    type: string
+    required: true
+
+  - name: origin_country
+    type: string
+    length: 2
+    description: ISO country code
+
+  - name: departure_terminal
+    type: string
+    nullable: true
+
+  - name: departure_gate
+    type: string
+    nullable: true
+
+  # Destination
+  - name: destination_airport
+    type: string
+    length: 3
+    required: true
+
+  - name: destination_airport_name
+    type: string
+
+  - name: destination_city
+    type: string
+    required: true
+
+  - name: destination_country
+    type: string
+    length: 2
+
+  - name: arrival_terminal
+    type: string
+    nullable: true
+
+  - name: arrival_gate
+    type: string
+    nullable: true
+
+  # Schedule
+  - name: departure_datetime
+    type: datetime
+    required: true
+    description: Local departure time
+
+  - name: arrival_datetime
+    type: datetime
+    required: true
+    description: Local arrival time
+
+  - name: departure_timezone
+    type: string
+    description: e.g., "Asia/Ho_Chi_Minh"
+
+  - name: arrival_timezone
+    type: string
+
+  - name: departure_utc
+    type: datetime
+    description: UTC departure time
+
+  - name: arrival_utc
+    type: datetime
+
+  # Duration
+  - name: duration_minutes
+    type: integer
+    required: true
+    description: Flight duration in minutes
+
+  - name: layover_minutes
+    type: integer
+    nullable: true
+    description: Time until next segment
+
+  - name: distance_km
+    type: integer
+    nullable: true
+
+  # Service
+  - name: cabin_class
+    type: enum
+    values: [economy, premium_economy, business, first]
+
+  - name: booking_class
+    type: string
+    length: 1
+    description: Fare class letter (Y, B, M, etc.)
+
+  - name: fare_basis
+    type: string
+    description: Fare basis code
+
+  - name: meal_service
+    type: array
+    items:
+      type: string
+    description: e.g., ["breakfast", "snack"]
+
+  - name: in_flight_entertainment
+    type: boolean
+    default: false
+
+  - name: wifi_available
+    type: boolean
+    default: false
+
+  - name: power_outlets
+    type: boolean
+    default: false
+
+  # Baggage for this segment
+  - name: checked_baggage_kg
+    type: integer
+    nullable: true
+
+  - name: checked_baggage_pieces
+    type: integer
+    nullable: true
+
+  - name: carry_on_kg
+    type: integer
+    nullable: true
+
+  # Seat Selection
+  - name: seat_map_available
+    type: boolean
+    default: true
+
+  - name: seats_selected
+    type: array
+    items:
+      type: object
+      properties:
+        traveler_id:
+          type: uuid
+        seat_number:
+          type: string
+        seat_type:
+          type: string
+        price:
+          type: decimal
+
+  # Status Tracking
+  - name: check_in_open
+    type: boolean
+    default: false
+
+  - name: check_in_deadline
+    type: datetime
+    nullable: true
+
+  - name: actual_departure
+    type: datetime
+    nullable: true
+
+  - name: actual_arrival
+    type: datetime
+    nullable: true
+
+  - name: delay_minutes
+    type: integer
+    default: 0
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    auto_set: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: arrival_datetime > departure_datetime
+    message: Arrival must be after departure
+
+  - rule: duration_minutes > 0
+    message: Duration must be positive
+
+  - rule: segment_number >= 1
+    message: Segment number must be at least 1
+
+relationships:
+  - name: flight
+    type: belongs_to
+    entity: flight
+    foreign_key: flight_id
+
+indexes:
+  - name: idx_segment_flight
+    columns: [flight_id, segment_number]
+    unique: true
+
+  - name: idx_segment_flight_number
+    columns: [airline_code, flight_number, departure_datetime]
+
+  - name: idx_segment_route
+    columns: [origin_airport, destination_airport]
+
+  - name: idx_segment_departure
+    columns: [departure_datetime]
+
+computed_fields:
+  - name: full_flight_number
+    formula: CONCAT(airline_code, flight_number)
+
+  - name: is_codeshare
+    formula: operating_airline_code IS NOT NULL AND operating_airline_code != airline_code
+
+  - name: is_overnight
+    formula: DATE(arrival_datetime) > DATE(departure_datetime)
+
+  - name: is_red_eye
+    formula: HOUR(departure_datetime) >= 22 OR HOUR(departure_datetime) <= 5
+
+  - name: connection_type
+    formula: |
+      CASE
+        WHEN layover_minutes IS NULL THEN 'final'
+        WHEN layover_minutes < 90 THEN 'tight_connection'
+        WHEN layover_minutes < 180 THEN 'normal_connection'
+        ELSE 'long_layover'
+      END
+
+  - name: duration_formatted
+    formula: |
+      CONCAT(FLOOR(duration_minutes / 60), 'h ', MOD(duration_minutes, 60), 'm')
+
+business_rules:
+  - id: BR-SEG-001
+    name: Minimum Connection Time
+    rule: |
+      Domestic: 45-60 minutes minimum
+      International: 90-120 minutes minimum
+      Depends on airport and airlines
+
+  - id: BR-SEG-002
+    name: Check-in Window
+    rule: |
+      Online check-in opens: 24-48 hours before departure
+      Closes: 1-2 hours before departure
+      Varies by airline
+
+  - id: BR-SEG-003
+    name: Schedule Change Handling
+    rule: |
+      Minor change (<60 min): Notify customer
+      Major change (>60 min): Offer rebooking or refund
+      Cancellation: Full refund or rerouting
+
+events:
+  - name: segment.schedule_changed
+    payload:
+      - id
+      - flight_id
+      - old_departure
+      - new_departure
+      - old_arrival
+      - new_arrival
+
+  - name: segment.check_in_opened
+    payload:
+      - id
+      - flight_id
+      - check_in_deadline
+
+  - name: segment.status_changed
+    payload:
+      - id
+      - old_status
+      - new_status

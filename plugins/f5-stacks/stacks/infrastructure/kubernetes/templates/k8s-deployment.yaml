@@ -1,0 +1,209 @@
+# Kubernetes Deployment Template
+# F5 Framework - Infrastructure Stack
+#
+# Variables:
+#   {{app_name}}     - Application name
+#   {{namespace}}    - Kubernetes namespace
+#   {{image}}        - Container image with tag
+#   {{replicas}}     - Number of replicas (default: 3)
+#   {{port}}         - Container port (default: 8080)
+#   {{cpu_request}}  - CPU request (default: 100m)
+#   {{cpu_limit}}    - CPU limit (default: 500m)
+#   {{mem_request}}  - Memory request (default: 128Mi)
+#   {{mem_limit}}    - Memory limit (default: 512Mi)
+#   {{env_vars}}     - Environment variables block
+#   {{labels}}       - Additional labels
+#   {{annotations}}  - Additional annotations
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{app_name}}
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/instance: {{app_name}}
+    app.kubernetes.io/version: "1.0.0"
+    app.kubernetes.io/component: application
+    app.kubernetes.io/managed-by: f5-framework
+    {{labels}}
+  annotations:
+    f5.io/template: "k8s-deployment"
+    f5.io/version: "1.0.0"
+    {{annotations}}
+spec:
+  replicas: {{replicas | default: 3}}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{app_name}}
+      app.kubernetes.io/instance: {{app_name}}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 25%
+      maxUnavailable: 25%
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{app_name}}
+        app.kubernetes.io/instance: {{app_name}}
+        {{labels}}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{metrics_port | default: 9090}}"
+        prometheus.io/path: "/metrics"
+        {{annotations}}
+    spec:
+      serviceAccountName: {{service_account | default: "default"}}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: {{app_name}}
+          image: {{image}}
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: {{port | default: 8080}}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{metrics_port | default: 9090}}
+              protocol: TCP
+
+          env:
+            - name: APP_NAME
+              value: "{{app_name}}"
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            {{env_vars}}
+
+          # ConfigMap/Secret references
+          envFrom:
+            - configMapRef:
+                name: {{app_name}}-config
+                optional: true
+            - secretRef:
+                name: {{app_name}}-secrets
+                optional: true
+
+          resources:
+            requests:
+              cpu: {{cpu_request | default: "100m"}}
+              memory: {{mem_request | default: "128Mi"}}
+            limits:
+              cpu: {{cpu_limit | default: "500m"}}
+              memory: {{mem_limit | default: "512Mi"}}
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          livenessProbe:
+            httpGet:
+              path: {{health_path | default: "/health/live"}}
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: {{ready_path | default: "/health/ready"}}
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: {{health_path | default: "/health/live"}}
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: cache
+              mountPath: /var/cache
+            # Add application-specific volume mounts
+            {{volume_mounts}}
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: cache
+          emptyDir: {}
+        # Add application-specific volumes
+        {{volumes}}
+
+      # Pod scheduling
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: {{app_name}}
+                topologyKey: kubernetes.io/hostname
+
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{app_name}}
+
+      # Graceful shutdown
+      terminationGracePeriodSeconds: 30
+
+      # Image pull secrets (if private registry)
+      {{#if image_pull_secrets}}
+      imagePullSecrets:
+        - name: {{image_pull_secrets}}
+      {{/if}}
+
+---
+# PodDisruptionBudget for high availability
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{app_name}}-pdb
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{app_name}}
+      app.kubernetes.io/instance: {{app_name}}

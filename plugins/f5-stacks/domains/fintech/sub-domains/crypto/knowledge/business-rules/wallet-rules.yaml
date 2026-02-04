@@ -1,0 +1,332 @@
+name: WalletRules
+display_name: Wallet Business Rules / Quy tắc ví
+description: |
+  Business rules governing cryptocurrency wallet operations
+  including creation, management, and security.
+
+domain: fintech
+sub_domain: crypto
+rule_category: wallet
+version: "1.0"
+status: active
+
+# =============================================================================
+# WALLET CREATION RULES
+# =============================================================================
+wallet_creation:
+  - id: WR-001
+    name: One Wallet Per Type
+    name_vi: Một ví mỗi loại
+    description: Each user can only have one wallet of each type
+    severity: error
+    enforcement: database_constraint
+    condition: |
+      COUNT(wallets WHERE user_id = :user_id AND wallet_type = :type) = 0
+    message: User already has a wallet of this type
+
+  - id: WR-002
+    name: KYC Required for Wallet
+    name_vi: Yêu cầu KYC để tạo ví
+    description: User must complete basic KYC to create wallet
+    severity: error
+    enforcement: application_logic
+    condition: |
+      user.kyc_level >= 'basic'
+    message: Please complete identity verification first
+    exception: Demo/sandbox accounts
+
+  - id: WR-003
+    name: Auto-Create Spot Wallet
+    name_vi: Tự động tạo ví spot
+    description: Spot wallet created automatically on registration
+    severity: info
+    enforcement: event_trigger
+    trigger: user.registration_completed
+    action: create_wallet(type='spot')
+
+  - id: WR-004
+    name: Margin Wallet Requirements
+    name_vi: Yêu cầu ví margin
+    description: Advanced KYC and agreement required for margin wallet
+    severity: error
+    enforcement: application_logic
+    condition: |
+      user.kyc_level >= 'advanced' AND
+      user.margin_agreement_signed = true
+    message: Complete advanced verification and sign margin agreement
+
+# =============================================================================
+# WALLET STATUS RULES
+# =============================================================================
+wallet_status:
+  - id: WR-010
+    name: Frozen Wallet Restrictions
+    name_vi: Hạn chế ví bị đóng băng
+    description: Frozen wallets cannot perform any transactions
+    severity: error
+    enforcement: application_logic
+    condition: |
+      wallet.status != 'frozen'
+    applies_to:
+      - deposit
+      - withdrawal
+      - transfer
+      - trade
+    message: Wallet is frozen. Contact support.
+
+  - id: WR-011
+    name: Suspended Wallet Restrictions
+    name_vi: Hạn chế ví bị tạm ngưng
+    description: Suspended wallets only allow deposits
+    severity: error
+    enforcement: application_logic
+    condition: |
+      wallet.status != 'suspended' OR operation = 'deposit'
+    message: Wallet is suspended. Only deposits allowed.
+
+  - id: WR-012
+    name: Auto-Freeze on Security Breach
+    name_vi: Tự động đóng băng khi vi phạm bảo mật
+    description: Wallet frozen on suspected security breach
+    severity: critical
+    enforcement: event_trigger
+    triggers:
+      - suspicious_login_detected
+      - multiple_failed_2fa
+      - unusual_withdrawal_pattern
+    action: |
+      wallet.status = 'frozen'
+      notify_security_team()
+      send_user_notification()
+
+# =============================================================================
+# BALANCE RULES
+# =============================================================================
+balance_rules:
+  - id: WR-020
+    name: Non-Negative Balance
+    name_vi: Số dư không âm
+    description: Balance cannot go below zero
+    severity: error
+    enforcement: database_constraint
+    condition: |
+      balance.total_balance >= 0 AND
+      balance.available_balance >= 0
+    message: Insufficient balance
+
+  - id: WR-021
+    name: Atomic Balance Updates
+    name_vi: Cập nhật số dư nguyên tử
+    description: All balance changes must be atomic and logged
+    severity: critical
+    enforcement: transaction_required
+    implementation: |
+      BEGIN TRANSACTION
+        UPDATE balance
+        INSERT INTO balance_transactions
+      COMMIT
+
+  - id: WR-022
+    name: Balance Consistency Check
+    name_vi: Kiểm tra tính nhất quán số dư
+    description: Balance components must sum correctly
+    severity: error
+    enforcement: application_logic
+    condition: |
+      available_balance = total_balance - locked_balance -
+                          in_order - staking_balance - pending_withdrawal
+    frequency: On every balance operation
+
+  - id: WR-023
+    name: Available Balance Calculation
+    name_vi: Tính số dư khả dụng
+    description: Available balance derived from components
+    severity: info
+    enforcement: calculated_field
+    formula: |
+      available = total - locked - in_order - staking - pending_withdrawal
+
+# =============================================================================
+# TRANSFER RULES
+# =============================================================================
+transfer_rules:
+  - id: WR-030
+    name: Internal Transfer Limits
+    name_vi: Giới hạn chuyển nội bộ
+    description: Limits on transfers between own wallets
+    severity: warning
+    enforcement: application_logic
+    limits:
+      spot_to_funding: unlimited
+      funding_to_spot: unlimited
+      spot_to_margin: requires_margin_enabled
+      margin_to_spot: requires_no_open_positions
+
+  - id: WR-031
+    name: P2P Transfer Restrictions
+    name_vi: Hạn chế chuyển P2P
+    description: Direct wallet-to-wallet transfers between users
+    severity: error
+    enforcement: application_logic
+    condition: |
+      feature_flag('p2p_transfers') = true AND
+      sender.kyc_level >= 'advanced' AND
+      recipient.kyc_level >= 'advanced'
+    message: P2P transfers require advanced verification
+
+  - id: WR-032
+    name: Transfer Cooldown
+    name_vi: Thời gian chờ chuyển tiền
+    description: Minimum time between internal transfers
+    severity: warning
+    enforcement: rate_limiting
+    cooldown: 5 seconds
+    applies_to: same_asset_same_direction
+
+# =============================================================================
+# ADDRESS MANAGEMENT RULES
+# =============================================================================
+address_rules:
+  - id: WR-040
+    name: Deposit Address Generation
+    name_vi: Tạo địa chỉ nạp tiền
+    description: Deposit address generated on first request per network
+    severity: info
+    enforcement: application_logic
+    behavior: |
+      IF NOT EXISTS deposit_address FOR (wallet, network)
+        GENERATE new_address
+        ASSOCIATE with wallet
+
+  - id: WR-041
+    name: Address Reuse Prevention
+    name_vi: Ngăn tái sử dụng địa chỉ
+    description: Each address assigned to only one user
+    severity: critical
+    enforcement: database_constraint
+    condition: |
+      deposit_address.user_id IS UNIQUE
+
+  - id: WR-042
+    name: Address Expiration
+    name_vi: Hết hạn địa chỉ
+    description: Deposit addresses may expire for certain networks
+    severity: warning
+    enforcement: application_logic
+    networks:
+      - name: tron_trc20
+        expiry: never
+      - name: ethereum
+        expiry: never
+      - name: bitcoin
+        expiry: never
+    note: Generally addresses don't expire on major networks
+
+# =============================================================================
+# WALLET RECOVERY RULES
+# =============================================================================
+recovery_rules:
+  - id: WR-050
+    name: Lost Access Recovery
+    name_vi: Khôi phục quyền truy cập
+    description: Process for recovering wallet access
+    severity: info
+    enforcement: process
+    steps:
+      - identity_verification
+      - email_confirmation
+      - phone_confirmation
+      - security_questions
+      - support_review
+    minimum_time: 72 hours
+
+  - id: WR-051
+    name: Inheritance Process
+    name_vi: Quy trình thừa kế
+    description: Process for estate/inheritance claims
+    severity: info
+    enforcement: manual_process
+    requirements:
+      - death_certificate
+      - legal_documentation
+      - identity_verification
+      - compliance_review
+    minimum_time: 30 days
+
+# =============================================================================
+# WALLET LIMITS
+# =============================================================================
+wallet_limits:
+  - id: WR-060
+    name: Maximum Wallets Per User
+    name_vi: Số ví tối đa mỗi người dùng
+    description: Limit on number of wallets per user
+    severity: error
+    enforcement: application_logic
+    limits:
+      spot: 1
+      funding: 1
+      margin: 1
+      futures: 1
+      earn: 1
+    message: Maximum wallet limit reached
+
+  - id: WR-061
+    name: Maximum Balances Per Wallet
+    name_vi: Số dư tối đa mỗi ví
+    description: Limit on number of different assets per wallet
+    severity: warning
+    enforcement: application_logic
+    limit: 1000
+    message: Too many different assets. Consider consolidating.
+
+# =============================================================================
+# AUDIT REQUIREMENTS
+# =============================================================================
+audit:
+  - id: WR-070
+    name: Wallet Activity Logging
+    name_vi: Ghi nhật ký hoạt động ví
+    description: All wallet operations must be logged
+    severity: critical
+    enforcement: application_logic
+    logged_events:
+      - wallet_created
+      - wallet_status_changed
+      - balance_credited
+      - balance_debited
+      - balance_locked
+      - balance_unlocked
+      - address_generated
+
+  - id: WR-071
+    name: Balance Reconciliation
+    name_vi: Đối chiếu số dư
+    description: Daily reconciliation of all balances
+    severity: critical
+    enforcement: scheduled_job
+    frequency: daily
+    action: |
+      FOR EACH wallet:
+        calculated = sum(all_transactions)
+        IF calculated != current_balance:
+          ALERT("Balance mismatch for wallet #{id}")
+
+# =============================================================================
+# VALIDATION SUMMARY
+# =============================================================================
+validation_summary:
+  pre_creation:
+    - WR-001  # One wallet per type
+    - WR-002  # KYC required
+    - WR-004  # Margin requirements
+
+  pre_operation:
+    - WR-010  # Frozen check
+    - WR-011  # Suspended check
+    - WR-020  # Balance check
+    - WR-022  # Consistency check
+
+  post_operation:
+    - WR-021  # Atomic updates
+    - WR-070  # Logging

@@ -1,0 +1,376 @@
+# Merchant Account Entity - Bank accounts for payouts
+# Domain: fintech/payment
+# Purpose: Bank accounts linked to merchants for receiving payouts
+
+name: MerchantAccount
+display_name: Merchant Account
+description: |
+  Represents a bank account linked to a merchant for receiving payouts.
+  Requires verification before funds can be disbursed.
+
+  Vietnamese: Tài khoản ngân hàng liên kết với merchant để nhận thanh toán.
+  Cần xác minh trước khi có thể giải ngân.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: merchant_account_id
+    type: string
+    required: true
+    description: External ID (MA-XXXXXXXX)
+    validation:
+      pattern: "^MA-[A-Z0-9]{8}$"
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Parent merchant
+
+  # Account Details
+  - name: account_holder_name
+    type: string
+    required: true
+    description: Name on bank account (Tên chủ tài khoản)
+    validation:
+      max: 100
+
+  - name: account_holder_type
+    type: enum
+    required: true
+    description: Account holder type
+    validation:
+      values: [individual, company]
+
+  - name: account_type
+    type: enum
+    required: true
+    description: Type of bank account
+    validation:
+      values: [checking, savings, current]
+    default: checking
+
+  # Bank Information
+  - name: bank_code
+    type: string
+    required: true
+    description: Bank code (NAPAS code or SWIFT/BIC)
+    validation:
+      max: 20
+
+  - name: bank_name
+    type: string
+    required: true
+    description: Bank name (Tên ngân hàng)
+    validation:
+      max: 100
+
+  - name: bank_branch
+    type: string
+    required: false
+    description: Branch name or code
+    validation:
+      max: 100
+
+  - name: account_number
+    type: string
+    required: true
+    description: Full account number (encrypted at rest)
+    validation:
+      max: 30
+
+  - name: account_number_last4
+    type: string
+    required: true
+    description: Last 4 digits for display
+    validation:
+      pattern: "^[0-9]{4}$"
+
+  - name: routing_number
+    type: string
+    required: false
+    description: Routing number (for US banks)
+    validation:
+      pattern: "^[0-9]{9}$"
+
+  # Currency
+  - name: currency
+    type: string
+    required: true
+    description: Account currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: country
+    type: string
+    required: true
+    description: Bank country
+    validation:
+      pattern: "^[A-Z]{2}$"
+    default: "VN"
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Account status (Trạng thái)
+    validation:
+      values: [pending_verification, verification_failed, verified, disabled]
+
+  - name: is_default
+    type: boolean
+    required: true
+    description: Default payout account
+    default: false
+
+  - name: is_primary
+    type: boolean
+    required: true
+    description: Primary settlement account
+    default: false
+
+  # Verification
+  - name: verification_method
+    type: enum
+    required: false
+    description: How account was verified
+    validation:
+      values: [micro_deposit, instant, document, manual]
+
+  - name: micro_deposit_status
+    type: enum
+    required: false
+    description: Micro-deposit verification status
+    validation:
+      values: [pending, sent, verified, failed, expired]
+
+  - name: micro_deposit_attempts
+    type: integer
+    required: true
+    description: Number of verification attempts
+    default: 0
+
+  - name: verified_at
+    type: timestamp
+    required: false
+    description: Verification timestamp
+
+  - name: verification_deadline
+    type: timestamp
+    required: false
+    description: Deadline for verification
+
+  # Limits
+  - name: daily_payout_limit
+    type: decimal
+    required: false
+    description: Maximum daily payout amount
+
+  - name: monthly_payout_limit
+    type: decimal
+    required: false
+    description: Maximum monthly payout amount
+
+  # Usage
+  - name: total_payouts
+    type: decimal
+    required: true
+    description: Total amount paid out
+    default: 0
+
+  - name: payout_count
+    type: integer
+    required: true
+    description: Number of payouts
+    default: 0
+
+  - name: last_payout_at
+    type: timestamp
+    required: false
+    description: Last payout timestamp
+
+  # Metadata
+  - name: nickname
+    type: string
+    required: false
+    description: Friendly name for account
+    validation:
+      max: 50
+
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: disabled_at
+    type: timestamp
+    required: false
+    description: When account was disabled
+
+relationships:
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Parent merchant
+
+  - name: payouts
+    type: has_many
+    entity: Payout
+    required: false
+    description: Payouts to this account
+
+  - name: settlements
+    type: has_many
+    entity: Settlement
+    required: false
+    description: Settlements to this account
+
+state_machine:
+  initial: pending_verification
+  states:
+    - name: pending_verification
+      description: Awaiting verification (Chờ xác minh)
+    - name: verification_failed
+      description: Verification failed (Xác minh thất bại)
+    - name: verified
+      description: Account verified (Đã xác minh)
+    - name: disabled
+      description: Account disabled (Đã vô hiệu hóa)
+
+  transitions:
+    - from: pending_verification
+      to: verified
+      trigger: verify
+      description: Verification successful
+
+    - from: pending_verification
+      to: verification_failed
+      trigger: fail_verification
+      description: Verification failed
+
+    - from: verification_failed
+      to: pending_verification
+      trigger: retry_verification
+      description: Retry verification
+
+    - from: verified
+      to: disabled
+      trigger: disable
+      description: Disable account
+
+    - from: disabled
+      to: verified
+      trigger: enable
+      description: Re-enable account
+
+indexes:
+  - [merchant_account_id]
+  - [merchant_id, is_default]
+  - [merchant_id, status]
+  - [account_number_last4]
+
+events:
+  - name: merchant_account.created
+    description: Account added
+    payload: [id, merchant_account_id, merchant_id, bank_name]
+
+  - name: merchant_account.verification_started
+    description: Verification initiated
+    payload: [id, verification_method]
+
+  - name: merchant_account.verified
+    description: Account verified
+    payload: [id, merchant_account_id, verified_at]
+
+  - name: merchant_account.verification_failed
+    description: Verification failed
+    payload: [id, reason]
+
+  - name: merchant_account.disabled
+    description: Account disabled
+    payload: [id, merchant_account_id, reason]
+
+business_rules:
+  - id: BR-MA-001
+    description: Account holder name must match merchant or business name
+    rule: |
+      account_holder_name MATCHES merchant.business_name
+      OR account_holder_name MATCHES merchant.legal_representative
+    vietnamese: Tên chủ tài khoản phải khớp với tên doanh nghiệp
+
+  - id: BR-MA-002
+    description: Only one default account per currency
+    rule: |
+      FOR EACH currency:
+        COUNT(is_default = true AND merchant_id = X) <= 1
+    vietnamese: Chỉ 1 tài khoản mặc định mỗi loại tiền
+
+  - id: BR-MA-003
+    description: Micro-deposit verification expires in 10 days
+    rule: |
+      IF verification_method = 'micro_deposit'
+         AND verification_deadline < now()
+      THEN status = 'verification_failed'
+    vietnamese: Xác minh micro-deposit hết hạn sau 10 ngày
+
+  - id: BR-MA-004
+    description: Maximum 3 verification attempts
+    rule: |
+      IF micro_deposit_attempts >= 3
+      THEN require_manual_verification = true
+    vietnamese: Tối đa 3 lần thử xác minh
+
+  - id: BR-MA-005
+    description: Payouts only to verified accounts
+    rule: |
+      IF status != 'verified'
+      THEN allow_payouts = false
+    vietnamese: Chỉ thanh toán vào tài khoản đã xác minh
+
+api_endpoints:
+  - method: POST
+    path: /v1/merchants/{merchant_id}/accounts
+    description: Add bank account
+
+  - method: GET
+    path: /v1/merchants/{merchant_id}/accounts
+    description: List merchant accounts
+
+  - method: GET
+    path: /v1/merchant-accounts/{id}
+    description: Get account details
+
+  - method: POST
+    path: /v1/merchant-accounts/{id}/verify
+    description: Submit verification
+
+  - method: DELETE
+    path: /v1/merchant-accounts/{id}
+    description: Remove account
+
+security_considerations:
+  - Encrypt account numbers at rest (AES-256)
+  - Never log full account numbers
+  - Verify account ownership before payouts
+  - Monitor for unauthorized account changes
+  - Rate limit account additions

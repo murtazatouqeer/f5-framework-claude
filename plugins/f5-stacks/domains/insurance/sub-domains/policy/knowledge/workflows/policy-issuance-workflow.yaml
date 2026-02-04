@@ -1,0 +1,629 @@
+name: Policy Issuance Workflow
+display_name: Policy Issuance Workflow
+description: |
+  End-to-end workflow for issuing insurance policies.
+  From application submission to policy delivery.
+
+domain: insurance
+subdomain: policy
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-ISSUE-001
+trigger:
+  - type: event
+    name: application.submitted
+  - type: api_call
+    endpoint: POST /policies/issue
+  - type: workflow
+    from: quote-workflow
+    state: converted
+
+actors:
+  - id: applicant
+    name: Applicant/Policyholder
+    type: external
+  - id: agent
+    name: Insurance Agent
+    type: internal
+  - id: operations
+    name: Operations Team
+    type: internal
+  - id: underwriter
+    name: Underwriter
+    type: internal
+  - id: system
+    name: Policy System
+    type: system
+  - id: finance
+    name: Finance Team
+    type: internal
+
+states:
+  - id: application_received
+    name: Application Received
+    description: Application submitted
+    initial: true
+  - id: document_verification
+    name: Document Verification
+    description: Verifying submitted documents
+  - id: documents_pending
+    name: Documents Pending
+    description: Awaiting additional documents
+  - id: kyc_verification
+    name: KYC Verification
+    description: KYC/AML checks in progress
+  - id: underwriting
+    name: Underwriting
+    description: Risk assessment in progress
+  - id: underwriting_referral
+    name: Underwriting Referral
+    description: Referred to senior underwriter
+  - id: medical_pending
+    name: Medical Pending
+    description: Awaiting medical examination
+  - id: decision_pending
+    name: Decision Pending
+    description: Final underwriting decision
+  - id: approved
+    name: Approved
+    description: Application approved
+  - id: approved_with_conditions
+    name: Approved with Conditions
+    description: Approved with loading/exclusions
+  - id: declined
+    name: Declined
+    description: Application declined
+  - id: pending_payment
+    name: Pending Payment
+    description: Awaiting initial premium
+  - id: payment_received
+    name: Payment Received
+    description: Premium payment confirmed
+  - id: policy_generation
+    name: Policy Generation
+    description: Generating policy documents
+  - id: quality_check
+    name: Quality Check
+    description: Final verification
+  - id: issued
+    name: Policy Issued
+    description: Policy issued and active
+    final: true
+  - id: withdrawn
+    name: Withdrawn
+    description: Application withdrawn
+    final: true
+
+steps:
+  - id: step_1
+    name: Receive Application
+    actor: system
+    from_state: null
+    to_state: application_received
+    actions:
+      - action: create_application_record
+        params:
+          status: received
+          application_number: generate_application_number()
+      - action: validate_application_data
+      - action: assign_to_operations
+      - action: log_event
+        event: application.received
+    outputs:
+      - application_id
+      - application_number
+
+  - id: step_2
+    name: Verify Documents
+    actor: operations
+    from_state: application_received
+    to_state: document_verification
+    actions:
+      - action: check_document_completeness
+        documents:
+          mandatory:
+            - identity_proof
+            - address_proof
+            - application_form
+          conditional:
+            - income_proof:
+                condition: "sum_insured > 1000000000"
+            - medical_report:
+                condition: "age > 45"
+      - action: verify_document_authenticity
+      - action: flag_missing_documents
+    outputs:
+      - documents_complete
+      - missing_documents_list
+    sla:
+      duration: 4_hours
+
+  - id: step_2a
+    name: Request Additional Documents
+    actor: operations
+    from_state: document_verification
+    to_state: documents_pending
+    condition:
+      expression: "documents_complete = false"
+    actions:
+      - action: notify_applicant
+        template: documents_required
+        include: missing_documents_list
+      - action: notify_agent
+      - action: set_reminder
+        days: 7
+    sla:
+      duration: 14_days
+      escalation: cancel_application
+
+  - id: step_2b
+    name: Receive Additional Documents
+    actor: applicant
+    from_state: documents_pending
+    to_state: document_verification
+    actions:
+      - action: upload_documents
+      - action: verify_new_documents
+      - action: update_document_status
+
+  - id: step_3
+    name: KYC/AML Verification
+    actor: system
+    from_state: document_verification
+    to_state: kyc_verification
+    condition:
+      expression: "documents_complete = true"
+    actions:
+      - action: verify_identity
+        method: document_verification
+      - action: run_sanctions_check
+        against:
+          - ofac_list
+          - un_sanctions
+          - local_sanctions
+      - action: check_pep_status
+      - action: calculate_aml_risk_score
+      - action: verify_source_of_funds
+        condition: "sum_insured > 500000000"
+    outputs:
+      - kyc_status
+      - aml_risk_rating
+      - pep_flag
+    sla:
+      duration: 24_hours
+
+  - id: step_4
+    name: Underwriting Assessment
+    actor: underwriter
+    from_state: kyc_verification
+    to_state: underwriting
+    condition:
+      expression: "kyc_status = 'verified'"
+    actions:
+      - action: assess_risk_factors
+        factors:
+          - age
+          - occupation_class
+          - health_declaration
+          - smoker_status
+          - sum_insured
+      - action: apply_eligibility_rules
+      - action: calculate_risk_score
+      - action: determine_underwriting_decision
+    outputs:
+      - risk_classification
+      - recommended_loadings
+      - recommended_exclusions
+      - decision
+    sla:
+      duration: 24_hours
+
+  - id: step_4a
+    name: Refer to Senior Underwriter
+    actor: underwriter
+    from_state: underwriting
+    to_state: underwriting_referral
+    condition:
+      expression: |
+        sum_insured > referral_limit OR
+        risk_score > threshold OR
+        medical_conditions.severity = 'high'
+    actions:
+      - action: assign_senior_underwriter
+      - action: prepare_referral_package
+        include:
+          - full_application
+          - medical_records
+          - risk_assessment
+      - action: notify_senior_underwriter
+    sla:
+      duration: 48_hours
+
+  - id: step_4b
+    name: Request Medical Examination
+    actor: underwriter
+    from_state: [underwriting, underwriting_referral]
+    to_state: medical_pending
+    condition:
+      expression: |
+        requires_medical_exam = true AND
+        medical_completed = false
+    actions:
+      - action: determine_required_exams
+        based_on:
+          - age
+          - sum_insured
+          - health_declaration
+      - action: schedule_medical_appointment
+      - action: notify_applicant
+        template: medical_appointment
+      - action: notify_agent
+    sla:
+      duration: 14_days
+
+  - id: step_4c
+    name: Receive Medical Results
+    actor: system
+    from_state: medical_pending
+    to_state: underwriting
+    actions:
+      - action: receive_medical_report
+      - action: parse_medical_results
+      - action: update_risk_assessment
+      - action: return_to_underwriting
+
+  - id: step_5
+    name: Make Underwriting Decision
+    actor: underwriter
+    from_state: [underwriting, underwriting_referral]
+    to_state: decision_pending
+    actions:
+      - action: finalize_risk_assessment
+      - action: determine_final_terms
+        include:
+          - premium_loadings
+          - coverage_exclusions
+          - special_conditions
+      - action: document_decision
+        require:
+          - decision_rationale
+          - supporting_evidence
+    outputs:
+      - underwriting_decision
+      - final_premium
+      - terms_and_conditions
+
+  - id: step_6a
+    name: Approve Application
+    actor: underwriter
+    from_state: decision_pending
+    to_state: approved
+    condition:
+      expression: "underwriting_decision = 'standard'"
+    actions:
+      - action: approve_application
+      - action: confirm_premium
+      - action: log_event
+        event: application.approved
+    outputs:
+      - approval_date
+      - final_premium
+
+  - id: step_6b
+    name: Approve with Conditions
+    actor: underwriter
+    from_state: decision_pending
+    to_state: approved_with_conditions
+    condition:
+      expression: "underwriting_decision IN ['substandard', 'with_exclusions']"
+    actions:
+      - action: apply_loading
+        percentage: underwriting_decision.loading_percentage
+      - action: apply_exclusions
+        list: underwriting_decision.exclusions
+      - action: generate_counter_offer
+      - action: notify_applicant
+        template: counter_offer
+      - action: notify_agent
+    outputs:
+      - modified_premium
+      - exclusions_applied
+      - customer_acceptance_required
+
+  - id: step_6b_accept
+    name: Customer Accepts Conditions
+    actor: applicant
+    from_state: approved_with_conditions
+    to_state: approved
+    inputs:
+      - acceptance_confirmation
+      - signature
+    actions:
+      - action: record_acceptance
+      - action: finalize_terms
+
+  - id: step_6c
+    name: Decline Application
+    actor: underwriter
+    from_state: decision_pending
+    to_state: declined
+    condition:
+      expression: "underwriting_decision = 'decline'"
+    actions:
+      - action: decline_application
+      - action: generate_decline_letter
+        include: decline_reason
+      - action: notify_applicant
+      - action: notify_agent
+      - action: log_event
+        event: application.declined
+    outputs:
+      - decline_reason
+      - appeal_information
+
+  - id: step_7
+    name: Request Initial Premium
+    actor: system
+    from_state: approved
+    to_state: pending_payment
+    actions:
+      - action: generate_premium_notice
+        include:
+          - premium_amount
+          - payment_methods
+          - due_date
+      - action: send_payment_request
+        to: applicant
+        channels: [email, sms]
+      - action: notify_agent
+      - action: set_payment_deadline
+        days: 30
+    sla:
+      duration: 30_days
+      reminder_at: [7, 14, 21]
+
+  - id: step_8
+    name: Receive Payment
+    actor: finance
+    from_state: pending_payment
+    to_state: payment_received
+    actions:
+      - action: verify_payment
+        check:
+          - amount_correct
+          - payment_cleared
+      - action: allocate_payment
+      - action: issue_receipt
+      - action: log_event
+        event: premium.received
+    outputs:
+      - payment_reference
+      - receipt_number
+
+  - id: step_9
+    name: Generate Policy Documents
+    actor: system
+    from_state: payment_received
+    to_state: policy_generation
+    actions:
+      - action: create_policy_record
+        status: active
+      - action: generate_policy_number
+      - action: calculate_dates
+        effective_date: calculate_effective_date()
+        expiry_date: effective_date + policy_term
+      - action: generate_policy_document
+        template: policy_document
+      - action: generate_policy_schedule
+      - action: generate_welcome_kit
+    outputs:
+      - policy_id
+      - policy_number
+      - policy_document_url
+      - schedule_url
+
+  - id: step_10
+    name: Quality Check
+    actor: operations
+    from_state: policy_generation
+    to_state: quality_check
+    actions:
+      - action: verify_policy_details
+        check:
+          - customer_details
+          - coverage_details
+          - premium_calculation
+          - dates_accuracy
+      - action: verify_documents
+      - action: approve_for_dispatch
+    sla:
+      duration: 4_hours
+
+  - id: step_11
+    name: Issue Policy
+    actor: system
+    from_state: quality_check
+    to_state: issued
+    actions:
+      - action: activate_policy
+      - action: send_policy_documents
+        to: policyholder
+        channels: [email, portal]
+        attachments:
+          - policy_document
+          - policy_schedule
+          - welcome_kit
+          - premium_receipt
+      - action: notify_agent
+      - action: calculate_commission
+      - action: setup_premium_reminders
+      - action: log_event
+        event: policy.issued
+    outputs:
+      - policy_number
+      - effective_date
+      - dispatch_confirmation
+
+  - id: step_withdraw
+    name: Withdraw Application
+    actor: applicant
+    from_state: [application_received, document_verification, documents_pending, kyc_verification, underwriting, pending_payment]
+    to_state: withdrawn
+    actions:
+      - action: record_withdrawal
+        reason: customer_request
+      - action: process_refund
+        condition: "payment_received"
+      - action: notify_agent
+      - action: log_event
+        event: application.withdrawn
+    outputs:
+      - withdrawal_date
+      - refund_amount
+
+transitions:
+  - from: application_received
+    to: document_verification
+    event: start_verification
+
+  - from: document_verification
+    to: documents_pending
+    event: documents_incomplete
+
+  - from: document_verification
+    to: kyc_verification
+    event: documents_complete
+
+  - from: documents_pending
+    to: document_verification
+    event: documents_received
+
+  - from: kyc_verification
+    to: underwriting
+    event: kyc_passed
+
+  - from: underwriting
+    to: underwriting_referral
+    event: refer_to_senior
+
+  - from: [underwriting, underwriting_referral]
+    to: medical_pending
+    event: require_medical
+
+  - from: medical_pending
+    to: underwriting
+    event: medical_received
+
+  - from: [underwriting, underwriting_referral]
+    to: decision_pending
+    event: assessment_complete
+
+  - from: decision_pending
+    to: approved
+    event: approve
+
+  - from: decision_pending
+    to: approved_with_conditions
+    event: approve_with_conditions
+
+  - from: decision_pending
+    to: declined
+    event: decline
+
+  - from: approved_with_conditions
+    to: approved
+    event: customer_accepts
+
+  - from: approved
+    to: pending_payment
+    event: request_payment
+
+  - from: pending_payment
+    to: payment_received
+    event: payment_confirmed
+
+  - from: payment_received
+    to: policy_generation
+    event: generate_policy
+
+  - from: policy_generation
+    to: quality_check
+    event: documents_ready
+
+  - from: quality_check
+    to: issued
+    event: approved_for_issue
+
+notifications:
+  - trigger: application.received
+    recipient: agent
+    template: new_application
+    channel: [email, portal]
+
+  - trigger: documents_pending
+    recipient: applicant
+    template: documents_required
+    channel: [email, sms]
+
+  - trigger: medical_appointment
+    recipient: applicant
+    template: medical_scheduled
+    channel: [email, sms]
+
+  - trigger: application.approved
+    recipient: [applicant, agent]
+    template: application_approved
+    channel: [email, sms]
+
+  - trigger: payment_reminder
+    recipient: applicant
+    template: premium_due
+    channel: [email, sms]
+    timing: [7, 14, 21]
+
+  - trigger: policy.issued
+    recipient: [policyholder, agent]
+    template: policy_issued
+    channel: [email, portal]
+
+sla:
+  total_issuance:
+    target: 7_days
+    max: 14_days
+  document_verification:
+    target: 4_hours
+    max: 24_hours
+  underwriting:
+    target: 24_hours
+    max: 48_hours
+  policy_generation:
+    target: 2_hours
+    max: 4_hours
+
+metrics:
+  - name: issuance_rate
+    formula: "issued_policies / submitted_applications * 100"
+  - name: average_issuance_time
+    formula: "AVG(issued_at - submitted_at)"
+  - name: decline_rate
+    formula: "declined_applications / total_applications * 100"
+  - name: document_rejection_rate
+    formula: "documents_rejected / documents_submitted * 100"
+  - name: first_time_right
+    formula: "applications_without_rework / total_applications * 100"
+
+integrations:
+  - system: kyc_service
+    action: verify_identity
+  - system: sanctions_database
+    action: run_checks
+  - system: underwriting_engine
+    action: assess_risk
+  - system: payment_gateway
+    action: process_payment
+  - system: document_generation
+    action: generate_documents
+  - system: notification_service
+    action: send_notifications

@@ -1,0 +1,463 @@
+name: salary-revision-workflow
+display_name: Salary Revision Workflow
+description: |
+  Workflow for processing salary changes including annual reviews,
+  promotions, market adjustments, and individual revisions.
+
+domain: hr-management
+subdomain: payroll
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-PAY-002
+  name: salary_revision
+  trigger: on_demand
+  frequency: as_needed
+
+  actors:
+    - role: line_manager
+      responsibilities:
+        - initiate_revision
+        - provide_justification
+        - recommend_amount
+
+    - role: hr_manager
+      responsibilities:
+        - review_proposal
+        - verify_budget
+        - ensure_equity
+
+    - role: hr_director
+      responsibilities:
+        - approve_significant_changes
+        - approve_exceptions
+
+    - role: ceo
+      responsibilities:
+        - approve_executive_changes
+        - approve_large_increases
+
+    - role: payroll_admin
+      responsibilities:
+        - implement_changes
+        - update_records
+        - process_retroactive
+
+  revision_types:
+    annual_review:
+      description: "Annual performance-based salary review"
+      typical_timing: "January or April"
+      scope: company_wide
+      approval_level: hr_director
+
+    promotion:
+      description: "Salary increase with job level change"
+      timing: as_needed
+      scope: individual
+      approval_level: varies_by_amount
+
+    market_adjustment:
+      description: "Alignment with market rates"
+      timing: as_needed
+      scope: role_or_individual
+      approval_level: hr_director
+
+    probation_confirmation:
+      description: "Salary adjustment after probation"
+      timing: end_of_probation
+      scope: individual
+      approval_level: hr_manager
+
+    retention:
+      description: "Counter-offer or retention adjustment"
+      timing: urgent
+      scope: individual
+      approval_level: hr_director
+
+    correction:
+      description: "Fix salary errors"
+      timing: as_needed
+      scope: individual
+      approval_level: hr_manager
+
+  approval_thresholds:
+    - change_percentage: "up to 10%"
+      approver: hr_manager
+      additional: none
+
+    - change_percentage: "10-20%"
+      approver: hr_director
+      additional: justification_required
+
+    - change_percentage: "20-30%"
+      approver: ceo
+      additional: business_case_required
+
+    - change_percentage: "above 30%"
+      approver: ceo
+      additional: board_notification
+
+  stages:
+    - id: STAGE-1
+      name: initiation
+      description: Request and document salary revision
+
+      steps:
+        - id: STEP-1.1
+          name: create_revision_request
+          actor: line_manager
+          action: submit_request
+          inputs:
+            - employee_id
+            - current_salary
+            - proposed_salary
+            - effective_date
+            - revision_type
+            - justification
+          outputs:
+            - revision_request_id
+          validations:
+            - employee_active
+            - not_in_notice_period
+            - effective_date_valid
+
+        - id: STEP-1.2
+          name: attach_supporting_documents
+          actor: line_manager
+          action: upload_documents
+          documents:
+            annual_review:
+              - performance_review
+              - rating_documentation
+            promotion:
+              - promotion_letter
+              - new_job_description
+              - competency_assessment
+            market_adjustment:
+              - market_survey_data
+              - compensation_analysis
+            probation_confirmation:
+              - probation_evaluation
+              - confirmation_letter
+
+        - id: STEP-1.3
+          name: calculate_change_metrics
+          actor: system
+          action: compute_metrics
+          outputs:
+            - percentage_change
+            - compa_ratio_before
+            - compa_ratio_after
+            - budget_impact
+            - internal_equity_analysis
+
+    - id: STAGE-2
+      name: hr_review
+      description: HR review and analysis
+
+      steps:
+        - id: STEP-2.1
+          name: equity_analysis
+          actor: hr_manager
+          action: analyze_equity
+          checks:
+            - compare_to_peers
+            - compare_to_range
+            - check_gender_pay_equity
+            - verify_market_position
+          outputs:
+            - equity_report
+            - recommendations
+
+        - id: STEP-2.2
+          name: budget_verification
+          actor: hr_manager
+          action: check_budget
+          inputs:
+            - department_budget
+            - allocated_increases
+            - remaining_budget
+          outputs:
+            - budget_status
+            - impact_on_remaining
+
+        - id: STEP-2.3
+          name: compliance_check
+          actor: system
+          action: validate_compliance
+          checks:
+            - minimum_wage_met
+            - probation_salary_rules
+            - policy_compliance
+          outputs:
+            - compliance_status
+
+        - id: STEP-2.4
+          name: hr_recommendation
+          actor: hr_manager
+          action: make_recommendation
+          options:
+            - approve_as_proposed
+            - approve_with_modification
+            - reject_with_reason
+            - escalate_for_approval
+          outputs:
+            - hr_recommendation
+            - modified_amount
+            - recommendation_notes
+
+    - id: STAGE-3
+      name: approval
+      description: Obtain required approvals
+
+      steps:
+        - id: STEP-3.1
+          name: determine_approval_path
+          actor: system
+          action: route_for_approval
+          logic: |
+            IF change_percentage <= 10% THEN
+              approver = hr_manager
+            ELSE IF change_percentage <= 20% THEN
+              approver = hr_director
+            ELSE IF change_percentage <= 30% THEN
+              approver = ceo
+            ELSE
+              approver = ceo + board_notification
+            END
+
+            IF employee.is_executive THEN
+              approver = ceo
+            END
+
+        - id: STEP-3.2
+          name: first_level_approval
+          actor: determined_by_routing
+          action: review_and_approve
+          inputs:
+            - revision_request
+            - hr_recommendation
+            - supporting_documents
+          outputs:
+            - approval_decision
+            - approval_notes
+          sla: 3_business_days
+
+        - id: STEP-3.3
+          name: additional_approval
+          actor: higher_approver
+          condition: "if_required_by_threshold"
+          action: final_approval
+          outputs:
+            - final_approval_decision
+          sla: 3_business_days
+
+    - id: STAGE-4
+      name: implementation
+      description: Implement approved salary change
+
+      steps:
+        - id: STEP-4.1
+          name: update_employee_record
+          actor: payroll_admin
+          action: apply_change
+          inputs:
+            - approved_revision
+          updates:
+            - employee_payroll.current_salary
+            - employee_payroll.salary_effective_date
+            - salary_structure (if_changed)
+          outputs:
+            - updated_employee_record
+
+        - id: STEP-4.2
+          name: update_insurance_base
+          actor: system
+          action: recalculate_si_base
+          condition: "if_si_contributable_component_changed"
+          outputs:
+            - new_contribution_base
+            - bhxh_change_report
+
+        - id: STEP-4.3
+          name: generate_documents
+          actor: system
+          action: create_documents
+          documents:
+            - salary_revision_letter
+            - contract_amendment
+            - bhxh_adjustment_form
+          outputs:
+            - document_ids
+
+        - id: STEP-4.4
+          name: process_retroactive
+          actor: payroll_admin
+          condition: "if_effective_date_in_past"
+          action: calculate_retroactive
+          calculation:
+            formula: |
+              retroactive_amount = (new_salary - old_salary) * retroactive_months
+          outputs:
+            - retroactive_payment_amount
+            - retroactive_tax_adjustment
+          max_retroactive_months: 3
+
+        - id: STEP-4.5
+          name: schedule_for_payroll
+          actor: system
+          action: queue_for_processing
+          outputs:
+            - payroll_change_queued
+
+    - id: STAGE-5
+      name: notification
+      description: Notify stakeholders
+
+      steps:
+        - id: STEP-5.1
+          name: notify_employee
+          actor: system
+          action: send_notification
+          recipients:
+            - employee
+          content:
+            - revision_letter
+            - effective_date
+            - new_salary_breakdown
+          method: [email, portal]
+
+        - id: STEP-5.2
+          name: notify_manager
+          actor: system
+          action: send_confirmation
+          recipients:
+            - line_manager
+          content:
+            - approval_confirmation
+            - effective_date
+
+        - id: STEP-5.3
+          name: update_finance
+          actor: system
+          action: update_budget_tracking
+          outputs:
+            - updated_budget_allocation
+
+    - id: STAGE-6
+      name: closure
+      description: Complete and archive
+
+      steps:
+        - id: STEP-6.1
+          name: collect_acknowledgment
+          actor: employee
+          action: acknowledge_change
+          method: [digital_signature, email_confirmation]
+          outputs:
+            - acknowledgment_record
+
+        - id: STEP-6.2
+          name: archive_request
+          actor: system
+          action: close_request
+          status: completed
+          outputs:
+            - archived_revision_record
+
+        - id: STEP-6.3
+          name: report_to_bhxh
+          actor: payroll_admin
+          condition: "if_si_base_changed"
+          action: submit_adjustment
+          deadline: "Within 30 days"
+          outputs:
+            - bhxh_submission_confirmation
+
+  mass_revision_process:
+    description: "Annual review or company-wide adjustment"
+
+    steps:
+      - id: MASS-1
+        name: prepare_revision_list
+        actor: hr_manager
+        action: create_batch
+        inputs:
+          - revision_spreadsheet
+          - budget_allocation
+        validations:
+          - within_budget
+          - all_employees_eligible
+
+      - id: MASS-2
+        name: manager_review
+        actor: line_managers
+        action: review_team_revisions
+        deadline: 5_business_days
+
+      - id: MASS-3
+        name: hr_consolidation
+        actor: hr_manager
+        action: consolidate_and_analyze
+
+      - id: MASS-4
+        name: executive_approval
+        actor: ceo
+        action: approve_mass_revision
+
+      - id: MASS-5
+        name: batch_implementation
+        actor: payroll_admin
+        action: process_batch
+        parallel: true
+
+  exception_handling:
+    rejection:
+      detection: "Approval rejected"
+      action:
+        - notify_requestor
+        - provide_feedback
+        - allow_resubmission
+      options:
+        - modify_and_resubmit
+        - appeal
+        - close_request
+
+    budget_exceeded:
+      detection: "Proposed increase exceeds budget"
+      action:
+        - flag_for_review
+        - request_budget_approval
+      resolution: "HR director decision"
+
+    equity_violation:
+      detection: "Creates pay inequity"
+      action:
+        - flag_concern
+        - suggest_alternatives
+      resolution: "HR review and adjustment"
+
+  audit:
+    logged_events:
+      - request_creation
+      - all_approvals
+      - amount_changes
+      - effective_date_changes
+      - implementation
+
+    retention: 10_years
+
+    reports:
+      - revision_summary_by_period
+      - budget_utilization
+      - equity_analysis
+
+  compliance:
+    - standard: Vietnam_Labor_Code
+      requirement: Salary change documentation
+    - standard: BHXH_Regulations
+      requirement: Report SI base changes
+    - standard: Company_Policy
+      requirement: Budget compliance

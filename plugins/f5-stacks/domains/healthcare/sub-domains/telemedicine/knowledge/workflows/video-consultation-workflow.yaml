@@ -1,0 +1,514 @@
+# Video Consultation Workflow
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Main workflow for conducting telehealth video visit
+
+workflow:
+  id: video-consultation-workflow
+  name: Video Consultation
+  name_ja: ビデオ診療
+  description: End-to-end workflow for conducting telehealth video consultation
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - provider_admits_patient_from_waiting_room
+
+  actors:
+    - id: provider
+      role: Healthcare Provider
+      
+    - id: patient
+      role: Patient
+      
+    - id: interpreter
+      role: Language Interpreter
+      optional: true
+      
+    - id: caregiver
+      role: Family/Caregiver
+      optional: true
+      
+    - id: system
+      role: Video Platform
+
+  preconditions:
+    - Pre-visit workflow completed
+    - Patient in virtual waiting room
+    - Provider authenticated and ready
+    - Video session initialized
+    - Consent verified
+
+  steps:
+    - step: 1
+      id: provider_joins
+      name: Provider Joins Session
+      actor: provider
+      description: Provider enters the video session
+      
+      actions:
+        - Click "Admit Patient" or "Start Visit"
+        - System initializes video connection
+        - Camera and microphone activated
+        - Provider status set to "in session"
+        
+      system_actions:
+        - CREATE video_session if not exists
+        - SET video_session.status = 'active'
+        - SET tele_visit.actual_start = now()
+        - LOG participant_joined (provider)
+        
+      provider_interface:
+        display:
+          - Patient chart summary (sidebar)
+          - Pre-visit questionnaire responses
+          - Vitals if collected
+          - Consent status
+          - Recording controls
+          
+      next_step: 2
+
+    - step: 2
+      id: admit_patient
+      name: Admit Patient from Waiting Room
+      actor: system
+      description: Connect patient to video session
+      
+      actions:
+        - Remove patient from waiting_room queue
+        - Connect patient to video session
+        - Enable patient video/audio
+        - Display "Provider is ready"
+        
+      system_actions:
+        - UPDATE tele_visit.status = 'in_progress'
+        - ADD patient to video_session.participants
+        - LOG participant_joined (patient)
+        - START visit_timer
+        
+      patient_notification:
+        audio: Chime sound
+        visual: "Your provider is ready"
+        
+      next_step: 3
+
+    - step: 3
+      id: verify_patient
+      name: Verify Patient Identity
+      actor: provider
+      description: Provider confirms patient identity
+      
+      verification_protocol:
+        ask:
+          - Full name
+          - Date of birth
+          - One additional identifier
+          
+        document_verification:
+          note: "Identity verified: [name], DOB [date]"
+          
+      if_cannot_verify:
+        action: |
+          Document issue
+          End visit if identity not confirmed
+          Reschedule
+          
+      system_actions:
+        - LOG identity_verification_performed
+        
+      next_step: 4
+
+    - step: 4
+      id: clinical_interview
+      name: Clinical Interview
+      actor: provider
+      description: Provider conducts clinical history and interview
+      
+      components:
+        chief_complaint_review:
+          - Review pre-visit questionnaire
+          - Clarify chief complaint
+          - Ask follow-up questions
+          
+        history_of_present_illness:
+          - Onset, duration, progression
+          - Associated symptoms
+          - Alleviating/aggravating factors
+          - Prior treatment
+          
+        medication_review:
+          - Current medications
+          - Adherence
+          - Side effects
+          - Refill needs
+          
+        relevant_history:
+          - Past medical history review
+          - Family history (if relevant)
+          - Social history (if relevant)
+          
+      provider_interface:
+        tools:
+          - Note templates
+          - Quick phrases
+          - Reference resources
+          - EHR integration
+          
+      documentation:
+        capture: Provider notes in real-time
+        
+      next_step: 5
+
+    - step: 5
+      id: visual_examination
+      name: Visual/Camera-Based Examination
+      actor: provider
+      description: Provider conducts visual examination via camera
+      
+      examination_techniques:
+        general_appearance:
+          - Overall health assessment
+          - Distress level
+          - Mental status
+          
+        focused_exam:
+          instructions_to_patient:
+            - "Can you show me [area]?"
+            - "Move the camera closer to..."
+            - "Turn to show me your [side]"
+            
+        examples_by_specialty:
+          dermatology:
+            - Skin lesion visualization
+            - Request patient use flashlight
+            - Compare to reference images
+            
+          ent:
+            - Throat visualization
+            - Request patient say "ahh"
+            - External ear examination
+            
+          mental_health:
+            - Mood assessment
+            - Affect observation
+            - Behavior observation
+            
+          musculoskeletal:
+            - Range of motion observation
+            - Gait if visible
+            - Visual inspection
+            
+      limitations:
+        document: Note what could/could not be examined
+        escalate_if: Physical exam required
+        
+      next_step: 6
+
+    - step: 6
+      id: share_screen
+      name: Share Screen (If Needed)
+      actor: provider
+      optional: true
+      description: Share lab results, imaging, or educational materials
+      
+      use_cases:
+        lab_review:
+          - Display lab results
+          - Explain values
+          - Compare to prior
+          
+        imaging_review:
+          - Display imaging results
+          - Point out findings
+          
+        patient_education:
+          - Show educational materials
+          - Demonstrate techniques
+          - Share resources
+          
+      system_actions:
+        - CREATE screen_share record
+        - LOG screen_share_started
+        - Enable snapshot capture if needed
+        
+      phi_warning:
+        display: "Screen may contain PHI"
+        require: Acknowledgment before sharing
+        
+      next_step: 7
+
+    - step: 7
+      id: discuss_assessment
+      name: Discuss Assessment and Plan
+      actor: provider
+      description: Provider shares diagnosis and treatment plan
+      
+      components:
+        diagnosis_discussion:
+          - Explain findings
+          - Discuss diagnosis (patient-friendly language)
+          - Answer patient questions
+          
+        treatment_plan:
+          - Explain recommended treatment
+          - Discuss options
+          - Set expectations
+          
+        patient_questions:
+          - Time for questions
+          - Clarify concerns
+          - Ensure understanding
+          
+      documentation:
+        capture:
+          - Assessment
+          - Diagnoses (ICD-10)
+          - Treatment plan
+          - Patient education provided
+          
+      next_step: 8
+
+    - step: 8
+      id: e_prescribe
+      name: E-Prescribe Medications
+      actor: provider
+      optional: true
+      description: Create and send electronic prescriptions
+      
+      actions:
+        - Select medication
+        - Configure dosing
+        - Select pharmacy
+        - Verify no interactions
+        - Sign prescription
+        - Transmit to pharmacy
+        
+      business_rules:
+        - BR-BIL-020: Prescribing requirements
+        - BR-BIL-021: Controlled substances (Ryan Haight)
+        - BR-BIL-022: PDMP query
+        
+      system_actions:
+        - CREATE e_prescription records
+        - QUERY PDMP (if controlled)
+        - TRANSMIT to pharmacy
+        - LOG prescription_created
+        
+      patient_communication:
+        inform:
+          - Medications prescribed
+          - Pharmacy selected
+          - Pickup instructions
+          
+      next_step: 9
+
+    - step: 9
+      id: create_orders
+      name: Create Orders
+      actor: provider
+      optional: true
+      description: Create lab, imaging, and referral orders
+      
+      order_types:
+        lab_orders:
+          - Select tests
+          - Choose lab location
+          - Provide instructions
+          
+        imaging_orders:
+          - Select study
+          - Provide clinical indication
+          - Choose facility
+          
+        referrals:
+          - Select specialty
+          - Provide reason
+          - Attach relevant info
+          
+      system_actions:
+        - CREATE order records
+        - TRANSMIT to appropriate systems
+        - UPDATE visit record with orders
+        
+      patient_communication:
+        provide:
+          - Order details
+          - Facility information
+          - Preparation instructions
+          
+      next_step: 10
+
+    - step: 10
+      id: summarize_visit
+      name: Summarize Visit
+      actor: provider
+      description: Wrap up and summarize next steps
+      
+      summary_components:
+        recap:
+          - Main diagnosis/findings
+          - Key treatment points
+          - Medications prescribed
+          - Orders placed
+          
+        next_steps:
+          - What patient should do
+          - Warning signs to watch for
+          - When to follow up
+          
+        questions:
+          - "Do you have any questions?"
+          - Address final concerns
+          
+      system_actions:
+        - GENERATE visit summary draft
+        - PREPARE after-visit documents
+        
+      next_step: 11
+
+    - step: 11
+      id: schedule_follow_up
+      name: Schedule Follow-Up
+      actor: provider
+      optional: true
+      description: Schedule follow-up if needed
+      
+      conditions:
+        required_when:
+          - Chronic condition management
+          - Treatment response monitoring
+          - Incomplete diagnosis
+          - Patient preference
+          
+      options:
+        schedule_now:
+          - Select date/time
+          - Book appointment
+          
+        schedule_later:
+          - Note follow-up needed
+          - Patient will schedule
+          
+        no_follow_up:
+          - Document not needed
+          
+      system_actions:
+        - UPDATE tele_visit.follow_up_needed
+        - CREATE new appointment if scheduled
+        
+      next_step: 12
+
+    - step: 12
+      id: end_session
+      name: End Video Session
+      actor: provider
+      description: Close the video session
+      
+      closing_actions:
+        - Confirm patient has no more questions
+        - Thank patient
+        - Say goodbye
+        - Click "End Visit"
+        
+      system_actions:
+        - SET tele_visit.actual_end = now()
+        - CALCULATE actual_duration
+        - SET tele_visit.status = 'completed'
+        - SET video_session.status = 'ended'
+        - STOP recording if active
+        - LOG session_ended
+        
+      patient_notification:
+        display: |
+          Thank you for your visit.
+          Your after-visit summary will be available shortly.
+          
+      next_step: complete
+
+  completion:
+    status: visit_completed
+    outputs:
+      - visit_id
+      - duration_minutes
+      - diagnoses
+      - prescriptions
+      - orders
+      - follow_up_scheduled
+      
+    next_workflow: post-visit-workflow
+    trigger: immediate
+
+  additional_participants:
+    interpreter:
+      when: Language assistance needed
+      actions:
+        - Add interpreter to session
+        - Three-way video
+        - Document interpreter used
+        
+    caregiver:
+      when: Patient requests or needs support
+      actions:
+        - Add caregiver to session
+        - Verify patient consent
+        - Document caregiver present
+        
+    specialist:
+      when: Real-time consultation needed
+      actions:
+        - Invite specialist to join
+        - eConsult workflow
+
+  in_session_features:
+    chat:
+      enabled: true
+      use_cases:
+        - Share links
+        - Spell medication names
+        - Technical communication
+        
+    screen_share:
+      enabled: true
+      requires: PHI acknowledgment
+      
+    whiteboard:
+      enabled: optional
+      use_case: Draw diagrams for patient
+      
+    file_share:
+      enabled: true
+      types: [pdf, image]
+
+  technical_issues:
+    patient_disconnection:
+      action: |
+        Wait 30 seconds for reconnect
+        Display "Reconnecting..."
+        Attempt callback if prolonged
+        Document interruption
+        
+    provider_disconnection:
+      action: |
+        Patient sees "Provider reconnecting"
+        Attempt auto-reconnect
+        Fallback to phone if needed
+        
+    quality_degradation:
+      action: |
+        Attempt quality adjustment
+        Offer audio-only fallback
+        Document any issues
+
+  metrics:
+    track:
+      - visit_duration
+      - technical_issue_count
+      - prescriptions_per_visit
+      - orders_per_visit
+      - follow_up_rate
+
+  audit:
+    log_all_actions: true
+    log_phi_access: true
+    retention_days: 2555

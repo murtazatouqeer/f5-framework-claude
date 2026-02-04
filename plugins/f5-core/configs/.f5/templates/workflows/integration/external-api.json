@@ -1,0 +1,357 @@
+{
+  "id": "f5-integration-external-api",
+  "name": "External API Integration Workflow",
+  "description": "Orchestrate external API calls with retry, circuit breaker, and data transformation",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "integration",
+    "category": "api",
+    "complexity": "complex",
+    "estimatedDuration": "25-35 minutes",
+    "requiredSkills": ["f5-backend", "f5-security", "f5-test"],
+    "mcpServers": ["tavily", "sequential-thinking", "github"],
+    "qualityGates": ["D3", "D4", "G2", "G3"],
+    "argumentHint": "Implement external API integration with resilience patterns for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "API Request"
+      }
+    },
+    {
+      "id": "subagent-prepare-request",
+      "type": "subAgent",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Prepare API Request",
+        "description": "Build and validate API request",
+        "prompt": "Prepare request:\n1. Get API configuration (endpoint, auth)\n2. Build request headers\n3. Transform request payload\n4. Add correlation ID for tracing\n5. Validate required parameters\n6. Apply rate limit check\n7. Return prepared request",
+        "agentType": "backend-architect",
+        "outputPorts": ["prepared", "rate_limited", "invalid"]
+      }
+    },
+    {
+      "id": "ifelse-circuit-breaker",
+      "type": "ifElse",
+      "position": { "x": 300, "y": 290 },
+      "data": {
+        "label": "Circuit Breaker Open?",
+        "description": "Check if circuit breaker is tripped",
+        "condition": "Circuit breaker is in open state for this API"
+      }
+    },
+    {
+      "id": "prompt-circuit-open",
+      "type": "prompt",
+      "position": { "x": 500, "y": 420 },
+      "data": {
+        "label": "Return Circuit Open",
+        "description": "Return cached or fallback response",
+        "prompt": "Handle circuit open:\n- Return cached response if available\n- Return fallback/default response\n- Include degraded service indicator\n- Log circuit breaker state",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "mcp-call-api",
+      "type": "mcp",
+      "position": { "x": 150, "y": 420 },
+      "data": {
+        "label": "Call External API",
+        "description": "Execute API call with timeout",
+        "serverName": "tavily",
+        "toolName": "tavily-search",
+        "mode": "structured",
+        "parameters": {
+          "query": "API call simulation"
+        },
+        "outputPorts": ["success", "error", "timeout"]
+      }
+    },
+    {
+      "id": "switch-response",
+      "type": "switch",
+      "position": { "x": 150, "y": 560 },
+      "data": {
+        "label": "Response Status",
+        "description": "Handle API response status",
+        "evaluationTarget": "HTTP response status code",
+        "cases": [
+          { "id": "case-success", "label": "Success (2xx)", "condition": "Response 200-299" },
+          { "id": "case-client-error", "label": "Client Error (4xx)", "condition": "Response 400-499" },
+          { "id": "case-server-error", "label": "Server Error (5xx)", "condition": "Response 500-599" }
+        ]
+      }
+    },
+    {
+      "id": "subagent-transform-response",
+      "type": "subAgent",
+      "position": { "x": 0, "y": 720 },
+      "data": {
+        "label": "Transform Response",
+        "description": "Transform API response to internal format",
+        "prompt": "Transform response:\n1. Parse response body\n2. Map fields to internal schema\n3. Handle nested objects\n4. Apply data type conversions\n5. Validate transformed data\n6. Return transformed response",
+        "agentType": "backend-architect",
+        "outputPorts": ["transformed", "parse_error"]
+      }
+    },
+    {
+      "id": "subagent-handle-error",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 720 },
+      "data": {
+        "label": "Handle API Error",
+        "description": "Process API error and determine retry",
+        "prompt": "Handle error:\n1. Parse error response\n2. Map to internal error codes\n3. Check if retryable\n4. Update circuit breaker state\n5. Log error details\n6. Return error info with retry flag",
+        "agentType": "backend-architect",
+        "outputPorts": ["retryable", "permanent"]
+      }
+    },
+    {
+      "id": "ifelse-retry",
+      "type": "ifElse",
+      "position": { "x": 150, "y": 860 },
+      "data": {
+        "label": "Should Retry?",
+        "description": "Check if retry should be attempted",
+        "condition": "Retry count < max retries AND error is retryable"
+      }
+    },
+    {
+      "id": "subagent-retry-with-backoff",
+      "type": "subAgent",
+      "position": { "x": 0, "y": 990 },
+      "data": {
+        "label": "Retry with Backoff",
+        "description": "Retry API call with exponential backoff",
+        "prompt": "Retry with backoff:\n1. Calculate backoff delay (exponential)\n2. Add jitter to prevent thundering herd\n3. Wait for delay\n4. Increment retry counter\n5. Re-execute API call\n6. Return to response handling",
+        "agentType": "backend-architect",
+        "outputPorts": ["retried"]
+      }
+    },
+    {
+      "id": "mcp-cache-response",
+      "type": "mcp",
+      "position": { "x": 0, "y": 1130 },
+      "data": {
+        "label": "Cache Response",
+        "description": "Cache successful response",
+        "serverName": "serena",
+        "toolName": "write_memory",
+        "mode": "structured",
+        "parameters": {
+          "memory_file_name": "api-cache",
+          "content": "API response cached with TTL"
+        },
+        "outputPorts": ["cached"]
+      }
+    },
+    {
+      "id": "qualitygate-g3",
+      "type": "qualityGate",
+      "position": { "x": 150, "y": 1260 },
+      "data": {
+        "label": "G3: Testing Gate",
+        "description": "Verify API integration tests",
+        "gateId": "G3",
+        "gateName": "Testing Complete",
+        "checklistItems": [
+          "Happy path tested",
+          "Error handling tested",
+          "Retry logic tested",
+          "Circuit breaker tested",
+          "Rate limiting tested"
+        ],
+        "outputPorts": ["passed", "failed"]
+      }
+    },
+    {
+      "id": "prompt-success",
+      "type": "prompt",
+      "position": { "x": 150, "y": 1390 },
+      "data": {
+        "label": "Return Success",
+        "description": "Return successful API response",
+        "prompt": "Return success:\n- Include transformed data\n- Include response metadata\n- Include cache status\n- Include correlation ID",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "prompt-error",
+      "type": "prompt",
+      "position": { "x": 300, "y": 990 },
+      "data": {
+        "label": "Return Error",
+        "description": "Return API error response",
+        "prompt": "Return error:\n- Include error code\n- Include error message\n- Include retry info if applicable\n- Include correlation ID for debugging",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 150, "y": 1520 },
+      "data": {
+        "label": "API Call Complete"
+      }
+    },
+    {
+      "id": "end-error",
+      "type": "end",
+      "position": { "x": 300, "y": 1120 },
+      "data": {
+        "label": "API Call Failed"
+      }
+    },
+    {
+      "id": "end-degraded",
+      "type": "end",
+      "position": { "x": 500, "y": 560 },
+      "data": {
+        "label": "Degraded Response"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "subagent-prepare-request",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "subagent-prepare-request",
+      "target": "ifelse-circuit-breaker",
+      "sourceHandle": "output-prepared",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "ifelse-circuit-breaker",
+      "target": "mcp-call-api",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "Closed"
+    },
+    {
+      "id": "conn-4",
+      "source": "ifelse-circuit-breaker",
+      "target": "prompt-circuit-open",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "Open"
+    },
+    {
+      "id": "conn-5",
+      "source": "prompt-circuit-open",
+      "target": "end-degraded",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "mcp-call-api",
+      "target": "switch-response",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-7",
+      "source": "switch-response",
+      "target": "subagent-transform-response",
+      "sourceHandle": "case-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "switch-response",
+      "target": "subagent-handle-error",
+      "sourceHandle": "case-client-error",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-9",
+      "source": "switch-response",
+      "target": "subagent-handle-error",
+      "sourceHandle": "case-server-error",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-10",
+      "source": "subagent-handle-error",
+      "target": "ifelse-retry",
+      "sourceHandle": "output-retryable",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-11",
+      "source": "subagent-handle-error",
+      "target": "prompt-error",
+      "sourceHandle": "output-permanent",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-12",
+      "source": "ifelse-retry",
+      "target": "subagent-retry-with-backoff",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "Retry"
+    },
+    {
+      "id": "conn-13",
+      "source": "ifelse-retry",
+      "target": "prompt-error",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "Give Up"
+    },
+    {
+      "id": "conn-14",
+      "source": "subagent-retry-with-backoff",
+      "target": "mcp-call-api",
+      "sourceHandle": "output-retried",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-15",
+      "source": "subagent-transform-response",
+      "target": "mcp-cache-response",
+      "sourceHandle": "output-transformed",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-16",
+      "source": "mcp-cache-response",
+      "target": "qualitygate-g3",
+      "sourceHandle": "output-cached",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-17",
+      "source": "qualitygate-g3",
+      "target": "prompt-success",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-18",
+      "source": "prompt-success",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-19",
+      "source": "prompt-error",
+      "target": "end-error",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

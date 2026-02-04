@@ -1,0 +1,391 @@
+name: AuditLog
+display_name: Audit Log / Nhật ký kiểm toán
+description: |
+  Records all significant actions and changes within the platform.
+  Essential for security, compliance, and debugging.
+
+domain: saas-platform
+entity_type: logging
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    required: true
+    indexed: true
+    description: Tenant where action occurred
+    description_vi: Khách thuê nơi hành động xảy ra
+
+  # Actor Information
+  - name: actor_type
+    type: enum
+    values: [user, api_key, system, webhook, integration, platform_admin]
+    required: true
+    description: Type of actor performing action
+    description_vi: Loại tác nhân thực hiện hành động
+
+  - name: actor_id
+    type: uuid
+    description: ID of the actor (user_id, api_key_id, etc.)
+    description_vi: ID của tác nhân
+
+  - name: actor_email
+    type: string
+    max_length: 255
+    description: Email of actor (for user actions)
+    description_vi: Email của tác nhân
+
+  - name: actor_name
+    type: string
+    max_length: 255
+    description: Display name of actor
+    description_vi: Tên hiển thị của tác nhân
+
+  # Action Details
+  - name: action
+    type: string
+    required: true
+    max_length: 100
+    description: Action performed
+    description_vi: Hành động đã thực hiện
+    examples: [user.created, subscription.upgraded, settings.updated, login.failed]
+
+  - name: action_category
+    type: enum
+    values: [authentication, authorization, data, configuration, billing, integration, security, admin]
+    required: true
+    description: Category of action
+    description_vi: Danh mục hành động
+
+  - name: action_status
+    type: enum
+    values: [success, failure, pending]
+    default: success
+    description: Outcome of the action
+    description_vi: Kết quả của hành động
+
+  # Target Resource
+  - name: resource_type
+    type: string
+    max_length: 50
+    description: Type of resource affected
+    description_vi: Loại tài nguyên bị ảnh hưởng
+    examples: [user, subscription, invoice, settings, api_key]
+
+  - name: resource_id
+    type: string
+    max_length: 255
+    description: ID of affected resource
+    description_vi: ID của tài nguyên bị ảnh hưởng
+
+  - name: resource_name
+    type: string
+    max_length: 255
+    description: Human-readable resource identifier
+    description_vi: Định danh tài nguyên dễ đọc
+
+  # Change Details
+  - name: changes
+    type: json
+    description: Before/after values for data changes
+    description_vi: Giá trị trước/sau cho thay đổi dữ liệu
+    schema:
+      before: object
+      after: object
+      diff: array
+    example:
+      before: { status: "active" }
+      after: { status: "suspended" }
+      diff: ["status"]
+
+  - name: description
+    type: text
+    description: Human-readable description
+    description_vi: Mô tả dễ đọc
+
+  # Request Context
+  - name: ip_address
+    type: string
+    max_length: 45
+    description: Client IP address
+    description_vi: Địa chỉ IP của client
+
+  - name: user_agent
+    type: string
+    max_length: 500
+    description: Browser/client user agent
+    description_vi: User agent của trình duyệt/client
+
+  - name: request_id
+    type: string
+    max_length: 100
+    description: Request correlation ID
+    description_vi: ID tương quan yêu cầu
+
+  - name: session_id
+    type: string
+    max_length: 100
+    description: Session identifier
+    description_vi: Định danh phiên
+
+  # Location
+  - name: geo_country
+    type: string
+    max_length: 2
+    description: Country code from IP geolocation
+    description_vi: Mã quốc gia từ geolocation IP
+
+  - name: geo_city
+    type: string
+    max_length: 100
+    description: City from IP geolocation
+    description_vi: Thành phố từ geolocation IP
+
+  # Additional Context
+  - name: metadata
+    type: json
+    description: Additional context about the action
+    description_vi: Ngữ cảnh bổ sung về hành động
+    schema:
+      endpoint: string
+      method: string
+      duration_ms: integer
+      response_code: integer
+      error_message: string
+
+  # Risk/Security
+  - name: risk_level
+    type: enum
+    values: [low, medium, high, critical]
+    default: low
+    description: Security risk level of action
+    description_vi: Mức độ rủi ro bảo mật của hành động
+
+  - name: is_sensitive
+    type: boolean
+    default: false
+    description: Involves sensitive data
+    description_vi: Liên quan đến dữ liệu nhạy cảm
+
+  - name: is_suspicious
+    type: boolean
+    default: false
+    description: Flagged as potentially suspicious
+    description_vi: Được đánh dấu là có thể đáng ngờ
+
+  # Timestamps
+  - name: timestamp
+    type: timestamp
+    required: true
+    default: now
+    description: When action occurred
+    description_vi: Thời điểm hành động xảy ra
+
+  - name: created_at
+    type: timestamp
+    auto: true
+    description: When log entry was created
+    description_vi: Thời điểm tạo mục nhật ký
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Tenant where action occurred
+
+  - name: user
+    type: belongs_to
+    target: User
+    foreign_key: actor_id
+    condition: "actor_type = 'user'"
+    description: User who performed action
+
+indexes:
+  - name: idx_audit_tenant_timestamp
+    columns: [tenant_id, timestamp DESC]
+    description: Primary audit log query
+
+  - name: idx_audit_tenant_action
+    columns: [tenant_id, action]
+    description: Filter by action type
+
+  - name: idx_audit_tenant_actor
+    columns: [tenant_id, actor_type, actor_id]
+    description: Find actions by actor
+
+  - name: idx_audit_tenant_resource
+    columns: [tenant_id, resource_type, resource_id]
+    description: Find actions on resource
+
+  - name: idx_audit_timestamp
+    columns: [timestamp]
+    description: Time-based queries and retention
+
+  - name: idx_audit_suspicious
+    columns: [tenant_id, is_suspicious]
+    where: "is_suspicious = true"
+    description: Security investigations
+
+  - name: idx_audit_risk_level
+    columns: [tenant_id, risk_level]
+    where: "risk_level IN ('high', 'critical')"
+    description: High-risk action monitoring
+
+business_rules:
+  - id: BR-AUD-001
+    name: Immutable Logs
+    description: Audit logs cannot be modified or deleted by tenants
+    description_vi: Nhật ký kiểm toán không thể bị sửa đổi hoặc xóa bởi khách thuê
+    severity: critical
+    compliance: [SOC2, GDPR]
+
+  - id: BR-AUD-002
+    name: Mandatory Logging
+    description: All security-relevant actions must be logged
+    description_vi: Tất cả hành động liên quan đến bảo mật phải được ghi lại
+    severity: critical
+
+  - id: BR-AUD-003
+    name: Retention Policy
+    description: Audit logs retained per plan tier
+    description_vi: Nhật ký kiểm toán được giữ lại theo cấp gói
+    parameters:
+      free: 30 days
+      starter: 90 days
+      professional: 365 days
+      enterprise: custom (up to 7 years)
+
+  - id: BR-AUD-004
+    name: Sensitive Data Masking
+    description: Sensitive fields are masked in change logs
+    description_vi: Các trường nhạy cảm được che trong nhật ký thay đổi
+    masked_fields: [password, token, secret, card_number]
+
+  - id: BR-AUD-005
+    name: PII Access Logging
+    description: Access to PII is always logged
+    description_vi: Truy cập PII luôn được ghi lại
+    compliance: [GDPR]
+
+  - id: BR-AUD-010
+    name: High-Risk Alert
+    description: High-risk actions trigger immediate alerts
+    description_vi: Hành động rủi ro cao kích hoạt cảnh báo ngay lập tức
+
+computed_fields:
+  - name: is_recent
+    formula: "timestamp > NOW() - INTERVAL '24 hours'"
+    description: Action occurred in last 24 hours
+
+events:
+  - name: audit.suspicious_activity
+    payload: [tenant_id, action, actor_id, risk_level, details]
+    triggers: [alert_security_team, notify_tenant_admin]
+
+  - name: audit.high_risk_action
+    payload: [tenant_id, action, actor_id, risk_level]
+    triggers: [log_to_siem, alert_security_team]
+
+action_catalog:
+  # Authentication
+  authentication:
+    - login.success
+    - login.failed
+    - login.locked
+    - logout
+    - password.changed
+    - password.reset_requested
+    - password.reset_completed
+    - two_factor.enabled
+    - two_factor.disabled
+    - two_factor.verified
+    - session.created
+    - session.revoked
+
+  # Authorization
+  authorization:
+    - permission.denied
+    - role.assigned
+    - role.removed
+
+  # User Management
+  user_management:
+    - user.created
+    - user.updated
+    - user.deleted
+    - user.invited
+    - user.invitation_accepted
+    - user.suspended
+    - user.reactivated
+
+  # Billing
+  billing:
+    - subscription.created
+    - subscription.upgraded
+    - subscription.downgraded
+    - subscription.cancelled
+    - subscription.paused
+    - subscription.resumed
+    - payment_method.added
+    - payment_method.removed
+    - payment_method.default_changed
+    - invoice.paid
+    - invoice.failed
+
+  # Configuration
+  configuration:
+    - settings.updated
+    - branding.updated
+    - domain.configured
+    - sso.enabled
+    - sso.disabled
+    - webhook.created
+    - webhook.deleted
+    - integration.connected
+    - integration.disconnected
+
+  # Security
+  security:
+    - api_key.created
+    - api_key.revoked
+    - ip_whitelist.updated
+    - security_policy.changed
+
+  # Data
+  data:
+    - data.exported
+    - data.deleted
+    - data.accessed
+
+risk_classification:
+  critical:
+    - subscription.cancelled
+    - user.deleted
+    - data.deleted
+    - security_policy.changed
+    - sso.disabled
+
+  high:
+    - password.changed
+    - payment_method.added
+    - api_key.created
+    - role.assigned (admin)
+    - data.exported
+
+  medium:
+    - user.created
+    - settings.updated
+    - integration.connected
+
+  low:
+    - login.success
+    - data.accessed
+    - settings.viewed

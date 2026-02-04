@@ -1,0 +1,595 @@
+name: fnol_workflow
+display_name: First Notice of Loss Workflow
+description: |
+  End-to-end workflow for First Notice of Loss (FNOL) processing from initial
+  notification through to claim registration.
+
+domain: insurance
+subdomain: claims
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-FNOL-001
+  name: FNOL Processing
+  description: Process FNOL from receipt to claim registration
+  trigger:
+    type: event
+    events:
+      - fnol.received
+      - fnol.submitted_via_portal
+      - fnol.submitted_via_mobile
+      - fnol.submitted_via_agent
+
+  sla:
+    acknowledgment: 1_hour
+    initial_triage: 4_hours
+    policy_verification: 24_hours
+    claim_registration: 48_hours
+
+stages:
+  - id: receive
+    name: Receive FNOL
+    description: Capture initial loss notification
+    type: automated
+
+    steps:
+      - id: capture_details
+        name: Capture FNOL Details
+        action: capture_fnol_data
+        inputs:
+          - reporter_information
+          - incident_details
+          - policy_reference
+        outputs:
+          - fnol_id
+          - fnol_number
+        validation:
+          - rule: CLM-CMP-001
+          - rule: CLM-DQ-002
+
+      - id: generate_reference
+        name: Generate FNOL Reference
+        action: generate_fnol_number
+        format: "FNOL-{YYYYMMDD}-{NNNNNN}"
+
+      - id: record_channel
+        name: Record Channel Details
+        action: log_channel_info
+        capture:
+          - channel_type
+          - call_recording_url
+          - submission_timestamp
+
+    transitions:
+      - to: acknowledge
+        condition: always
+
+  - id: acknowledge
+    name: Send Acknowledgment
+    description: Acknowledge receipt of FNOL to reporter
+    type: automated
+    sla: 1_hour
+
+    steps:
+      - id: determine_channel
+        name: Determine Acknowledgment Channel
+        action: get_preferred_channel
+        fallback: email
+
+      - id: send_acknowledgment
+        name: Send Acknowledgment
+        action: send_notification
+        template: fnol_acknowledgment
+        channels:
+          - sms
+          - email
+        content:
+          - fnol_number
+          - next_steps
+          - contact_information
+          - required_documents
+
+      - id: record_acknowledgment
+        name: Record Acknowledgment
+        action: update_fnol
+        updates:
+          acknowledged: true
+          acknowledgment_sent_at: "{{now}}"
+          acknowledgment_method: "{{channel}}"
+
+    transitions:
+      - to: initial_triage
+        condition: acknowledgment_sent
+      - to: handle_failure
+        condition: acknowledgment_failed
+
+  - id: initial_triage
+    name: Initial Triage
+    description: Initial assessment and categorization
+    type: semi_automated
+    sla: 4_hours
+
+    steps:
+      - id: assess_urgency
+        name: Assess Urgency
+        action: evaluate_urgency
+        criteria:
+          emergency:
+            - is_emergency: true
+            - insured_condition: hospitalized
+            - insured_condition: critical
+            - immediate_assistance_needed: true
+          high:
+            - incident_type: death
+            - loss_severity: total_loss
+          medium:
+            - loss_severity: major
+          low:
+            - default
+
+      - id: check_emergency
+        name: Check Emergency Needs
+        action: evaluate_emergency
+        if_emergency:
+          trigger: emergency_assistance_workflow
+          actions:
+            - dispatch_ambulance
+            - arrange_hospital_admission
+            - arrange_towing
+            - arrange_temporary_accommodation
+
+      - id: preliminary_coverage
+        name: Preliminary Coverage Check
+        action: quick_policy_lookup
+        using: policy_number_or_id
+        outputs:
+          - policy_found
+          - policy_status
+          - coverage_likely
+
+      - id: categorize_complexity
+        name: Categorize Complexity
+        action: assess_complexity
+        criteria:
+          simple:
+            - claimed_amount < 50000000
+            - single_coverage
+            - no_third_party
+          moderate:
+            - claimed_amount: 50000000-500000000
+            - standard_coverage
+          complex:
+            - claimed_amount > 500000000
+            - multiple_coverages
+            - third_parties_involved
+            - potential_fraud_indicators
+          catastrophic:
+            - is_catastrophe_event
+            - multiple_properties
+            - mass_casualty
+
+      - id: set_priority
+        name: Set Processing Priority
+        action: assign_priority
+        based_on:
+          - urgency
+          - complexity
+          - claim_type
+          - policy_value
+
+      - id: record_triage
+        name: Record Triage Results
+        action: update_fnol
+        updates:
+          coverage_preliminary_check: "{{coverage_result}}"
+          complexity: "{{complexity}}"
+          priority: "{{priority}}"
+          triage_notes: "{{notes}}"
+          triaged_by: "{{user_id}}"
+          triaged_at: "{{now}}"
+
+    transitions:
+      - to: policy_verification
+        condition: coverage_likely OR coverage_needs_review
+      - to: reject_fnol
+        condition: policy_not_found AND no_policy_provided
+      - to: request_information
+        condition: insufficient_information
+
+  - id: policy_verification
+    name: Policy Verification
+    description: Verify policy details and coverage
+    type: semi_automated
+    sla: 24_hours
+
+    steps:
+      - id: retrieve_policy
+        name: Retrieve Policy Details
+        action: get_policy
+        using:
+          - policy_id
+          - policy_number
+          - insured_name
+          - national_id
+
+      - id: verify_policy_status
+        name: Verify Policy Status
+        action: check_policy_status
+        checks:
+          - status_at_loss_date
+          - premium_status
+          - grace_period_check
+        rules:
+          - CLM-ELG-001
+          - CLM-ELG-004
+          - CLM-ELG-005
+
+      - id: verify_insured
+        name: Verify Insured Person
+        action: match_insured
+        match_criteria:
+          - name_matching
+          - id_matching
+          - relationship_verification
+
+      - id: check_coverage
+        name: Check Coverage Applicability
+        action: evaluate_coverage
+        checks:
+          - coverage_type_match
+          - peril_covered
+          - geographic_coverage
+          - waiting_period
+        rules:
+          - COV-APP-001
+          - COV-APP-002
+          - COV-APP-003
+          - COV-APP-004
+
+      - id: flag_issues
+        name: Flag Any Issues
+        action: record_issues
+        issue_types:
+          - policy_status_issue
+          - coverage_mismatch
+          - exclusion_applicable
+          - late_notification
+
+    transitions:
+      - to: assign_handler
+        condition: policy_verified AND coverage_applicable
+      - to: escalate_coverage_issue
+        condition: coverage_uncertain
+      - to: reject_fnol
+        condition: policy_inactive OR no_coverage
+
+  - id: assign_handler
+    name: Assign Claims Handler
+    description: Assign appropriate handler based on claim characteristics
+    type: automated
+
+    steps:
+      - id: determine_team
+        name: Determine Handling Team
+        action: route_to_team
+        based_on:
+          - claim_type
+          - complexity
+          - claim_value
+          - special_requirements
+        teams:
+          health_claims: claim_type IN (hospitalization, medical, disability)
+          life_claims: claim_type IN (death, critical_illness)
+          motor_claims: claim_type IN (motor_own_damage, motor_theft, motor_tpli)
+          property_claims: claim_type IN (fire, theft, natural_disaster)
+          travel_claims: claim_type = travel
+
+      - id: select_handler
+        name: Select Handler
+        action: assign_handler
+        criteria:
+          - workload_balance
+          - expertise_match
+          - authority_level
+          - availability
+
+      - id: notify_handler
+        name: Notify Assigned Handler
+        action: send_notification
+        to: assigned_handler
+        template: fnol_assignment
+        include:
+          - fnol_summary
+          - priority
+          - sla_deadline
+          - required_actions
+
+      - id: record_assignment
+        name: Record Assignment
+        action: update_fnol
+        updates:
+          assigned_to: "{{handler_id}}"
+          assigned_team: "{{team}}"
+          assigned_at: "{{now}}"
+
+    transitions:
+      - to: create_claim
+        condition: handler_assigned
+
+  - id: create_claim
+    name: Create Claim Record
+    description: Convert FNOL to formal claim
+    type: semi_automated
+    sla: 48_hours
+
+    steps:
+      - id: prepare_claim
+        name: Prepare Claim Data
+        action: compile_claim_data
+        from:
+          - fnol
+          - policy
+          - coverage
+          - claimant
+
+      - id: create_claim_record
+        name: Create Claim Record
+        action: create_claim
+        generates:
+          - claim_id
+          - claim_number
+        initial_status: registered
+
+      - id: link_fnol
+        name: Link FNOL to Claim
+        action: update_fnol
+        updates:
+          claim_id: "{{claim_id}}"
+          status: converted_to_claim
+          converted_at: "{{now}}"
+
+      - id: create_claimant
+        name: Create Claimant Record
+        action: create_claimant
+        from: fnol.reporter
+        set:
+          - identity_verification_required
+
+      - id: set_initial_reserve
+        name: Set Initial Reserve
+        action: create_reserve
+        based_on:
+          - claimed_amount
+          - claim_type_guidelines
+          - coverage_limit
+        rules:
+          - RES-INI-001
+          - RES-INI-002
+
+      - id: identify_documents
+        name: Identify Required Documents
+        action: determine_documents
+        based_on:
+          - claim_type
+          - coverage_requirements
+        outputs:
+          - document_checklist
+
+      - id: send_welcome_pack
+        name: Send Claim Welcome Pack
+        action: send_notification
+        to: claimant
+        template: claim_welcome
+        include:
+          - claim_number
+          - handler_contact
+          - document_checklist
+          - next_steps
+          - portal_access
+
+      - id: schedule_follow_up
+        name: Schedule Follow-up
+        action: create_task
+        task:
+          type: follow_up_call
+          due: "{{now + 2 days}}"
+          assigned_to: handler
+
+    transitions:
+      - to: complete
+        condition: claim_created
+
+  - id: request_information
+    name: Request Additional Information
+    description: Request missing information from reporter
+    type: semi_automated
+
+    steps:
+      - id: identify_gaps
+        name: Identify Information Gaps
+        action: analyze_gaps
+        check:
+          - required_fields
+          - validation_failures
+
+      - id: send_request
+        name: Send Information Request
+        action: send_notification
+        to: reporter
+        template: information_request
+        include:
+          - missing_information_list
+          - deadline
+          - submission_methods
+
+      - id: set_deadline
+        name: Set Response Deadline
+        action: schedule_deadline
+        deadline: 7_days
+        reminder: 3_days
+
+      - id: update_status
+        name: Update Status
+        action: update_fnol
+        updates:
+          status: incomplete
+
+    transitions:
+      - to: initial_triage
+        condition: information_received
+      - to: reject_fnol
+        condition: deadline_passed AND no_response
+
+  - id: escalate_coverage_issue
+    name: Escalate Coverage Issue
+    description: Escalate uncertain coverage for review
+    type: manual
+
+    steps:
+      - id: prepare_case
+        name: Prepare Case Summary
+        action: compile_summary
+        include:
+          - fnol_details
+          - policy_details
+          - coverage_analysis
+          - issues_identified
+
+      - id: assign_reviewer
+        name: Assign Senior Reviewer
+        action: escalate_to
+        role: supervisor
+        reason: coverage_uncertainty
+
+      - id: record_escalation
+        name: Record Escalation
+        action: log_escalation
+        details:
+          - reason
+          - assigned_to
+          - timestamp
+
+    transitions:
+      - to: policy_verification
+        condition: coverage_confirmed
+      - to: reject_fnol
+        condition: coverage_denied
+
+  - id: reject_fnol
+    name: Reject FNOL
+    description: Reject FNOL that cannot proceed
+    type: semi_automated
+
+    steps:
+      - id: document_reason
+        name: Document Rejection Reason
+        action: record_rejection
+        required:
+          - rejection_reason
+          - supporting_notes
+
+      - id: send_rejection
+        name: Send Rejection Notice
+        action: send_notification
+        to: reporter
+        template: fnol_rejection
+        include:
+          - rejection_reason
+          - appeal_options
+          - contact_information
+
+      - id: update_status
+        name: Update FNOL Status
+        action: update_fnol
+        updates:
+          status: rejected
+          rejection_reason: "{{reason}}"
+
+    transitions:
+      - to: complete
+        condition: always
+
+  - id: handle_failure
+    name: Handle Processing Failure
+    description: Handle system or process failures
+    type: manual
+
+    steps:
+      - id: log_failure
+        name: Log Failure Details
+        action: log_error
+        capture:
+          - failure_point
+          - error_details
+          - recovery_options
+
+      - id: notify_support
+        name: Notify Support Team
+        action: alert
+        to: claims_support
+        priority: high
+
+      - id: manual_intervention
+        name: Manual Intervention Required
+        action: create_task
+        task:
+          type: manual_processing
+          priority: urgent
+
+    transitions:
+      - to: receive
+        condition: retry_approved
+      - to: complete
+        condition: manually_resolved
+
+  - id: complete
+    name: Workflow Complete
+    description: FNOL processing complete
+    type: automated
+
+    steps:
+      - id: record_completion
+        name: Record Completion
+        action: log_completion
+        metrics:
+          - processing_time
+          - sla_compliance
+          - outcome
+
+      - id: trigger_next
+        name: Trigger Next Workflow
+        action: trigger_workflow
+        if: fnol.status = converted_to_claim
+        workflow: claim_assessment_workflow
+
+events_emitted:
+  - fnol.received
+  - fnol.acknowledged
+  - fnol.triaged
+  - fnol.policy_verified
+  - fnol.converted
+  - fnol.rejected
+
+metrics:
+  - name: fnol_volume
+    description: Number of FNOLs received
+    aggregation: count
+    dimensions: [channel, claim_type]
+
+  - name: acknowledgment_sla
+    description: Acknowledgment SLA compliance
+    calculation: "(acknowledged_within_sla / total) * 100"
+
+  - name: conversion_rate
+    description: FNOL to claim conversion rate
+    calculation: "(converted / total) * 100"
+
+  - name: average_processing_time
+    description: Average time from FNOL to claim
+    calculation: "AVG(converted_at - received_at)"
+
+  - name: rejection_rate
+    description: FNOL rejection rate
+    calculation: "(rejected / total) * 100"

@@ -1,0 +1,608 @@
+name: Patient
+display_name: Patient / Bệnh nhân
+description: |
+  Core entity representing an individual receiving healthcare services.
+  Central to the EHR system with comprehensive demographic, medical,
+  and administrative information.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: master
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+    description: Internal unique identifier
+
+  business:
+    - name: mrn
+      display_name: Medical Record Number
+      type: string
+      pattern: "^MRN-[0-9]{8}$"
+      example: "MRN-00012345"
+      description: Unique patient identifier within the healthcare system
+      auto_generated: true
+
+    - name: patient_id
+      display_name: Patient ID
+      type: string
+      description: External-facing patient identifier
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: active
+      description: Active patient with current care relationship
+
+    - value: inactive
+      description: Patient who has not had encounter in 3+ years
+
+    - value: deceased
+      description: Patient is deceased
+      triggers:
+        - Set death_date
+        - Mark records read-only
+        - Notify registries
+
+    - value: merged
+      description: Patient record merged into another
+      triggers:
+        - Set merged_into_id
+        - Redirect all lookups to master record
+
+  default: active
+  transitions:
+    active:
+      - to: inactive
+        condition: No encounters for 3 years
+      - to: deceased
+        condition: Death recorded
+      - to: merged
+        condition: Duplicate identified
+    inactive:
+      - to: active
+        condition: New encounter
+      - to: deceased
+        condition: Death recorded
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  demographics:
+    - name: first_name
+      type: string
+      required: true
+      max_length: 100
+      phi: true
+
+    - name: middle_name
+      type: string
+      max_length: 100
+      phi: true
+
+    - name: last_name
+      type: string
+      required: true
+      max_length: 100
+      phi: true
+
+    - name: full_name
+      type: string
+      computed: true
+      formula: "CONCAT(first_name, ' ', middle_name, ' ', last_name)"
+      phi: true
+
+    - name: preferred_name
+      type: string
+      max_length: 100
+      description: Name the patient prefers to be called
+      phi: true
+
+    - name: date_of_birth
+      type: date
+      required: true
+      phi: true
+      validation:
+        - rule: not_future
+          message: Date of birth cannot be in the future
+        - rule: not_before
+          value: "1900-01-01"
+          message: Date of birth must be after 1900
+
+    - name: age
+      type: integer
+      computed: true
+      formula: "YEAR_DIFF(date_of_birth, CURRENT_DATE)"
+
+    - name: gender
+      type: enum
+      required: true
+      values: [male, female, other, unknown]
+
+    - name: sex_at_birth
+      type: enum
+      values: [male, female, unknown]
+      description: Biological sex assigned at birth
+
+    - name: gender_identity
+      type: enum
+      values:
+        - male
+        - female
+        - transgender_male
+        - transgender_female
+        - non_binary
+        - other
+        - prefer_not_to_say
+
+    - name: pronouns
+      type: string
+      max_length: 50
+      example: "she/her, he/him, they/them"
+
+    - name: marital_status
+      type: enum
+      values: [single, married, divorced, widowed, separated, domestic_partner, unknown]
+
+    - name: nationality
+      type: string
+      max_length: 100
+
+    - name: ethnicity
+      type: enum
+      values:
+        - hispanic_latino
+        - not_hispanic_latino
+        - unknown
+        - declined
+
+    - name: race
+      type: array
+      items:
+        type: enum
+        values:
+          - american_indian_alaska_native
+          - asian
+          - black_african_american
+          - native_hawaiian_pacific_islander
+          - white
+          - other
+          - unknown
+          - declined
+
+    - name: religion
+      type: string
+      max_length: 100
+
+    - name: preferred_language
+      type: string
+      max_length: 50
+      default: "vi"
+
+    - name: interpreter_needed
+      type: boolean
+      default: false
+
+    - name: communication_preference
+      type: enum
+      values: [phone, email, sms, mail, portal]
+      default: phone
+
+  contact:
+    - name: phone_primary
+      type: string
+      pattern: "^\\+?[0-9]{10,15}$"
+      phi: true
+
+    - name: phone_secondary
+      type: string
+      pattern: "^\\+?[0-9]{10,15}$"
+      phi: true
+
+    - name: phone_type_primary
+      type: enum
+      values: [mobile, home, work]
+
+    - name: email
+      type: string
+      format: email
+      phi: true
+
+    - name: address
+      type: object
+      phi: true
+      properties:
+        line1:
+          type: string
+          max_length: 255
+        line2:
+          type: string
+          max_length: 255
+        ward:
+          type: string
+          max_length: 100
+        district:
+          type: string
+          max_length: 100
+        city:
+          type: string
+          max_length: 100
+        province:
+          type: string
+          max_length: 100
+        country:
+          type: string
+          max_length: 100
+          default: "Vietnam"
+        postal_code:
+          type: string
+          max_length: 20
+
+    - name: emergency_contact
+      type: object
+      phi: true
+      properties:
+        name:
+          type: string
+          max_length: 200
+        relationship:
+          type: enum
+          values: [spouse, parent, child, sibling, relative, friend, guardian, other]
+        phone:
+          type: string
+        email:
+          type: string
+
+  identifiers_external:
+    - name: national_id
+      type: string
+      description: CCCD/CMND number
+      phi: true
+
+    - name: passport_number
+      type: string
+      phi: true
+
+    - name: insurance_id
+      type: string
+      description: Health insurance card number
+      phi: true
+
+    - name: insurance_provider
+      type: string
+      description: Insurance company/BHXH
+
+    - name: social_security_number
+      type: string
+      phi: true
+      sensitive: true
+
+  medical:
+    - name: blood_type
+      type: enum
+      values: [A+, A-, B+, B-, AB+, AB-, O+, O-, unknown]
+
+    - name: organ_donor
+      type: boolean
+      default: false
+
+    - name: organ_donor_registry_date
+      type: date
+
+    - name: advance_directive
+      type: boolean
+      default: false
+      description: Has advance healthcare directive on file
+
+    - name: advance_directive_type
+      type: array
+      items:
+        type: enum
+        values:
+          - living_will
+          - healthcare_proxy
+          - do_not_resuscitate
+          - polst
+
+    - name: code_status
+      type: enum
+      values:
+        - full_code
+        - dnr
+        - dnr_dni
+        - comfort_measures_only
+      default: full_code
+
+  administrative:
+    - name: registration_date
+      type: timestamp
+      auto_set: on_create
+
+    - name: last_visit_date
+      type: timestamp
+
+    - name: primary_care_provider_id
+      type: uuid
+      references: Provider
+
+    - name: preferred_pharmacy_id
+      type: uuid
+      references: Pharmacy
+
+    - name: preferred_facility_id
+      type: uuid
+      references: Facility
+
+    - name: photo_url
+      type: string
+      format: url
+      phi: true
+
+  consent_privacy:
+    - name: consent_to_treatment
+      type: boolean
+      required: true
+      default: false
+
+    - name: consent_to_treatment_date
+      type: timestamp
+
+    - name: consent_to_share_data
+      type: boolean
+      default: false
+      description: Consent to share with other providers
+
+    - name: hipaa_consent_date
+      type: timestamp
+
+    - name: restricted_access
+      type: boolean
+      default: false
+      description: VIP/sensitive patient requiring extra access controls
+
+    - name: restriction_reason
+      type: enum
+      values: [vip, employee, celebrity, sensitive_case, legal, other]
+
+    - name: access_override_required
+      type: boolean
+      default: false
+      description: Requires break-the-glass for non-care-team access
+
+  deceased:
+    - name: death_date
+      type: date
+
+    - name: death_time
+      type: time
+
+    - name: death_cause
+      type: string
+
+    - name: death_location
+      type: enum
+      values: [hospital, home, other_facility, other]
+
+    - name: autopsy_performed
+      type: boolean
+
+  merged:
+    - name: merged_into_id
+      type: uuid
+      references: Patient
+      description: Target patient ID when this record is merged
+
+    - name: merged_date
+      type: timestamp
+
+    - name: merged_by
+      type: uuid
+      references: User
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: encounters
+    type: one_to_many
+    target: Encounter
+    foreign_key: patient_id
+    description: All clinical encounters for this patient
+
+  - name: medical_records
+    type: one_to_many
+    target: MedicalRecord
+    foreign_key: patient_id
+
+  - name: diagnoses
+    type: one_to_many
+    target: Diagnosis
+    foreign_key: patient_id
+
+  - name: allergies
+    type: one_to_many
+    target: Allergy
+    foreign_key: patient_id
+
+  - name: medications
+    type: one_to_many
+    target: PatientMedication
+    foreign_key: patient_id
+    description: Active medication list
+
+  - name: prescriptions
+    type: one_to_many
+    target: Prescription
+    foreign_key: patient_id
+
+  - name: lab_orders
+    type: one_to_many
+    target: LabOrder
+    foreign_key: patient_id
+
+  - name: lab_results
+    type: one_to_many
+    target: LabResult
+    foreign_key: patient_id
+
+  - name: vital_signs
+    type: one_to_many
+    target: VitalSign
+    foreign_key: patient_id
+
+  - name: consents
+    type: one_to_many
+    target: Consent
+    foreign_key: patient_id
+
+  - name: primary_care_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: primary_care_provider_id
+
+  - name: care_team
+    type: many_to_many
+    target: Provider
+    through: PatientCareTeam
+
+  - name: insurance_coverages
+    type: one_to_many
+    target: InsuranceCoverage
+    foreign_key: patient_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-PAT-001
+    name: MRN Uniqueness
+    description: Medical Record Number must be unique across the system
+    rule: mrn IS UNIQUE
+    enforcement: database_constraint
+
+  - id: BR-PAT-002
+    name: MRN Auto-generation
+    description: MRN is auto-generated on patient creation
+    rule: mrn = "MRN-" + LPAD(SEQUENCE.NEXTVAL, 8, '0')
+    trigger: on_create
+
+  - id: BR-PAT-003
+    name: DOB Validation
+    description: Date of birth cannot be in the future
+    rule: date_of_birth <= CURRENT_DATE
+    enforcement: validation
+
+  - id: BR-PAT-004
+    name: Deceased Read-Only
+    description: Deceased patient records are read-only for clinical data
+    rule: IF status = 'deceased' THEN clinical_data.readonly = TRUE
+    exceptions:
+      - Correction of errors
+      - Administrative updates
+      - Legal requirements
+
+  - id: BR-PAT-005
+    name: Merge Redirect
+    description: Merged patients redirect to master record
+    rule: IF status = 'merged' THEN redirect_to(merged_into_id)
+
+  - id: BR-PAT-006
+    name: Required Demographics
+    description: Minimum required information for patient registration
+    rule: |
+      REQUIRED: first_name, last_name, date_of_birth, gender
+      REQUIRED_FOR_BILLING: insurance_id OR self_pay_agreement
+
+  - id: BR-PAT-007
+    name: Age Calculation
+    description: Age is calculated from DOB, not stored
+    rule: age = YEAR_DIFF(date_of_birth, CURRENT_DATE)
+
+  - id: BR-PAT-008
+    name: Restricted Patient Access
+    description: Restricted patients require additional authorization
+    rule: |
+      IF restricted_access = TRUE
+      THEN require_explicit_authorization()
+      AND log_access_with_reason()
+
+  - id: BR-PAT-009
+    name: Consent Before Treatment
+    description: Consent to treatment required before clinical services
+    rule: consent_to_treatment = TRUE for non-emergency services
+    exceptions:
+      - Emergency life-threatening situations
+      - Court-ordered treatment
+
+  - id: BR-PAT-010
+    name: Insurance Verification
+    description: Insurance eligibility should be verified at each visit
+    rule: verify_insurance_eligibility() on encounter_check_in
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_patient_mrn
+    columns: [mrn]
+    unique: true
+
+  - name: idx_patient_name
+    columns: [last_name, first_name]
+
+  - name: idx_patient_dob
+    columns: [date_of_birth]
+
+  - name: idx_patient_phone
+    columns: [phone_primary]
+
+  - name: idx_patient_national_id
+    columns: [national_id]
+    unique: true
+    condition: "national_id IS NOT NULL"
+
+  - name: idx_patient_pcp
+    columns: [primary_care_provider_id]
+
+  - name: idx_patient_status
+    columns: [status]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  phi_access_logging: true
+  fields_tracked:
+    - all_phi_fields
+    - status
+    - consent_fields
+  retention_years: 6
+
+# =============================================================================
+# SEARCH
+# =============================================================================
+search:
+  enabled: true
+  searchable_fields:
+    - mrn
+    - first_name
+    - last_name
+    - date_of_birth
+    - phone_primary
+    - national_id
+    - insurance_id
+  phonetic_search:
+    enabled: true
+    fields: [first_name, last_name]

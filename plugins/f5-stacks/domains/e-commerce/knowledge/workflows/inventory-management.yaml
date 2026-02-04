@@ -1,0 +1,544 @@
+name: Inventory Management Workflow
+display_name: Inventory Management / Quản lý kho hàng
+description: |
+  Comprehensive inventory management workflow covering stock tracking,
+  replenishment, adjustments, and multi-location operations.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: inventory.threshold_reached
+    source: Inventory
+    condition: available_quantity <= reorder_point
+  - event: inventory.received
+    source: Purchase Order
+  - event: inventory.adjustment_requested
+    source: Admin
+
+actors:
+  - name: Inventory Manager
+    role: supervisor
+    description: Manages inventory operations
+  - name: Warehouse Staff
+    role: operator
+    description: Handles physical inventory
+  - name: Purchasing
+    role: operator
+    description: Manages procurement
+  - name: System
+    role: automated
+    description: Automated inventory management
+
+processes:
+  # Stock Level Monitoring
+  - id: STOCK_MONITORING
+    name: Stock Level Monitoring
+    description: Continuous monitoring of inventory levels
+    type: continuous
+    steps:
+      - id: CALCULATE_AVAILABLE
+        name: Calculate Available Stock
+        actor: System
+        type: automated
+        frequency: real-time
+        actions:
+          - Calculate available = quantity - reserved - damaged - on_hold
+          - Update stock_status based on thresholds
+          - Update product availability
+        validations:
+          - rule: BR-INV-001
+            description: Available stock calculation
+
+      - id: CHECK_THRESHOLDS
+        name: Check Stock Thresholds
+        actor: System
+        type: automated
+        frequency: hourly
+        actions:
+          - Compare available vs reorder_point
+          - Compare available vs safety_stock
+          - Check for critical low levels
+        routing:
+          - condition: available <= safety_stock
+            next: CRITICAL_LOW_ALERT
+          - condition: available <= reorder_point
+            next: REORDER_ALERT
+          - condition: available <= low_stock_threshold
+            next: LOW_STOCK_ALERT
+
+      - id: CRITICAL_LOW_ALERT
+        name: Critical Low Stock Alert
+        actor: System
+        type: automated
+        actions:
+          - Send critical alert to inventory manager
+          - Flag product as critical
+          - Consider expedited reorder
+        notifications:
+          - recipient: inventory_manager
+            template: critical_stock_alert
+            priority: high
+        validations:
+          - rule: BR-INV-041
+
+      - id: REORDER_ALERT
+        name: Reorder Point Alert
+        actor: System
+        type: automated
+        actions:
+          - Trigger reorder notification
+          - Calculate suggested order quantity
+          - Create draft purchase order (if auto-reorder)
+        notifications:
+          - recipient: purchasing
+            template: reorder_alert
+        validations:
+          - rule: BR-INV-040
+
+      - id: LOW_STOCK_ALERT
+        name: Low Stock Alert
+        actor: System
+        type: automated
+        actions:
+          - Update product badge to "Low Stock"
+          - Notify merchandising team
+          - Consider promotional adjustments
+
+  # Replenishment Process
+  - id: REPLENISHMENT
+    name: Inventory Replenishment
+    description: Process for replenishing stock
+    type: triggered
+    trigger: reorder_point_reached OR manual_request
+    steps:
+      - id: CALCULATE_ORDER_QUANTITY
+        name: Calculate Order Quantity
+        actor: System
+        type: automated
+        actions:
+          - Calculate Economic Order Quantity (EOQ)
+          - Consider lead time demand
+          - Factor in minimum order quantities
+          - Apply safety stock buffer
+        outputs:
+          - suggested_quantity
+          - estimated_cost
+        validations:
+          - rule: BR-INV-042
+
+      - id: CREATE_PURCHASE_ORDER
+        name: Create Purchase Order
+        actor: Purchasing
+        type: interactive
+        actions:
+          - Review suggested quantities
+          - Select supplier
+          - Negotiate pricing
+          - Create purchase order
+        inputs:
+          - suggested_quantity
+          - supplier_options
+          - pricing_history
+        outputs:
+          - purchase_order_id
+          - expected_delivery_date
+        ui_elements:
+          - quantity_input
+          - supplier_selector
+          - price_negotiation
+          - delivery_date_picker
+
+      - id: APPROVE_PURCHASE_ORDER
+        name: Approve Purchase Order
+        actor: Inventory Manager
+        type: interactive
+        conditions:
+          - amount > approval_threshold
+        actions:
+          - Review purchase order
+          - Approve or request changes
+        ui_elements:
+          - po_details_view
+          - approve_button
+          - reject_button
+          - notes_field
+
+      - id: SEND_TO_SUPPLIER
+        name: Send to Supplier
+        actor: System
+        type: automated
+        actions:
+          - Send PO to supplier
+          - Record submission
+          - Set expected receipt date
+        notifications:
+          - recipient: supplier
+            template: purchase_order
+
+      - id: AWAIT_DELIVERY
+        name: Await Delivery
+        actor: System
+        type: wait
+        timeout: expected_delivery_date + 3 days
+        actions:
+          - Monitor for delivery
+          - Track shipment if available
+        on_delivered: RECEIVE_INVENTORY
+        on_timeout: FOLLOW_UP_SUPPLIER
+
+      - id: RECEIVE_INVENTORY
+        name: Receive Inventory
+        actor: Warehouse Staff
+        type: interactive
+        actions:
+          - Verify received quantities
+          - Inspect quality
+          - Record discrepancies
+          - Update inventory levels
+        inputs:
+          - purchase_order
+          - received_items
+        outputs:
+          - receipt_record
+          - discrepancy_report
+        ui_elements:
+          - receiving_checklist
+          - quantity_input
+          - quality_inspection
+          - discrepancy_form
+        on_success: UPDATE_INVENTORY
+        on_discrepancy: HANDLE_RECEIPT_DISCREPANCY
+
+      - id: UPDATE_INVENTORY
+        name: Update Inventory
+        actor: System
+        type: automated
+        actions:
+          - Add received quantity to inventory
+          - Update average cost (if applicable)
+          - Clear pending receipt flag
+          - Log inventory movement
+        outputs:
+          - inventory.quantity += received
+          - movement_log
+        validations:
+          - rule: BR-INV-052
+            description: Audit trail
+
+  # Stock Adjustment
+  - id: STOCK_ADJUSTMENT
+    name: Stock Adjustment
+    description: Manual inventory adjustment process
+    type: triggered
+    trigger: adjustment_request OR cycle_count_discrepancy
+    steps:
+      - id: REQUEST_ADJUSTMENT
+        name: Request Adjustment
+        actor: Warehouse Staff
+        type: interactive
+        actions:
+          - Specify product and location
+          - Enter adjustment quantity
+          - Select adjustment reason
+          - Provide justification
+        inputs:
+          - product_id
+          - location_id
+          - adjustment_quantity
+          - reason
+        outputs:
+          - adjustment_request_id
+        ui_elements:
+          - product_selector
+          - location_selector
+          - quantity_input (positive/negative)
+          - reason_dropdown
+          - justification_textarea
+        reasons:
+          - cycle_count: "Cycle count correction"
+          - damaged: "Damaged goods"
+          - theft: "Theft/shrinkage"
+          - found: "Found inventory"
+          - system_error: "System error correction"
+          - other: "Other (specify)"
+
+      - id: REVIEW_ADJUSTMENT
+        name: Review Adjustment
+        actor: Inventory Manager
+        type: interactive
+        conditions:
+          - adjustment_value > threshold OR reason IN ('theft', 'system_error')
+        actions:
+          - Review adjustment request
+          - Verify justification
+          - Approve or reject
+        ui_elements:
+          - adjustment_details
+          - approval_buttons
+          - notes_field
+        on_approve: APPLY_ADJUSTMENT
+        on_reject: NOTIFY_REJECTION
+
+      - id: APPLY_ADJUSTMENT
+        name: Apply Adjustment
+        actor: System
+        type: automated
+        actions:
+          - Update inventory quantity
+          - Create adjustment record
+          - Log to audit trail
+          - Update financial records
+        outputs:
+          - inventory.quantity += adjustment
+          - adjustment_record
+        validations:
+          - rule: BR-INV-052
+
+  # Cycle Counting
+  - id: CYCLE_COUNTING
+    name: Cycle Counting
+    description: Regular inventory verification
+    type: scheduled
+    schedule: daily (subset) / monthly (full)
+    steps:
+      - id: GENERATE_COUNT_LIST
+        name: Generate Count List
+        actor: System
+        type: automated
+        actions:
+          - Select items for counting (ABC analysis)
+          - Generate count sheets
+          - Assign to counters
+        outputs:
+          - count_list
+          - assigned_counters
+        strategy:
+          A_items: weekly
+          B_items: monthly
+          C_items: quarterly
+
+      - id: PERFORM_COUNT
+        name: Perform Physical Count
+        actor: Warehouse Staff
+        type: interactive
+        actions:
+          - Navigate to location
+          - Count physical inventory
+          - Record count
+          - Flag discrepancies
+        ui_elements:
+          - count_list_view
+          - location_scanner
+          - quantity_input
+          - discrepancy_flag
+
+      - id: RECONCILE_COUNTS
+        name: Reconcile Counts
+        actor: System
+        type: automated
+        actions:
+          - Compare count to system
+          - Calculate variance
+          - Flag significant discrepancies
+        outputs:
+          - variance_report
+          - discrepancies
+
+      - id: INVESTIGATE_DISCREPANCY
+        name: Investigate Discrepancy
+        actor: Inventory Manager
+        type: interactive
+        conditions:
+          - variance > tolerance_threshold
+        actions:
+          - Review count details
+          - Investigate cause
+          - Order recount if needed
+          - Approve adjustment
+        ui_elements:
+          - variance_report
+          - investigation_form
+          - recount_button
+          - adjust_button
+
+  # Stock Transfer
+  - id: STOCK_TRANSFER
+    name: Stock Transfer
+    description: Transfer inventory between locations
+    type: triggered
+    trigger: transfer_request OR rebalancing_need
+    steps:
+      - id: REQUEST_TRANSFER
+        name: Request Transfer
+        actor: Inventory Manager
+        type: interactive
+        actions:
+          - Select source location
+          - Select destination location
+          - Specify items and quantities
+          - Set priority
+        outputs:
+          - transfer_request_id
+        ui_elements:
+          - source_location_selector
+          - destination_location_selector
+          - item_quantity_grid
+          - priority_selector
+
+      - id: VALIDATE_TRANSFER
+        name: Validate Transfer
+        actor: System
+        type: automated
+        actions:
+          - Check source availability
+          - Verify destination capacity
+          - Calculate transfer cost
+        on_valid: APPROVE_TRANSFER
+        on_invalid: REJECT_TRANSFER
+
+      - id: APPROVE_TRANSFER
+        name: Approve Transfer
+        actor: System
+        type: automated
+        conditions:
+          - auto_approve OR manager_approved
+        actions:
+          - Reserve source inventory
+          - Create transfer order
+          - Notify both locations
+
+      - id: PICK_TRANSFER
+        name: Pick Transfer Items
+        actor: Warehouse Staff
+        type: interactive
+        actions:
+          - Pick items from source
+          - Pack for transfer
+          - Create shipping document
+        on_complete: SHIP_TRANSFER
+
+      - id: SHIP_TRANSFER
+        name: Ship Transfer
+        actor: System
+        type: automated
+        actions:
+          - Deduct from source location
+          - Mark as in_transit
+          - Track shipment
+
+      - id: RECEIVE_TRANSFER
+        name: Receive Transfer
+        actor: Warehouse Staff
+        type: interactive
+        actions:
+          - Receive at destination
+          - Verify quantities
+          - Add to destination inventory
+        on_complete: COMPLETE_TRANSFER
+
+      - id: COMPLETE_TRANSFER
+        name: Complete Transfer
+        actor: System
+        type: automated
+        actions:
+          - Update both location inventories
+          - Close transfer order
+          - Log movement
+
+  # Inventory Sync
+  - id: INVENTORY_SYNC
+    name: Multi-Channel Sync
+    description: Sync inventory across sales channels
+    type: continuous
+    steps:
+      - id: DETECT_CHANGE
+        name: Detect Inventory Change
+        actor: System
+        type: automated
+        trigger: inventory_change
+        actions:
+          - Capture change event
+          - Calculate new available
+          - Queue for sync
+
+      - id: SYNC_TO_CHANNELS
+        name: Sync to Sales Channels
+        actor: System
+        type: automated
+        actions:
+          - Update website inventory
+          - Update marketplace inventories
+          - Apply buffer adjustments
+        validations:
+          - rule: BR-INV-050
+            description: Real-time sync
+          - rule: BR-INV-051
+            description: Marketplace buffer
+
+notifications:
+  - event: inventory.critical_low
+    recipient: [inventory_manager, purchasing]
+    template: critical_stock_alert
+    priority: high
+
+  - event: inventory.reorder_point
+    recipient: purchasing
+    template: reorder_alert
+
+  - event: inventory.received
+    recipient: inventory_manager
+    template: stock_received
+
+  - event: inventory.adjusted
+    recipient: inventory_manager
+    template: adjustment_notification
+
+  - event: inventory.discrepancy
+    recipient: inventory_manager
+    template: discrepancy_alert
+
+metrics:
+  - name: inventory_accuracy
+    description: System vs physical count accuracy
+    calculation: matching_counts / total_counts * 100
+
+  - name: stockout_rate
+    description: Percentage of time items out of stock
+    calculation: stockout_days / total_days * 100
+
+  - name: inventory_turnover
+    description: How quickly inventory sells
+    calculation: cost_of_goods_sold / average_inventory
+
+  - name: days_of_inventory
+    description: Days of stock on hand
+    calculation: average_inventory / daily_sales
+
+  - name: shrinkage_rate
+    description: Lost inventory percentage
+    calculation: (recorded - actual) / recorded * 100
+
+reports:
+  - name: Daily Inventory Summary
+    frequency: daily
+    contents:
+      - Stock levels by category
+      - Low stock items
+      - Pending receipts
+      - Recent adjustments
+
+  - name: Weekly Replenishment Report
+    frequency: weekly
+    contents:
+      - Items below reorder point
+      - Pending purchase orders
+      - Suggested orders
+
+  - name: Monthly Inventory Valuation
+    frequency: monthly
+    contents:
+      - Total inventory value
+      - Value by category
+      - Aging analysis
+      - Slow-moving items

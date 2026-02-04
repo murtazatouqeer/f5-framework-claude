@@ -1,0 +1,477 @@
+name: StandingOrder
+display_name: Standing Order / Lệnh chuyển khoản định kỳ
+description: |
+  Recurring payment instruction that automatically executes transfers
+  on a scheduled basis. Supports various frequencies and handles
+  execution tracking, failures, and notifications.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique standing order identifier
+
+  order_reference:
+    type: string
+    format: "^SO-[0-9]{8}-[A-Z0-9]{6}$"
+    unique: true
+    indexed: true
+    description: Human-readable standing order reference
+    description_vi: Mã tham chiếu lệnh định kỳ
+    example: "SO-20241215-A1B2C3"
+
+  # ---------------------------------------------------------------------------
+  # Source & Destination
+  # ---------------------------------------------------------------------------
+  account_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: BankAccount
+    description: Source account for transfers
+
+  beneficiary_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: Beneficiary
+    description: Recipient of recurring transfers
+
+  # ---------------------------------------------------------------------------
+  # Amount
+  # ---------------------------------------------------------------------------
+  amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Transfer amount per execution
+    description_vi: Số tiền mỗi lần chuyển
+
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+    description: Transfer currency
+
+  # ---------------------------------------------------------------------------
+  # Schedule
+  # ---------------------------------------------------------------------------
+  frequency:
+    type: enum
+    values: [daily, weekly, bi_weekly, monthly, quarterly, semi_annually, annually]
+    required: true
+    description: Execution frequency
+    description_vi: Tần suất chuyển
+    value_descriptions:
+      daily: "Every day / Hàng ngày"
+      weekly: "Every week / Hàng tuần"
+      bi_weekly: "Every 2 weeks / 2 tuần/lần"
+      monthly: "Every month / Hàng tháng"
+      quarterly: "Every 3 months / Hàng quý"
+      semi_annually: "Every 6 months / 6 tháng/lần"
+      annually: "Every year / Hàng năm"
+
+  execution_day:
+    type: integer
+    minimum: 1
+    maximum: 31
+    nullable: true
+    description: Day of month/week for execution
+    description_vi: Ngày thực hiện
+    notes: "For monthly: 1-28 (29-31 adjusted to last day). For weekly: 1=Monday"
+
+  execution_week_day:
+    type: enum
+    values: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+    nullable: true
+    description: Day of week for weekly frequency
+
+  start_date:
+    type: date
+    required: true
+    indexed: true
+    description: First execution date
+    description_vi: Ngày bắt đầu
+
+  end_date:
+    type: date
+    nullable: true
+    description: Final execution date (null = indefinite)
+    description_vi: Ngày kết thúc
+
+  next_execution_date:
+    type: date
+    indexed: true
+    description: Next scheduled execution
+    description_vi: Ngày chuyển kế tiếp
+
+  # ---------------------------------------------------------------------------
+  # Execution Control
+  # ---------------------------------------------------------------------------
+  total_executions:
+    type: integer
+    nullable: true
+    description: Maximum number of executions (null = unlimited)
+
+  completed_executions:
+    type: integer
+    default: 0
+    description: Number of successful executions
+    description_vi: Số lần đã thực hiện thành công
+
+  failed_executions:
+    type: integer
+    default: 0
+    description: Number of failed executions
+    description_vi: Số lần thất bại
+
+  last_execution_at:
+    type: timestamp
+    nullable: true
+    description: Last execution timestamp
+
+  last_execution_status:
+    type: enum
+    values: [success, failed, skipped]
+    nullable: true
+    description: Status of last execution
+
+  last_execution_reference:
+    type: string
+    nullable: true
+    description: Reference of last executed transfer
+
+  last_failure_reason:
+    type: string
+    max_length: 500
+    nullable: true
+    description: Reason for last failure
+
+  # ---------------------------------------------------------------------------
+  # Status
+  # ---------------------------------------------------------------------------
+  status:
+    type: enum
+    values: [active, paused, completed, cancelled, expired]
+    default: active
+    indexed: true
+    description: Standing order status
+    description_vi: Trạng thái
+    value_descriptions:
+      active: "Active and will execute / Đang hoạt động"
+      paused: "Temporarily paused / Tạm dừng"
+      completed: "All executions done / Hoàn thành"
+      cancelled: "Cancelled by user / Đã hủy"
+      expired: "Past end date / Hết hạn"
+
+  # ---------------------------------------------------------------------------
+  # Details
+  # ---------------------------------------------------------------------------
+  description:
+    type: string
+    max_length: 200
+    nullable: true
+    description: Standing order description
+    description_vi: Mô tả lệnh chuyển
+
+  reference:
+    type: string
+    max_length: 140
+    nullable: true
+    description: Reference included in each transfer
+    description_vi: Nội dung chuyển khoản
+
+  purpose_code:
+    type: string
+    max_length: 10
+    nullable: true
+    description: Purpose code for transfers
+
+  # ---------------------------------------------------------------------------
+  # Notifications
+  # ---------------------------------------------------------------------------
+  notify_on_execution:
+    type: boolean
+    default: true
+    description: Notify on each execution
+    description_vi: Thông báo khi thực hiện
+
+  notify_on_failure:
+    type: boolean
+    default: true
+    description: Notify on execution failure
+    description_vi: Thông báo khi thất bại
+
+  notify_before_execution:
+    type: boolean
+    default: false
+    description: Notify before execution (1 day)
+    description_vi: Thông báo trước khi thực hiện
+
+  # ---------------------------------------------------------------------------
+  # Failure Handling
+  # ---------------------------------------------------------------------------
+  retry_on_failure:
+    type: boolean
+    default: true
+    description: Retry failed executions
+
+  max_retries:
+    type: integer
+    default: 3
+    description: Maximum retry attempts
+
+  retry_delay_days:
+    type: integer
+    default: 1
+    description: Days between retry attempts
+
+  skip_if_insufficient_funds:
+    type: boolean
+    default: false
+    description: Skip and continue vs. fail and pause
+
+  consecutive_failures:
+    type: integer
+    default: 0
+    description: Current consecutive failure count
+
+  max_consecutive_failures:
+    type: integer
+    default: 3
+    description: Pause after this many consecutive failures
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+  paused_at:
+    type: timestamp
+    nullable: true
+
+  cancelled_at:
+    type: timestamp
+    nullable: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: account_id
+
+  beneficiary:
+    type: belongs_to
+    entity: Beneficiary
+    foreign_key: beneficiary_id
+
+  transfers:
+    type: has_many
+    entity: Transfer
+    foreign_key: recurring_id
+    description: Transfers created by this standing order
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: active
+
+  states:
+    active:
+      description: "Active and scheduled for execution"
+      allowed_operations: [execute, pause, cancel, modify]
+
+    paused:
+      description: "Temporarily paused"
+      allowed_operations: [resume, cancel, modify]
+
+    completed:
+      description: "All scheduled executions done"
+      final: true
+
+    cancelled:
+      description: "Cancelled by user"
+      final: true
+
+    expired:
+      description: "Past end date"
+      final: true
+
+  transitions:
+    - from: active
+      to: paused
+      event: pause
+      actions:
+        - "Record pause timestamp"
+        - "Send notification"
+
+    - from: paused
+      to: active
+      event: resume
+      conditions:
+        - "Not past end date"
+        - "Account still active"
+      actions:
+        - "Recalculate next execution date"
+
+    - from: active
+      to: completed
+      event: complete
+      conditions:
+        - "completed_executions >= total_executions"
+        - "OR next_execution_date > end_date"
+
+    - from: [active, paused]
+      to: cancelled
+      event: cancel
+      actions:
+        - "Record cancellation"
+        - "Send notification"
+
+    - from: active
+      to: expired
+      event: expire
+      conditions:
+        - "Current date > end_date"
+
+    - from: active
+      to: paused
+      event: auto_pause
+      conditions:
+        - "consecutive_failures >= max_consecutive_failures"
+      actions:
+        - "Send failure notification"
+        - "Alert customer"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-SO-001
+    name: Valid Account
+    description: Source account must be active
+    rule: |
+      account.status = 'active' AND account.allow_debit = true
+
+  - id: BR-SO-002
+    name: Valid Beneficiary
+    description: Beneficiary must be verified
+    rule: |
+      beneficiary.status = 'active'
+      AND beneficiary.verification_status = 'verified'
+
+  - id: BR-SO-003
+    name: Next Execution Calculation
+    description: Calculate next execution date based on frequency
+    rule: |
+      CASE frequency:
+        daily: next_date + 1 day
+        weekly: next_date + 7 days
+        bi_weekly: next_date + 14 days
+        monthly: next_date + 1 month (adjust for month length)
+        quarterly: next_date + 3 months
+        semi_annually: next_date + 6 months
+        annually: next_date + 1 year
+
+  - id: BR-SO-004
+    name: Auto-Pause on Failures
+    description: Pause after consecutive failures
+    rule: |
+      IF consecutive_failures >= max_consecutive_failures
+      THEN status = 'paused'
+      AND notify_customer()
+
+  - id: BR-SO-005
+    name: Execution Day Adjustment
+    description: Adjust for months with fewer days
+    rule: |
+      IF execution_day > days_in_month
+      THEN use_day = last_day_of_month
+
+  - id: BR-SO-006
+    name: Weekend/Holiday Adjustment
+    description: Handle non-business days
+    rule: |
+      IF execution_date is weekend or holiday
+      THEN execute on next_business_day
+      OR execute on previous_business_day (configurable)
+
+# =============================================================================
+# EXECUTION SCHEDULE
+# =============================================================================
+execution_schedule:
+  daily_batch_time: "06:00"
+  timezone: "Asia/Ho_Chi_Minh"
+
+  processing_order:
+    - priority: high  # VIP customers
+    - priority: normal
+
+  retry_schedule:
+    - attempt: 1
+      delay: "0 hours"
+    - attempt: 2
+      delay: "24 hours"
+    - attempt: 3
+      delay: "48 hours"
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_so_account
+    fields: [account_id]
+
+  - name: idx_so_beneficiary
+    fields: [beneficiary_id]
+
+  - name: idx_so_reference
+    fields: [order_reference]
+    unique: true
+
+  - name: idx_so_next_execution
+    fields: [next_execution_date]
+    where: "status = 'active'"
+
+  - name: idx_so_status
+    fields: [status]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  events:
+    - standing_order_created
+    - standing_order_modified
+    - standing_order_paused
+    - standing_order_resumed
+    - standing_order_cancelled
+    - standing_order_completed
+    - execution_success
+    - execution_failed
+    - execution_skipped
+    - execution_retried

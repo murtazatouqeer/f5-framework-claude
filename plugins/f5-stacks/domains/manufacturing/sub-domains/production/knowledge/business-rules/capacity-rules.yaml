@@ -1,0 +1,397 @@
+name: capacity-rules
+display_name: Capacity Planning Rules
+display_name_vi: Quy tắc lập kế hoạch công suất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: business-rules
+
+description: |
+  Business rules for capacity planning, resource allocation, and
+  load balancing across work centers and machines.
+
+description_vi: |
+  Quy tắc lập kế hoạch công suất, phân bổ nguồn lực và
+  cân bằng tải qua các trung tâm làm việc và máy móc.
+
+rule_categories:
+  - capacity_calculation
+  - load_management
+  - bottleneck_handling
+  - overtime_management
+  - efficiency_factors
+
+rules:
+  capacity_calculation:
+    - id: CAP-001
+      name: available_capacity_calculation
+      description: Calculate available capacity per period
+      description_vi: Tính công suất khả dụng theo kỳ
+      formula: |
+        available_capacity =
+          number_of_machines *
+          working_hours_per_shift *
+          shifts_per_day *
+          working_days *
+          efficiency_factor *
+          utilization_target
+      priority: critical
+      category: capacity_calculation
+
+    - id: CAP-002
+      name: demonstrated_capacity
+      description: Use historical performance for capacity
+      description_vi: Sử dụng hiệu suất lịch sử cho công suất
+      formula: |
+        demonstrated_capacity =
+          AVG(actual_output, last_n_periods) *
+          (1 + improvement_factor)
+      parameters:
+        last_n_periods: 12
+        improvement_factor: 0.02
+      priority: high
+      category: capacity_calculation
+
+    - id: CAP-003
+      name: rated_vs_effective_capacity
+      description: Distinguish rated from effective capacity
+      description_vi: Phân biệt công suất định mức và hiệu dụng
+      definitions:
+        rated_capacity: Maximum theoretical output
+        effective_capacity: Realistic achievable output
+      formula: |
+        effective_capacity = rated_capacity * efficiency * utilization
+      priority: high
+      category: capacity_calculation
+
+    - id: CAP-004
+      name: capacity_units
+      description: Standard capacity measurement units
+      description_vi: Đơn vị đo công suất tiêu chuẩn
+      units:
+        - hours: Labor or machine hours
+        - pieces: Unit count for discrete manufacturing
+        - weight: Kg/tons for process manufacturing
+        - volume: Liters/cubic meters for liquid/bulk
+      priority: medium
+      category: capacity_calculation
+
+    - id: CAP-005
+      name: shift_capacity
+      description: Calculate capacity per shift
+      description_vi: Tính công suất theo ca
+      formula: |
+        shift_capacity =
+          (shift_duration_hours - break_time_hours) *
+          number_of_resources *
+          efficiency_factor
+      priority: high
+      category: capacity_calculation
+
+  load_management:
+    - id: LOAD-001
+      name: capacity_load_calculation
+      description: Calculate load against capacity
+      description_vi: Tính tải so với công suất
+      formula: |
+        load_percent = (required_hours / available_hours) * 100
+        status = CASE
+          WHEN load_percent <= 80 THEN 'underloaded'
+          WHEN load_percent <= 100 THEN 'optimal'
+          WHEN load_percent <= 110 THEN 'overloaded'
+          ELSE 'critical'
+        END
+      priority: critical
+      category: load_management
+
+    - id: LOAD-002
+      name: rough_cut_capacity_planning
+      description: High-level capacity check against MPS
+      description_vi: Kiểm tra công suất cấp cao với MPS
+      condition: planning_level = 'rough_cut'
+      action: |
+        FOR each product_family:
+          load = demand * load_profile
+          capacity = available_capacity
+          IF load > capacity THEN flag_capacity_constraint
+      priority: high
+      category: load_management
+
+    - id: LOAD-003
+      name: capacity_requirements_planning
+      description: Detailed CRP from work orders
+      description_vi: CRP chi tiết từ lệnh sản xuất
+      condition: planning_level = 'detailed'
+      action: |
+        FOR each work_order.operation:
+          load_period = operation.scheduled_period
+          load_hours = operation.run_time + operation.setup_time
+          ADD load_hours TO period_load[load_period]
+      priority: high
+      category: load_management
+
+    - id: LOAD-004
+      name: load_leveling
+      description: Smooth load across periods
+      description_vi: Làm phẳng tải qua các kỳ
+      condition: load_variance > threshold
+      action: |
+        WHILE period_load[i] > capacity:
+          shift_load TO adjacent_underloaded_period
+          RESPECT due_date_constraints
+      parameters:
+        threshold: 20
+      priority: medium
+      category: load_management
+
+  bottleneck_handling:
+    - id: BOT-001
+      name: bottleneck_identification
+      description: Identify capacity bottlenecks
+      description_vi: Xác định nút thắt công suất
+      condition: always
+      action: |
+        bottleneck = work_center.WHERE(
+          load_percent = MAX(load_percent) AND
+          load_percent > 100
+        )
+      priority: critical
+      category: bottleneck_handling
+
+    - id: BOT-002
+      name: bottleneck_protection
+      description: Protect bottleneck from starvation
+      description_vi: Bảo vệ nút thắt khỏi thiếu việc
+      condition: work_center.is_bottleneck = true
+      action: |
+        ENSURE buffer_before_bottleneck >= safety_buffer
+        PRIORITIZE bottleneck_feeding_operations
+        NEVER allow_bottleneck_idle
+      priority: critical
+      category: bottleneck_handling
+
+    - id: BOT-003
+      name: drum_buffer_rope
+      description: Apply Theory of Constraints DBR
+      description_vi: Áp dụng DBR theo Lý thuyết ràng buộc
+      condition: scheduling_method = 'dbr'
+      components:
+        drum: bottleneck_schedule
+        buffer: time_buffer_before_bottleneck
+        rope: material_release_tied_to_drum
+      action: |
+        schedule_bottleneck_first()
+        set_buffer_time()
+        release_materials_to_match_drum()
+      priority: high
+      category: bottleneck_handling
+
+    - id: BOT-004
+      name: bottleneck_offloading
+      description: Offload bottleneck work when possible
+      description_vi: Giảm tải nút thắt khi có thể
+      condition: |
+        bottleneck.load_percent > 110 AND
+        alternative_work_center.available
+      action: |
+        MOVE work TO alternative_work_center
+        ACCEPT efficiency_penalty IF (bottleneck_relief > penalty)
+      priority: high
+      category: bottleneck_handling
+
+  overtime_management:
+    - id: OT-001
+      name: overtime_threshold
+      description: Trigger overtime consideration
+      description_vi: Kích hoạt xem xét làm thêm giờ
+      condition: load_percent > overtime_trigger_percent
+      action: |
+        calculate_overtime_requirement()
+        check_overtime_budget()
+        IF approved THEN add_overtime_capacity()
+      parameters:
+        overtime_trigger_percent: 95
+      priority: high
+      category: overtime_management
+
+    - id: OT-002
+      name: overtime_limit
+      description: Enforce maximum overtime
+      description_vi: Thực thi giới hạn làm thêm giờ
+      condition: always
+      validation: |
+        daily_overtime <= max_daily_overtime
+        weekly_overtime <= max_weekly_overtime
+        monthly_overtime <= max_monthly_overtime
+      parameters:
+        max_daily_overtime: 4
+        max_weekly_overtime: 20
+        max_monthly_overtime: 60
+      priority: critical
+      category: overtime_management
+
+    - id: OT-003
+      name: weekend_shift_activation
+      description: Activate weekend shifts for capacity
+      description_vi: Kích hoạt ca cuối tuần cho công suất
+      condition: |
+        weekday_capacity_exhausted AND
+        demand > available_capacity
+      action: |
+        REQUEST weekend_shift_approval
+        IF approved THEN
+          ADD weekend_capacity
+          NOTIFY affected_operators
+      priority: medium
+      category: overtime_management
+
+    - id: OT-004
+      name: overtime_cost_optimization
+      description: Minimize overtime cost while meeting demand
+      description_vi: Tối thiểu chi phí làm thêm khi đáp ứng nhu cầu
+      action: |
+        overtime_cost = overtime_hours * overtime_rate
+        subcontract_cost = outsource_units * subcontract_rate
+
+        IF subcontract_cost < overtime_cost THEN
+          PREFER subcontracting
+        ELSE
+          USE overtime
+      priority: medium
+      category: overtime_management
+
+  efficiency_factors:
+    - id: EFF-001
+      name: efficiency_factor_application
+      description: Apply efficiency factors to capacity
+      description_vi: Áp dụng hệ số hiệu suất cho công suất
+      factors:
+        machine_efficiency: Historical machine performance
+        labor_efficiency: Worker productivity factor
+        quality_factor: First-pass yield impact
+        learning_curve: New product/process adjustment
+      formula: |
+        effective_capacity = rated_capacity *
+          machine_efficiency *
+          labor_efficiency *
+          quality_factor *
+          learning_curve
+      priority: high
+      category: efficiency_factors
+
+    - id: EFF-002
+      name: utilization_target
+      description: Set realistic utilization targets
+      description_vi: Đặt mục tiêu sử dụng thực tế
+      targets:
+        bottleneck: 95%
+        non_bottleneck: 85%
+        shared_resource: 80%
+      rationale: |
+        Non-100% targets account for:
+        - Variability in processing times
+        - Unplanned downtime
+        - Quality issues
+        - Setup time variation
+      priority: high
+      category: efficiency_factors
+
+    - id: EFF-003
+      name: seasonal_adjustment
+      description: Adjust capacity for seasonal patterns
+      description_vi: Điều chỉnh công suất theo mùa
+      condition: product.has_seasonality = true
+      action: |
+        seasonal_factor = seasonal_index[period]
+        adjusted_capacity = base_capacity * seasonal_factor
+      priority: medium
+      category: efficiency_factors
+
+    - id: EFF-004
+      name: learning_curve_application
+      description: Apply learning curve to new products
+      description_vi: Áp dụng đường cong học hỏi cho sản phẩm mới
+      condition: product.is_new OR process.is_new
+      formula: |
+        -- Wright's learning curve
+        time_per_unit = initial_time * (cumulative_units ^ log(learning_rate)/log(2))
+      parameters:
+        learning_rate: 0.85  # 85% learning curve
+      priority: medium
+      category: efficiency_factors
+
+capacity_planning_levels:
+  - level: resource_planning
+    horizon: 2-5 years
+    granularity: monthly/quarterly
+    focus: Capital investment, workforce planning
+
+  - level: rough_cut_capacity
+    horizon: 6-18 months
+    granularity: weekly/monthly
+    focus: Master schedule feasibility
+
+  - level: capacity_requirements
+    horizon: 1-6 months
+    granularity: daily/weekly
+    focus: Detailed work center loading
+
+  - level: finite_scheduling
+    horizon: 1-4 weeks
+    granularity: hourly
+    focus: Real-time sequencing
+
+capacity_strategies:
+  chase_demand:
+    description: Vary capacity to match demand
+    methods:
+      - hiring_firing
+      - overtime
+      - subcontracting
+
+  level_capacity:
+    description: Maintain stable capacity
+    methods:
+      - inventory_buffering
+      - backlog_management
+
+  hybrid:
+    description: Combination approach
+    methods:
+      - base_level_capacity
+      - overtime_for_peaks
+      - inventory_for_seasonality
+
+oee_components:
+  availability:
+    formula: (planned_time - downtime) / planned_time
+    target: "> 90%"
+
+  performance:
+    formula: (ideal_cycle_time * actual_output) / operating_time
+    target: "> 95%"
+
+  quality:
+    formula: good_output / total_output
+    target: "> 99%"
+
+  oee:
+    formula: availability * performance * quality
+    world_class: "> 85%"
+
+integration_points:
+  - system: ERP/MPS
+    data: master_schedule, demand_forecast
+    direction: inbound
+
+  - system: MES
+    data: actual_output, downtime
+    direction: inbound
+
+  - system: HR
+    data: labor_availability, skills
+    direction: inbound
+
+  - system: Maintenance
+    data: planned_downtime, reliability
+    direction: inbound

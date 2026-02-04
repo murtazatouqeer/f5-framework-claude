@@ -1,0 +1,350 @@
+name: risk-limits-rules
+display_name: Risk Management Rules
+description: |
+  Collection of risk management rules for securities trading.
+  Includes trading limits, margin, concentration, and risk alerts.
+
+domain: fintech/stock-trading
+version: "1.0"
+effective_date: "2024-01-01"
+
+references:
+  - SSC Risk Management Regulations
+  - Securities Firm Margin Regulations
+
+rules:
+  # ===== MARGIN RISK =====
+  - id: BR-RISK-001
+    name: Initial Margin Ratio
+    description: |
+      When opening a new margin position, initial margin ratio must be at least 50%.
+      Initial Margin = Equity / Position Value × 100 >= 50%
+    category: validation
+    severity: error
+    condition: |
+      IF order.is_margin == TRUE AND order.side == 'buy' THEN
+        (portfolio.equity / (portfolio.total_market_value + order.value)) >= 0.50
+      ELSE
+        TRUE
+      END IF
+    parameters:
+      initial_margin_ratio: 0.50
+    message: "Margin ratio after transaction below required 50%"
+    applies_to: [Order, Portfolio]
+
+  - id: BR-RISK-002
+    name: Maintenance Margin Ratio
+    description: |
+      Margin ratio must be maintained at minimum 35%.
+      Below this level will trigger margin call.
+    category: calculation
+    severity: warning
+    condition: |
+      portfolio.margin_ratio >= 0.35
+    parameters:
+      maintenance_margin_ratio: 0.35
+    message: "Warning: Margin ratio {ratio}% close to margin call threshold"
+    applies_to: [Portfolio]
+
+  - id: BR-RISK-003
+    name: Margin Call Trigger
+    description: |
+      Trigger margin call when margin ratio falls below 35%.
+      Customer has 3 business days to deposit additional funds.
+    category: compliance
+    severity: error
+    condition: |
+      IF portfolio.margin_ratio < 0.35 THEN
+        portfolio.is_margin_call = TRUE
+        notify_customer('margin_call')
+      END IF
+    parameters:
+      margin_call_ratio: 0.35
+      grace_period_days: 3
+    message: "MARGIN CALL: Please deposit additional funds within 3 days"
+    applies_to: [Portfolio]
+
+  - id: BR-RISK-004
+    name: Force Sell Trigger
+    description: |
+      Automatically liquidate positions when margin ratio falls below 25%
+      or after 3 days of unmet margin call.
+    category: compliance
+    severity: error
+    condition: |
+      portfolio.margin_ratio < 0.25
+      OR (portfolio.is_margin_call == TRUE
+          AND DATEDIFF(NOW(), portfolio.margin_call_at) >= 3)
+    parameters:
+      force_sell_ratio: 0.25
+    message: "FORCE LIQUIDATION: Margin ratio below safety threshold"
+    applies_to: [Portfolio]
+
+  # ===== CONCENTRATION LIMITS =====
+  - id: BR-RISK-010
+    name: Single Stock Concentration Limit
+    description: |
+      A single stock cannot exceed 30% of portfolio value.
+      Reduces concentration risk.
+    category: validation
+    severity: warning
+    condition: |
+      position.weight_percentage <= 30
+    parameters:
+      max_single_stock_weight: 30
+    message: "Warning: {symbol} represents {weight}% of portfolio, exceeds 30% threshold"
+    applies_to: [Position, Portfolio]
+
+  - id: BR-RISK-011
+    name: Sector Concentration Limit
+    description: |
+      A single sector cannot exceed 50% of portfolio value.
+    category: validation
+    severity: warning
+    condition: |
+      sector_allocation.percentage <= 50
+    parameters:
+      max_sector_weight: 50
+    message: "Warning: {sector} represents {weight}% of portfolio, exceeds 50% threshold"
+    applies_to: [Portfolio]
+
+  - id: BR-RISK-012
+    name: Penny Stock Warning
+    description: |
+      Warning when buying stocks priced < 5,000 VND (penny stocks) with high risk.
+    category: validation
+    severity: warning
+    condition: |
+      quote.last_price >= 5000
+    parameters:
+      penny_stock_threshold: 5000
+    message: "Warning: {symbol} is a penny stock (price < 5,000). High risk"
+    applies_to: [Order, Quote]
+
+  # ===== TRADING LIMITS =====
+  - id: BR-RISK-020
+    name: Daily Trading Limit
+    description: |
+      Total trading value per day cannot exceed account limit.
+    category: validation
+    severity: error
+    condition: |
+      (account.daily_traded_value + order.value) <= account.daily_trade_limit
+    parameters:
+      default_daily_limit: 10000000000  # 10 billion VND
+    message: "Daily trading limit exceeded. Limit: {limit}, Traded: {used}"
+    applies_to: [Order, Account]
+
+  - id: BR-RISK-021
+    name: Daily Margin Limit
+    description: |
+      Total margin purchase value per day cannot exceed margin limit.
+    category: validation
+    severity: error
+    condition: |
+      IF order.is_margin == TRUE THEN
+        (account.daily_margin_used + order.value) <= account.daily_margin_limit
+      ELSE
+        TRUE
+      END IF
+    parameters:
+      default_margin_limit: 5000000000  # 5 billion VND
+    message: "Daily margin limit exceeded"
+    applies_to: [Order, Account]
+
+  - id: BR-RISK-022
+    name: Maximum Daily Orders
+    description: |
+      Limit number of orders per day to prevent spam.
+    category: validation
+    severity: warning
+    condition: |
+      account.daily_order_count < account.max_daily_orders
+    parameters:
+      max_daily_orders: 500
+    message: "Maximum daily orders reached ({max})"
+    applies_to: [Order, Account]
+
+  # ===== VOLATILITY PROTECTION =====
+  - id: BR-RISK-030
+    name: High Volatility Warning
+    description: |
+      Warning when placing order on stock with > 5% intraday volatility.
+    category: validation
+    severity: warning
+    condition: |
+      ABS(quote.change_percentage) <= 5
+    parameters:
+      volatility_threshold: 5
+    message: "Warning: {symbol} is highly volatile ({change}%)"
+    applies_to: [Order, Quote]
+
+  - id: BR-RISK-031
+    name: Ceiling/Floor Price Warning
+    description: |
+      Special warning when stock is at ceiling or floor price.
+    category: validation
+    severity: warning
+    condition: |
+      NOT (quote.last_price == quote.ceiling_price
+           OR quote.last_price == quote.floor_price)
+    message: "Warning: {symbol} is at {ceiling_or_floor} price"
+    applies_to: [Order, Quote]
+
+  - id: BR-RISK-032
+    name: Low Liquidity Warning
+    description: |
+      Warning when order volume > 20% of average trading volume.
+    category: validation
+    severity: warning
+    condition: |
+      order.quantity <= (quote.avg_volume_10d × 0.20)
+    parameters:
+      volume_warning_ratio: 0.20
+    message: "Warning: Order volume large compared to average liquidity"
+    applies_to: [Order, Quote]
+
+  # ===== STOP LOSS RECOMMENDATIONS =====
+  - id: BR-RISK-040
+    name: Stop Loss Recommendation
+    description: |
+      Recommend setting stop loss when opening new position, especially with margin.
+    category: validation
+    severity: info
+    condition: |
+      IF order.side == 'buy' AND order.is_margin == TRUE THEN
+        suggest_stop_loss(order.price × 0.92)  # -8%
+      END IF
+    parameters:
+      suggested_stop_loss_percentage: 8
+    message: "Recommend setting Stop Loss at {price} (-8%)"
+    applies_to: [Order]
+
+  - id: BR-RISK-041
+    name: Automatic Trailing Stop
+    description: |
+      Activate trailing stop when profit reaches target level.
+    category: calculation
+    severity: info
+    condition: |
+      IF position.unrealized_pnl_percentage >= 20
+         AND position.trailing_stop IS NULL THEN
+        suggest_trailing_stop()
+      END IF
+    parameters:
+      profit_threshold: 20
+      trailing_distance: 5
+    message: "Suggest activating Trailing Stop to protect profit"
+    applies_to: [Position]
+
+  # ===== PORTFOLIO RISK METRICS =====
+  - id: BR-RISK-050
+    name: High VaR Warning
+    description: |
+      Warning when Value at Risk 95% exceeds 5% of NAV.
+    category: validation
+    severity: warning
+    condition: |
+      (portfolio.var_95 / portfolio.nav) × 100 <= 5
+    parameters:
+      max_var_percentage: 5
+    message: "Warning: Portfolio VaR is high ({var}%)"
+    applies_to: [Portfolio]
+
+  - id: BR-RISK-051
+    name: Max Drawdown Warning
+    description: |
+      Warning when drawdown from peak exceeds 15%.
+    category: validation
+    severity: warning
+    condition: |
+      portfolio.max_drawdown >= -15
+    parameters:
+      max_drawdown_threshold: -15
+    message: "Warning: Portfolio down {drawdown}% from peak"
+    applies_to: [Portfolio]
+
+  - id: BR-RISK-052
+    name: Rebalancing Recommendation
+    description: |
+      Recommend rebalancing when allocation drifts > 10% from target.
+    category: calculation
+    severity: info
+    condition: |
+      ABS(position.weight_percentage - position.target_weight) <= 10
+    parameters:
+      rebalance_threshold: 10
+    message: "Suggest rebalancing: {symbol} drifted {diff}% from target"
+    applies_to: [Position, Portfolio]
+
+  # ===== UNUSUAL ACTIVITY =====
+  - id: BR-RISK-060
+    name: Unusual Transaction Detection
+    description: |
+      Warning when transaction value unusually high compared to history.
+    category: validation
+    severity: warning
+    condition: |
+      order.value <= (account.avg_order_value × 5)
+    parameters:
+      unusual_multiplier: 5
+    message: "Confirm transaction: Value higher than normal ({multiplier}x)"
+    applies_to: [Order]
+
+  - id: BR-RISK-061
+    name: Large Transaction Confirmation
+    description: |
+      Require additional confirmation for transactions > 500 million VND.
+    category: authorization
+    severity: warning
+    condition: |
+      order.value <= 500000000
+    parameters:
+      large_order_threshold: 500000000
+    message: "Large transaction: Please confirm with OTP to continue"
+    applies_to: [Order]
+
+  - id: BR-RISK-062
+    name: Unusual Frequency Detection
+    description: |
+      Warning when number of orders in 1 minute exceeds threshold (suspect bot).
+    category: validation
+    severity: warning
+    condition: |
+      COUNT(orders WHERE created_at >= NOW() - INTERVAL '1 minute') <= 10
+    parameters:
+      max_orders_per_minute: 10
+    message: "Unusual order frequency. Please wait"
+    applies_to: [Order]
+
+risk_levels:
+  - level: low
+    description: Low risk
+    conditions:
+      - margin_ratio >= 60
+      - max_position_weight <= 20
+      - var_percentage <= 3
+    color: green
+
+  - level: medium
+    description: Medium risk
+    conditions:
+      - margin_ratio >= 40 AND < 60
+      - max_position_weight <= 30
+      - var_percentage <= 5
+    color: yellow
+
+  - level: high
+    description: High risk
+    conditions:
+      - margin_ratio >= 30 AND < 40
+      - max_position_weight > 30
+      - var_percentage > 5
+    color: orange
+
+  - level: critical
+    description: Very high risk
+    conditions:
+      - margin_ratio < 30
+      - OR is_margin_call == TRUE
+    color: red

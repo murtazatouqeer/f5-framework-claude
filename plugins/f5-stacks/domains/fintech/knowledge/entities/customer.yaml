@@ -1,0 +1,285 @@
+name: Customer
+display_name: Customer
+description: |
+  Entity using the system's financial services.
+  Includes individual customers and corporate customers.
+  Each customer must complete KYC process before using services.
+
+domain: fintech
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the customer in the system
+
+  - name: customer_type
+    type: enum
+    required: true
+    description: Customer type (individual or corporate)
+    validation:
+      values: [individual, corporate]
+
+  - name: status
+    type: enum
+    required: true
+    description: Current status of the customer in the system
+    validation:
+      values: [pending, active, suspended, blocked, closed]
+
+  - name: full_name
+    type: string
+    required: true
+    description: Full name of customer (individual) or company name (corporate)
+    validation:
+      min: 2
+      max: 255
+
+  - name: id_type
+    type: enum
+    required: true
+    description: Type of identity document used for verification
+    validation:
+      values: [cccd, cmnd, passport, business_license]
+
+  - name: id_number
+    type: string
+    required: true
+    description: Identity document number (CCCD/CMND/Passport/Business License)
+    validation:
+      pattern: "^[A-Z0-9]{8,20}$"
+
+  - name: id_issue_date
+    type: date
+    required: true
+    description: Identity document issue date
+
+  - name: id_expiry_date
+    type: date
+    required: false
+    description: Identity document expiry date (if applicable)
+
+  - name: id_issue_place
+    type: string
+    required: true
+    description: Identity document issuing place
+    validation:
+      max: 255
+
+  - name: date_of_birth
+    type: date
+    required: true
+    description: Date of birth (individual) or establishment date (corporate)
+
+  - name: gender
+    type: enum
+    required: false
+    description: Gender (individual customers only)
+    validation:
+      values: [male, female, other]
+
+  - name: nationality
+    type: string
+    required: true
+    description: Nationality (individual) or country of registration (corporate)
+    validation:
+      pattern: "^[A-Z]{2}$"
+
+  - name: phone_number
+    type: string
+    required: true
+    description: Primary phone number, used for authentication and contact
+    validation:
+      pattern: "^\\+?[0-9]{10,15}$"
+
+  - name: email
+    type: string
+    required: true
+    description: Primary email address, used for notifications and authentication
+    validation:
+      pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+  - name: address
+    type: object
+    required: true
+    description: Permanent address/business registration address
+    nested:
+      - name: street
+        type: string
+        required: true
+      - name: ward
+        type: string
+        required: true
+      - name: district
+        type: string
+        required: true
+      - name: city
+        type: string
+        required: true
+      - name: country
+        type: string
+        required: true
+        default: "VN"
+
+  - name: kyc_level
+    type: enum
+    required: true
+    description: Completed KYC level, affects transaction limits
+    validation:
+      values: [level_0, level_1, level_2, level_3]
+
+  - name: kyc_verified_at
+    type: timestamp
+    required: false
+    description: Timestamp of most recent KYC verification completion
+
+  - name: risk_rating
+    type: enum
+    required: true
+    description: Customer risk rating based on CDD assessment
+    validation:
+      values: [low, medium, high, critical]
+
+  - name: is_pep
+    type: boolean
+    required: true
+    description: Whether customer is a Politically Exposed Person (PEP)
+    default: false
+
+  - name: tax_id
+    type: string
+    required: false
+    description: Personal or corporate tax ID
+    validation:
+      pattern: "^[0-9]{10,13}$"
+
+  - name: occupation
+    type: string
+    required: false
+    description: Occupation (individual) or business sector (corporate)
+    validation:
+      max: 255
+
+  - name: income_range
+    type: enum
+    required: false
+    description: Annual income/revenue range (used for risk assessment)
+    validation:
+      values: [below_100m, 100m_500m, 500m_1b, 1b_5b, above_5b]
+
+  - name: source_of_funds
+    type: string
+    required: false
+    description: Primary source of funds/income
+    validation:
+      max: 500
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Customer profile creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last profile update timestamp
+
+  - name: onboarded_at
+    type: timestamp
+    required: false
+    description: Timestamp when customer completed registration and was activated
+
+relationships:
+  - name: accounts
+    type: has_many
+    entity: Account
+    required: false
+    description: List of accounts owned by the customer
+
+  - name: transactions
+    type: has_many
+    entity: Transaction
+    required: false
+    description: Customer's transaction history
+
+  - name: kyc_documents
+    type: has_many
+    entity: KYCDocument
+    required: false
+    description: Submitted KYC documents
+
+  - name: beneficiaries
+    type: has_many
+    entity: Beneficiary
+    required: false
+    description: List of saved beneficiaries
+
+  - name: representatives
+    type: has_many
+    entity: Representative
+    required: false
+    description: List of authorized representatives (corporate customers only)
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Newly registered customer, KYC not completed
+    - name: active
+      description: Verified customer, can use full services
+    - name: suspended
+      description: Temporarily suspended (by customer request or re-verification needed)
+    - name: blocked
+      description: Blocked due to regulation violation or authority request
+    - name: closed
+      description: Account permanently closed
+  transitions:
+    - from: pending
+      to: active
+      trigger: kyc_approved
+      description: KYC approved
+    - from: pending
+      to: closed
+      trigger: registration_cancelled
+      description: Registration cancelled
+    - from: active
+      to: suspended
+      trigger: suspend_requested
+      description: Suspension requested
+    - from: active
+      to: blocked
+      trigger: compliance_block
+      description: Blocked due to violation
+    - from: suspended
+      to: active
+      trigger: reactivate
+      description: Reactivate account
+    - from: suspended
+      to: closed
+      trigger: close_account
+      description: Close account
+    - from: blocked
+      to: active
+      trigger: unblock
+      description: Unblock after violation resolved
+    - from: blocked
+      to: closed
+      trigger: force_close
+      description: Force close account
+
+indexes:
+  - [id_type, id_number]
+  - [phone_number]
+  - [email]
+  - [status, kyc_level]
+  - [risk_rating]
+  - [created_at]
+
+business_rules:
+  - BR-CUS-001: Customer must be over 18 years old (individual)
+  - BR-CUS-002: CCCD/CMND must be valid
+  - BR-CUS-003: Each CCCD/CMND number can only be registered once
+  - BR-CUS-004: Email and phone number must be verified via OTP
+  - BR-CUS-005: PEP customers must undergo EDD
+  - BR-CUS-006: High-risk customers require manual approval

@@ -1,0 +1,491 @@
+name: off-cycle-payment-workflow
+display_name: Off-Cycle Payment Workflow
+description: |
+  Workflow for processing payments outside the regular payroll cycle
+  including final settlements, emergency payments, corrections, and advances.
+
+domain: hr-management
+subdomain: payroll
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-PAY-005
+  name: off_cycle_payment
+  trigger: on_demand
+  frequency: as_needed
+
+  actors:
+    - role: requester
+      description: "Person initiating the request"
+      responsibilities:
+        - submit_request
+        - provide_justification
+
+    - role: payroll_admin
+      responsibilities:
+        - process_request
+        - calculate_payment
+        - generate_payment
+
+    - role: hr_manager
+      responsibilities:
+        - approve_request
+        - verify_eligibility
+
+    - role: finance_manager
+      responsibilities:
+        - approve_payment
+        - release_funds
+
+  payment_types:
+    final_settlement:
+      description: "Payment upon employee termination"
+      components:
+        - remaining_salary
+        - unused_leave_payout
+        - severance_pay
+        - outstanding_bonuses
+        - loan_deductions
+      deadline: "14 days from termination (standard) or 30 days (complex)"
+      priority: high
+
+    salary_advance:
+      description: "Early payment of salary"
+      max_amount: "50% of monthly salary (standard) or 100% (emergency)"
+      repayment: "Deducted from next payroll"
+      priority: medium
+
+    bonus_payment:
+      description: "One-time bonus outside regular payroll"
+      types:
+        - spot_bonus
+        - project_completion
+        - referral_bonus
+        - retention_bonus
+      priority: medium
+
+    correction:
+      description: "Fix underpayment from previous period"
+      scope: "Amount previously missed"
+      includes_interest: false
+      priority: high
+
+    reimbursement:
+      description: "Expense reimbursement through payroll"
+      types:
+        - travel_expenses
+        - relocation_allowance
+        - education_support
+      priority: low
+
+    emergency_payment:
+      description: "Urgent payment for special circumstances"
+      examples:
+        - medical_emergency
+        - family_crisis
+        - natural_disaster
+      priority: urgent
+
+  stages:
+    - id: STAGE-1
+      name: request_initiation
+      description: Submit and validate off-cycle payment request
+
+      steps:
+        - id: STEP-1.1
+          name: submit_request
+          actor: requester
+          action: create_request
+          inputs:
+            - payment_type
+            - employee_id
+            - amount (if_known)
+            - justification
+            - urgency_level
+            - supporting_documents
+          outputs:
+            - request_id
+          validations:
+            - employee_exists
+            - valid_payment_type
+            - justification_provided
+
+        - id: STEP-1.2
+          name: initial_validation
+          actor: system
+          action: validate_request
+          checks:
+            - no_duplicate_request
+            - employee_eligible
+            - within_policy_limits
+          outputs:
+            - validation_status
+
+        - id: STEP-1.3
+          name: calculate_amount
+          actor: system
+          action: compute_payment
+          calculations:
+            final_settlement:
+              - remaining_salary: "daily_rate * remaining_days"
+              - unused_leave: "leave_days * daily_rate"
+              - severance: "0.5 * monthly_salary * years_of_service"
+              - deductions: "outstanding_loans + advances"
+              - net_settlement: "sum_of_above - deductions"
+
+            salary_advance:
+              - max_allowed: "monthly_salary * 0.5"
+              - approved_amount: "MIN(requested, max_allowed)"
+
+            correction:
+              - original_amount: "from_previous_calculation"
+              - paid_amount: "from_records"
+              - difference: "original_amount - paid_amount"
+
+          outputs:
+            - calculated_amount
+            - amount_breakdown
+
+    - id: STAGE-2
+      name: approval
+      description: Obtain required approvals
+
+      steps:
+        - id: STEP-2.1
+          name: determine_approvers
+          actor: system
+          action: route_for_approval
+          logic:
+            final_settlement:
+              - hr_manager
+              - finance_manager
+            salary_advance:
+              standard:
+                - direct_manager
+              emergency:
+                - hr_manager
+            bonus_payment:
+              - hr_manager
+              - finance_manager
+            correction:
+              - payroll_admin
+              - hr_manager
+            emergency_payment:
+              - hr_manager
+              - finance_manager
+          outputs:
+            - approval_path
+
+        - id: STEP-2.2
+          name: manager_approval
+          actor: direct_manager
+          condition: "if_required_by_payment_type"
+          action: review_and_approve
+          inputs:
+            - request_details
+            - calculated_amount
+          outputs:
+            - manager_decision
+          sla: 1_business_day
+
+        - id: STEP-2.3
+          name: hr_approval
+          actor: hr_manager
+          action: review_and_approve
+          checks:
+            - policy_compliance
+            - employee_eligibility
+            - calculation_accuracy
+          outputs:
+            - hr_decision
+          sla: 1_business_day
+
+        - id: STEP-2.4
+          name: finance_approval
+          actor: finance_manager
+          action: approve_funds_release
+          inputs:
+            - payment_amount
+            - budget_availability
+          outputs:
+            - finance_decision
+            - payment_authorization
+          sla: 1_business_day
+
+    - id: STAGE-3
+      name: processing
+      description: Process the approved payment
+
+      steps:
+        - id: STEP-3.1
+          name: create_payroll_entry
+          actor: payroll_admin
+          action: setup_off_cycle_run
+          inputs:
+            - approved_request
+            - payment_details
+          creates:
+            - payroll_run (type: off_cycle)
+            - payslip
+          outputs:
+            - payroll_run_id
+
+        - id: STEP-3.2
+          name: calculate_tax
+          actor: system
+          action: compute_tax_implications
+          considerations:
+            - aggregate_with_ytd
+            - apply_progressive_brackets
+            - handle_non_taxable_portions
+          outputs:
+            - tax_amount
+            - net_payment
+
+        - id: STEP-3.3
+          name: calculate_insurance
+          actor: system
+          condition: "if_insurance_applicable"
+          action: compute_insurance
+          applies_to:
+            - final_settlement (remaining_salary)
+            - correction
+          outputs:
+            - insurance_deductions
+
+        - id: STEP-3.4
+          name: apply_deductions
+          actor: system
+          action: process_deductions
+          types:
+            - outstanding_loans
+            - advance_repayment
+            - other_pending_deductions
+          outputs:
+            - total_deductions
+            - net_amount
+
+        - id: STEP-3.5
+          name: generate_payslip
+          actor: system
+          action: create_payslip
+          outputs:
+            - payslip_id
+            - payslip_pdf
+
+    - id: STAGE-4
+      name: payment_execution
+      description: Execute the payment
+
+      steps:
+        - id: STEP-4.1
+          name: generate_bank_instruction
+          actor: payroll_admin
+          action: create_payment_file
+          formats:
+            - single_transfer
+            - batch_file
+          outputs:
+            - bank_instruction
+
+        - id: STEP-4.2
+          name: submit_payment
+          actor: finance_manager
+          action: execute_transfer
+          methods:
+            - online_banking
+            - bank_api
+            - manual_transfer
+          outputs:
+            - payment_reference
+            - submission_timestamp
+
+        - id: STEP-4.3
+          name: confirm_payment
+          actor: finance_manager
+          action: verify_completion
+          confirmation_source:
+            - bank_statement
+            - api_callback
+            - manual_verification
+          outputs:
+            - payment_confirmation
+
+        - id: STEP-4.4
+          name: update_records
+          actor: system
+          action: finalize_records
+          updates:
+            - mark_payslip_paid
+            - update_ytd_totals
+            - close_request
+            - update_loan_balances (if_applicable)
+          outputs:
+            - updated_records
+
+    - id: STAGE-5
+      name: post_processing
+      description: Complete administrative tasks
+
+      steps:
+        - id: STEP-5.1
+          name: notify_employee
+          actor: system
+          action: send_notification
+          content:
+            - payment_amount
+            - payment_date
+            - payslip_link
+          methods:
+            - email
+            - sms (for_urgent)
+            - portal
+
+        - id: STEP-5.2
+          name: distribute_payslip
+          actor: system
+          action: deliver_payslip
+          outputs:
+            - distribution_confirmation
+
+        - id: STEP-5.3
+          name: update_statutory_records
+          actor: system
+          condition: "if_affects_statutory_reporting"
+          action: flag_for_reporting
+          outputs:
+            - statutory_update_flag
+
+        - id: STEP-5.4
+          name: archive_request
+          actor: system
+          action: close_and_archive
+          outputs:
+            - archived_request
+
+  final_settlement_details:
+    description: "Detailed final settlement process"
+
+    components:
+      remaining_salary:
+        calculation: "(monthly_salary / working_days) * days_worked"
+        taxable: true
+        insurance: prorated
+
+      unused_annual_leave:
+        calculation: "unused_days * daily_rate"
+        taxable: true
+        insurance: false
+
+      severance_pay:
+        eligibility:
+          - voluntary_resignation: "Service >= 12 months"
+          - redundancy: "All qualifying employees"
+          - retirement: "All qualifying employees"
+        calculation: "0.5 * monthly_salary * years_of_service"
+        taxable: false
+        insurance: false
+        cap: "No maximum per law"
+
+      outstanding_bonuses:
+        eligibility: "Earned but unpaid bonuses"
+        proration: "Per bonus policy"
+        taxable: true
+
+      loan_recovery:
+        action: "Deduct outstanding balance"
+        limit: "Up to available settlement amount"
+        excess: "Convert to receivable"
+
+    timeline:
+      standard: 14_days
+      complex: 30_days
+      conditions_for_extension:
+        - outstanding_disputes
+        - audit_requirements
+        - complex_calculations
+
+  emergency_processing:
+    description: "Expedited processing for urgent payments"
+
+    criteria:
+      - medical_emergency
+      - family_crisis
+      - natural_disaster
+      - other_documented_emergency
+
+    timeline:
+      target: "Same day or next business day"
+      approval: "Parallel instead of sequential"
+
+    safeguards:
+      - documented_justification
+      - post_payment_audit
+      - spending_limits
+
+  notifications:
+    - event: request_submitted
+      recipients: [approvers]
+      template: "Off-cycle payment request pending approval"
+
+    - event: request_approved
+      recipients: [requester, employee]
+      template: "Payment request approved, processing"
+
+    - event: payment_complete
+      recipients: [employee]
+      template: "Payment of {amount} has been deposited"
+
+    - event: request_rejected
+      recipients: [requester]
+      template: "Payment request rejected: {reason}"
+
+  exception_handling:
+    insufficient_funds:
+      detection: "Budget or account balance insufficient"
+      action:
+        - notify_finance_manager
+        - seek_budget_approval
+        - delay_if_necessary
+      resolution: "Budget reallocation or delay"
+
+    employee_account_invalid:
+      detection: "Bank account validation fails"
+      action:
+        - notify_employee
+        - request_updated_info
+        - hold_payment
+      resolution: "Update account and retry"
+
+    approval_timeout:
+      detection: "Approval not received within SLA"
+      action:
+        - send_reminder
+        - escalate_if_urgent
+      resolution: "Escalation to next level"
+
+  audit:
+    logged_events:
+      - request_creation
+      - all_approvals
+      - calculation_details
+      - payment_execution
+      - exceptions
+
+    retention: 10_years
+
+    reports:
+      - off_cycle_payments_summary
+      - final_settlements_report
+      - advance_tracking
+
+  compliance:
+    - standard: Vietnam_Labor_Code
+      article: Article_48
+      requirement: Final settlement within 14 days
+    - standard: PIT_Law
+      requirement: Tax on all payments
+    - standard: BHXH_Law
+      requirement: Insurance on applicable components

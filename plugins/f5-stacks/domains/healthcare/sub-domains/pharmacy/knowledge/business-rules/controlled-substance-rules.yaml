@@ -1,0 +1,389 @@
+# Controlled Substance Rules
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# DEA-compliant controlled substance business rules
+
+business_rules:
+  id: controlled-substance-rules
+  name: Controlled Substance Rules
+  name_ja: 規制物質ルール
+  description: DEA-compliant rules for controlled substance handling
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  regulatory_references:
+    - Controlled Substances Act (21 USC 801)
+    - DEA Regulations (21 CFR 1300-1321)
+    - State Controlled Substance Acts
+    - PDMP State Laws
+
+  categories:
+    - id: prescribing
+      name: Prescribing Requirements
+      description: Valid prescription requirements
+      
+    - id: dispensing
+      name: Dispensing Requirements
+      description: Controlled substance dispensing rules
+      
+    - id: inventory
+      name: Inventory Control
+      description: Perpetual inventory requirements
+      
+    - id: ordering
+      name: Ordering Requirements
+      description: DEA ordering requirements
+      
+    - id: pdmp
+      name: PDMP Requirements
+      description: Prescription monitoring program rules
+      
+    - id: documentation
+      name: Documentation
+      description: Record keeping requirements
+
+  rules:
+    # Prescribing Requirements
+    - id: BR-CS-001
+      name: Valid DEA Number Verification
+      category: prescribing
+      severity: critical
+      
+      description: Verify prescriber has valid DEA registration
+      
+      dea_format:
+        pattern: "^[ABCDEFGHJKLMNPRST][A-Z][0-9]{7}$"
+        checksum: "Sum of (1st+3rd+5th) + 2*(2nd+4th+6th) mod 10 = last digit"
+        
+      condition: |
+        prescriber.dea_number IS valid format AND
+        prescriber.dea_number IS active in DEA database AND
+        prescriber.dea_schedules INCLUDES prescribed_schedule
+        
+      action: |
+        IF invalid DEA:
+          REJECT prescription
+          LOG rejection reason
+          DO NOT dispense
+          
+    - id: BR-CS-002
+      name: Schedule II Written Prescription Requirement
+      category: prescribing
+      severity: critical
+      
+      description: Schedule II requires written or electronic prescription
+      
+      condition: |
+        drug.dea_schedule == II AND
+        (prescription.origin_type IN ['written', 'electronic'] OR
+         emergency_oral_prescription == true)
+         
+      emergency_oral_rules:
+        quantity: "Limited to emergency supply"
+        follow_up: "Written prescription within 7 days"
+        documentation: "Must document emergency circumstances"
+        
+      action: |
+        IF phone/fax Schedule II:
+          REJECT unless documented emergency
+          REQUIRE written follow-up within 7 days
+          
+    - id: BR-CS-003
+      name: Schedule II Partial Fill Rules
+      category: prescribing
+      severity: high
+      
+      description: Rules for partial filling Schedule II
+      
+      partial_fill_allowed:
+        - Unable to supply full quantity
+        - Long-term care facility patient
+        - Terminally ill patient
+        
+      time_limits:
+        unable_to_supply: "72 hours to complete"
+        ltc_terminal: "60 days from written date"
+        
+      action: |
+        IF partial fill:
+          DOCUMENT reason
+          TRACK remaining quantity
+          APPLY time limit
+
+    # Dispensing Requirements
+    - id: BR-CS-004
+      name: Patient ID Verification
+      category: dispensing
+      severity: high
+      
+      description: Verify patient ID for controlled substances
+      
+      acceptable_id:
+        - State driver's license
+        - State ID card
+        - US passport
+        - Military ID
+        
+      condition: |
+        id_verified == true AND
+        id_type IN acceptable_id_list AND
+        id_matches_patient_profile
+        
+      action: |
+        VERIFY ID before dispensing
+        RECORD ID type (not number)
+        STORE in secure manner
+        
+    - id: BR-CS-005
+      name: Corresponding Responsibility
+      category: dispensing
+      severity: critical
+      
+      description: Pharmacist corresponding responsibility for valid prescriptions
+      
+      red_flags:
+        - Cash payment for expensive controlled
+        - Multiple prescribers for same drug class
+        - Long distance from prescriber/pharmacy
+        - Pattern of early refills
+        - Requests for specific brands/generics
+        - Multiple patients from same address
+        - Doctor shopping indicators
+        
+      condition: |
+        prescription IS for legitimate medical purpose AND
+        no_red_flags OR red_flags_resolved
+        
+      action: |
+        IF red flags present:
+          PHARMACIST must investigate
+          MAY refuse to fill
+          DOCUMENT decision
+          
+    - id: BR-CS-006
+      name: Ryan Haight Act Compliance
+      category: dispensing
+      severity: critical
+      
+      description: In-person exam requirement for controlled substances
+      
+      condition: |
+        IF e-prescription for controlled:
+          prescriber HAD in-person evaluation OR
+          DEA special registration for telemedicine OR
+          public_health_emergency_waiver active
+          
+      telemedicine_exceptions:
+        - VA telemedicine
+        - IHS practitioners
+        - DEA registered practitioners
+        - Public health emergency
+        
+      action: |
+        IF no valid in-person exam:
+          REJECT prescription
+          DOCUMENT reason
+
+    # PDMP Requirements
+    - id: BR-CS-007
+      name: PDMP Query Requirement
+      category: pdmp
+      severity: high
+      
+      description: Query PDMP before dispensing (state-specific)
+      
+      query_requirements:
+        mandatory_states: "Query before each dispense"
+        optional_states: "Query recommended"
+        
+      query_timing:
+        before_dispense: true
+        max_age_of_query: "24 hours"
+        
+      condition: |
+        IF state_requires_pdmp_query:
+          pdmp_query_completed == true AND
+          query_age <= 24 hours
+          
+      action: |
+        IF query not completed:
+          BLOCK dispense until query
+          LOG query results
+          
+    - id: BR-CS-008
+      name: PDMP Reporting
+      category: pdmp
+      severity: critical
+      
+      description: Report dispensed controlled substances to PDMP
+      
+      reporting_requirements:
+        timing: "Within 24 hours (state specific)"
+        format: "ASAP 4.2 standard"
+        
+      required_data:
+        - Patient demographics
+        - Prescriber information
+        - Drug information
+        - Quantity dispensed
+        - Payment method
+        
+      condition: |
+        controlled_dispense == true
+        
+      action: |
+        REPORT to state PDMP
+        TRACK submission status
+        HANDLE errors/rejections
+
+    # Inventory Control
+    - id: BR-CS-009
+      name: Perpetual Inventory Requirement
+      category: inventory
+      severity: critical
+      
+      description: Maintain perpetual inventory for all controlled substances
+      
+      condition: |
+        perpetual_inventory_current == true AND
+        every_transaction_logged == true
+        
+      required_tracking:
+        - Receipts
+        - Dispenses
+        - Returns to stock
+        - Destructions
+        - Transfers
+        - Losses
+        
+      action: |
+        LOG every transaction to controlled_substance_log
+        MAINTAIN running balance
+        RECONCILE daily (Schedule II)
+        
+    - id: BR-CS-010
+      name: Physical Inventory Counts
+      category: inventory
+      severity: high
+      
+      description: Physical inventory count requirements
+      
+      count_frequency:
+        schedule_II: "At least annually (recommended quarterly)"
+        schedule_III_V: "At least biennial"
+        
+      count_requirements:
+        - Exact count required
+        - Document date and counters
+        - Two people for Schedule II (recommended)
+        - Reconcile to perpetual inventory
+        
+      variance_handling:
+        threshold: "Any variance must be investigated"
+        documentation: "Investigation results documented"
+        dea_reporting: "Significant loss requires DEA Form 106"
+        
+      action: |
+        SCHEDULE regular counts
+        DOCUMENT all counts
+        INVESTIGATE variances
+        REPORT significant losses
+        
+    - id: BR-CS-011
+      name: Secure Storage Requirements
+      category: inventory
+      severity: critical
+      
+      description: Physical security requirements for controlled substances
+      
+      storage_requirements:
+        location: "Locked cabinet or vault"
+        access: "Limited to authorized personnel"
+        monitoring: "Security cameras recommended"
+        
+      condition: |
+        controlled_substances IN secure_storage
+        
+      action: |
+        STORE in locked area
+        LIMIT key/code access
+        LOG access
+
+    # Ordering Requirements
+    - id: BR-CS-012
+      name: Schedule II Ordering (DEA Form 222/CSOS)
+      category: ordering
+      severity: critical
+      
+      description: Schedule II ordering requirements
+      
+      ordering_methods:
+        paper: "DEA Form 222 (triplicate)"
+        electronic: "CSOS (Controlled Substance Ordering System)"
+        
+      form_222_rules:
+        - Use official DEA forms only
+        - Purchaser retains copy 3
+        - Submit copies 1 and 2 to supplier
+        - Void unused copies properly
+        - Maintain 2-year retention
+        
+      csos_rules:
+        - Digital certificate required
+        - Maintain electronic records
+        - Comply with DEA regulations
+        
+      action: |
+        USE proper ordering method
+        RETAIN all documentation
+        RECONCILE orders to receipts
+        
+    - id: BR-CS-013
+      name: Theft/Loss Reporting
+      category: documentation
+      severity: critical
+      
+      description: DEA theft/loss reporting requirements
+      
+      reporting_required_for:
+        - Theft (any amount)
+        - Significant loss (any amount)
+        - In-transit loss
+        
+      reporting_method:
+        form: "DEA Form 106"
+        timing: "Immediately upon discovery"
+        submission: "Online via DEA Diversion Control"
+        
+      action: |
+        DISCOVER theft/loss
+        IMMEDIATELY notify pharmacy manager
+        FILE DEA Form 106
+        NOTIFY local law enforcement
+        DOCUMENT investigation
+
+  decision_flow:
+    controlled_dispense_authorization:
+      steps:
+        1: Verify DEA registration (BR-CS-001)
+        2: Check prescription requirements (BR-CS-002, BR-CS-003)
+        3: Query PDMP (BR-CS-007)
+        4: Verify patient ID (BR-CS-004)
+        5: Evaluate corresponding responsibility (BR-CS-005)
+        6: Check Ryan Haight compliance (BR-CS-006)
+        7: Update perpetual inventory (BR-CS-009)
+        8: Report to PDMP (BR-CS-008)
+        9: Authorize dispense
+        
+      any_failure: "Do not dispense - document reason"
+
+  audit:
+    log_all_rule_evaluations: true
+    retention_days: 3650
+    dea_compliant: true
+    required_documentation:
+      - All controlled transactions
+      - Refusal reasons
+      - PDMP queries and reports
+      - Inventory counts
+      - Theft/loss reports

@@ -1,0 +1,322 @@
+# Issuance Business Rules
+# F5 Framework v2.0 - Education/Certification
+# Rules governing certificate and badge issuance
+
+business_rules:
+  domain: education
+  subdomain: certification
+  category: issuance
+  version: "1.0.0"
+  
+  description: |
+    Business rules governing the issuance of certificates and badges,
+    including eligibility verification, duplicate prevention, and
+    automatic vs manual issuance triggers.
+
+  rule_groups:
+    # ==========================================
+    # Eligibility Rules
+    # ==========================================
+    - id: eligibility
+      name: Eligibility Rules
+      name_ja: 適格性ルール
+      description: Rules for determining issuance eligibility
+      
+      rules:
+        - id: BR-ISS-001
+          name: Completion Requirements Check
+          name_ja: 完了要件確認
+          description: All program requirements must be met before issuance
+          priority: critical
+          
+          condition:
+            all_of:
+              - required_courses_completed: true
+              - required_assessments_passed: true
+              - minimum_score_achieved: true
+              - prerequisites_met: true
+              
+          validation:
+            check_courses: |
+              SELECT COUNT(*) = 0 FROM program_required_courses prc
+              WHERE prc.program_id = :program_id
+              AND prc.course_id NOT IN (
+                SELECT course_id FROM course_completions
+                WHERE user_id = :user_id AND status = 'completed'
+              )
+            check_assessments: |
+              SELECT COUNT(*) = 0 FROM program_required_assessments pra
+              WHERE pra.program_id = :program_id
+              AND pra.assessment_id NOT IN (
+                SELECT exam_id FROM exam_results
+                WHERE user_id = :user_id AND status = 'passed'
+              )
+              
+          error_message: "Not all program requirements have been completed"
+          error_message_ja: "プログラムの要件がすべて完了していません"
+          
+        - id: BR-ISS-002
+          name: Prerequisite Certifications
+          name_ja: 前提認定確認
+          description: All prerequisite certifications must be active
+          priority: critical
+          
+          condition:
+            all_prerequisites:
+              status: active
+              not_expired: true
+              
+          validation: |
+            SELECT COUNT(*) = 0 FROM program_prerequisites pp
+            WHERE pp.program_id = :program_id
+            AND pp.prerequisite_program_id NOT IN (
+              SELECT program_id FROM certificates
+              WHERE holder_id = :holder_id 
+              AND status = 'active'
+              AND (valid_until IS NULL OR valid_until > CURRENT_DATE)
+            )
+            
+          error_message: "Required prerequisite certifications are not active"
+          
+        - id: BR-ISS-003
+          name: Experience Requirement
+          name_ja: 経験要件
+          description: Holder must meet experience requirements if specified
+          priority: high
+          
+          condition:
+            when: "program.experience_required_months > 0"
+            check: "holder.verified_experience_months >= program.experience_required_months"
+            
+          error_message: "Insufficient verified work experience"
+          
+        - id: BR-ISS-004
+          name: Identity Verification
+          name_ja: 本人確認要件
+          description: Holder identity must be verified for high-stakes certifications
+          priority: high
+          
+          condition:
+            when: "program.program_type IN ('professional', 'compliance')"
+            check: "holder.identity_verified = true"
+            
+          error_message: "Identity verification required for this certification"
+
+    # ==========================================
+    # Issuance Process Rules
+    # ==========================================
+    - id: issuance_process
+      name: Issuance Process Rules
+      name_ja: 発行プロセスルール
+      description: Rules governing the issuance process
+      
+      rules:
+        - id: BR-ISS-010
+          name: Auto-Issuance Trigger
+          name_ja: 自動発行トリガー
+          description: Automatically issue certificate when requirements are met
+          priority: high
+          
+          trigger:
+            event: requirements_completed
+            conditions:
+              - program.auto_issue: true
+              - holder.status: active
+              - no_holds_on_account: true
+              
+          action:
+            - create_certificate_record
+            - generate_certificate_assets
+            - send_notification
+            
+          automation:
+            enabled: true
+            delay_minutes: 0
+            
+        - id: BR-ISS-011
+          name: Manual Issuance Approval
+          name_ja: 手動発行承認
+          description: Some certificates require manual approval
+          priority: medium
+          
+          condition:
+            any_of:
+              - program.auto_issue: false
+              - issue_reason: manual_grant
+              - issue_reason: exception
+              - issue_reason: honors
+              
+          workflow:
+            - submit_for_approval
+            - await_admin_review
+            - approve_or_deny
+            - if_approved: issue_certificate
+            
+        - id: BR-ISS-012
+          name: Certificate Number Generation
+          name_ja: 証明書番号生成
+          description: Generate unique certificate number
+          priority: critical
+          
+          format:
+            pattern: "{prefix}-{year}-{sequence}"
+            prefix: "program.certificate_prefix OR organization.prefix"
+            year: "YYYY"
+            sequence: "padded 5-8 digits"
+            
+          constraints:
+            - globally_unique: true
+            - immutable: true
+            - no_reuse: true
+            
+          example: "AWS-2024-00012345"
+
+    # ==========================================
+    # Duplicate Prevention Rules
+    # ==========================================
+    - id: duplicate_prevention
+      name: Duplicate Prevention Rules
+      name_ja: 重複防止ルール
+      description: Prevent duplicate certificate issuance
+      
+      rules:
+        - id: BR-ISS-020
+          name: Single Active Certificate
+          name_ja: 単一有効証明書
+          description: Only one active certificate per holder per program
+          priority: critical
+          
+          condition:
+            check: |
+              NOT EXISTS (
+                SELECT 1 FROM certificates
+                WHERE holder_id = :holder_id
+                AND program_id = :program_id
+                AND status = 'active'
+              )
+              
+          exception:
+            - renewed_certificate: "Links to previous via previous_certificate_id"
+            - replacement_certificate: "Requires admin override"
+            
+          error_message: "Active certificate already exists for this program"
+          
+        - id: BR-ISS-021
+          name: Cooldown Period
+          name_ja: クールダウン期間
+          description: Minimum time between certificate issuances
+          priority: medium
+          
+          condition:
+            when: "program.has_cooldown = true"
+            check: |
+              last_certificate.issued_at + program.cooldown_days < CURRENT_DATE
+              OR last_certificate.status = 'revoked'
+              
+          error_message: "Must wait before earning this certification again"
+
+    # ==========================================
+    # Verification Code Rules
+    # ==========================================
+    - id: verification
+      name: Verification Rules
+      name_ja: 検証ルール
+      description: Rules for verification code generation
+      
+      rules:
+        - id: BR-ISS-030
+          name: Verification Code Generation
+          name_ja: 検証コード生成
+          description: Generate unique verification code
+          priority: critical
+          
+          generation:
+            length: 12
+            charset: "alphanumeric_uppercase"
+            format: "XXXX-XXXX-XXXX"
+            
+          constraints:
+            - unique: true
+            - url_safe: true
+            - case_insensitive_lookup: true
+            - no_ambiguous_chars: "0O1lI"
+            
+        - id: BR-ISS-031
+          name: Verification URL Generation
+          name_ja: 検証URL生成
+          description: Generate public verification URL
+          priority: high
+          
+          format:
+            url: "{base_url}/verify/{verification_code}"
+            qr_content: "verification_url"
+            
+          tracking:
+            log_access: true
+            rate_limit: true
+
+    # ==========================================
+    # Digital Asset Rules
+    # ==========================================
+    - id: digital_assets
+      name: Digital Asset Rules
+      name_ja: デジタル資産ルール
+      description: Rules for certificate digital assets
+      
+      rules:
+        - id: BR-ISS-040
+          name: PDF Generation
+          name_ja: PDF生成
+          description: Generate PDF certificate
+          priority: high
+          
+          requirements:
+            - template_exists: true
+            - all_fields_populated: true
+            - holder_name_verified: true
+            
+          output:
+            format: "PDF/A-3"
+            resolution: 300
+            embed_metadata: true
+            digitally_sign: true
+            
+        - id: BR-ISS-041
+          name: Blockchain Anchoring
+          name_ja: ブロックチェーン定着
+          description: Anchor certificate to blockchain if enabled
+          priority: medium
+          
+          condition:
+            when: "program.blockchain_enabled = true"
+            
+          action:
+            - compute_certificate_hash
+            - submit_to_blockchain
+            - store_transaction_hash
+            
+          hash_algorithm: "SHA-256"
+          data_to_hash:
+            - certificate_id
+            - holder_id
+            - program_id
+            - issued_at
+            - certificate_number
+
+  enforcement:
+    mode: strict
+    on_violation: reject
+    audit_all: true
+    
+  exceptions:
+    requires_approval: true
+    approval_levels:
+      - level: 1
+        role: certification_admin
+        allowed_exceptions: [BR-ISS-003, BR-ISS-021]
+      - level: 2
+        role: certification_manager
+        allowed_exceptions: [BR-ISS-002, BR-ISS-020]
+      - level: 3
+        role: system_admin
+        allowed_exceptions: all

@@ -1,0 +1,446 @@
+name: Loan Funding Workflow
+display_name: Loan Funding Workflow / Quy trình cấp vốn khoản vay
+description: |
+  Workflow for collecting investor funds for approved loans through
+  marketplace listing, auto-invest matching, and manual investments.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-P2P-FUND
+  name: Loan Funding
+  name_vi: Cấp vốn khoản vay
+  category: loan_funding
+
+  trigger:
+    type: loan_approved
+    event: loan_status_changed_to_approved
+
+  expected_duration:
+    auto_invest_only: 1_hour
+    with_manual: 7_days
+    maximum: 14_days
+
+  actors:
+    - system
+    - investor
+    - borrower
+    - operations
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Create Marketplace Listing
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: create_listing
+    name: Create Marketplace Listing
+    name_vi: Tạo danh sách trên sàn
+    actor: system
+
+    description: |
+      Create a public listing for the approved loan on the marketplace.
+
+    actions:
+      - generate_listing_id
+      - set_listing_visibility
+      - calculate_funding_target
+      - set_expiration_date
+      - enable_auto_invest_matching
+
+    listing_content:
+      public_info:
+        - loan_grade
+        - sub_grade
+        - interest_rate
+        - loan_term
+        - loan_purpose
+        - loan_amount
+        - borrower_profile_summary
+      hidden_info:
+        - borrower_identity
+        - exact_address
+        - employer_details
+
+    outputs:
+      - listing_id
+      - listing_status: open
+      - expiration_date
+      - funding_target
+
+    next_step: process_auto_invest
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Process Auto-Invest Orders
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: process_auto_invest
+    name: Process Auto-Invest
+    name_vi: Xử lý đầu tư tự động
+    actor: system
+
+    description: |
+      Match listing against active auto-invest configurations.
+
+    matching_criteria:
+      investor_filters:
+        - grade_matches: investor_grade_selection
+        - term_matches: investor_term_selection
+        - rate_meets_minimum: investor_minimum_rate
+        - purpose_allowed: investor_purpose_filter
+        - balance_sufficient: investor_available_balance
+
+      matching_priority:
+        - oldest_configuration_first
+        - largest_balance_first
+        - highest_diversification_need
+
+    execution_rules:
+      per_investor:
+        - check_per_loan_limit
+        - check_concentration_limit
+        - check_available_balance
+        - reserve_funds
+
+      batch_processing:
+        frequency: every_5_minutes
+        max_investors_per_batch: 100
+        timeout_per_investor: 5_seconds
+
+    outputs:
+      - auto_invest_count
+      - auto_invest_amount
+      - remaining_to_fund
+
+    next_step:
+      if_fully_funded: mark_funded
+      if_partial: open_manual_investment
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Open for Manual Investment
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: open_manual_investment
+    name: Open Manual Investment
+    name_vi: Mở đầu tư thủ công
+    actor: investor
+    conditional: true
+
+    description: |
+      Allow investors to manually invest in the listing.
+
+    display_on:
+      - marketplace_browse
+      - loan_detail_page
+      - investor_dashboard
+
+    investment_options:
+      amount:
+        minimum: 100000
+        maximum: per_loan_limit
+        increment: 100000
+        suggested_amounts: [100000, 500000, 1000000, 2000000, 5000000]
+
+      payment_methods:
+        - internal_wallet
+        - bank_transfer
+        - auto_debit
+
+    investor_actions:
+      - view_listing_details
+      - calculate_expected_returns
+      - select_investment_amount
+      - confirm_investment
+      - sign_investment_agreement
+
+    validations:
+      - check_investor_eligibility
+      - verify_available_balance
+      - check_per_loan_limit
+      - check_suitability
+
+    outputs:
+      - investment_id
+      - investment_amount
+      - updated_funding_progress
+
+    next_step:
+      if_fully_funded: mark_funded
+      if_not_funded: continue_funding
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Continue Funding
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: continue_funding
+    name: Continue Funding
+    name_vi: Tiếp tục cấp vốn
+    actor: system
+
+    description: |
+      Monitor funding progress and manage listing lifecycle.
+
+    monitoring:
+      check_frequency: every_15_minutes
+      metrics:
+        - current_funded_amount
+        - number_of_investors
+        - funding_velocity
+        - time_remaining
+
+    promotional_actions:
+      if_slow_funding:
+        - feature_on_homepage
+        - send_notification_to_matching_investors
+        - include_in_email_digest
+
+      thresholds:
+        slow_funding: "<50% in first 48 hours"
+        critical: "<75% with 3 days remaining"
+
+    outputs:
+      - funding_status
+      - funding_percentage
+      - investor_count
+
+    next_step:
+      if_fully_funded: mark_funded
+      if_expired: handle_expiration
+      else: continue_monitoring
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Handle Expiration
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: handle_expiration
+    name: Handle Funding Expiration
+    name_vi: Xử lý hết hạn cấp vốn
+    actor: system
+    conditional: true
+
+    description: |
+      Handle listing that did not achieve full funding.
+
+    options:
+      extend_funding:
+        conditions:
+          - funding_percentage: ">= 80%"
+          - borrower_consent: required
+        extension_period: 7_days
+        max_extensions: 2
+
+      partial_funding:
+        conditions:
+          - funding_percentage: ">= 70%"
+          - borrower_accepts_reduced: required
+        action: proceed_with_partial
+
+      cancel_listing:
+        conditions:
+          - funding_percentage: "< 70%"
+          - or: borrower_declines
+        actions:
+          - return_funds_to_investors
+          - cancel_loan_application
+          - notify_borrower
+          - notify_investors
+
+    outputs:
+      - expiration_action
+      - notification_sent
+
+    next_step:
+      if_extended: continue_funding
+      if_partial_accepted: mark_funded
+      if_cancelled: close_listing
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Mark Loan as Funded
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: mark_funded
+    name: Mark Loan Funded
+    name_vi: Đánh dấu đã cấp vốn
+    actor: system
+
+    description: |
+      Finalize funding and prepare for disbursement.
+
+    actions:
+      - update_loan_status_to_funded
+      - close_listing
+      - finalize_investor_positions
+      - calculate_investor_shares
+      - generate_investment_confirmations
+      - prepare_disbursement
+
+    validations:
+      - verify_total_funded_amount
+      - confirm_all_investor_funds_reserved
+      - validate_investor_agreements
+
+    notifications:
+      to_borrower:
+        channel: [push, email, sms]
+        content: "Your loan has been fully funded!"
+
+      to_investors:
+        channel: [push, email]
+        content: "Your investment in Loan #X is confirmed"
+
+    outputs:
+      - loan_status: funded
+      - total_funded: amount
+      - investor_count: number
+      - funding_completed_at: timestamp
+
+    next_step: trigger_disbursement
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Close Listing
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: close_listing
+    name: Close Listing
+    name_vi: Đóng danh sách
+    actor: system
+    conditional: true
+
+    description: |
+      Close cancelled listing and cleanup.
+
+    actions:
+      - mark_listing_cancelled
+      - release_reserved_funds
+      - process_refunds_to_investors
+      - update_borrower_application
+      - archive_listing
+
+    refund_processing:
+      timing: immediate
+      method: return_to_source
+      confirmation: sent_to_each_investor
+
+    outputs:
+      - listing_status: cancelled
+      - refunds_processed: count
+      - borrower_notified: true
+
+    next_step: complete
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Trigger Disbursement
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: trigger_disbursement
+    name: Trigger Disbursement
+    name_vi: Kích hoạt giải ngân
+    actor: system
+
+    description: |
+      Initiate the loan disbursement workflow.
+
+    actions:
+      - validate_funding_complete
+      - prepare_disbursement_request
+      - trigger_disbursement_workflow
+
+    outputs:
+      - disbursement_workflow_initiated: true
+      - disbursement_request_id
+
+    next_step: complete
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  auto_invest_failure:
+    action: log_and_continue
+    notification: operations_team
+    fallback: manual_processing
+
+  payment_failure:
+    retries: 3
+    action: release_reservation
+    notification: investor
+
+  insufficient_funds:
+    action: skip_investor
+    continue_matching: true
+
+  system_error:
+    action: pause_and_alert
+    notification: operations_team
+
+# =============================================================================
+# SLA & METRICS
+# =============================================================================
+sla:
+  listing_creation:
+    target: 1_minute
+    maximum: 5_minutes
+
+  auto_invest_matching:
+    target: 15_minutes
+    maximum: 1_hour
+
+  full_funding:
+    target: 48_hours
+    maximum: 14_days
+
+  fund_confirmation:
+    target: immediate
+    maximum: 5_minutes
+
+metrics:
+  tracked:
+    - funding_velocity
+    - auto_invest_fill_rate
+    - average_investors_per_loan
+    - average_investment_amount
+    - funding_success_rate
+    - time_to_full_funding
+
+  targets:
+    auto_invest_fill_rate: "> 60%"
+    funding_success_rate: "> 95%"
+    average_time_to_fund: "< 72 hours"
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+notifications:
+  listing_created:
+    to: borrower
+    channels: [push, email]
+    timing: immediate
+
+  investment_received:
+    to: borrower
+    channels: [push]
+    timing: immediate
+    content: "Your loan is X% funded"
+
+  funding_milestone:
+    to: borrower
+    channels: [push]
+    milestones: [25, 50, 75, 90]
+
+  fully_funded:
+    to: [borrower, investors]
+    channels: [push, email, sms]
+    timing: immediate
+
+  funding_reminder:
+    to: matching_investors
+    channels: [push, email]
+    timing: 48_hours_before_expiry

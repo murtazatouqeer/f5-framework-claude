@@ -1,0 +1,646 @@
+# Move-Out Workflow
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy trình dọn đi / 退去ワークフロー
+
+workflow:
+  name: MoveOutWorkflow
+  name_vi: Quy trình dọn đi
+  name_ja: 退去ワークフロー
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Complete workflow for tenant move-out process
+    including notice processing, inspection, deposit
+    settlement, and unit turnover preparation.
+
+  # Workflow Triggers
+  triggers:
+    - event: notice_to_vacate_received
+      source: tenant
+    - event: lease_expiring_no_renewal
+      source: lease_renewal_workflow
+    - event: eviction_completed
+      source: eviction_process
+    - event: mutual_termination
+      source: property_manager
+
+  # Primary Actors
+  actors:
+    primary:
+      - tenant
+      - property_manager
+    supporting:
+      - maintenance_staff
+      - accounting
+      - leasing_agent
+      - cleaning_vendor
+
+  # Referenced Entities
+  entities:
+    - MoveInOut
+    - Lease
+    - Tenant
+    - SecurityDeposit
+    - Inspection
+    - Unit
+
+  # Business Rules Applied
+  business_rules:
+    - LeaseRules
+    - RentRules
+    - MaintenanceRules
+
+  # ==========================================
+  # WORKFLOW STEPS
+  # ==========================================
+
+  steps:
+    - step_id: WF-MVO-001
+      name: Receive Notice
+      name_vi: Nhận thông báo
+      order: 1
+      description: |
+        Receive and process tenant's notice to vacate
+        or initiate move-out for other reasons.
+
+      inputs:
+        - notice_type
+        - requested_move_out_date
+        - tenant_contact
+        - lease_information
+
+      actions:
+        - action: validate_notice
+          checks:
+            - notice_period_met: "30 days minimum"
+            - written_form: required
+            - proper_delivery: true
+          rule: BR-LSE-050
+        - action: calculate_move_out_date
+          based_on:
+            - notice_date
+            - required_notice_period
+            - lease_end_date
+        - action: create_move_out_record
+          entity: MoveInOut
+          move_type: move_out
+          status: notice_received
+        - action: acknowledge_receipt
+          to: tenant
+          content:
+            - confirmed_move_out_date
+            - next_steps
+            - contact_information
+        - action: notify_stakeholders
+          to:
+            - property_owner
+            - accounting
+            - leasing_agent
+
+      outputs:
+        - move_out_record
+        - confirmed_date
+        - acknowledgment_sent
+
+      sla:
+        acknowledgment: 24_hours
+
+      next_step: WF-MVO-002
+
+    - step_id: WF-MVO-002
+      name: Send Move-Out Instructions
+      name_vi: Gửi hướng dẫn dọn đi
+      order: 2
+      description: |
+        Provide comprehensive move-out instructions
+        and requirements to tenant.
+
+      inputs:
+        - move_out_date
+        - lease_terms
+        - property_requirements
+
+      actions:
+        - action: generate_move_out_package
+          content:
+            - move_out_checklist
+            - cleaning_requirements
+            - key_return_instructions
+            - utility_transfer_information
+            - forwarding_address_form
+            - inspection_scheduling_options
+        - action: attach_move_in_inspection
+          for: comparison_reference
+        - action: deliver_package
+          methods:
+            - email
+            - tenant_portal
+            - mail
+        - action: request_forwarding_address
+          deadline: 7_days_before_move_out
+
+      outputs:
+        - move_out_instructions
+        - delivery_confirmation
+        - forwarding_address_request
+
+      next_step: WF-MVO-003
+
+    - step_id: WF-MVO-003
+      name: Schedule Inspection
+      name_vi: Lên lịch kiểm tra
+      order: 3
+      description: |
+        Schedule move-out inspection with tenant.
+
+      inputs:
+        - move_out_date
+        - tenant_availability
+        - inspector_availability
+
+      actions:
+        - action: offer_inspection_options
+          timing: on_or_after_move_out_date
+          with_tenant: preferred
+        - action: schedule_inspection
+          requirements:
+            - unit_must_be_empty
+            - cleaned_per_standards
+            - all_keys_available
+        - action: confirm_appointment
+          to: tenant
+          content:
+            - date_and_time
+            - what_to_expect
+            - items_to_bring
+        - action: prepare_inspection_materials
+          items:
+            - move_in_inspection_report
+            - inspection_checklist
+            - camera_equipment
+
+      outputs:
+        - scheduled_inspection
+        - confirmation_sent
+        - materials_prepared
+
+      next_step: WF-MVO-004
+
+    - step_id: WF-MVO-004
+      name: Pre-Move-Out Walkthrough
+      name_vi: Kiểm tra trước dọn đi
+      order: 4
+      description: |
+        Optional pre-move-out walkthrough to
+        identify issues tenant can address.
+
+      inputs:
+        - tenant_request
+        - time_before_move_out
+
+      actions:
+        - action: conduct_preliminary_inspection
+          if: tenant_requests
+          timing: 1-2_weeks_before_move_out
+        - action: identify_issues
+          categories:
+            - cleaning_needed
+            - repairs_needed
+            - items_to_remove
+            - potential_charges
+        - action: provide_feedback
+          to: tenant
+          content:
+            - issues_identified
+            - recommended_actions
+            - potential_deductions_if_not_addressed
+        - action: document_walkthrough
+          system: property_management
+
+      outputs:
+        - preliminary_inspection_notes
+        - tenant_feedback_provided
+
+      conditions:
+        optional: true
+        recommended: for_long_term_tenants
+
+      next_step: WF-MVO-005
+
+    - step_id: WF-MVO-005
+      name: Final Rent Collection
+      name_vi: Thu tiền thuê cuối
+      order: 5
+      description: |
+        Collect final month's rent and outstanding
+        charges.
+
+      inputs:
+        - lease_end_date
+        - outstanding_balance
+        - prorated_calculation
+
+      actions:
+        - action: calculate_final_charges
+          items:
+            - prorated_rent: if_mid_month
+            - utility_charges: final
+            - outstanding_balance: any
+        - action: generate_final_invoice
+          entity: RentCharge
+          charge_type: final_rent
+        - action: collect_payment
+          deadline: before_move_out
+        - action: apply_prepaid_rent
+          if: last_month_was_prepaid
+        - action: document_final_payment
+          system: accounting
+
+      outputs:
+        - final_invoice
+        - payment_status
+        - outstanding_amount_if_any
+
+      note: "Outstanding amounts may be deducted from security deposit"
+
+      next_step: WF-MVO-006
+
+    - step_id: WF-MVO-006
+      name: Conduct Move-Out Inspection
+      name_vi: Kiểm tra khi dọn đi
+      order: 6
+      description: |
+        Comprehensive inspection documenting unit
+        condition at move-out.
+
+      inputs:
+        - scheduled_appointment
+        - move_in_inspection
+        - inspection_checklist
+
+      actions:
+        - action: verify_unit_empty
+          requirement: true
+        - action: conduct_room_by_room_inspection
+          checklist:
+            - all_rooms: condition
+            - all_appliances: working_condition
+            - all_fixtures: condition
+            - walls_floors_ceilings: damage_check
+            - windows_doors: condition
+            - cleanliness: overall
+        - action: document_with_photos
+          required: all_areas
+          special_attention: damage_areas
+        - action: record_meter_readings
+          meters:
+            - electricity
+            - water
+            - gas_if_applicable
+        - action: compare_to_move_in
+          baseline: move_in_inspection_report
+        - action: note_normal_wear_vs_damage
+          rule: BR-MNT-012
+        - action: obtain_tenant_signature
+          on: inspection_report
+          if_present: true
+
+      outputs:
+        - move_out_inspection_report
+        - condition_photos
+        - meter_readings
+        - tenant_acknowledgment
+
+      entity_created:
+        type: Inspection
+        inspection_type: move_out
+
+      next_step: WF-MVO-007
+
+    - step_id: WF-MVO-007
+      name: Collect Keys
+      name_vi: Thu chìa khóa
+      order: 7
+      description: |
+        Collect all keys and access devices from
+        tenant.
+
+      inputs:
+        - key_inventory
+        - access_devices_list
+
+      actions:
+        - action: collect_keys
+          items:
+            - unit_keys: all_copies
+            - mailbox_key
+            - common_area_keys
+            - storage_keys
+        - action: collect_access_devices
+          items:
+            - access_cards
+            - gate_remotes
+            - parking_remotes
+        - action: verify_count
+          against: original_key_receipt
+        - action: note_missing_items
+          for: deposit_deduction
+        - action: deactivate_access
+          system: access_control
+          immediately: true
+        - action: issue_key_return_receipt
+          to: tenant
+
+      outputs:
+        - key_return_record
+        - missing_items_list
+        - access_deactivation_confirmation
+
+      next_step: WF-MVO-008
+
+    - step_id: WF-MVO-008
+      name: Calculate Deposit Deductions
+      name_vi: Tính khấu trừ đặt cọc
+      order: 8
+      description: |
+        Calculate itemized deductions from
+        security deposit.
+
+      inputs:
+        - move_out_inspection
+        - move_in_inspection
+        - outstanding_charges
+        - key_return_record
+
+      actions:
+        - action: itemize_damages
+          beyond_normal_wear:
+            - damage_type
+            - location
+            - repair_cost_estimate
+            - photos_as_evidence
+        - action: calculate_cleaning_charges
+          if: not_cleaned_per_standards
+          estimate: professional_cleaning_cost
+        - action: calculate_unpaid_rent
+          include:
+            - outstanding_rent
+            - late_fees
+            - utility_charges
+        - action: calculate_missing_items
+          items:
+            - keys_not_returned
+            - missing_fixtures
+            - missing_appliances
+        - action: obtain_repair_estimates
+          if: significant_damage
+          from: vendors
+        - action: prepare_itemized_statement
+          entity: SecurityDeposit
+          content:
+            - original_deposit_amount
+            - each_deduction_with_explanation
+            - refund_amount
+
+      outputs:
+        - itemized_deduction_list
+        - supporting_documentation
+        - calculated_refund_amount
+
+      validations:
+        - all_deductions_documented
+        - charges_reasonable
+        - photos_support_claims
+
+      next_step: WF-MVO-009
+
+    - step_id: WF-MVO-009
+      name: Process Deposit Return
+      name_vi: Xử lý hoàn trả đặt cọc
+      order: 9
+      description: |
+        Process security deposit refund or
+        collect additional amounts owed.
+
+      inputs:
+        - deposit_amount
+        - total_deductions
+        - forwarding_address
+
+      actions:
+        - action: calculate_final_amount
+          formula: deposit - deductions
+          scenarios:
+            refund_due: deposit > deductions
+            additional_owed: deductions > deposit
+        - action: prepare_deposit_statement
+          content:
+            - deposit_held
+            - itemized_deductions
+            - refund_or_balance_due
+          rule: BR-LSE-004
+        - action: process_refund
+          if: refund_due
+          method: bank_transfer_or_check
+          timeline: within_30_days
+        - action: send_statement
+          to: forwarding_address
+          method: certified_mail
+          with: refund_if_applicable
+        - action: invoice_for_balance
+          if: additional_amount_owed
+          collection_process: initiate
+
+      outputs:
+        - deposit_statement
+        - refund_payment
+        - delivery_confirmation
+
+      sla:
+        statement_delivery: 30_days_from_move_out
+        rule: "Per local regulations"
+
+      decision_point:
+        condition: balance_status
+        outcomes:
+          refund_processed: WF-MVO-010
+          balance_owed: WF-MVO-009a
+
+    - step_id: WF-MVO-009a
+      name: Collect Balance Owed
+      name_vi: Thu số dư nợ
+      order: 9.5
+      description: |
+        Pursue collection of amounts owed
+        beyond security deposit.
+
+      inputs:
+        - balance_owed
+        - tenant_contact
+        - forwarding_address
+
+      actions:
+        - action: send_balance_due_notice
+          content:
+            - amount_owed
+            - breakdown
+            - payment_deadline: 30_days
+            - consequences_of_non_payment
+        - action: attempt_collection
+          methods:
+            - direct_contact
+            - payment_plan_offer
+            - demand_letter
+        - action: refer_to_collections
+          if: no_response
+          timeline: after_90_days
+          rule: BR-RNT-042
+        - action: report_to_credit
+          if: permitted_and_appropriate
+        - action: pursue_legal
+          if: significant_amount
+          method: small_claims_court
+
+      outputs:
+        - collection_attempts_log
+        - payment_received_or_referred
+
+      next_step: WF-MVO-010
+
+    - step_id: WF-MVO-010
+      name: Prepare Unit for Turnover
+      name_vi: Chuẩn bị đơn vị cho khách mới
+      order: 10
+      description: |
+        Prepare unit for next tenant through
+        repairs, cleaning, and updates.
+
+      inputs:
+        - move_out_inspection
+        - repair_requirements
+        - make_ready_standards
+
+      actions:
+        - action: create_make_ready_list
+          from: inspection_findings
+          categories:
+            - repairs_required
+            - painting_needed
+            - cleaning_required
+            - replacements_needed
+            - upgrades_optional
+        - action: change_locks
+          required: true
+          immediately: after_key_collection
+        - action: schedule_repairs
+          priority: based_on_showing_timeline
+        - action: schedule_cleaning
+          standard: professional_deep_clean
+        - action: complete_make_ready
+          verify: all_items_addressed
+        - action: final_walkthrough
+          by: property_manager
+          purpose: verify_rent_ready
+
+      outputs:
+        - make_ready_checklist
+        - completed_repairs_list
+        - unit_ready_confirmation
+
+      sla:
+        target_turnaround: 5-7_days
+        maximum: 14_days
+
+      next_step: WF-MVO-011
+
+    - step_id: WF-MVO-011
+      name: Close Tenant Records
+      name_vi: Đóng hồ sơ người thuê
+      order: 11
+      description: |
+        Finalize all tenant records and
+        prepare for re-leasing.
+
+      inputs:
+        - all_move_out_documentation
+        - financial_records
+        - unit_status
+
+      actions:
+        - action: update_lease_status
+          entity: Lease
+          status: terminated
+        - action: update_tenant_status
+          entity: Tenant
+          status: past
+        - action: update_unit_status
+          entity: Unit
+          status: available
+        - action: archive_documentation
+          items:
+            - lease_documents
+            - inspection_reports
+            - correspondence
+            - financial_records
+            - photos
+          retention: 7_years
+        - action: update_rental_history
+          for: future_reference_checks
+        - action: notify_leasing
+          unit_available: true
+          rental_rate: current_market
+        - action: list_for_rent
+          on: marketing_channels
+
+      outputs:
+        - closed_tenant_file
+        - archived_records
+        - unit_listed_for_rent
+
+      notifications:
+        - to: property_owner
+          content: move_out_complete_summary
+        - to: leasing
+          content: unit_available_notification
+
+      workflow_complete: true
+
+  # ==========================================
+  # WORKFLOW METRICS
+  # ==========================================
+
+  metrics:
+    - name: deposit_processing_time
+      description: "Days from move-out to deposit statement"
+      target: "<30 days"
+
+    - name: unit_turnaround_time
+      description: "Days from move-out to rent-ready"
+      target: "<7 days"
+
+    - name: deposit_dispute_rate
+      description: "Percentage of deposits disputed"
+      target: "<5%"
+
+    - name: collection_success_rate
+      description: "Percentage of balances owed collected"
+      target: ">70%"
+
+    - name: vacancy_days
+      description: "Days unit vacant between tenants"
+      target: "<21 days"
+
+  # Summary
+  summary:
+    total_steps: 13
+    decision_points: 1
+    average_duration: 30-45_days
+    critical_deadlines:
+      - "30-day deposit return requirement"
+      - "7-day unit turnaround target"
+    key_outputs:
+      - "Move-out inspection report"
+      - "Itemized deposit statement"
+      - "Rent-ready unit"

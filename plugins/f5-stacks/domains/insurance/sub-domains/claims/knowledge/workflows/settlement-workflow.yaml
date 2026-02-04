@@ -1,0 +1,849 @@
+name: settlement_workflow
+display_name: Settlement Workflow
+description: |
+  Workflow for claim settlement processing from approval through payment
+  including negotiation, documentation, and disbursement.
+
+domain: insurance
+subdomain: claims
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-SET-001
+  name: Claim Settlement
+  description: Process claim from approval to payment
+  trigger:
+    type: event
+    events:
+      - assessment.completed
+      - assessment.approved
+
+  sla:
+    settlement_offer: 5_business_days
+    offer_acceptance: 30_days
+    payment_processing: 5_business_days
+    total_settlement: 45_days
+
+stages:
+  - id: initiate_settlement
+    name: Initiate Settlement
+    description: Start settlement process
+    type: automated
+
+    steps:
+      - id: create_settlement
+        name: Create Settlement Record
+        action: create_settlement
+        from: assessment
+        generates:
+          - settlement_id
+          - settlement_number
+
+      - id: determine_type
+        name: Determine Settlement Type
+        action: classify_settlement
+        based_on:
+          - recommendation
+          - assessment_outcome
+        types:
+          approve_full: full_payment
+          approve_partial: partial_payment
+          ex_gratia: ex_gratia
+          deny: denial
+
+      - id: populate_amounts
+        name: Populate Settlement Amounts
+        action: copy_from_assessment
+        fields:
+          - claimed_amount
+          - assessed_amount
+          - deductible_amount
+          - co_payment_amount
+          - net_payable
+
+    transitions:
+      - to: prepare_settlement
+        condition: settlement_type IN (full_payment, partial_payment, ex_gratia)
+      - to: prepare_denial
+        condition: settlement_type = denial
+
+  - id: prepare_settlement
+    name: Prepare Settlement
+    description: Prepare settlement offer details
+    type: semi_automated
+
+    steps:
+      - id: finalize_breakdown
+        name: Finalize Item Breakdown
+        action: prepare_breakdown
+        include:
+          - approved_items
+          - rejected_items_with_reasons
+          - deductions
+
+      - id: calculate_final
+        name: Calculate Final Settlement
+        action: compute_settlement
+        formula: |
+          gross = SUM(approved_items)
+          net = gross - deductible - co_payment - salvage - other_deductions
+        rules:
+          - SET-CAL-002
+          - SET-CAL-003
+          - SET-CAL-004
+          - SET-CAL-005
+
+      - id: add_conditions
+        name: Add Settlement Conditions
+        action: set_conditions
+        standard_conditions:
+          - full_and_final_release
+          - no_further_claims
+          - subrogation_rights_preserved
+        custom_conditions:
+          based_on: claim_type
+
+      - id: set_validity
+        name: Set Offer Validity
+        action: set_expiry
+        default_days: 30
+        rules:
+          - SET-OFF-002
+
+    transitions:
+      - to: check_authority
+        condition: settlement_prepared
+
+  - id: check_authority
+    name: Check Settlement Authority
+    description: Verify authority to approve settlement
+    type: automated
+
+    steps:
+      - id: identify_authority
+        name: Identify Required Authority
+        action: determine_authority_level
+        based_on:
+          - settlement_amount
+          - settlement_type
+          - claim_characteristics
+        rules:
+          - SET-AUT-001
+          - SET-AUT-002
+          - SET-AUT-003
+          - SET-AUT-004
+
+      - id: check_preparer
+        name: Check Preparer Authority
+        action: verify_authority
+        compare:
+          - preparer_authority
+          - required_authority
+
+    transitions:
+      - to: generate_offer
+        condition: within_authority
+      - to: approval_routing
+        condition: exceeds_authority
+
+  - id: approval_routing
+    name: Route for Approval
+    description: Route settlement for appropriate approval
+    type: semi_automated
+
+    steps:
+      - id: select_approver
+        name: Select Approver
+        action: find_approver
+        criteria:
+          - authority_level_required
+          - claim_type_expertise
+          - availability
+
+      - id: submit_for_approval
+        name: Submit for Approval
+        action: create_approval_task
+        include:
+          - settlement_summary
+          - assessment_summary
+          - supporting_documents
+
+      - id: notify_approver
+        name: Notify Approver
+        action: send_notification
+        to: approver
+        template: settlement_approval_request
+        priority: based_on_sla
+
+      - id: await_decision
+        name: Await Decision
+        action: wait_for_approval
+        timeout: 3_business_days
+        escalation:
+          after: 2_business_days
+          to: approver_manager
+
+    transitions:
+      - to: generate_offer
+        condition: approved
+      - to: revise_settlement
+        condition: returned_with_comments
+      - to: reject_settlement
+        condition: rejected
+
+  - id: revise_settlement
+    name: Revise Settlement
+    description: Revise settlement based on feedback
+    type: manual
+
+    steps:
+      - id: review_feedback
+        name: Review Feedback
+        action: display_comments
+        from: approver
+
+      - id: make_revisions
+        name: Make Revisions
+        action: edit_settlement
+        fields:
+          - offered_amount
+          - item_breakdown
+          - conditions
+
+      - id: document_changes
+        name: Document Changes
+        action: log_revision
+        capture:
+          - original_values
+          - new_values
+          - revision_reason
+
+    transitions:
+      - to: check_authority
+        condition: revisions_complete
+
+  - id: generate_offer
+    name: Generate Settlement Offer
+    description: Generate formal settlement offer
+    type: automated
+
+    steps:
+      - id: generate_letter
+        name: Generate Offer Letter
+        action: create_document
+        template: settlement_offer_letter
+        content:
+          - claim_details
+          - settlement_amount
+          - breakdown
+          - deductions
+          - conditions
+          - payment_details
+          - validity_period
+          - acceptance_instructions
+
+      - id: attach_breakdown
+        name: Attach Detailed Breakdown
+        action: generate_breakdown_document
+        format: pdf
+
+      - id: attach_release
+        name: Attach Release Form
+        action: generate_release_form
+        for_signature: true
+
+      - id: record_documents
+        name: Record Documents
+        action: update_settlement
+        updates:
+          offer_document_url: "{{offer_url}}"
+          status: approved
+
+    transitions:
+      - to: send_offer
+        condition: documents_ready
+
+  - id: send_offer
+    name: Send Settlement Offer
+    description: Communicate offer to claimant
+    type: automated
+
+    steps:
+      - id: determine_channel
+        name: Determine Communication Channel
+        action: get_preferred_channel
+        options:
+          - email
+          - postal_mail
+          - portal
+          - in_person
+
+      - id: send_offer
+        name: Send Offer Package
+        action: send_communication
+        package:
+          - offer_letter
+          - breakdown
+          - release_form
+          - payment_form
+
+      - id: record_sending
+        name: Record Offer Sent
+        action: update_settlement
+        updates:
+          status: offer_sent
+          offer_date: "{{now}}"
+          offer_method: "{{channel}}"
+
+      - id: schedule_follow_up
+        name: Schedule Follow-up
+        action: create_task
+        task:
+          type: follow_up_call
+          due: "{{offer_date + 7 days}}"
+
+    transitions:
+      - to: await_response
+        condition: offer_sent
+
+  - id: await_response
+    name: Await Claimant Response
+    description: Wait for claimant response to offer
+    type: waiting
+    timeout: 30_days
+
+    steps:
+      - id: send_reminders
+        name: Send Reminders
+        action: schedule_reminders
+        schedule:
+          - 7_days: first_reminder
+          - 14_days: second_reminder
+          - 21_days: urgent_reminder
+
+      - id: process_response
+        name: Process Response
+        action: on_response_received
+        response_types:
+          - acceptance
+          - counter_offer
+          - rejection
+          - questions
+
+      - id: record_response
+        name: Record Response
+        action: update_settlement
+        updates:
+          claimant_response: "{{response}}"
+          response_date: "{{now}}"
+          response_notes: "{{notes}}"
+
+    transitions:
+      - to: process_acceptance
+        condition: response = acceptance
+      - to: negotiation
+        condition: response = counter_offer
+      - to: handle_rejection
+        condition: response = rejection
+      - to: handle_questions
+        condition: response = questions
+      - to: handle_no_response
+        condition: timeout
+
+  - id: negotiation
+    name: Settlement Negotiation
+    description: Negotiate settlement terms
+    type: manual
+
+    steps:
+      - id: record_counter
+        name: Record Counter Offer
+        action: log_negotiation
+        details:
+          - their_demand
+          - our_position
+          - notes
+
+      - id: evaluate_counter
+        name: Evaluate Counter Offer
+        action: analyze_counter
+        considerations:
+          - commercial_reasonableness
+          - litigation_risk
+          - cost_of_defense
+
+      - id: prepare_response
+        name: Prepare Response
+        action: formulate_response
+        options:
+          - accept_counter
+          - make_counter_offer
+          - hold_position
+          - withdraw
+
+      - id: check_authority
+        name: Check Negotiation Authority
+        action: verify_authority
+        for: new_offer_amount
+
+      - id: record_negotiation
+        name: Record Negotiation Round
+        action: add_negotiation_history
+        increment: negotiation_rounds
+
+    transitions:
+      - to: send_counter_offer
+        condition: counter_offer_approved
+      - to: process_acceptance
+        condition: their_offer_accepted
+      - to: escalate_negotiation
+        condition: exceeds_authority
+      - to: negotiation_stalled
+        condition: rounds > 5
+
+  - id: send_counter_offer
+    name: Send Counter Offer
+    description: Send revised offer to claimant
+    type: automated
+
+    steps:
+      - id: generate_counter
+        name: Generate Counter Offer
+        action: create_counter_offer
+        include:
+          - revised_amount
+          - revised_conditions
+          - reasoning
+
+      - id: send_counter
+        name: Send Counter Offer
+        action: send_communication
+        template: counter_offer_letter
+
+      - id: update_status
+        name: Update Status
+        action: update_settlement
+        updates:
+          offered_amount: "{{new_amount}}"
+          status: offer_sent
+
+    transitions:
+      - to: await_response
+        condition: counter_sent
+
+  - id: process_acceptance
+    name: Process Acceptance
+    description: Process accepted settlement
+    type: semi_automated
+
+    steps:
+      - id: record_acceptance
+        name: Record Acceptance
+        action: update_settlement
+        updates:
+          status: accepted
+          accepted_amount: "{{amount}}"
+
+      - id: verify_release
+        name: Verify Release Form
+        action: check_release_form
+        required:
+          - signed
+          - dated
+          - witnessed_if_required
+
+      - id: verify_bank_details
+        name: Verify Bank Details
+        action: verify_claimant_bank
+        if_not_verified:
+          trigger: bank_verification_process
+
+      - id: verify_identity
+        name: Verify Identity
+        action: check_identity_verification
+        rules:
+          - BR-CLT-001
+
+    transitions:
+      - to: finalize_settlement
+        condition: all_verifications_passed
+      - to: await_release
+        condition: release_pending
+      - to: await_bank_verification
+        condition: bank_verification_pending
+
+  - id: await_release
+    name: Await Release Form
+    description: Wait for signed release form
+    type: waiting
+    timeout: 14_days
+
+    steps:
+      - id: request_release
+        name: Request Release Form
+        action: send_request
+        template: release_form_request
+
+      - id: process_receipt
+        name: Process Receipt
+        action: on_document_received
+        document_type: release_form
+
+      - id: verify_signature
+        name: Verify Signature
+        action: validate_release
+        checks:
+          - signature_valid
+          - date_correct
+          - terms_unchanged
+
+    transitions:
+      - to: finalize_settlement
+        condition: release_received_valid
+      - to: handle_rejection
+        condition: timeout
+
+  - id: finalize_settlement
+    name: Finalize Settlement
+    description: Complete settlement processing
+    type: automated
+
+    steps:
+      - id: record_finalization
+        name: Record Finalization
+        action: update_settlement
+        updates:
+          status: finalized
+          finalized_at: "{{now}}"
+          finalized_by: "{{user_id}}"
+          full_and_final: true
+          release_signed: true
+
+      - id: update_reserve
+        name: Update Reserve
+        action: adjust_reserve
+        to: settlement_amount
+        reason: settlement_finalized
+
+      - id: create_payment
+        name: Create Payment Record
+        action: create_payment
+        from: settlement
+        status: pending_approval
+
+    transitions:
+      - to: payment_processing
+        condition: payment_created
+
+  - id: payment_processing
+    name: Process Payment
+    description: Process settlement payment
+    type: semi_automated
+
+    steps:
+      - id: approve_payment
+        name: Approve Payment
+        action: submit_for_payment_approval
+        rules:
+          - BR-PAY-002
+
+      - id: schedule_payment
+        name: Schedule Payment
+        action: schedule_payment
+        method: based_on_claimant_preference
+        batch: next_payment_run
+
+      - id: execute_payment
+        name: Execute Payment
+        action: process_payment
+        via: payment_gateway
+
+      - id: verify_completion
+        name: Verify Completion
+        action: confirm_payment
+        checks:
+          - transaction_successful
+          - amount_correct
+
+      - id: record_payment
+        name: Record Payment
+        action: update_payment
+        updates:
+          status: completed
+          transaction_reference: "{{ref}}"
+          processed_date: "{{now}}"
+
+      - id: send_confirmation
+        name: Send Payment Confirmation
+        action: send_notification
+        to: claimant
+        template: payment_confirmation
+
+    transitions:
+      - to: close_settlement
+        condition: payment_successful
+      - to: payment_failure
+        condition: payment_failed
+
+  - id: payment_failure
+    name: Handle Payment Failure
+    description: Handle failed payment
+    type: manual
+
+    steps:
+      - id: record_failure
+        name: Record Failure
+        action: log_payment_failure
+        capture:
+          - failure_reason
+          - error_code
+
+      - id: notify_handler
+        name: Notify Handler
+        action: send_alert
+        to: claims_handler
+        priority: high
+
+      - id: investigate_cause
+        name: Investigate Cause
+        action: determine_resolution
+        options:
+          - retry_payment
+          - update_bank_details
+          - alternative_payment_method
+
+      - id: retry_or_escalate
+        name: Retry or Escalate
+        action: handle_failure
+        max_retries: 3
+
+    transitions:
+      - to: payment_processing
+        condition: retry_approved
+      - to: escalate_payment_issue
+        condition: max_retries_exceeded
+
+  - id: close_settlement
+    name: Close Settlement
+    description: Complete settlement closure
+    type: automated
+
+    steps:
+      - id: update_claim
+        name: Update Claim Status
+        action: update_claim
+        updates:
+          status: settled
+          settlement_date: "{{now}}"
+          paid_amount: "{{settlement_amount}}"
+
+      - id: release_reserve
+        name: Release Remaining Reserve
+        action: release_reserve
+        if: reserve > paid
+        reason: settlement_complete
+
+      - id: trigger_recovery
+        name: Check for Recovery
+        action: evaluate_recovery
+        if: recovery_potential
+        trigger: recovery_workflow
+
+      - id: archive_settlement
+        name: Archive Settlement Documents
+        action: archive_documents
+        retention: per_policy
+
+    transitions:
+      - to: end
+        condition: always
+
+  - id: prepare_denial
+    name: Prepare Denial
+    description: Prepare claim denial
+    type: semi_automated
+
+    steps:
+      - id: finalize_denial_reason
+        name: Finalize Denial Reason
+        action: document_denial
+        required:
+          - denial_code
+          - detailed_reason
+          - policy_reference
+        rules:
+          - SET-DEN-001
+
+      - id: approve_denial
+        name: Approve Denial
+        action: submit_denial_approval
+        rules:
+          - SET-DEN-004
+
+      - id: generate_denial_letter
+        name: Generate Denial Letter
+        action: create_document
+        template: claim_denial_letter
+        content:
+          - claim_details
+          - denial_reason
+          - policy_provisions
+          - appeal_rights
+          - appeal_deadline
+        rules:
+          - SET-DEN-002
+          - SET-DEN-003
+
+      - id: send_denial
+        name: Send Denial
+        action: send_communication
+        track: delivery
+
+    transitions:
+      - to: close_denial
+        condition: denial_sent
+
+  - id: close_denial
+    name: Close Denial
+    description: Close denied claim
+    type: automated
+
+    steps:
+      - id: update_claim
+        name: Update Claim
+        action: update_claim
+        updates:
+          status: denied
+          denial_date: "{{now}}"
+
+      - id: release_reserve
+        name: Release Reserve
+        action: release_reserve
+        full: true
+        reason: claim_denied
+
+      - id: set_appeal_deadline
+        name: Set Appeal Deadline
+        action: schedule_deadline
+        deadline: 30_days
+        monitor: true
+
+    transitions:
+      - to: end
+        condition: always
+
+  - id: handle_rejection
+    name: Handle Claimant Rejection
+    description: Handle rejected settlement offer
+    type: manual
+
+    steps:
+      - id: record_rejection
+        name: Record Rejection
+        action: log_rejection
+        capture:
+          - rejection_reason
+          - claimant_expectations
+
+      - id: evaluate_options
+        name: Evaluate Options
+        action: assess_next_steps
+        options:
+          - increase_offer
+          - hold_position
+          - offer_mediation
+          - prepare_for_litigation
+
+      - id: document_decision
+        name: Document Decision
+        action: record_decision
+
+    transitions:
+      - to: negotiation
+        condition: continue_negotiation
+      - to: close_without_settlement
+        condition: end_negotiation
+
+  - id: handle_no_response
+    name: Handle No Response
+    description: Handle offer expiry without response
+    type: semi_automated
+
+    steps:
+      - id: final_attempt
+        name: Final Contact Attempt
+        action: contact_claimant
+        method: phone
+        record: attempt_details
+
+      - id: extend_or_close
+        name: Extend or Close
+        action: evaluate_options
+        options:
+          - extend_offer
+          - close_without_settlement
+
+    transitions:
+      - to: send_offer
+        condition: offer_extended
+      - to: close_without_settlement
+        condition: close_decision
+
+  - id: close_without_settlement
+    name: Close Without Settlement
+    description: Close claim without settlement
+    type: automated
+
+    steps:
+      - id: update_claim
+        name: Update Claim Status
+        action: update_claim
+        updates:
+          status: closed
+          closure_reason: no_settlement
+
+      - id: release_reserve
+        name: Release Reserve
+        action: release_reserve
+        full: true
+        reason: no_settlement
+
+    transitions:
+      - to: end
+        condition: always
+
+events_emitted:
+  - settlement.created
+  - settlement.approved
+  - settlement.offer_sent
+  - settlement.accepted
+  - settlement.rejected
+  - settlement.negotiating
+  - settlement.finalized
+  - payment.created
+  - payment.processing
+  - payment.completed
+  - payment.failed
+
+metrics:
+  - name: settlement_cycle_time
+    description: Average time from assessment to settlement
+    calculation: "AVG(finalized_at - created_at)"
+
+  - name: payment_cycle_time
+    description: Average time from finalization to payment
+    calculation: "AVG(payment.completed_at - settlement.finalized_at)"
+
+  - name: offer_acceptance_rate
+    description: First offer acceptance rate
+    calculation: "(accepted_first_offer / total) * 100"
+
+  - name: negotiation_rate
+    description: Claims requiring negotiation
+    calculation: "(negotiated / total) * 100"
+
+  - name: average_settlement_ratio
+    description: Settlement amount vs claimed
+    calculation: "AVG(settlement_amount / claimed_amount)"

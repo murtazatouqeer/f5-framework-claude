@@ -1,0 +1,528 @@
+name: Fulfillment Workflow
+display_name: Fulfillment Workflow / Quy trình xử lý đơn hàng
+description: |
+  Order fulfillment workflow from order confirmation to shipment.
+  Handles picking, packing, and shipping operations.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: order.confirmed
+    source: Order
+    condition: order.requires_fulfillment = true
+
+actors:
+  - name: Warehouse Manager
+    role: supervisor
+    description: Oversees fulfillment operations
+  - name: Picker
+    role: operator
+    description: Picks items from warehouse
+  - name: Packer
+    role: operator
+    description: Packs orders for shipping
+  - name: Shipper
+    role: operator
+    description: Handles carrier handoff
+  - name: System
+    role: automated
+    description: Automated fulfillment system
+
+steps:
+  # Order Receipt
+  - id: RECEIVE_ORDER
+    name: Receive Order
+    description: Receive confirmed order for fulfillment
+    actor: System
+    type: automated
+    actions:
+      - Create fulfillment record
+      - Determine fulfillment warehouse
+      - Calculate priority
+      - Add to fulfillment queue
+    inputs:
+      - order_id
+      - order_items
+      - shipping_address
+      - shipping_method
+    outputs:
+      - fulfillment_id
+      - assigned_warehouse
+      - priority_level
+    routing:
+      - condition: single_warehouse_available
+        next: ALLOCATE_INVENTORY
+      - condition: multiple_warehouses
+        next: DETERMINE_WAREHOUSE
+    on_success: DETERMINE_WAREHOUSE
+    on_failure: FULFILLMENT_ERROR
+
+  - id: DETERMINE_WAREHOUSE
+    name: Determine Warehouse
+    description: Select optimal warehouse for fulfillment
+    actor: System
+    type: decision
+    actions:
+      - Check inventory at each location
+      - Calculate shipping distance
+      - Consider warehouse capacity
+      - Select optimal warehouse(s)
+    inputs:
+      - order_items
+      - shipping_address
+      - available_warehouses
+    outputs:
+      - selected_warehouse
+      - split_fulfillment (if multiple)
+    validations:
+      - rule: BR-INV-021
+        description: Nearest warehouse allocation
+      - rule: BR-INV-022
+        description: Split allocation if needed
+    routing:
+      - condition: single_warehouse
+        next: ALLOCATE_INVENTORY
+      - condition: split_required
+        next: CREATE_SPLIT_FULFILLMENTS
+    on_failure: NO_WAREHOUSE_AVAILABLE
+
+  - id: CREATE_SPLIT_FULFILLMENTS
+    name: Create Split Fulfillments
+    description: Create multiple fulfillments for split orders
+    actor: System
+    type: automated
+    actions:
+      - Create fulfillment per warehouse
+      - Allocate items to each fulfillment
+      - Link fulfillments to order
+    outputs:
+      - fulfillment_ids[]
+    on_success: ALLOCATE_INVENTORY (for each)
+
+  - id: ALLOCATE_INVENTORY
+    name: Allocate Inventory
+    description: Allocate inventory to fulfillment
+    actor: System
+    type: automated
+    actions:
+      - Reserve specific inventory units
+      - Select by FIFO or location
+      - Record allocation
+      - Update inventory status
+    inputs:
+      - fulfillment_id
+      - warehouse_id
+      - items
+    outputs:
+      - allocated_items
+      - bin_locations
+    validations:
+      - rule: BR-INV-020
+        description: FIFO allocation
+    on_success: CREATE_PICK_LIST
+    on_failure: ALLOCATION_FAILED
+
+  - id: CREATE_PICK_LIST
+    name: Create Pick List
+    description: Generate pick list for warehouse
+    actor: System
+    type: automated
+    actions:
+      - Generate pick list document
+      - Optimize pick route
+      - Group by zone/aisle
+      - Assign to picker
+    inputs:
+      - allocated_items
+      - bin_locations
+    outputs:
+      - pick_list_id
+      - pick_list_document
+      - assigned_picker
+    ui_elements:
+      - pick_list_view
+      - barcode_scanner_integration
+    on_success: ASSIGN_TO_PICKER
+    on_failure: PICK_LIST_ERROR
+
+  - id: ASSIGN_TO_PICKER
+    name: Assign to Picker
+    description: Assign pick task to warehouse picker
+    actor: Warehouse Manager
+    type: interactive
+    actions:
+      - Select available picker
+      - Send notification
+      - Start SLA timer
+    inputs:
+      - pick_list_id
+      - available_pickers
+    outputs:
+      - assigned_picker
+      - assigned_at
+    sla:
+      target: 30 minutes
+      escalation: Notify manager
+    on_success: PICKING
+    on_timeout: ESCALATE_PICK_ASSIGNMENT
+
+  # Picking Process
+  - id: PICKING
+    name: Picking Process
+    description: Pick items from warehouse locations
+    actor: Picker
+    type: interactive
+    actions:
+      - Navigate to first location
+      - Scan bin/location barcode
+      - Pick item and scan barcode
+      - Confirm quantity
+      - Move to next item
+    inputs:
+      - pick_list
+      - bin_locations
+    outputs:
+      - picked_items
+      - pick_completion_time
+    ui_elements:
+      - mobile_pick_app
+      - barcode_scanner
+      - quantity_input
+      - confirm_button
+    validations:
+      - Scanned item matches expected
+      - Quantity matches requested
+    sub_steps:
+      - id: SCAN_LOCATION
+        name: Scan Location
+        actions:
+          - Scan bin barcode
+          - Verify correct location
+        on_mismatch: LOCATION_MISMATCH_ALERT
+
+      - id: SCAN_ITEM
+        name: Scan Item
+        actions:
+          - Scan product barcode
+          - Verify correct product
+        on_mismatch: ITEM_MISMATCH_ALERT
+
+      - id: CONFIRM_QUANTITY
+        name: Confirm Quantity
+        actions:
+          - Enter/confirm quantity
+          - Mark item as picked
+        on_short: HANDLE_SHORT_PICK
+    on_complete: VERIFY_PICK
+    on_short: HANDLE_SHORT_PICK
+
+  - id: HANDLE_SHORT_PICK
+    name: Handle Short Pick
+    description: Handle when inventory is short
+    actor: Picker
+    type: interactive
+    actions:
+      - Record actual quantity found
+      - Flag discrepancy
+      - Check alternative locations
+      - Notify manager if unable to fulfill
+    routing:
+      - condition: found_in_alternative
+        next: PICKING (continue)
+      - condition: partial_available
+        next: PARTIAL_FULFILLMENT_DECISION
+      - condition: none_available
+        next: BACKORDER_ITEM
+
+  - id: VERIFY_PICK
+    name: Verify Pick Completion
+    description: Verify all items picked correctly
+    actor: System
+    type: automated
+    actions:
+      - Compare picked vs requested
+      - Calculate pick accuracy
+      - Flag any discrepancies
+    on_success: MOVE_TO_PACKING
+    on_discrepancy: PICK_DISCREPANCY_RESOLUTION
+
+  # Packing Process
+  - id: MOVE_TO_PACKING
+    name: Move to Packing
+    description: Transfer picked items to packing station
+    actor: Picker
+    type: interactive
+    actions:
+      - Transport items to packing area
+      - Scan into packing station
+      - Handoff to packer
+    outputs:
+      - packing_station_id
+      - handoff_time
+    on_success: ASSIGN_TO_PACKER
+
+  - id: ASSIGN_TO_PACKER
+    name: Assign to Packer
+    description: Assign packing task
+    actor: System
+    type: automated
+    actions:
+      - Find available packer
+      - Assign fulfillment
+      - Notify packer
+    outputs:
+      - assigned_packer
+    on_success: PACKING
+
+  - id: PACKING
+    name: Packing Process
+    description: Pack items for shipment
+    actor: Packer
+    type: interactive
+    actions:
+      - Verify items against order
+      - Select appropriate packaging
+      - Pack items securely
+      - Add packing materials
+      - Include packing slip/invoice
+      - Seal package
+    inputs:
+      - picked_items
+      - order_details
+      - packing_requirements
+    outputs:
+      - package_count
+      - package_weights
+      - package_dimensions
+    ui_elements:
+      - packing_station_interface
+      - item_verification_scanner
+      - package_selection
+      - weight_scale_integration
+    sub_steps:
+      - id: VERIFY_ITEMS
+        name: Verify Items
+        actions:
+          - Scan each item
+          - Verify quantity
+          - Check condition
+        on_mismatch: PACKING_DISCREPANCY
+
+      - id: SELECT_PACKAGING
+        name: Select Packaging
+        actions:
+          - Calculate package size needed
+          - Select box/envelope
+          - Record packaging used
+
+      - id: ADD_DOCUMENTS
+        name: Add Documents
+        actions:
+          - Print packing slip
+          - Add invoice if required
+          - Include any inserts
+
+      - id: WEIGH_PACKAGE
+        name: Weigh Package
+        actions:
+          - Place on scale
+          - Record weight
+          - Calculate dimensional weight
+
+    on_complete: GENERATE_LABEL
+    on_error: PACKING_ERROR
+
+  # Shipping Label Generation
+  - id: GENERATE_LABEL
+    name: Generate Shipping Label
+    description: Generate carrier shipping label
+    actor: System
+    type: automated
+    actions:
+      - Select carrier based on method
+      - Call carrier API
+      - Generate shipping label
+      - Get tracking number
+    inputs:
+      - shipping_address
+      - package_details
+      - shipping_method
+    outputs:
+      - tracking_number
+      - shipping_label_url
+      - carrier_code
+    validations:
+      - rule: BR-SHP-050
+        description: Tracking number required
+    on_success: PRINT_LABEL
+    on_failure: LABEL_GENERATION_ERROR
+
+  - id: PRINT_LABEL
+    name: Print Shipping Label
+    description: Print and attach shipping label
+    actor: Packer
+    type: interactive
+    actions:
+      - Print shipping label
+      - Attach to package
+      - Scan to confirm
+    ui_elements:
+      - label_printer
+      - confirmation_scanner
+    on_success: MOVE_TO_SHIPPING
+
+  # Shipping
+  - id: MOVE_TO_SHIPPING
+    name: Move to Shipping Area
+    description: Move packed orders to shipping dock
+    actor: Packer
+    type: interactive
+    actions:
+      - Transport to shipping area
+      - Sort by carrier
+      - Scan into staging
+    outputs:
+      - staging_location
+    on_success: AWAIT_CARRIER
+
+  - id: AWAIT_CARRIER
+    name: Await Carrier Pickup
+    description: Wait for carrier pickup
+    actor: Shipper
+    type: wait
+    actions:
+      - Stage packages by carrier
+      - Prepare manifest
+      - Await carrier arrival
+    trigger:
+      - carrier_arrival
+      - scheduled_pickup_time
+    on_carrier_arrival: CARRIER_HANDOFF
+
+  - id: CARRIER_HANDOFF
+    name: Carrier Handoff
+    description: Hand packages to carrier
+    actor: Shipper
+    type: interactive
+    actions:
+      - Scan each package
+      - Verify with carrier
+      - Get carrier receipt
+      - Record pickup time
+    inputs:
+      - packages_to_ship
+      - carrier_id
+    outputs:
+      - carrier_receipt
+      - pickup_timestamp
+    sub_steps:
+      - id: SCAN_PACKAGES
+        name: Scan Out Packages
+        actions:
+          - Scan each package barcode
+          - Verify tracking number
+          - Mark as shipped
+
+      - id: CARRIER_CONFIRMATION
+        name: Carrier Confirmation
+        actions:
+          - Carrier scans/confirms receipt
+          - Exchange manifest
+          - Record handoff
+    on_complete: MARK_SHIPPED
+    on_discrepancy: HANDOFF_DISCREPANCY
+
+  - id: MARK_SHIPPED
+    name: Mark as Shipped
+    description: Update order and shipment status
+    actor: System
+    type: automated
+    actions:
+      - Update shipment status to 'shipped'
+      - Update order status to 'shipped'
+      - Update order.shipped_at
+      - Trigger shipped notification
+      - Deduct inventory
+    events:
+      - shipment.shipped
+      - order.shipped
+    validations:
+      - rule: BR-INV-030
+        description: Ship deduction
+    on_success: COMPLETE_FULFILLMENT
+
+  - id: COMPLETE_FULFILLMENT
+    name: Complete Fulfillment
+    description: Mark fulfillment as complete
+    actor: System
+    type: automated
+    actions:
+      - Update fulfillment status
+      - Calculate fulfillment metrics
+      - Close fulfillment record
+    outputs:
+      - fulfillment.status = 'completed'
+      - fulfillment_time
+
+notifications:
+  - event: fulfillment.created
+    recipient: warehouse
+    template: new_fulfillment_task
+
+  - event: pick_assigned
+    recipient: picker
+    template: pick_assignment
+
+  - event: pack_assigned
+    recipient: packer
+    template: pack_assignment
+
+  - event: shipment.shipped
+    recipient: customer
+    channels: [email, sms]
+    template: order_shipped
+
+metrics:
+  - name: pick_time
+    description: Time to complete picking
+    calculation: pick_complete_time - pick_start_time
+
+  - name: pack_time
+    description: Time to complete packing
+    calculation: pack_complete_time - pack_start_time
+
+  - name: fulfillment_time
+    description: Total fulfillment time
+    calculation: shipped_at - order.confirmed_at
+
+  - name: pick_accuracy
+    description: Picking accuracy rate
+    calculation: correct_picks / total_picks * 100
+
+  - name: on_time_shipment
+    description: Shipments within SLA
+    calculation: on_time_shipments / total_shipments * 100
+
+sla:
+  - stage: picking
+    target: 2 hours
+    escalation: Notify supervisor
+
+  - stage: packing
+    target: 1 hour
+    escalation: Notify supervisor
+
+  - stage: shipping
+    target: Same day cutoff (2 PM)
+    escalation: Priority handling
+
+exceptions:
+  - name: OUT_OF_STOCK
+    handling: Cancel item, partial fulfillment, or backorder
+
+  - name: DAMAGED_INVENTORY
+    handling: Flag for quality, select alternative unit
+
+  - name: CARRIER_UNAVAILABLE
+    handling: Select alternative carrier

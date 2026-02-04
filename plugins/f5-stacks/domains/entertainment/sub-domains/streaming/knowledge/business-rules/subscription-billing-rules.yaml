@@ -1,0 +1,513 @@
+name: subscription_billing_rules
+display_name: Subscription & Billing Rules
+description: |
+  Business rules for subscription management, billing cycles,
+  payment processing, and subscription lifecycle.
+
+domain: entertainment
+subdomain: streaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - subscription_lifecycle
+  - billing_management
+  - payment_processing
+  - promotional_rules
+  - grace_periods
+
+rules:
+  # ============================================
+  # Subscription Lifecycle
+  # ============================================
+  - id: SBR-001
+    name: Trial Period Limits
+    description: One free trial per user account
+    category: subscription_lifecycle
+    severity: high
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: trialing
+      then:
+        - field: account.previous_trials
+          operator: equals
+          value: 0
+        - field: account.payment_method_history
+          operator: not_contains_any
+          reference: current_payment_method
+
+    actions:
+      on_violation:
+        - block_trial_creation
+        - offer_paid_subscription
+        - log_fraud_attempt
+
+    error_message: "Account has already used free trial"
+
+  - id: SBR-002
+    name: Trial Duration
+    description: Free trial period is 7 days
+    category: subscription_lifecycle
+    severity: medium
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: trialing
+
+    parameters:
+      trial_days: 7
+
+    actions:
+      on_creation:
+        - set_trial_end: "start_date + 7 days"
+        - schedule_trial_ending_reminder: "trial_end - 3 days"
+        - schedule_conversion_prompt: "trial_end - 1 day"
+
+  - id: SBR-003
+    name: Subscription Activation Requirements
+    description: Valid payment method required to activate
+    category: subscription_lifecycle
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: active
+      then:
+        - field: payment_method_id
+          operator: is_not_null
+        - field: payment_method.is_valid
+          operator: equals
+          value: true
+        - field: payment_method.is_expired
+          operator: equals
+          value: false
+
+    actions:
+      on_violation:
+        - block_activation
+        - request_payment_method
+
+    error_message: "Valid payment method required to activate subscription"
+
+  - id: SBR-004
+    name: Plan Downgrade Timing
+    description: Downgrades take effect at end of billing period
+    category: subscription_lifecycle
+    severity: medium
+
+    conditions:
+      when:
+        - event: plan_change
+        - field: new_plan.tier
+          operator: less_than
+          reference: current_plan.tier
+
+    actions:
+      on_event:
+        - schedule_downgrade: current_period_end
+        - maintain_current_features: until_period_end
+        - send_downgrade_confirmation
+        - log_plan_change
+
+  - id: SBR-005
+    name: Plan Upgrade Immediate
+    description: Upgrades take effect immediately with prorated billing
+    category: subscription_lifecycle
+    severity: medium
+
+    conditions:
+      when:
+        - event: plan_change
+        - field: new_plan.tier
+          operator: greater_than
+          reference: current_plan.tier
+
+    actions:
+      on_event:
+        - calculate_proration
+        - apply_upgrade_immediately
+        - charge_prorated_amount
+        - send_upgrade_confirmation
+        - grant_new_features
+
+  # ============================================
+  # Billing Management
+  # ============================================
+  - id: SBR-010
+    name: Billing Cycle Start
+    description: Billing cycle starts on subscription activation
+    category: billing_management
+    severity: high
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: active
+
+    actions:
+      on_transition:
+        - set_billing_anchor: activation_date
+        - create_first_invoice
+        - schedule_next_billing: based_on_cycle
+        - send_billing_confirmation
+
+  - id: SBR-011
+    name: Invoice Generation
+    description: Generate invoice at start of each billing period
+    category: billing_management
+    severity: high
+
+    conditions:
+      when:
+        - event: billing_cycle_start
+        - field: status
+          operator: in
+          values: [active, past_due]
+
+    actions:
+      on_event:
+        - create_invoice
+        - calculate_amount: "base_price - discounts + taxes"
+        - add_line_items
+        - process_payment
+        - send_invoice_email
+
+  - id: SBR-012
+    name: Tax Calculation
+    description: Apply applicable taxes based on user location
+    category: billing_management
+    severity: critical
+
+    conditions:
+      when:
+        - event: invoice_creation
+
+    actions:
+      on_event:
+        - determine_tax_jurisdiction
+        - calculate_tax_rate
+        - apply_tax_to_invoice
+        - store_tax_details
+
+    compliance:
+      - eu_vat
+      - us_sales_tax
+      - gst_applicable
+
+  - id: SBR-013
+    name: Currency Handling
+    description: Bill in user's local currency when supported
+    category: billing_management
+    severity: medium
+
+    conditions:
+      when:
+        - event: subscription_creation
+
+    parameters:
+      supported_currencies:
+        - USD
+        - EUR
+        - GBP
+        - JPY
+        - AUD
+        - CAD
+
+    actions:
+      on_event:
+        - determine_user_currency
+        - convert_price_if_needed
+        - lock_currency_for_subscription
+        - display_local_pricing
+
+  # ============================================
+  # Payment Processing
+  # ============================================
+  - id: SBR-020
+    name: Payment Retry Logic
+    description: Retry failed payments with exponential backoff
+    category: payment_processing
+    severity: high
+
+    conditions:
+      when:
+        - event: payment_failed
+        - field: retry_count
+          operator: less_than
+          value: 4
+
+    parameters:
+      retry_schedule:
+        - delay: 1 day
+        - delay: 3 days
+        - delay: 5 days
+        - delay: 7 days
+
+    actions:
+      on_event:
+        - schedule_retry
+        - send_payment_failed_email
+        - update_subscription_status: past_due
+        - increment_retry_count
+
+  - id: SBR-021
+    name: Payment Method Update Grace
+    description: Allow 7 days to update payment method after failure
+    category: payment_processing
+    severity: medium
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: past_due
+
+    parameters:
+      grace_period_days: 7
+
+    actions:
+      scheduled:
+        - send_reminder: "day 3"
+        - send_final_warning: "day 5"
+        - suspend_if_not_resolved: "day 7"
+
+  - id: SBR-022
+    name: Fraud Detection
+    description: Flag suspicious payment patterns
+    category: payment_processing
+    severity: critical
+
+    conditions:
+      when:
+        - event: payment_attempt
+      evaluate:
+        - multiple_cards_same_ip: threshold 3
+        - rapid_subscription_cycling: threshold 5
+        - geographic_mismatch: card_country != ip_country
+        - velocity_check: attempts_per_hour > 10
+
+    actions:
+      on_trigger:
+        - flag_for_review
+        - block_payment
+        - notify_fraud_team
+        - log_fraud_indicator
+
+  - id: SBR-023
+    name: Refund Policy
+    description: Process refunds within policy guidelines
+    category: payment_processing
+    severity: high
+
+    conditions:
+      when:
+        - event: refund_request
+
+    parameters:
+      refund_window_days: 7
+      prorated_refund: true
+      full_refund_conditions:
+        - never_streamed_content
+        - technical_issue_verified
+
+    actions:
+      on_request:
+        - verify_eligibility
+        - calculate_refund_amount
+        - process_refund
+        - update_subscription
+        - send_refund_confirmation
+
+  # ============================================
+  # Promotional Rules
+  # ============================================
+  - id: SBR-030
+    name: Promo Code Validation
+    description: Validate and apply promotional codes
+    category: promotional_rules
+    severity: medium
+
+    conditions:
+      when:
+        - event: promo_code_applied
+      validate:
+        - field: promo_code.is_active
+          operator: equals
+          value: true
+        - field: promo_code.usage_count
+          operator: less_than
+          reference: promo_code.max_uses
+        - field: promo_code.valid_until
+          operator: greater_than
+          value: now()
+        - field: user.previous_promo_codes
+          operator: not_contains
+          reference: promo_code
+
+    actions:
+      on_valid:
+        - apply_discount
+        - increment_usage_count
+        - track_attribution
+      on_invalid:
+        - reject_code
+        - show_error_message
+
+  - id: SBR-031
+    name: Discount Stacking Prevention
+    description: Only one discount per subscription
+    category: promotional_rules
+    severity: medium
+
+    conditions:
+      when:
+        - event: discount_applied
+      then:
+        - field: current_discounts.count
+          operator: equals
+          value: 0
+
+    actions:
+      on_violation:
+        - reject_new_discount
+        - offer_choice_of_discount
+
+    error_message: "Only one discount can be applied per subscription"
+
+  - id: SBR-032
+    name: Partner Bundle Handling
+    description: Process partner/bundled subscriptions
+    category: promotional_rules
+    severity: medium
+
+    conditions:
+      when:
+        - field: subscription_source
+          operator: in
+          values: [partner_bundle, carrier_billing, device_bundle]
+
+    actions:
+      on_creation:
+        - bypass_direct_billing
+        - link_partner_account
+        - sync_entitlements
+        - track_partner_attribution
+      on_cancellation:
+        - notify_partner
+        - handle_unbundling
+
+  # ============================================
+  # Grace Periods
+  # ============================================
+  - id: SBR-040
+    name: Cancellation Grace Period
+    description: Maintain access until end of paid period
+    category: grace_periods
+    severity: high
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: cancelled
+        - field: current_period_end
+          operator: greater_than
+          value: now()
+
+    actions:
+      during_grace:
+        - maintain_full_access
+        - show_cancellation_notice
+        - offer_win_back_incentive
+      at_period_end:
+        - revoke_access
+        - update_status: expired
+        - archive_user_data
+
+  - id: SBR-041
+    name: Pause Subscription Feature
+    description: Allow users to pause subscription
+    category: grace_periods
+    severity: medium
+
+    conditions:
+      when:
+        - event: pause_request
+      validate:
+        - field: account_age_days
+          operator: greater_than
+          value: 30
+        - field: pause_count_this_year
+          operator: less_than
+          value: 2
+
+    parameters:
+      max_pause_duration_days: 90
+      min_pause_duration_days: 7
+
+    actions:
+      on_pause:
+        - suspend_billing
+        - maintain_profile_data
+        - schedule_auto_resume
+        - send_pause_confirmation
+      on_resume:
+        - reactivate_billing
+        - restore_full_access
+
+automation:
+  - name: subscription_renewal
+    trigger:
+      type: schedule
+      cron: "0 0 * * *"
+    condition:
+      - field: next_billing_date
+        operator: equals
+        value: today()
+      - field: auto_renew
+        operator: equals
+        value: true
+    action:
+      - process_renewal_payment
+      - extend_subscription_period
+      - send_renewal_receipt
+
+  - name: trial_conversion_reminder
+    trigger:
+      type: schedule
+      cron: "0 10 * * *"
+    condition:
+      - field: status
+        operator: equals
+        value: trialing
+      - field: trial_end
+        operator: between
+        value: [now(), "now() + 3 days"]
+    action:
+      - send_trial_ending_email
+      - show_in_app_prompt
+
+metrics:
+  - name: trial_conversion_rate
+    calculation: "(converted_trials / total_trials) * 100"
+
+  - name: churn_rate
+    calculation: "(cancelled_subscriptions / total_subscriptions) * 100"
+
+  - name: mrr
+    calculation: "SUM(active_subscriptions.monthly_value)"
+
+  - name: arpu
+    calculation: "total_revenue / active_users"
+
+  - name: payment_failure_rate
+    calculation: "(failed_payments / total_payments) * 100"

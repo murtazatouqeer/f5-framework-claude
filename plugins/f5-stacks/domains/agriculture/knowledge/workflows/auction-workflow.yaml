@@ -1,0 +1,238 @@
+name: Auction Workflow
+display_name: Auction Workflow / Quy trình đấu giá
+description: |
+  Quy trình đấu giá gia súc/gia cầm từ đầu đến cuối.
+
+domain: agriculture
+version: "1.0"
+
+triggers:
+  - event: listing.published
+    source: Listing
+    condition: listing.selling_type = 'auction'
+
+actors:
+  - name: Seller
+    role: primary
+    description: Người bán (Farm owner)
+  - name: Bidders
+    role: participants
+    description: Những người tham gia đấu giá
+  - name: System
+    role: automated
+    description: Hệ thống xử lý tự động
+  - name: Admin
+    role: support
+    description: Quản trị viên
+
+steps:
+  - id: CREATE_AUCTION
+    name: Create Auction
+    actor: System
+    type: automated
+    actions:
+      - Create auction record from listing
+      - Set start_at and end_at
+      - Initialize current_price = starting_price
+      - Schedule start notification
+    inputs:
+      - listing_id
+    outputs:
+      - auction_id
+      - auction_code
+    on_success: WAIT_FOR_START
+
+  - id: WAIT_FOR_START
+    name: Wait for Auction Start
+    actor: System
+    type: scheduled
+    actions:
+      - Wait until start_at
+      - Notify watchers
+    on_success: AUCTION_ACTIVE
+
+  - id: AUCTION_ACTIVE
+    name: Auction Active
+    actor: System
+    type: automated
+    actions:
+      - Set status = 'active'
+      - Enable bidding
+      - Start countdown timer
+    events:
+      - auction.started
+    on_success: ACCEPT_BIDS
+
+  - id: ACCEPT_BIDS
+    name: Accept Bids
+    actor: Bidders
+    type: interactive
+    actions:
+      - Validate bid amount (BR-AUC-001)
+      - Check bidder != seller (BR-AUC-002)
+      - Check for shill bidding (BR-FRAUD-005)
+      - Record bid
+      - Update current_price
+      - Mark previous high bidder as outbid
+      - Check for auto-extension (BR-AUC-003)
+    inputs:
+      - bidder_id
+      - amount
+    outputs:
+      - bid_id
+      - new_current_price
+    validations:
+      - rule: BR-AUC-001
+      - rule: BR-AUC-002
+      - rule: BR-FRAUD-005
+    events:
+      - auction.bid_placed
+    loop_until: auction.end_at
+
+  - id: CHECK_EXTENSION
+    name: Check Extension
+    actor: System
+    type: automated
+    condition: |
+      bid placed within last 5 minutes AND
+      auto_extend = true AND
+      extension_count < max_extensions
+    actions:
+      - Extend end_at by 5 minutes
+      - Increment extension_count
+      - Set status = 'extended'
+      - Notify all bidders
+    events:
+      - auction.extended
+
+  - id: END_AUCTION
+    name: End Auction
+    actor: System
+    type: automated
+    trigger: NOW() >= auction.end_at
+    actions:
+      - Set status = 'ended'
+      - Determine winner (highest bidder)
+      - Check reserve_price met
+      - Record final_price
+      - Notify all participants
+    outputs:
+      - winning_bid_id
+      - final_price
+      - reserve_met
+    events:
+      - auction.ended
+    on_success: CHECK_RESERVE
+
+  - id: CHECK_RESERVE
+    name: Check Reserve Price
+    actor: System
+    type: automated
+    branches:
+      - condition: reserve_met = true OR reserve_price IS NULL
+        next: CREATE_ORDER
+      - condition: reserve_met = false
+        next: SELLER_DECISION
+
+  - id: SELLER_DECISION
+    name: Seller Decision (Reserve Not Met)
+    actor: Seller
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Notify seller reserve not met
+      - Seller can accept highest bid or cancel
+    inputs:
+      - decision: accept | cancel
+    branches:
+      - condition: decision = 'accept'
+        next: CREATE_ORDER
+      - condition: decision = 'cancel'
+        next: CANCEL_AUCTION
+    on_timeout: CANCEL_AUCTION
+
+  - id: CREATE_ORDER
+    name: Create Order
+    actor: System
+    type: automated
+    actions:
+      - Create order from winning bid
+      - Set order.order_source = 'auction'
+      - Calculate deposit amount
+      - Notify winner for payment
+    outputs:
+      - order_id
+    on_success: WAIT_DEPOSIT
+
+  - id: WAIT_DEPOSIT
+    name: Wait for Deposit
+    actor: Bidders
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Winner pays deposit
+      - Verify payment
+    validations:
+      - rule: BR-AUC-006
+    on_success: AUCTION_COMPLETE
+    on_timeout: TRANSFER_TO_SECOND
+
+  - id: TRANSFER_TO_SECOND
+    name: Transfer to Second Bidder
+    actor: System
+    type: automated
+    actions:
+      - Penalize original winner
+      - Offer to second highest bidder
+      - Notify all parties
+    on_success: WAIT_DEPOSIT
+    on_failure: CANCEL_AUCTION
+
+  - id: AUCTION_COMPLETE
+    name: Auction Complete
+    actor: System
+    type: automated
+    actions:
+      - Set status = 'completed'
+      - Link order to auction
+    events:
+      - auction.completed
+    outputs:
+      - order_id
+
+  - id: CANCEL_AUCTION
+    name: Cancel Auction
+    actor: System
+    type: automated
+    actions:
+      - Set status = 'cancelled'
+      - Notify all bidders
+      - Return listing to active (optional)
+    events:
+      - auction.cancelled
+
+timeouts:
+  seller_decision: 24 hours
+  winner_payment: 24 hours
+  second_bidder_payment: 24 hours
+
+notifications:
+  - event: auction.started
+    recipients: [watchers, seller]
+    channels: [push, email]
+
+  - event: auction.bid_placed
+    recipients: [seller, outbid_bidder]
+    channels: [push]
+
+  - event: auction.extended
+    recipients: [all_bidders]
+    channels: [push]
+
+  - event: auction.ended
+    recipients: [all_bidders, seller]
+    channels: [push, email, sms]
+
+  - event: auction.completed
+    recipients: [winner, seller]
+    channels: [push, email, sms]

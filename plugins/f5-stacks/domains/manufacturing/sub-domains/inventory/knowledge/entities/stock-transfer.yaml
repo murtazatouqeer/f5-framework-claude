@@ -1,0 +1,496 @@
+name: StockTransfer
+display_name: Stock Transfer / Chuyển kho
+description: |
+  Document managing inventory movement between locations,
+  warehouses, or plants. Supports two-step transfers with
+  in-transit tracking and multi-line transfers.
+
+domain: manufacturing
+subdomain: inventory
+category: transaction
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: transfer_number
+    type: string
+    required: true
+    description: Transfer order number
+    validation:
+      pattern: "^TR-[0-9]{4}-[0-9]{6}$"
+    example: "TR-2024-000123"
+
+  - name: status
+    type: enum
+    required: true
+    description: Transfer status
+    validation:
+      values: [draft, pending_approval, approved, picking, picked, in_transit,
+               partially_received, received, completed, cancelled]
+    default: draft
+
+  - name: transfer_type
+    type: enum
+    required: true
+    description: Type of transfer
+    validation:
+      values:
+        - intra_warehouse    # Within same warehouse
+        - inter_warehouse    # Between warehouses, same plant
+        - inter_plant        # Between plants
+        - inter_company      # Between legal entities
+        - replenishment      # Reserve to forward pick
+        - relocation         # Bin optimization
+    default: intra_warehouse
+
+  # Source
+  - name: source_plant_id
+    type: uuid
+    required: true
+    description: Source plant
+
+  - name: source_warehouse_id
+    type: uuid
+    required: true
+    description: Source warehouse
+
+  - name: source_location_id
+    type: uuid
+    required: false
+    description: Source location (if single)
+
+  # Destination
+  - name: destination_plant_id
+    type: uuid
+    required: true
+    description: Destination plant
+
+  - name: destination_warehouse_id
+    type: uuid
+    required: true
+    description: Destination warehouse
+
+  - name: destination_location_id
+    type: uuid
+    required: false
+    description: Destination location (if single)
+
+  # Dates
+  - name: request_date
+    type: date
+    required: true
+    description: Date transfer requested
+
+  - name: required_date
+    type: date
+    required: true
+    description: Required delivery date
+
+  - name: ship_date
+    type: date
+    required: false
+    description: Actual ship date
+
+  - name: arrival_date
+    type: date
+    required: false
+    description: Actual arrival date
+
+  - name: completion_date
+    type: timestamp
+    required: false
+    description: Transfer completion timestamp
+
+  # Priority
+  - name: priority
+    type: enum
+    required: true
+    description: Transfer priority
+    validation:
+      values: [low, normal, high, urgent]
+    default: normal
+
+  # Reason
+  - name: reason_code
+    type: string
+    required: false
+    description: Reason code for transfer
+    validation:
+      max_length: 10
+
+  - name: reason_description
+    type: string
+    required: false
+    description: Reason description
+    validation:
+      max_length: 200
+
+  # Reference
+  - name: reference_type
+    type: enum
+    required: false
+    description: Source reference type
+    validation:
+      values: [production_order, sales_order, replenishment, manual, cycle_count]
+
+  - name: reference_id
+    type: uuid
+    required: false
+    description: Reference document ID
+
+  - name: reference_number
+    type: string
+    required: false
+    description: Reference number
+    validation:
+      max_length: 30
+
+  # Shipping (for inter-plant/company)
+  - name: carrier_id
+    type: uuid
+    required: false
+    description: Shipping carrier
+
+  - name: shipping_method
+    type: string
+    required: false
+    description: Shipping method
+    validation:
+      max_length: 50
+
+  - name: tracking_number
+    type: string
+    required: false
+    description: Shipment tracking number
+    validation:
+      max_length: 50
+
+  - name: vehicle_number
+    type: string
+    required: false
+    description: Vehicle/container number
+    validation:
+      max_length: 20
+
+  - name: shipping_cost
+    type: decimal
+    required: false
+    description: Shipping cost
+    validation:
+      min: 0
+      precision: 2
+
+  - name: currency
+    type: string
+    required: false
+    description: Cost currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  # Quantity summary
+  - name: total_lines
+    type: integer
+    required: false
+    description: Number of line items
+    computed: true
+
+  - name: total_requested_qty
+    type: decimal
+    required: false
+    description: Total requested quantity
+    computed: true
+
+  - name: total_shipped_qty
+    type: decimal
+    required: false
+    description: Total shipped quantity
+    computed: true
+
+  - name: total_received_qty
+    type: decimal
+    required: false
+    description: Total received quantity
+    computed: true
+
+  # Value
+  - name: total_value
+    type: decimal
+    required: false
+    description: Total transfer value
+    validation:
+      precision: 2
+    computed: true
+
+  # Two-step transfer
+  - name: two_step_transfer
+    type: boolean
+    required: true
+    description: Uses two-step process (issue then receive)
+    default: false
+
+  - name: issue_posted
+    type: boolean
+    required: false
+    description: Issue transaction posted
+    default: false
+
+  - name: issue_date
+    type: timestamp
+    required: false
+    description: Issue posting date
+
+  - name: receipt_posted
+    type: boolean
+    required: false
+    description: Receipt transaction posted
+    default: false
+
+  - name: receipt_date
+    type: timestamp
+    required: false
+    description: Receipt posting date
+
+  # Discrepancy
+  - name: has_discrepancy
+    type: boolean
+    required: false
+    description: Has quantity discrepancy
+    default: false
+
+  - name: discrepancy_notes
+    type: string
+    required: false
+    description: Discrepancy description
+    validation:
+      max_length: 500
+
+  # Approval
+  - name: approval_required
+    type: boolean
+    required: false
+    description: Requires approval
+    default: false
+
+  - name: approved_by
+    type: uuid
+    required: false
+    description: Approver
+
+  - name: approved_at
+    type: timestamp
+    required: false
+    description: Approval timestamp
+
+  # Notes
+  - name: notes
+    type: string
+    required: false
+    description: Transfer notes
+    validation:
+      max_length: 1000
+
+  - name: shipping_notes
+    type: string
+    required: false
+    description: Shipping instructions
+    validation:
+      max_length: 500
+
+  # Audit
+  - name: created_by
+    type: uuid
+    required: true
+    description: User who created
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation timestamp
+
+  - name: updated_by
+    type: uuid
+    required: false
+    description: Last updated by
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+  - name: cancelled_by
+    type: uuid
+    required: false
+    description: User who cancelled
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: Cancellation timestamp
+
+  - name: cancellation_reason
+    type: string
+    required: false
+    description: Cancellation reason
+    validation:
+      max_length: 200
+
+relationships:
+  - name: source_warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+    description: Source warehouse
+
+  - name: destination_warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+    description: Destination warehouse
+
+  - name: lines
+    type: has_many
+    entity: StockTransferLine
+    description: Transfer line items
+
+  - name: transactions
+    type: has_many
+    entity: InventoryTransaction
+    description: Inventory transactions
+
+  - name: carrier
+    type: belongs_to
+    entity: Carrier
+    required: false
+    description: Shipping carrier
+
+indexes:
+  - [transfer_number]
+  - [status]
+  - [transfer_type]
+  - [source_plant_id, source_warehouse_id]
+  - [destination_plant_id, destination_warehouse_id]
+  - [request_date]
+  - [required_date]
+  - [priority]
+  - [created_by]
+
+state_machine:
+  initial: draft
+  states:
+    draft:
+      description: Being prepared
+      transitions:
+        - to: pending_approval
+          trigger: submit
+          condition: approval_required AND has_lines
+        - to: approved
+          trigger: submit
+          condition: NOT approval_required AND has_lines
+        - to: cancelled
+          trigger: cancel
+    pending_approval:
+      description: Awaiting approval
+      transitions:
+        - to: approved
+          trigger: approve
+          action: set_approval_info
+        - to: draft
+          trigger: reject
+        - to: cancelled
+          trigger: cancel
+    approved:
+      description: Ready for picking
+      transitions:
+        - to: picking
+          trigger: start_picking
+        - to: cancelled
+          trigger: cancel
+    picking:
+      description: Being picked
+      transitions:
+        - to: picked
+          trigger: complete_picking
+        - to: cancelled
+          trigger: cancel
+    picked:
+      description: Picked and ready
+      transitions:
+        - to: in_transit
+          trigger: ship
+          condition: two_step_transfer
+          action: post_issue_transaction
+        - to: received
+          trigger: receive
+          condition: NOT two_step_transfer
+          action: post_one_step_transaction
+    in_transit:
+      description: In transit
+      transitions:
+        - to: partially_received
+          trigger: receive_partial
+          action: post_partial_receipt
+        - to: received
+          trigger: receive_complete
+          action: post_receipt_transaction
+    partially_received:
+      description: Partially received
+      transitions:
+        - to: received
+          trigger: receive_remaining
+          action: post_receipt_transaction
+        - to: completed
+          trigger: close
+          action: handle_discrepancy
+    received:
+      description: All items received
+      transitions:
+        - to: completed
+          trigger: complete
+    completed:
+      description: Transfer completed
+      final: true
+    cancelled:
+      description: Transfer cancelled
+      final: true
+
+business_rules:
+  - BR-TR-001: Transfer number auto-generated as TR-YYYY-NNNNNN
+  - BR-TR-002: Source and destination must be different
+  - BR-TR-003: Two-step required for inter-plant transfers
+  - BR-TR-004: Approval required for high value transfers
+  - BR-TR-005: Cannot transfer more than available quantity
+  - BR-TR-006: Required date >= request date
+  - BR-TR-007: Batch number maintained through transfer
+  - BR-TR-008: Cannot cancel after picking started
+  - BR-TR-009: In-transit inventory tracked separately
+  - BR-TR-010: Discrepancy requires resolution before completion
+
+events:
+  - name: transfer.created
+    payload: [id, transfer_number, transfer_type, source_warehouse_id, destination_warehouse_id]
+    description: Transfer created
+
+  - name: transfer.approved
+    payload: [id, transfer_number, approved_by]
+    description: Transfer approved
+
+  - name: transfer.shipped
+    payload: [id, transfer_number, ship_date, tracking_number]
+    description: Transfer shipped
+
+  - name: transfer.received
+    payload: [id, transfer_number, received_qty, discrepancy]
+    description: Transfer received
+
+  - name: transfer.completed
+    payload: [id, transfer_number, total_value]
+    description: Transfer completed
+
+  - name: transfer.discrepancy
+    payload: [id, transfer_number, shipped_qty, received_qty]
+    description: Discrepancy detected

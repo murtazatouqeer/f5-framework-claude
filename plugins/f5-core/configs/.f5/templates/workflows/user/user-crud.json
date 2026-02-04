@@ -1,0 +1,258 @@
+{
+  "id": "f5-user-crud",
+  "name": "User CRUD Operations Workflow",
+  "description": "Complete user management with CRUD operations, role-based permissions, and audit logging",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "user",
+    "category": "crud",
+    "complexity": "medium",
+    "estimatedDuration": "15-20 minutes",
+    "requiredSkills": ["f5-backend", "f5-db", "f5-security"],
+    "mcpServers": ["serena", "github", "sequential-thinking"],
+    "qualityGates": ["D3", "G2", "G3"],
+    "argumentHint": "Implement user CRUD with role-based access control for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "Start User Operation"
+      }
+    },
+    {
+      "id": "switch-operation",
+      "type": "switch",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Select Operation",
+        "description": "Route to appropriate CRUD operation",
+        "evaluationTarget": "Requested operation type from API endpoint",
+        "cases": [
+          { "id": "case-create", "label": "Create", "condition": "POST request to /users" },
+          { "id": "case-read", "label": "Read", "condition": "GET request to /users/:id" },
+          { "id": "case-update", "label": "Update", "condition": "PUT/PATCH request to /users/:id" },
+          { "id": "case-delete", "label": "Delete", "condition": "DELETE request to /users/:id" }
+        ]
+      }
+    },
+    {
+      "id": "subagent-check-permission",
+      "type": "subAgent",
+      "position": { "x": 550, "y": 300 },
+      "data": {
+        "label": "Check Permissions",
+        "description": "Verify user has permission for requested operation",
+        "prompt": "Check RBAC permissions:\n1. Get requesting user's role from JWT\n2. Check role permissions for requested operation\n3. For self-operations, allow if user ID matches\n4. For admin operations, require admin role\n5. Return permission granted/denied with reason",
+        "agentType": "security-engineer",
+        "outputPorts": ["granted", "denied"]
+      }
+    },
+    {
+      "id": "subagent-create-user",
+      "type": "subAgent",
+      "position": { "x": 100, "y": 450 },
+      "data": {
+        "label": "Create User",
+        "description": "Create new user with validation",
+        "prompt": "Create new user:\n1. Validate all required fields\n2. Check email uniqueness\n3. Hash password with bcrypt\n4. Assign default role\n5. Create user record\n6. Send welcome email\n7. Return created user (exclude password)",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "validation_error", "duplicate_error"]
+      }
+    },
+    {
+      "id": "subagent-read-user",
+      "type": "subAgent",
+      "position": { "x": 250, "y": 450 },
+      "data": {
+        "label": "Read User",
+        "description": "Retrieve user by ID with field filtering",
+        "prompt": "Retrieve user:\n1. Find user by ID\n2. Apply field filtering based on requester role\n3. Admins see all fields\n4. Regular users see public fields only\n5. Return 404 if not found\n6. Return filtered user data",
+        "agentType": "backend-architect",
+        "outputPorts": ["found", "not_found"]
+      }
+    },
+    {
+      "id": "subagent-update-user",
+      "type": "subAgent",
+      "position": { "x": 400, "y": 450 },
+      "data": {
+        "label": "Update User",
+        "description": "Update user with partial updates support",
+        "prompt": "Update user:\n1. Find existing user\n2. Validate update fields\n3. If password change, verify current password\n4. If email change, trigger reverification\n5. Apply updates with optimistic locking\n6. Update modified timestamp\n7. Return updated user",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "not_found", "validation_error"]
+      }
+    },
+    {
+      "id": "subagent-delete-user",
+      "type": "subAgent",
+      "position": { "x": 550, "y": 450 },
+      "data": {
+        "label": "Delete User",
+        "description": "Soft delete user with cascade handling",
+        "prompt": "Delete user:\n1. Find user by ID\n2. Check for cascade dependencies\n3. Perform soft delete (set deleted_at)\n4. Anonymize PII data\n5. Invalidate all sessions\n6. Schedule hard delete after retention period\n7. Return deletion confirmation",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "not_found", "has_dependencies"]
+      }
+    },
+    {
+      "id": "mcp-audit-log",
+      "type": "mcp",
+      "position": { "x": 300, "y": 600 },
+      "data": {
+        "label": "Log Audit Event",
+        "description": "Record operation in audit log",
+        "serverName": "serena",
+        "toolName": "write_memory",
+        "mode": "structured",
+        "parameters": {
+          "memory_file_name": "audit-log",
+          "content": "User operation logged with actor, action, target, timestamp"
+        },
+        "outputPorts": ["logged"]
+      }
+    },
+    {
+      "id": "prompt-format-response",
+      "type": "prompt",
+      "position": { "x": 300, "y": 730 },
+      "data": {
+        "label": "Format Response",
+        "description": "Format API response based on operation result",
+        "prompt": "Format API response:\n- Create: 201 Created with user data\n- Read: 200 OK with user data\n- Update: 200 OK with updated user\n- Delete: 204 No Content\n- Errors: Appropriate status with message\n\nInclude HATEOAS links for discoverability.",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "prompt-permission-denied",
+      "type": "prompt",
+      "position": { "x": 700, "y": 450 },
+      "data": {
+        "label": "Return Permission Denied",
+        "description": "Return 403 Forbidden response",
+        "prompt": "Return permission denied:\n- HTTP 403 Forbidden\n- Include required permission\n- Log unauthorized access attempt\n- Don't reveal existence of resource",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 300, "y": 860 },
+      "data": {
+        "label": "Operation Complete"
+      }
+    },
+    {
+      "id": "end-denied",
+      "type": "end",
+      "position": { "x": 700, "y": 580 },
+      "data": {
+        "label": "Access Denied"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "switch-operation",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "switch-operation",
+      "target": "subagent-check-permission",
+      "sourceHandle": "case-create",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "switch-operation",
+      "target": "subagent-check-permission",
+      "sourceHandle": "case-read",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-4",
+      "source": "switch-operation",
+      "target": "subagent-check-permission",
+      "sourceHandle": "case-update",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-5",
+      "source": "switch-operation",
+      "target": "subagent-check-permission",
+      "sourceHandle": "case-delete",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "subagent-check-permission",
+      "target": "subagent-create-user",
+      "sourceHandle": "output-granted",
+      "targetHandle": "input",
+      "label": "Create Path"
+    },
+    {
+      "id": "conn-7",
+      "source": "subagent-check-permission",
+      "target": "prompt-permission-denied",
+      "sourceHandle": "output-denied",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "subagent-create-user",
+      "target": "mcp-audit-log",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-9",
+      "source": "subagent-read-user",
+      "target": "mcp-audit-log",
+      "sourceHandle": "output-found",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-10",
+      "source": "subagent-update-user",
+      "target": "mcp-audit-log",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-11",
+      "source": "subagent-delete-user",
+      "target": "mcp-audit-log",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-12",
+      "source": "mcp-audit-log",
+      "target": "prompt-format-response",
+      "sourceHandle": "output-logged",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-13",
+      "source": "prompt-format-response",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-14",
+      "source": "prompt-permission-denied",
+      "target": "end-denied",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

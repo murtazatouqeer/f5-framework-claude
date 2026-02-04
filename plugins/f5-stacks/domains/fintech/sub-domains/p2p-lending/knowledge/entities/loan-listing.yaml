@@ -1,0 +1,595 @@
+name: Loan Listing
+display_name: Loan Listing / Tin vay
+description: |
+  Loan listing entity representing marketplace listings for investor
+  funding with loan details, funding progress, and visibility controls.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: LoanListing
+  name_vi: Tin vay
+  table_name: loan_listings
+
+  primary_key: id
+  natural_key: listing_number
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique listing identifier
+
+    - name: listing_number
+      type: string
+      format: "LST-YYYYMM-XXXXXX"
+      unique: true
+      indexed: true
+      description: Human-readable listing number
+      example: "LST-202501-000001"
+
+    # References
+    - name: loan_id
+      type: uuid
+      required: true
+      references: loans.id
+      unique: true
+      description: Associated loan
+
+    - name: loan_application_id
+      type: uuid
+      required: true
+      references: loan_applications.id
+      description: Original loan application
+
+    - name: borrower_id
+      type: uuid
+      required: true
+      references: borrowers.id
+      indexed: true
+      description: The borrower
+
+    # Listing Details
+    - name: title
+      type: string
+      max_length: 200
+      required: true
+      description: Listing title for display
+
+    - name: description
+      type: text
+      max_length: 2000
+      description: Loan purpose description
+
+    - name: loan_purpose
+      type: enum
+      values: [personal, business, education, medical, home_improvement, debt_consolidation, auto, other]
+      required: true
+      indexed: true
+      description: Purpose category
+
+    # Financial Details
+    - name: loan_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      indexed: true
+      description: Total loan amount in VND
+
+    - name: interest_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      required: true
+      indexed: true
+      description: Annual interest rate
+
+    - name: term_months
+      type: integer
+      required: true
+      min: 1
+      max: 60
+      indexed: true
+      description: Loan term in months
+
+    - name: monthly_payment
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Estimated monthly payment
+
+    # Risk Information
+    - name: grade
+      type: enum
+      values: [A, B, C, D, E, F]
+      required: true
+      indexed: true
+      description: Risk grade
+
+    - name: sub_grade
+      type: string
+      pattern: "^[A-F][1-5]$"
+      indexed: true
+      description: Sub-grade
+
+    - name: credit_score
+      type: integer
+      min: 300
+      max: 850
+      description: Borrower credit score
+
+    # Borrower Information (anonymized)
+    - name: borrower_employment
+      type: enum
+      values: [employed, self_employed, business_owner, freelancer, retired, other]
+      description: Employment status
+
+    - name: borrower_income_range
+      type: enum
+      values: [under_10m, 10m_20m, 20m_30m, 30m_50m, 50m_100m, over_100m]
+      description: Monthly income range
+
+    - name: borrower_region
+      type: string
+      max_length: 50
+      description: Borrower region (general)
+
+    - name: borrower_loan_history
+      type: jsonb
+      description: Anonymized loan history summary
+      example: '{"completed": 2, "active": 0, "on_time_rate": 100}'
+
+    - name: debt_to_income
+      type: decimal
+      precision: 5
+      scale: 2
+      description: DTI ratio
+
+    # Funding Status
+    - name: status
+      type: enum
+      values: [draft, active, funded, expired, cancelled, withdrawn]
+      default: draft
+      indexed: true
+      description: Listing status
+
+    - name: funding_target
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Target funding amount
+
+    - name: funded_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Current funded amount
+
+    - name: funding_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      computed: "(funded_amount / funding_target) * 100"
+      description: Funding progress percentage
+
+    - name: remaining_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "funding_target - funded_amount"
+      description: Amount still needed
+
+    - name: investor_count
+      type: integer
+      default: 0
+      description: Number of investors
+
+    - name: min_investment
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 100000
+      description: Minimum investment amount
+
+    - name: max_investment
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Maximum investment per investor
+
+    # Timing
+    - name: listed_at
+      type: timestamp
+      indexed: true
+      description: When listing went live
+
+    - name: funding_deadline
+      type: timestamp
+      required: true
+      indexed: true
+      description: Funding deadline
+
+    - name: days_remaining
+      type: integer
+      computed: "GREATEST(0, DATEDIFF(funding_deadline, NOW()))"
+      description: Days until funding deadline
+
+    - name: fully_funded_at
+      type: timestamp
+      description: When fully funded
+
+    - name: time_to_fund_hours
+      type: integer
+      computed: "TIMESTAMPDIFF(HOUR, listed_at, fully_funded_at)"
+      description: Hours to reach full funding
+
+    # Visibility & Priority
+    - name: is_featured
+      type: boolean
+      default: false
+      indexed: true
+      description: Featured listing flag
+
+    - name: priority_score
+      type: integer
+      default: 0
+      indexed: true
+      description: Sort priority score
+
+    - name: visibility
+      type: enum
+      values: [public, accredited_only, private]
+      default: public
+      description: Visibility level
+
+    # Auto-Invest Eligibility
+    - name: auto_invest_eligible
+      type: boolean
+      default: true
+      indexed: true
+      description: Eligible for auto-invest matching
+
+    - name: auto_invest_reserved
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount reserved for auto-invest
+
+    # Display Options
+    - name: show_borrower_story
+      type: boolean
+      default: true
+      description: Show borrower description
+
+    - name: show_income_details
+      type: boolean
+      default: false
+      description: Show detailed income
+
+    - name: show_employment_details
+      type: boolean
+      default: true
+      description: Show employment info
+
+    # Engagement Metrics
+    - name: view_count
+      type: integer
+      default: 0
+      description: Number of views
+
+    - name: unique_viewers
+      type: integer
+      default: 0
+      description: Unique investors who viewed
+
+    - name: watchlist_count
+      type: integer
+      default: 0
+      description: Added to watchlist count
+
+    - name: conversion_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(investor_count / GREATEST(unique_viewers, 1)) * 100"
+      description: View to investment conversion
+
+    # Cancellation
+    - name: cancelled_at
+      type: timestamp
+      description: When listing was cancelled
+
+    - name: cancellation_reason
+      type: enum
+      values: [borrower_request, funding_timeout, policy_violation, fraud_detected, other]
+      description: Reason for cancellation
+
+    - name: cancellation_notes
+      type: text
+      description: Cancellation details
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      description: When listing was created
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: loan_id
+
+    - name: loan_application
+      type: belongs_to
+      entity: LoanApplication
+      foreign_key: loan_application_id
+
+    - name: borrower
+      type: belongs_to
+      entity: Borrower
+      foreign_key: borrower_id
+
+    - name: investments
+      type: has_many
+      entity: Investment
+      foreign_key: listing_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_listings_status
+      columns: [status]
+
+    - name: idx_listings_active
+      columns: [status, funding_deadline]
+      where: "status = 'active'"
+
+    - name: idx_listings_grade
+      columns: [grade, interest_rate]
+
+    - name: idx_listings_purpose
+      columns: [loan_purpose]
+
+    - name: idx_listings_featured
+      columns: [is_featured, priority_score desc]
+      where: "status = 'active'"
+
+    - name: idx_listings_auto_invest
+      columns: [auto_invest_eligible, grade, term_months]
+      where: "status = 'active'"
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  initial_state: draft
+
+  states:
+    draft:
+      description: Listing created but not yet active
+      name_vi: Bản nháp
+      allowed_actions: [publish, delete]
+
+    active:
+      description: Listing live and accepting investments
+      name_vi: Đang hoạt động
+      allowed_actions: [invest, fund_complete, cancel, expire]
+
+    funded:
+      description: Fully funded, awaiting disbursement
+      name_vi: Đã đủ vốn
+      terminal: true
+
+    expired:
+      description: Funding deadline passed without full funding
+      name_vi: Hết hạn
+      terminal: true
+
+    cancelled:
+      description: Listing cancelled
+      name_vi: Đã hủy
+      terminal: true
+
+    withdrawn:
+      description: Borrower withdrew the listing
+      name_vi: Đã rút
+      terminal: true
+
+  transitions:
+    - from: draft
+      to: active
+      event: publish
+      actions:
+        - set_listed_at
+        - notify_matching_investors
+        - trigger_auto_invest
+
+    - from: draft
+      to: cancelled
+      event: delete
+      actions:
+        - log_deletion
+
+    - from: active
+      to: funded
+      event: fully_funded
+      condition: "funding_percentage >= 100"
+      actions:
+        - set_fully_funded_at
+        - notify_borrower
+        - notify_investors
+        - disable_new_investments
+
+    - from: active
+      to: expired
+      event: deadline_reached
+      condition: "NOW() > funding_deadline AND funding_percentage < 100"
+      actions:
+        - refund_investors
+        - notify_borrower
+        - close_listing
+
+    - from: active
+      to: cancelled
+      event: cancel
+      actions:
+        - refund_investors
+        - notify_borrower
+        - log_cancellation
+
+    - from: active
+      to: withdrawn
+      event: borrower_withdraw
+      actions:
+        - refund_investors
+        - update_borrower_status
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  listing:
+    - rule: "Listing created only after loan application approved"
+      enforcement: system
+
+    - rule: "Funding deadline maximum 14 days from listing"
+      enforcement: system
+
+    - rule: "Minimum 70% funding required for disbursement"
+      enforcement: system
+
+  investment:
+    - rule: "Minimum investment 100,000 VND"
+      enforcement: system
+
+    - rule: "Maximum 10% of loan per individual investor"
+      enforcement: system
+
+    - rule: "Cannot invest in own listing"
+      enforcement: system
+
+  display:
+    - rule: "Borrower identity never revealed to investors"
+      enforcement: system
+
+    - rule: "Only approved data points shown"
+      enforcement: system
+
+# =============================================================================
+# SEARCH & FILTER OPTIONS
+# =============================================================================
+filters:
+  grade:
+    type: multi_select
+    options: [A, B, C, D, E, F]
+    label: "Risk Grade"
+
+  term:
+    type: range
+    min: 1
+    max: 60
+    unit: months
+    label: "Loan Term"
+
+  interest_rate:
+    type: range
+    min: 6
+    max: 36
+    unit: percent
+    label: "Interest Rate"
+
+  amount:
+    type: range
+    min: 1000000
+    max: 2000000000
+    unit: VND
+    label: "Loan Amount"
+
+  purpose:
+    type: multi_select
+    options: [personal, business, education, medical, home_improvement, debt_consolidation, auto]
+    label: "Loan Purpose"
+
+  funding_progress:
+    type: range
+    min: 0
+    max: 100
+    unit: percent
+    label: "Funding Progress"
+
+sort_options:
+  - field: interest_rate
+    direction: desc
+    label: "Highest Interest"
+
+  - field: interest_rate
+    direction: asc
+    label: "Lowest Interest"
+
+  - field: funding_percentage
+    direction: desc
+    label: "Most Funded"
+
+  - field: listed_at
+    direction: desc
+    label: "Newest"
+
+  - field: funding_deadline
+    direction: asc
+    label: "Ending Soon"
+
+  - field: grade
+    direction: asc
+    label: "Best Grade"
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: funding_deadline
+    rules:
+      - custom: "funding_deadline > listed_at"
+        message: "Deadline must be after listing date"
+      - custom: "funding_deadline <= listed_at + 14 days"
+        message: "Maximum funding period is 14 days"
+
+  - field: min_investment
+    rules:
+      - min: 100000
+        message: "Minimum investment must be at least 100,000 VND"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - borrower_id
+  retention_years: 7

@@ -1,0 +1,336 @@
+# Media Rules
+# F5 Framework v2.0 - Real Estate/Listing
+# Business rules for property media management
+
+rules:
+  domain: real-estate
+  subdomain: listing
+  category: media
+  version: "1.0.0"
+
+  description: |
+    Business rules for property media upload, processing, moderation,
+    and quality standards.
+
+  # Upload Rules
+  upload:
+    - id: MED-UPL-001
+      name: Photo Format Requirements
+      name_vi: Yêu cầu định dạng ảnh
+      description: Allowed photo formats and specifications
+      condition: |
+        file.mime_type IN ['image/jpeg', 'image/png', 'image/webp'] AND
+        file.size_bytes <= 10485760 AND  # 10MB
+        image.width >= 800 AND
+        image.height >= 600
+      action: reject
+      message: "Photo must be JPG/PNG/WebP, max 10MB, min 800x600px"
+      severity: error
+
+    - id: MED-UPL-002
+      name: Video Format Requirements
+      name_vi: Yêu cầu định dạng video
+      description: Allowed video formats and specifications
+      condition: |
+        file.mime_type IN ['video/mp4', 'video/quicktime', 'video/webm'] AND
+        file.size_bytes <= 52428800 AND  # 50MB
+        video.duration_seconds <= 300     # 5 minutes
+      action: reject
+      message: "Video must be MP4/MOV/WebM, max 50MB, max 5 minutes"
+      severity: error
+
+    - id: MED-UPL-003
+      name: Daily Upload Limit
+      name_vi: Giới hạn upload hàng ngày
+      description: Limit uploads per user per day
+      condition: |
+        (SELECT COUNT(*) FROM property_media
+         WHERE uploaded_by = user.id
+         AND uploaded_at > NOW() - INTERVAL '24 hours') <
+        CASE user.subscription_tier
+          WHEN 'basic' THEN 20
+          WHEN 'professional' THEN 100
+          WHEN 'premium' THEN 500
+          ELSE 1000
+        END
+      action: block
+      message: "Daily upload limit reached"
+      severity: error
+
+    - id: MED-UPL-004
+      name: Property Media Limit
+      name_vi: Giới hạn media mỗi bất động sản
+      description: Maximum media items per property
+      condition: |
+        (SELECT COUNT(*) FROM property_media
+         WHERE property_id = NEW.property_id
+         AND status != 'archived') < 50
+      action: block
+      message: "Maximum 50 media items per property"
+      severity: error
+
+  # Processing Rules
+  processing:
+    - id: MED-PRC-001
+      name: Auto Thumbnail Generation
+      name_vi: Tự động tạo thumbnail
+      description: Generate thumbnails for all photos
+      trigger: on_upload_complete
+      action: |
+        generate_thumbnail(
+          source: original_file,
+          sizes: [
+            { name: 'thumb_small', width: 150, height: 100 },
+            { name: 'thumb_medium', width: 300, height: 200 },
+            { name: 'thumb_large', width: 600, height: 400 },
+            { name: 'display', width: 1200, height: 800 }
+          ],
+          format: 'webp',
+          quality: 85
+        )
+
+    - id: MED-PRC-002
+      name: EXIF Extraction
+      name_vi: Trích xuất EXIF
+      description: Extract and store EXIF metadata from photos
+      trigger: on_upload_complete
+      action: |
+        exif_data = extract_exif(file)
+        store_metadata(media_id, {
+          camera_make: exif_data.make,
+          camera_model: exif_data.model,
+          date_taken: exif_data.datetime_original,
+          gps_latitude: exif_data.gps_latitude,
+          gps_longitude: exif_data.gps_longitude,
+          orientation: exif_data.orientation
+        })
+
+    - id: MED-PRC-003
+      name: GPS Stripping for Privacy
+      name_vi: Xóa GPS để bảo mật
+      description: Remove GPS data from public photos
+      trigger: on_upload_complete
+      condition: "property.hide_address = true"
+      action: |
+        strip_exif_location(file)
+
+    - id: MED-PRC-004
+      name: CDN Upload
+      name_vi: Upload lên CDN
+      description: Upload processed files to CDN
+      trigger: on_processing_complete
+      action: |
+        cdn_url = upload_to_cdn(
+          file: processed_file,
+          path: "properties/{property_id}/{media_id}",
+          cache_control: "public, max-age=31536000"
+        )
+        update_media(media_id, { file_url_cdn: cdn_url })
+
+  # Quality Rules
+  quality:
+    - id: MED-QTY-001
+      name: Photo Quality Assessment
+      name_vi: Đánh giá chất lượng ảnh
+      description: AI-powered photo quality scoring
+      trigger: on_upload_complete
+      action: |
+        quality_score = assess_photo_quality(file, criteria: {
+          sharpness: { weight: 0.25, min: 0.5 },
+          brightness: { weight: 0.20, min: 0.3, max: 0.9 },
+          composition: { weight: 0.20, min: 0.4 },
+          resolution: { weight: 0.15, min_megapixels: 2 },
+          noise: { weight: 0.10, max: 0.3 },
+          color_accuracy: { weight: 0.10, min: 0.6 }
+        })
+        update_media(media_id, { quality_score: quality_score })
+
+    - id: MED-QTY-002
+      name: Professional Photo Detection
+      name_vi: Nhận diện ảnh chuyên nghiệp
+      description: Detect if photo is professionally shot
+      trigger: on_upload_complete
+      action: |
+        is_professional = detect_professional(file, indicators: [
+          'wide_angle_lens',
+          'proper_lighting',
+          'staged_composition',
+          'high_dynamic_range',
+          'real_estate_style'
+        ])
+        update_media(media_id, { is_professional: is_professional })
+
+    - id: MED-QTY-003
+      name: Low Quality Warning
+      name_vi: Cảnh báo chất lượng thấp
+      description: Warn about low quality photos
+      condition: "media.quality_score < 0.5"
+      action: warn
+      message: "Photo quality is below recommended standard"
+      severity: warning
+
+  # Moderation Rules
+  moderation:
+    - id: MED-MOD-001
+      name: Auto Content Moderation
+      name_vi: Tự động kiểm duyệt nội dung
+      description: AI-powered content moderation
+      trigger: on_upload_complete
+      action: |
+        moderation_result = moderate_content(file, checks: [
+          'inappropriate_content',
+          'violence',
+          'text_overlay_spam',
+          'watermarks',
+          'logos_branding',
+          'misleading_content',
+          'screenshot_detection'
+        ])
+        update_media(media_id, {
+          auto_moderated: true,
+          auto_moderation_score: moderation_result.score,
+          auto_moderation_flags: moderation_result.flags
+        })
+        IF moderation_result.score < 0.7 THEN
+          queue_for_manual_review(media_id)
+        END
+
+    - id: MED-MOD-002
+      name: Watermark Detection
+      name_vi: Nhận diện watermark
+      description: Detect and flag photos with watermarks
+      trigger: on_upload_complete
+      action: |
+        has_watermark = detect_watermark(file)
+        IF has_watermark THEN
+          flag_for_review(media_id, reason: 'watermark_detected')
+        END
+
+    - id: MED-MOD-003
+      name: Duplicate Detection
+      name_vi: Nhận diện ảnh trùng lặp
+      description: Detect duplicate or similar photos
+      trigger: on_upload_complete
+      action: |
+        duplicates = find_similar_images(file, threshold: 0.95)
+        IF duplicates.count > 0 THEN
+          flag_as_duplicate(media_id, similar_to: duplicates[0].id)
+        END
+
+    - id: MED-MOD-004
+      name: Room Type Classification
+      name_vi: Phân loại loại phòng
+      description: Auto-classify photo room type
+      trigger: on_upload_complete
+      action: |
+        room_type = classify_room_type(file, categories: [
+          'exterior', 'living_room', 'bedroom', 'master_bedroom',
+          'bathroom', 'kitchen', 'dining', 'balcony', 'view',
+          'garden', 'pool', 'parking', 'other'
+        ])
+        update_media(media_id, { room_type: room_type.prediction })
+
+    - id: MED-MOD-005
+      name: Manual Review Queue
+      name_vi: Hàng chờ kiểm duyệt thủ công
+      description: Queue rules for manual review
+      condition: |
+        media.auto_moderation_score < 0.7 OR
+        'inappropriate_content' IN media.auto_moderation_flags OR
+        'misleading_content' IN media.auto_moderation_flags
+      action: queue_review
+      priority: |
+        CASE
+          WHEN 'inappropriate_content' IN flags THEN 'urgent'
+          WHEN auto_moderation_score < 0.5 THEN 'high'
+          ELSE 'normal'
+        END
+
+  # Ordering Rules
+  ordering:
+    - id: MED-ORD-001
+      name: Primary Photo Selection
+      name_vi: Chọn ảnh chính
+      description: Rules for primary photo
+      condition: |
+        -- Only one primary photo per property
+        NOT EXISTS(
+          SELECT 1 FROM property_media
+          WHERE property_id = NEW.property_id
+          AND is_primary = true
+          AND id != NEW.id
+          AND status = 'approved'
+        ) OR NEW.is_primary = false
+      action: |
+        IF NEW.is_primary = true THEN
+          UPDATE property_media
+          SET is_primary = false
+          WHERE property_id = NEW.property_id AND id != NEW.id
+        END
+
+    - id: MED-ORD-002
+      name: Auto Primary Selection
+      name_vi: Tự động chọn ảnh chính
+      description: Auto-select best photo as primary if none set
+      trigger: on_approval
+      condition: |
+        NOT EXISTS(
+          SELECT 1 FROM property_media
+          WHERE property_id = media.property_id
+          AND is_primary = true
+          AND status = 'approved'
+        )
+      action: |
+        best_photo = SELECT id FROM property_media
+          WHERE property_id = media.property_id
+          AND status = 'approved'
+          AND media_type = 'photo'
+          AND room_type = 'exterior'
+          ORDER BY quality_score DESC, is_professional DESC
+          LIMIT 1
+        IF best_photo THEN
+          UPDATE property_media SET is_primary = true WHERE id = best_photo.id
+        END
+
+  # Virtual Tour Rules
+  virtual_tour:
+    - id: MED-VT-001
+      name: Virtual Tour Provider Validation
+      name_vi: Xác thực nhà cung cấp tour ảo
+      description: Validate virtual tour embed codes
+      condition: |
+        media.media_type != 'virtual_tour' OR
+        (media.tour_provider IN ['matterport', 'zillow_3d', 'custom'] AND
+         (media.tour_embed_code IS NOT NULL OR media.tour_external_url IS NOT NULL))
+      action: reject
+      message: "Virtual tour requires valid provider and embed code"
+      severity: error
+
+    - id: MED-VT-002
+      name: One Virtual Tour Per Property
+      name_vi: Một tour ảo mỗi bất động sản
+      description: Limit to one active virtual tour
+      condition: |
+        media.media_type != 'virtual_tour' OR
+        NOT EXISTS(
+          SELECT 1 FROM property_media
+          WHERE property_id = NEW.property_id
+          AND media_type = 'virtual_tour'
+          AND status IN ('approved', 'pending')
+          AND id != NEW.id
+        )
+      action: warn
+      message: "Property already has an active virtual tour"
+      severity: warning
+
+  notifications:
+    on_moderation:
+      - trigger: rejected
+        recipients: [uploader]
+        template: media_rejected
+      - trigger: approved
+        recipients: [uploader]
+        template: media_approved
+      - trigger: queued_review
+        recipients: [moderators]
+        template: review_needed

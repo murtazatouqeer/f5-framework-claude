@@ -1,0 +1,399 @@
+name: Eligibility Rules
+display_name: Policy Eligibility Rules
+description: |
+  Business rules for determining eligibility for insurance products.
+  Covers age limits, occupation restrictions, and health requirements.
+
+domain: insurance
+subdomain: policy
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - age_eligibility
+  - occupation_eligibility
+  - health_eligibility
+  - financial_eligibility
+  - geographic_eligibility
+
+rules:
+  # Age Eligibility Rules
+  - id: ELG-AGE-001
+    name: Minimum Entry Age
+    category: age_eligibility
+    priority: critical
+    description: |
+      Applicant must meet minimum age requirement for the product.
+    condition:
+      field: applicant.age_at_inception
+      operator: gte
+      value: product.min_entry_age
+    failure_action: reject
+    failure_message: "Applicant does not meet minimum age requirement of {product.min_entry_age} years"
+    examples:
+      - scenario: "18-year-old applying for term life with min age 18"
+        result: pass
+      - scenario: "16-year-old applying for term life with min age 18"
+        result: fail
+
+  - id: ELG-AGE-002
+    name: Maximum Entry Age
+    category: age_eligibility
+    priority: critical
+    description: |
+      Applicant must not exceed maximum entry age for the product.
+    condition:
+      field: applicant.age_at_inception
+      operator: lte
+      value: product.max_entry_age
+    failure_action: reject
+    failure_message: "Applicant exceeds maximum entry age of {product.max_entry_age} years"
+
+  - id: ELG-AGE-003
+    name: Coverage End Age
+    category: age_eligibility
+    priority: high
+    description: |
+      Policy term cannot extend beyond maximum coverage age.
+    condition:
+      expression: "applicant.age_at_inception + policy.term_years <= product.max_coverage_age"
+    failure_action: adjust
+    adjustment:
+      field: policy.term_years
+      value: "product.max_coverage_age - applicant.age_at_inception"
+    failure_message: "Policy term adjusted to end at maximum coverage age"
+
+  - id: ELG-AGE-004
+    name: Child Insured Age Limits
+    category: age_eligibility
+    priority: high
+    description: |
+      Child insureds must be within child age range.
+    condition:
+      expression: |
+        IF insured.relationship = 'child'
+        THEN insured.age >= 1 AND insured.age <= 21
+    failure_action: reject
+    failure_message: "Child insured must be between 1 and 21 years old"
+
+  - id: ELG-AGE-005
+    name: Spouse Age Difference
+    category: age_eligibility
+    priority: medium
+    description: |
+      Spouse age difference exceeding threshold requires review.
+    condition:
+      expression: |
+        IF insured.relationship = 'spouse'
+        THEN ABS(policyholder.age - insured.age) <= 20
+    failure_action: refer
+    failure_message: "Age difference exceeds threshold - manual review required"
+
+  # Occupation Eligibility Rules
+  - id: ELG-OCC-001
+    name: Occupation Class Check
+    category: occupation_eligibility
+    priority: high
+    description: |
+      Applicant occupation class must be within product limits.
+    condition:
+      field: applicant.occupation_class
+      operator: in
+      value: product.occupation_classes_allowed
+    failure_action: reject
+    failure_message: "Occupation class {applicant.occupation_class} not eligible for this product"
+
+  - id: ELG-OCC-002
+    name: Hazardous Occupation Restriction
+    category: occupation_eligibility
+    priority: critical
+    description: |
+      Certain hazardous occupations are excluded from coverage.
+    condition:
+      field: applicant.occupation
+      operator: not_in
+      value:
+        - "Underground miner"
+        - "Bomb disposal"
+        - "Offshore oil platform worker"
+        - "Professional stunt performer"
+        - "War correspondent"
+    failure_action: reject
+    failure_message: "Occupation is excluded from coverage"
+
+  - id: ELG-OCC-003
+    name: Occupation Class Loading
+    category: occupation_eligibility
+    priority: medium
+    description: |
+      Higher occupation classes require premium loading.
+    condition:
+      field: applicant.occupation_class
+      operator: gte
+      value: 3
+    action: apply_loading
+    loading:
+      type: occupation
+      percentage:
+        class_3: 25
+        class_4: 50
+    message: "Occupation loading of {loading.percentage}% applied"
+
+  - id: ELG-OCC-004
+    name: Unemployed Applicant
+    category: occupation_eligibility
+    priority: medium
+    description: |
+      Unemployed applicants may have restrictions on sum insured.
+    condition:
+      field: applicant.employment_status
+      operator: eq
+      value: "unemployed"
+    action: limit
+    limit:
+      field: sum_insured
+      max_value: 500000000
+    failure_message: "Sum insured limited for unemployed applicants"
+
+  # Health Eligibility Rules
+  - id: ELG-HLT-001
+    name: Pre-Existing Condition Disclosure
+    category: health_eligibility
+    priority: critical
+    description: |
+      Pre-existing conditions must be disclosed for underwriting.
+    condition:
+      expression: "health_declaration.has_medical_conditions = true"
+    action: refer_underwriting
+    message: "Application referred to underwriting for medical review"
+
+  - id: ELG-HLT-002
+    name: BMI Range Check
+    category: health_eligibility
+    priority: high
+    description: |
+      BMI outside normal range requires medical underwriting.
+    condition:
+      expression: "applicant.bmi < 18.5 OR applicant.bmi > 30"
+    action: refer_underwriting
+    underwriting_code: "BMI_ABNORMAL"
+    message: "BMI outside normal range - referred for underwriting"
+
+  - id: ELG-HLT-003
+    name: Smoker Status Loading
+    category: health_eligibility
+    priority: high
+    description: |
+      Smokers require premium loading.
+    condition:
+      field: applicant.smoker_status
+      operator: eq
+      value: "smoker"
+    action: apply_loading
+    loading:
+      type: smoker
+      percentage: 50
+    message: "Smoker loading of 50% applied"
+
+  - id: ELG-HLT-004
+    name: Recent Hospitalization
+    category: health_eligibility
+    priority: high
+    description: |
+      Hospitalization in last 12 months requires medical evidence.
+    condition:
+      expression: |
+        health_declaration.hospitalized_last_12_months = true
+    action: request_documents
+    documents_required:
+      - type: "hospital_discharge_summary"
+        mandatory: true
+      - type: "medical_report"
+        mandatory: true
+    message: "Medical documents required due to recent hospitalization"
+
+  - id: ELG-HLT-005
+    name: Critical Illness History
+    category: health_eligibility
+    priority: critical
+    description: |
+      History of critical illness may result in exclusion or decline.
+    condition:
+      expression: |
+        ANY health_declaration.conditions IN ['cancer', 'heart_attack', 'stroke', 'organ_failure']
+    action: refer_underwriting
+    underwriting_code: "CRITICAL_ILLNESS_HISTORY"
+    possible_outcomes:
+      - decline
+      - exclude_condition
+      - loading
+    message: "History of critical illness - senior underwriter review required"
+
+  - id: ELG-HLT-006
+    name: Medical Exam Requirements
+    category: health_eligibility
+    priority: high
+    description: |
+      Medical exams required based on age and sum insured.
+    conditions:
+      - trigger:
+          expression: "applicant.age >= 45 AND sum_insured > 500000000"
+        required_exams:
+          - "full_medical_exam"
+          - "blood_test"
+          - "ECG"
+      - trigger:
+          expression: "applicant.age >= 50 AND sum_insured > 200000000"
+        required_exams:
+          - "full_medical_exam"
+          - "blood_test"
+      - trigger:
+          expression: "sum_insured > 1000000000"
+        required_exams:
+          - "full_medical_exam"
+          - "blood_test"
+          - "stress_test"
+    action: request_medical_exam
+    message: "Medical examination required based on age/sum insured"
+
+  # Financial Eligibility Rules
+  - id: ELG-FIN-001
+    name: Income to Sum Insured Ratio
+    category: financial_eligibility
+    priority: high
+    description: |
+      Sum insured should not exceed income multiple.
+    condition:
+      expression: "sum_insured <= applicant.annual_income * 20"
+    failure_action: limit
+    limit:
+      field: sum_insured
+      max_value: "applicant.annual_income * 20"
+    failure_message: "Sum insured exceeds 20x annual income"
+
+  - id: ELG-FIN-002
+    name: Minimum Sum Insured
+    category: financial_eligibility
+    priority: high
+    description: |
+      Sum insured must meet product minimum.
+    condition:
+      field: sum_insured
+      operator: gte
+      value: product.min_sum_insured
+    failure_action: reject
+    failure_message: "Sum insured below product minimum of {product.min_sum_insured}"
+
+  - id: ELG-FIN-003
+    name: Maximum Sum Insured
+    category: financial_eligibility
+    priority: high
+    description: |
+      Sum insured must not exceed product maximum.
+    condition:
+      field: sum_insured
+      operator: lte
+      value: product.max_sum_insured
+    failure_action: limit
+    limit:
+      field: sum_insured
+      max_value: product.max_sum_insured
+    failure_message: "Sum insured capped at product maximum of {product.max_sum_insured}"
+
+  - id: ELG-FIN-004
+    name: Income Source Verification
+    category: financial_eligibility
+    priority: medium
+    description: |
+      High sum insured requires income verification.
+    condition:
+      expression: "sum_insured > 1000000000"
+    action: request_documents
+    documents_required:
+      - type: "income_proof"
+        options:
+          - "salary_slip"
+          - "tax_return"
+          - "bank_statement"
+        mandatory: true
+    message: "Income verification required for high sum insured"
+
+  - id: ELG-FIN-005
+    name: Existing Coverage Check
+    category: financial_eligibility
+    priority: medium
+    description: |
+      Total coverage across all policies checked.
+    condition:
+      expression: "sum_insured + existing_coverage_total <= max_total_coverage"
+    failure_action: limit
+    failure_message: "Total coverage would exceed maximum limit"
+
+  # Geographic Eligibility Rules
+  - id: ELG-GEO-001
+    name: Country of Residence
+    category: geographic_eligibility
+    priority: critical
+    description: |
+      Applicant must reside in eligible country.
+    condition:
+      field: applicant.country_of_residence
+      operator: in
+      value: product.geographic_availability
+    failure_action: reject
+    failure_message: "Product not available in {applicant.country_of_residence}"
+
+  - id: ELG-GEO-002
+    name: High Risk Travel
+    category: geographic_eligibility
+    priority: medium
+    description: |
+      Frequent travel to high-risk areas requires review.
+    condition:
+      expression: |
+        lifestyle_declaration.travel_high_risk = false
+    failure_action: refer_underwriting
+    underwriting_code: "HIGH_RISK_TRAVEL"
+    message: "Application referred due to high-risk travel destinations"
+
+  - id: ELG-GEO-003
+    name: Expatriate Coverage
+    category: geographic_eligibility
+    priority: medium
+    description: |
+      Expatriates may require special product.
+    condition:
+      expression: |
+        applicant.nationality != applicant.country_of_residence
+    action: flag
+    flag: "EXPATRIATE"
+    message: "Applicant is expatriate - verify product suitability"
+
+validation_order:
+  - geographic_eligibility
+  - age_eligibility
+  - occupation_eligibility
+  - financial_eligibility
+  - health_eligibility
+
+auto_decline_conditions:
+  - "applicant.age_at_inception < 18 AND product.type = 'life'"
+  - "applicant.occupation IN excluded_occupations"
+  - "applicant.country_of_residence NOT IN product.geographic_availability"
+  - "applicant.kyc_status = 'blacklisted'"
+
+auto_approve_conditions:
+  - expression: |
+      applicant.age_at_inception <= 45 AND
+      applicant.occupation_class <= 2 AND
+      sum_insured <= product.auto_accept_limit AND
+      health_declaration.has_medical_conditions = false AND
+      health_declaration.smoker_status = 'non_smoker' AND
+      applicant.bmi >= 18.5 AND applicant.bmi <= 27
+    message: "Application auto-approved - meets STP criteria"
+
+integration:
+  underwriting_system: true
+  kyc_system: true
+  reinsurance_system: true

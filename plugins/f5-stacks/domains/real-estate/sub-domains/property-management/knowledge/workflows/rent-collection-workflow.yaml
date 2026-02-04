@@ -1,0 +1,735 @@
+# Rent Collection Workflow
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy trình thu tiền thuê / 賃料回収ワークフロー
+
+workflow:
+  name: RentCollectionWorkflow
+  name_vi: Quy trình thu tiền thuê
+  name_ja: 賃料回収ワークフロー
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    End-to-end workflow for rent collection including
+    invoicing, payment processing, late fee management,
+    and delinquency escalation.
+
+  # Workflow Triggers
+  triggers:
+    - event: rent_cycle_start
+      timing: monthly
+      day: 25th_of_prior_month
+    - event: payment_received
+      source: payment_gateway
+    - event: grace_period_expired
+      source: scheduler
+
+  # Primary Actors
+  actors:
+    primary:
+      - tenant
+      - property_manager
+    supporting:
+      - accounting
+      - payment_processor
+      - collections_agent
+      - legal_counsel
+
+  # Referenced Entities
+  entities:
+    - RentCharge
+    - RentPayment
+    - Lease
+    - Tenant
+    - Notice
+
+  # Business Rules Applied
+  business_rules:
+    - RentRules
+    - LeaseRules
+
+  # ==========================================
+  # WORKFLOW STEPS
+  # ==========================================
+
+  steps:
+    - step_id: WF-RNT-001
+      name: Generate Invoice
+      name_vi: Tạo hóa đơn
+      order: 1
+      description: |
+        Generate monthly rent invoice with all
+        applicable charges.
+
+      trigger:
+        timing: 25th_of_prior_month
+        automatic: true
+
+      inputs:
+        - active_leases
+        - charge_schedule
+        - outstanding_balances
+
+      actions:
+        - action: calculate_charges
+          items:
+            - base_rent
+            - recurring_charges
+            - utility_charges
+            - late_fees_if_carried
+            - other_charges
+        - action: apply_credits
+          items:
+            - prepayments
+            - concessions
+            - adjustments
+        - action: generate_invoice
+          entity: RentCharge
+          status: pending
+        - action: send_invoice_notification
+          system: notification
+          channels:
+            - email
+            - tenant_portal
+            - sms_optional
+
+      outputs:
+        - rent_invoice
+        - charge_breakdown
+        - payment_instructions
+
+      sla:
+        generation: 25th_of_month
+        delivery: same_day
+
+      next_step: WF-RNT-002
+
+    - step_id: WF-RNT-002
+      name: Send Reminder
+      name_vi: Gửi nhắc nhở
+      order: 2
+      description: |
+        Send payment reminder before due date.
+
+      trigger:
+        timing: 3_days_before_due_date
+        automatic: true
+
+      inputs:
+        - unpaid_invoices
+        - tenant_contact_preferences
+
+      actions:
+        - action: check_payment_status
+          condition: not_already_paid
+        - action: send_reminder
+          system: notification
+          template: friendly_reminder
+          channels:
+            - email
+            - sms
+            - push_notification
+
+      outputs:
+        - reminder_sent_confirmation
+        - delivery_status
+
+      conditions:
+        skip_if: payment_already_received
+
+      next_step: WF-RNT-003
+
+    - step_id: WF-RNT-003
+      name: Receive Payment
+      name_vi: Nhận thanh toán
+      order: 3
+      description: |
+        Process incoming rent payments through
+        various channels.
+
+      trigger:
+        event: payment_received
+        source: multiple_channels
+
+      inputs:
+        - payment_amount
+        - payment_method
+        - payer_identification
+
+      actions:
+        - action: validate_payment
+          checks:
+            - amount_verification
+            - payer_verification
+            - method_acceptance
+        - action: create_payment_record
+          entity: RentPayment
+          status: processing
+        - action: apply_to_charges
+          order:
+            - 1: legal_fees
+            - 2: late_fees
+            - 3: nsf_fees
+            - 4: utility_charges
+            - 5: other_charges
+            - 6: oldest_rent_balance
+            - 7: current_month_rent
+          rule: BR-RNT-030
+        - action: generate_receipt
+          system: accounting
+        - action: send_confirmation
+          system: notification
+
+      outputs:
+        - payment_record
+        - receipt
+        - updated_balance
+        - allocation_details
+
+      validations:
+        - payment_method_accepted
+        - funds_received
+
+      decision_point:
+        condition: payment_status
+        outcomes:
+          full_payment: WF-RNT-004
+          partial_payment: WF-RNT-003a
+          payment_failed: WF-RNT-003b
+
+    - step_id: WF-RNT-003a
+      name: Handle Partial Payment
+      name_vi: Xử lý thanh toán một phần
+      order: 3.5
+      description: |
+        Process partial payments and determine
+        next actions.
+
+      inputs:
+        - payment_amount
+        - remaining_balance
+        - tenant_history
+
+      actions:
+        - action: apply_partial_payment
+          order: per_allocation_rules
+        - action: calculate_remaining
+          system: accounting
+        - action: evaluate_situation
+          factors:
+            - payment_history
+            - communication_status
+            - eviction_status
+        - action: determine_next_action
+          options:
+            - accept_and_continue_collection
+            - request_payment_plan
+            - proceed_with_delinquency
+
+      outputs:
+        - partial_payment_receipt
+        - remaining_balance_notice
+        - recommended_action
+
+      decision_point:
+        condition: policy_and_situation
+        outcomes:
+          continue_normal: WF-RNT-005
+          payment_plan: WF-RNT-008
+          eviction_in_progress: WF-RNT-LEGAL
+
+    - step_id: WF-RNT-003b
+      name: Handle Failed Payment
+      name_vi: Xử lý thanh toán thất bại
+      order: 3.6
+      description: |
+        Process returned checks or failed
+        electronic payments.
+
+      inputs:
+        - failed_payment_details
+        - failure_reason
+        - tenant_record
+
+      actions:
+        - action: reverse_payment_credit
+          system: accounting
+        - action: apply_nsf_fee
+          amount: per_lease_agreement
+          rule: BR-RNT-012
+        - action: notify_tenant
+          system: notification
+          urgency: high
+        - action: update_payment_method_status
+          condition: require_certified_funds
+        - action: log_incident
+          system: property_management
+
+      outputs:
+        - reversal_record
+        - nsf_fee_charge
+        - tenant_notification
+        - updated_payment_requirements
+
+      consequences:
+        first_occurrence: warning_and_fee
+        second_occurrence: require_certified_funds_only
+        third_occurrence: may_terminate_lease
+
+      next_step: WF-RNT-005
+
+    - step_id: WF-RNT-004
+      name: Confirm Payment
+      name_vi: Xác nhận thanh toán
+      order: 4
+      description: |
+        Complete payment processing and update
+        all records.
+
+      inputs:
+        - payment_record
+        - tenant_record
+        - lease_record
+
+      actions:
+        - action: verify_funds_cleared
+          system: banking
+          timing: per_payment_method
+        - action: finalize_payment
+          entity: RentPayment
+          status: completed
+        - action: update_charge_status
+          entity: RentCharge
+          status: paid
+        - action: update_tenant_ledger
+          system: accounting
+        - action: update_on_time_payment_record
+          system: property_management
+
+      outputs:
+        - payment_confirmation
+        - updated_ledger
+        - tenant_payment_history
+
+      notifications:
+        - to: property_manager
+          condition: large_payment_or_catch_up
+        - to: accounting
+          summary: daily_payment_report
+
+      workflow_complete: true
+      condition: paid_in_full
+
+    - step_id: WF-RNT-005
+      name: Apply Late Fee
+      name_vi: Áp dụng phí trễ hạn
+      order: 5
+      description: |
+        Calculate and apply late fees after
+        grace period expires.
+
+      trigger:
+        event: grace_period_expired
+        timing: day_6_of_month_default
+
+      inputs:
+        - unpaid_charges
+        - grace_period_end
+        - late_fee_policy
+
+      actions:
+        - action: verify_payment_not_received
+          system: property_management
+        - action: calculate_late_fee
+          methods:
+            flat_fee: "5% of monthly rent"
+            percentage: "5%"
+            daily: "0.1% per day"
+          cap: "10% maximum"
+          rule: BR-RNT-020
+        - action: create_late_fee_charge
+          entity: RentCharge
+          charge_type: late_fee
+        - action: send_late_notice
+          system: notification
+          template: late_payment_notice
+
+      outputs:
+        - late_fee_charge
+        - late_notice
+        - updated_balance
+
+      conditions:
+        skip_if:
+          - payment_received_within_grace
+          - valid_payment_plan_exists
+          - approved_waiver
+
+      next_step: WF-RNT-006
+
+    - step_id: WF-RNT-006
+      name: Send Late Notice
+      name_vi: Gửi thông báo trễ hạn
+      order: 6
+      description: |
+        Formal late payment notification with
+        consequences outlined.
+
+      trigger:
+        timing: day_after_grace_period
+        automatic: true
+
+      inputs:
+        - outstanding_balance
+        - late_fee_applied
+        - tenant_contact
+
+      actions:
+        - action: generate_late_notice
+          content:
+            - amount_due
+            - late_fee_added
+            - payment_deadline
+            - consequences_if_not_paid
+            - contact_for_hardship
+        - action: deliver_notice
+          methods:
+            - email: primary
+            - mail: certified
+            - post_on_door: if_required
+        - action: log_notice
+          entity: Notice
+          notice_type: late_payment
+
+      outputs:
+        - late_notice_document
+        - delivery_confirmation
+        - notice_record
+
+      sla:
+        delivery: within_24_hours
+
+      next_step: WF-RNT-007
+
+    - step_id: WF-RNT-007
+      name: Follow Up Call
+      name_vi: Gọi điện theo dõi
+      order: 7
+      description: |
+        Personal outreach to understand situation
+        and discuss payment options.
+
+      trigger:
+        timing: day_10_of_month
+        condition: balance_still_outstanding
+
+      inputs:
+        - tenant_contact_info
+        - outstanding_balance
+        - payment_history
+
+      actions:
+        - action: attempt_phone_contact
+          attempts: 3
+          at_different_times: true
+        - action: document_conversation
+          topics:
+            - reason_for_late_payment
+            - expected_payment_date
+            - hardship_circumstances
+            - payment_plan_interest
+        - action: assess_situation
+          factors:
+            - willingness_to_pay
+            - ability_to_pay
+            - communication_quality
+        - action: log_contact_attempt
+          system: property_management
+
+      outputs:
+        - contact_notes
+        - agreed_next_steps
+        - situation_assessment
+
+      decision_point:
+        condition: contact_outcome
+        outcomes:
+          payment_promised: WF-RNT-007a
+          payment_plan_requested: WF-RNT-008
+          no_response: WF-RNT-009
+          hostile_or_refused: WF-RNT-009
+
+    - step_id: WF-RNT-007a
+      name: Monitor Promise
+      name_vi: Theo dõi cam kết
+      order: 7.5
+      description: |
+        Track promised payment and follow up
+        if not received.
+
+      inputs:
+        - promised_payment_date
+        - promised_amount
+
+      actions:
+        - action: set_reminder
+          timing: promised_date_plus_1_day
+        - action: check_payment_received
+          system: property_management
+        - action: send_reminder
+          condition: payment_not_received
+          timing: 24_hours_after_promise
+
+      decision_point:
+        condition: payment_received
+        outcomes:
+          received: WF-RNT-004
+          not_received: WF-RNT-009
+
+    - step_id: WF-RNT-008
+      name: Offer Payment Plan
+      name_vi: Đề xuất kế hoạch thanh toán
+      order: 8
+      description: |
+        Create and document payment arrangement
+        for tenant in hardship.
+
+      inputs:
+        - total_amount_owed
+        - tenant_financial_situation
+        - payment_history
+
+      actions:
+        - action: evaluate_eligibility
+          criteria:
+            - first_time_delinquency: preferred
+            - demonstrated_hardship: true
+            - communication_with_landlord: required
+          rule: BR-RNT-041
+        - action: propose_payment_plan
+          terms:
+            - maximum_duration: 3_months
+            - current_rent_required: true
+            - additional_payment_toward_balance: required
+        - action: draft_agreement
+          content:
+            - payment_schedule
+            - amounts_per_payment
+            - default_consequences
+            - late_fee_handling
+        - action: obtain_signatures
+          parties:
+            - tenant
+            - property_manager
+
+      outputs:
+        - payment_plan_agreement
+        - payment_schedule
+        - monitoring_setup
+
+      validations:
+        - written_agreement_signed
+        - first_payment_received
+
+      next_step: WF-RNT-008a
+
+    - step_id: WF-RNT-008a
+      name: Monitor Payment Plan
+      name_vi: Theo dõi kế hoạch thanh toán
+      order: 8.5
+      description: |
+        Track compliance with payment plan
+        and handle defaults.
+
+      inputs:
+        - payment_plan_schedule
+        - payment_history
+
+      actions:
+        - action: track_scheduled_payments
+          system: property_management
+        - action: send_reminders
+          timing: 3_days_before_each_payment
+        - action: process_payments
+          as_received: true
+        - action: evaluate_compliance
+          after_each_payment: true
+
+      decision_point:
+        condition: plan_status
+        outcomes:
+          on_track: continue_monitoring
+          completed: WF-RNT-004
+          defaulted: WF-RNT-009
+
+    - step_id: WF-RNT-009
+      name: Send Demand Letter
+      name_vi: Gửi thư yêu cầu
+      order: 9
+      description: |
+        Formal demand letter with legal
+        consequence warning.
+
+      trigger:
+        timing: day_15_of_month
+        condition: still_delinquent
+
+      inputs:
+        - total_amount_owed
+        - payment_history
+        - contact_attempts_log
+
+      actions:
+        - action: generate_demand_letter
+          content:
+            - total_balance_with_fees
+            - payment_deadline: 10_days
+            - consequences: eviction_proceedings
+            - contact_information
+        - action: deliver_by_certified_mail
+          return_receipt: required
+        - action: log_notice
+          entity: Notice
+          notice_type: demand_letter
+        - action: consult_legal_if_needed
+          condition: complex_situation
+
+      outputs:
+        - demand_letter
+        - delivery_confirmation
+        - return_receipt
+
+      sla:
+        response_deadline: 10_days
+
+      next_step: WF-RNT-010
+
+    - step_id: WF-RNT-010
+      name: Initiate Legal Process
+      name_vi: Khởi động quy trình pháp lý
+      order: 10
+      description: |
+        Begin formal eviction process for
+        non-payment.
+
+      trigger:
+        timing: day_30_of_month
+        condition: balance_unpaid_no_arrangement
+
+      inputs:
+        - all_notices_sent
+        - payment_history
+        - lease_agreement
+        - tenant_communication_log
+
+      actions:
+        - action: prepare_pay_or_quit_notice
+          notice_period: 7_days
+          rule: BR-EVT-010
+        - action: serve_notice
+          methods:
+            - personal_delivery: preferred
+            - certified_mail: required
+            - posting: if_other_methods_fail
+        - action: document_service
+          required:
+            - proof_of_service
+            - date_of_service
+            - method_used
+        - action: consult_legal_counsel
+          system: external
+        - action: prepare_eviction_filing
+          condition: notice_period_expires_without_payment
+
+      outputs:
+        - pay_or_quit_notice
+        - proof_of_service
+        - eviction_preparation_documents
+
+      entity_created:
+        type: Notice
+        notice_type: pay_or_quit
+
+      decision_point:
+        condition: tenant_response
+        outcomes:
+          pays_in_full: WF-RNT-004
+          partial_payment: evaluate_per_policy
+          no_response: WF-RNT-LEGAL
+
+      next_step: WF-RNT-LEGAL
+
+    - step_id: WF-RNT-LEGAL
+      name: Eviction Proceedings
+      name_vi: Thủ tục thu hồi nhà
+      order: 11
+      description: |
+        Formal eviction through legal system.
+
+      trigger:
+        event: pay_or_quit_expired
+        condition: no_payment_received
+
+      inputs:
+        - all_documentation
+        - legal_counsel_consultation
+
+      actions:
+        - action: file_eviction_lawsuit
+          court: civil_court
+        - action: attend_court_hearing
+          parties: landlord_or_representative
+        - action: obtain_judgment
+          if_successful: true
+        - action: execute_eviction
+          by: court_officer_only
+        - action: pursue_money_judgment
+          for: unpaid_balance
+
+      outputs:
+        - court_filing
+        - judgment
+        - eviction_order
+        - money_judgment
+
+      legal_requirements:
+        - proper_notice_served: verified
+        - cure_period_expired: verified
+        - documentation_complete: verified
+
+      collections:
+        - wage_garnishment: if_permitted
+        - bank_levy: if_permitted
+        - credit_reporting: true
+        - collection_agency: after_move_out
+
+      workflow_complete: true
+
+  # ==========================================
+  # WORKFLOW METRICS
+  # ==========================================
+
+  metrics:
+    - name: on_time_payment_rate
+      description: "Percentage of rent paid by due date"
+      target: 95%
+
+    - name: collection_rate
+      description: "Percentage of rent collected by end of month"
+      target: 98%
+
+    - name: days_sales_outstanding
+      description: "Average days to collect rent"
+      target: 5_days
+
+    - name: eviction_rate
+      description: "Percentage of tenants going to eviction"
+      target: "<1%"
+
+  # Summary
+  summary:
+    total_steps: 14
+    decision_points: 5
+    critical_path: "Invoice → Due Date → Grace Period → Late → Collection → Legal"
+    automation_level: high

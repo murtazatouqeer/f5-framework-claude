@@ -1,0 +1,310 @@
+{
+  "id": "f5-order-processing",
+  "name": "Order Processing Workflow",
+  "description": "Complete order lifecycle from creation through fulfillment with inventory and payment integration",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "order",
+    "category": "processing",
+    "complexity": "complex",
+    "estimatedDuration": "25-35 minutes",
+    "requiredSkills": ["f5-backend", "f5-db", "f5-test"],
+    "mcpServers": ["serena", "sequential-thinking", "github"],
+    "qualityGates": ["D3", "D4", "G2", "G3"],
+    "argumentHint": "Implement order processing with inventory and payment for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "Receive Order"
+      }
+    },
+    {
+      "id": "subagent-validate-order",
+      "type": "subAgent",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Validate Order",
+        "description": "Validate order data and check inventory availability",
+        "prompt": "Validate order:\n1. Validate order schema and required fields\n2. Verify customer exists and is active\n3. Check product availability for all items\n4. Validate quantities against stock\n5. Check shipping address validity\n6. Calculate order totals\n7. Return validation result with inventory reservations",
+        "agentType": "backend-architect",
+        "outputPorts": ["valid", "invalid", "out_of_stock"]
+      }
+    },
+    {
+      "id": "ifelse-stock-available",
+      "type": "ifElse",
+      "position": { "x": 300, "y": 290 },
+      "data": {
+        "label": "Stock Available?",
+        "description": "Check if all items are in stock",
+        "condition": "All order items have sufficient inventory"
+      }
+    },
+    {
+      "id": "subagent-reserve-inventory",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 420 },
+      "data": {
+        "label": "Reserve Inventory",
+        "description": "Create inventory reservations for order items",
+        "prompt": "Reserve inventory:\n1. Lock inventory records\n2. Create reservations for each item\n3. Set reservation expiry (15 minutes)\n4. Update available stock\n5. Return reservation IDs\n6. Handle partial availability with backorder flag",
+        "agentType": "backend-architect",
+        "outputPorts": ["reserved", "partial", "failed"]
+      }
+    },
+    {
+      "id": "prompt-stock-error",
+      "type": "prompt",
+      "position": { "x": 450, "y": 420 },
+      "data": {
+        "label": "Handle Out of Stock",
+        "description": "Return out of stock error with alternatives",
+        "prompt": "Handle out of stock:\n- Return 409 Conflict\n- List unavailable items\n- Suggest alternatives or backorder\n- Offer waitlist signup\n- Return available quantities",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "subagent-process-payment",
+      "type": "subAgent",
+      "position": { "x": 150, "y": 550 },
+      "data": {
+        "label": "Process Payment",
+        "description": "Process payment through payment gateway",
+        "prompt": "Process payment:\n1. Get payment method from order\n2. Calculate final amount with tax and shipping\n3. Create payment intent\n4. Process payment with gateway\n5. Handle 3D Secure if required\n6. Store payment reference\n7. Return payment result",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "failed", "requires_action"]
+      }
+    },
+    {
+      "id": "ifelse-payment-success",
+      "type": "ifElse",
+      "position": { "x": 150, "y": 690 },
+      "data": {
+        "label": "Payment Successful?",
+        "description": "Check if payment was processed successfully",
+        "condition": "Payment gateway returned success status"
+      }
+    },
+    {
+      "id": "subagent-create-order",
+      "type": "subAgent",
+      "position": { "x": 50, "y": 820 },
+      "data": {
+        "label": "Create Order Record",
+        "description": "Create confirmed order in database",
+        "prompt": "Create order:\n1. Generate order number\n2. Create order record with status 'confirmed'\n3. Create order items with prices locked\n4. Convert reservations to allocations\n5. Calculate estimated delivery date\n6. Create audit trail entry\n7. Return order details",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "error"]
+      }
+    },
+    {
+      "id": "subagent-release-inventory",
+      "type": "subAgent",
+      "position": { "x": 250, "y": 820 },
+      "data": {
+        "label": "Release Inventory",
+        "description": "Release inventory reservations on payment failure",
+        "prompt": "Release inventory:\n1. Find all reservations for order\n2. Delete reservations\n3. Restore available stock\n4. Log release reason\n5. Return release confirmation",
+        "agentType": "backend-architect",
+        "outputPorts": ["released"]
+      }
+    },
+    {
+      "id": "mcp-send-confirmation",
+      "type": "mcp",
+      "position": { "x": 50, "y": 950 },
+      "data": {
+        "label": "Send Order Confirmation",
+        "description": "Send order confirmation email to customer",
+        "serverName": "github",
+        "toolName": "create_issue",
+        "mode": "structured",
+        "parameters": {
+          "title": "Order Confirmation Sent",
+          "body": "Order confirmation email dispatched to customer"
+        },
+        "outputPorts": ["sent"]
+      }
+    },
+    {
+      "id": "qualitygate-g3",
+      "type": "qualityGate",
+      "position": { "x": 50, "y": 1080 },
+      "data": {
+        "label": "G3: Testing Gate",
+        "description": "Verify order processing tests pass",
+        "gateId": "G3",
+        "gateName": "Testing Complete",
+        "checklistItems": [
+          "Order creation tests pass",
+          "Inventory reservation tests pass",
+          "Payment integration tests pass",
+          "Edge cases handled (partial stock, payment retry)",
+          "Order cancellation tested"
+        ],
+        "outputPorts": ["passed", "failed"]
+      }
+    },
+    {
+      "id": "prompt-success-response",
+      "type": "prompt",
+      "position": { "x": 50, "y": 1210 },
+      "data": {
+        "label": "Return Order Success",
+        "description": "Return successful order creation response",
+        "prompt": "Return order success:\n- HTTP 201 Created\n- Include order number\n- Include order summary\n- Include estimated delivery\n- Include tracking information when available",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "prompt-payment-error",
+      "type": "prompt",
+      "position": { "x": 250, "y": 950 },
+      "data": {
+        "label": "Return Payment Error",
+        "description": "Return payment failure response",
+        "prompt": "Return payment error:\n- HTTP 402 Payment Required\n- Include error code and message\n- Suggest retry or alternative payment\n- Preserve cart for retry",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 50, "y": 1340 },
+      "data": {
+        "label": "Order Created"
+      }
+    },
+    {
+      "id": "end-stock-error",
+      "type": "end",
+      "position": { "x": 450, "y": 550 },
+      "data": {
+        "label": "Stock Unavailable"
+      }
+    },
+    {
+      "id": "end-payment-error",
+      "type": "end",
+      "position": { "x": 250, "y": 1080 },
+      "data": {
+        "label": "Payment Failed"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "subagent-validate-order",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "subagent-validate-order",
+      "target": "ifelse-stock-available",
+      "sourceHandle": "output-valid",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "ifelse-stock-available",
+      "target": "subagent-reserve-inventory",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "In Stock"
+    },
+    {
+      "id": "conn-4",
+      "source": "ifelse-stock-available",
+      "target": "prompt-stock-error",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "Out of Stock"
+    },
+    {
+      "id": "conn-5",
+      "source": "prompt-stock-error",
+      "target": "end-stock-error",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "subagent-reserve-inventory",
+      "target": "subagent-process-payment",
+      "sourceHandle": "output-reserved",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-7",
+      "source": "subagent-process-payment",
+      "target": "ifelse-payment-success",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "ifelse-payment-success",
+      "target": "subagent-create-order",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input",
+      "label": "Success"
+    },
+    {
+      "id": "conn-9",
+      "source": "ifelse-payment-success",
+      "target": "subagent-release-inventory",
+      "sourceHandle": "branch-1",
+      "targetHandle": "input",
+      "label": "Failed"
+    },
+    {
+      "id": "conn-10",
+      "source": "subagent-create-order",
+      "target": "mcp-send-confirmation",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-11",
+      "source": "mcp-send-confirmation",
+      "target": "qualitygate-g3",
+      "sourceHandle": "output-sent",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-12",
+      "source": "qualitygate-g3",
+      "target": "prompt-success-response",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-13",
+      "source": "prompt-success-response",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-14",
+      "source": "subagent-release-inventory",
+      "target": "prompt-payment-error",
+      "sourceHandle": "output-released",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-15",
+      "source": "prompt-payment-error",
+      "target": "end-payment-error",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

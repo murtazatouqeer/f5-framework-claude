@@ -1,0 +1,332 @@
+name: room
+display_name: Room
+display_name_vi: Phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Individual hotel room entity with physical attributes, current status,
+  and operational state. Represents a specific sellable unit within the property.
+
+description_vi: |
+  Thực thể phòng khách sạn riêng lẻ với các thuộc tính vật lý, trạng thái
+  hiện tại và trạng thái vận hành. Đại diện cho một đơn vị bán được cụ thể
+  trong cơ sở lưu trú.
+
+attributes:
+  identity:
+    - name: room_id
+      type: string
+      format: "ROOM-{property_code}-{room_number}"
+      required: true
+      description: Unique room identifier
+
+    - name: property_id
+      type: string
+      required: true
+      description: Parent property reference
+
+    - name: room_number
+      type: string
+      max_length: 10
+      required: true
+      description: Room number as displayed
+
+    - name: room_type_id
+      type: string
+      required: true
+      description: Room type classification
+
+  physical:
+    - name: floor
+      type: integer
+      required: true
+      description: Floor number
+
+    - name: wing
+      type: string
+      description: Building wing or section
+
+    - name: building
+      type: string
+      description: Building name for multi-building properties
+
+    - name: view_type
+      type: enum
+      values:
+        - ocean_view
+        - garden_view
+        - city_view
+        - pool_view
+        - mountain_view
+        - no_view
+        - courtyard
+
+    - name: bed_configuration
+      type: array
+      items:
+        type: object
+        properties:
+          bed_type:
+            type: enum
+            values: [king, queen, double, twin, single, sofa_bed, murphy_bed, bunk]
+          quantity: integer
+      description: Actual bed setup in room
+
+    - name: square_meters
+      type: decimal
+      description: Room size in square meters
+
+    - name: max_occupancy
+      type: integer
+      required: true
+      description: Maximum guests allowed
+
+    - name: max_adults
+      type: integer
+      required: true
+
+    - name: max_children
+      type: integer
+      default: 0
+
+    - name: connecting_room
+      type: string
+      description: Connected room number if any
+
+    - name: is_accessible
+      type: boolean
+      default: false
+      description: ADA/accessibility compliant
+
+  status:
+    - name: room_status
+      type: enum
+      values:
+        - vacant_clean
+        - vacant_dirty
+        - vacant_inspected
+        - occupied_clean
+        - occupied_dirty
+        - out_of_order
+        - out_of_service
+      required: true
+      description: Current housekeeping status
+
+    - name: fo_status
+      type: enum
+      values:
+        - available
+        - reserved
+        - occupied
+        - blocked
+        - out_of_inventory
+      required: true
+      description: Front office availability status
+
+    - name: reservation_status
+      type: enum
+      values:
+        - vacant
+        - arrival
+        - stay_over
+        - due_out
+        - departed
+        - day_use
+      description: Current reservation state
+
+  features:
+    - name: amenities
+      type: array
+      items:
+        type: enum
+        values:
+          - air_conditioning
+          - heating
+          - minibar
+          - safe
+          - tv
+          - cable_tv
+          - wifi
+          - telephone
+          - balcony
+          - terrace
+          - bathtub
+          - shower
+          - jacuzzi
+          - kitchen
+          - kitchenette
+          - washer
+          - dryer
+          - iron
+          - coffee_maker
+          - work_desk
+          - sitting_area
+
+    - name: special_features
+      type: array
+      items: string
+      description: Additional unique features
+
+  maintenance:
+    - name: last_inspection_date
+      type: date
+
+    - name: last_deep_clean_date
+      type: date
+
+    - name: last_renovation_date
+      type: date
+
+    - name: maintenance_notes
+      type: text
+
+    - name: ooo_reason
+      type: string
+      description: Out of Order reason if applicable
+
+    - name: ooo_until
+      type: date
+      description: Expected return to service date
+
+  operational:
+    - name: is_smoking
+      type: boolean
+      default: false
+
+    - name: is_sellable
+      type: boolean
+      default: true
+      description: Whether room can be sold
+
+    - name: housekeeping_priority
+      type: integer
+      min: 1
+      max: 10
+      default: 5
+
+    - name: assigned_housekeeper
+      type: string
+      description: Current assigned housekeeper ID
+
+  current_stay:
+    - name: current_reservation_id
+      type: string
+      description: Active reservation if occupied
+
+    - name: current_guest_id
+      type: string
+      description: Current guest if occupied
+
+    - name: current_folio_id
+      type: string
+      description: Active folio if occupied
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+    - name: status_changed_at
+      type: timestamp
+
+    - name: status_changed_by
+      type: string
+
+relationships:
+  - entity: property
+    type: many_to_one
+    required: true
+    description: Room belongs to property
+
+  - entity: room_type
+    type: many_to_one
+    required: true
+    description: Room has a room type
+
+  - entity: reservation
+    type: one_to_many
+    description: Room has reservation history
+
+  - entity: housekeeping
+    type: one_to_many
+    description: Room has housekeeping tasks
+
+  - entity: maintenance
+    type: one_to_many
+    description: Room has maintenance records
+
+indexes:
+  - fields: [property_id, room_number]
+    unique: true
+  - fields: [property_id, room_status, fo_status]
+  - fields: [property_id, floor]
+  - fields: [room_type_id]
+  - fields: [assigned_housekeeper]
+
+state_machine:
+  name: room_status
+  states:
+    - vacant_clean
+    - vacant_dirty
+    - vacant_inspected
+    - occupied_clean
+    - occupied_dirty
+    - out_of_order
+    - out_of_service
+
+  transitions:
+    - from: vacant_dirty
+      to: vacant_clean
+      trigger: cleaning_complete
+      actor: housekeeper
+
+    - from: vacant_clean
+      to: vacant_inspected
+      trigger: inspection_passed
+      actor: supervisor
+
+    - from: vacant_inspected
+      to: occupied_clean
+      trigger: guest_checked_in
+      actor: front_desk
+
+    - from: occupied_clean
+      to: occupied_dirty
+      trigger: daily_reset
+      actor: system
+
+    - from: occupied_dirty
+      to: occupied_clean
+      trigger: daily_service_complete
+      actor: housekeeper
+
+    - from: [occupied_clean, occupied_dirty]
+      to: vacant_dirty
+      trigger: guest_checked_out
+      actor: front_desk
+
+    - from: any
+      to: out_of_order
+      trigger: maintenance_required
+      actor: [front_desk, maintenance]
+
+    - from: out_of_order
+      to: vacant_dirty
+      trigger: maintenance_complete
+      actor: maintenance
+
+business_rules:
+  - rule: BR-ROOM-001
+    description: Room number must be unique within property
+  - rule: BR-ROOM-002
+    description: Max occupancy cannot exceed room type limit
+  - rule: BR-ROOM-003
+    description: Occupied room cannot be marked out_of_order without checkout
+  - rule: BR-ROOM-004
+    description: Room must be inspected before selling after deep clean

@@ -1,0 +1,314 @@
+# Expiration Business Rules
+# F5 Framework v2.0 - Education/Certification
+# Rules governing certificate expiration
+
+business_rules:
+  domain: education
+  subdomain: certification
+  category: expiration
+  version: "1.0.0"
+  
+  description: |
+    Business rules governing certificate validity periods, expiration
+    calculations, grace periods, and expiration notifications.
+
+  rule_groups:
+    # ==========================================
+    # Validity Calculation Rules
+    # ==========================================
+    - id: validity_calculation
+      name: Validity Calculation Rules
+      name_ja: 有効期間計算ルール
+      description: Rules for calculating certificate validity
+      
+      rules:
+        - id: BR-EXP-001
+          name: Fixed Duration Validity
+          name_ja: 固定期間有効性
+          description: Calculate expiration from issue date plus validity period
+          priority: high
+          
+          condition:
+            when: "program.expiration_type = 'from_issue'"
+            
+          calculation:
+            valid_until: "issued_at + program.certificate_validity_months MONTHS"
+            
+          example:
+            issued_at: "2024-03-15"
+            validity_months: 36
+            valid_until: "2027-03-15"
+            
+        - id: BR-EXP-002
+          name: Achievement Date Validity
+          name_ja: 達成日有効性
+          description: Calculate expiration from achievement date
+          priority: high
+          
+          condition:
+            when: "program.expiration_type = 'from_achievement'"
+            
+          calculation:
+            valid_until: "achievement_date + program.certificate_validity_months MONTHS"
+            
+        - id: BR-EXP-003
+          name: Calendar Year Validity
+          name_ja: 暦年有効性
+          description: Expiration aligned to calendar year end
+          priority: medium
+          
+          condition:
+            when: "program.expiration_type = 'calendar_year'"
+            
+          calculation:
+            base_year: "YEAR(issued_at)"
+            valid_until: "DATE(base_year + validity_years, 12, 31)"
+            
+          example:
+            issued_at: "2024-03-15"
+            validity_years: 3
+            valid_until: "2027-12-31"
+            
+        - id: BR-EXP-004
+          name: Lifetime Validity
+          name_ja: 生涯有効性
+          description: Certificate never expires
+          priority: high
+          
+          condition:
+            when: "program.is_lifetime = true OR program.expiration_type = 'never'"
+            
+          result:
+            valid_until: null
+            is_lifetime: true
+            renewal_required: false
+
+    # ==========================================
+    # Grace Period Rules
+    # ==========================================
+    - id: grace_period
+      name: Grace Period Rules
+      name_ja: 猶予期間ルール
+      description: Rules for post-expiration grace periods
+      
+      rules:
+        - id: BR-EXP-010
+          name: Standard Grace Period
+          name_ja: 標準猶予期間
+          description: Allow renewal within grace period after expiration
+          priority: high
+          
+          configuration:
+            default_days: 30
+            max_days: 90
+            program_override: true
+            
+          status_during_grace:
+            certificate_status: expired
+            renewal_allowed: true
+            verification_shows: "Expired - Within Renewal Period"
+            
+        - id: BR-EXP-011
+          name: Grace Period Fees
+          name_ja: 猶予期間料金
+          description: Late renewal fees during grace period
+          priority: medium
+          
+          fee_calculation:
+            days_1_to_30:
+              multiplier: 1.0
+              description: "Standard renewal fee"
+            days_31_to_60:
+              multiplier: 1.25
+              description: "25% late penalty"
+            days_61_to_90:
+              multiplier: 1.5
+              description: "50% late penalty"
+              
+        - id: BR-EXP-012
+          name: Post-Grace Reinstatement
+          name_ja: 猶予後復帰
+          description: Rules for reinstatement after grace period
+          priority: medium
+          
+          window:
+            start: "grace_period_end + 1 day"
+            end: "expiration_date + 1 year"
+            
+          requirements:
+            - complete_current_ceu_requirements: true
+            - pass_reinstatement_exam: "if program.reinstatement_exam_required"
+            - pay_reinstatement_fee: true
+            
+          after_window:
+            action: must_recertify_from_start
+            status: lapsed_beyond_reinstatement
+
+    # ==========================================
+    # Notification Rules
+    # ==========================================
+    - id: notifications
+      name: Notification Rules
+      name_ja: 通知ルール
+      description: Rules for expiration notifications
+      
+      rules:
+        - id: BR-EXP-020
+          name: Expiration Reminder Schedule
+          name_ja: 有効期限リマインダースケジュール
+          description: Send reminders before expiration
+          priority: high
+          
+          schedule:
+            - days_before: 90
+              notification_type: first_reminder
+              channel: [email, app]
+              message_key: expiration_90_days
+              
+            - days_before: 60
+              notification_type: second_reminder
+              channel: [email, app]
+              message_key: expiration_60_days
+              
+            - days_before: 30
+              notification_type: urgent_reminder
+              channel: [email, app, sms]
+              message_key: expiration_30_days
+              
+            - days_before: 7
+              notification_type: final_reminder
+              channel: [email, app, sms]
+              message_key: expiration_7_days
+              
+            - days_before: 0
+              notification_type: expiration_notice
+              channel: [email, app]
+              message_key: certificate_expired
+              
+          conditions:
+            skip_if:
+              - renewal_submitted: true
+              - certificate_revoked: true
+              - holder_opted_out: true
+              
+        - id: BR-EXP-021
+          name: Renewal Window Opening
+          name_ja: 更新期間開始
+          description: Notify when renewal window opens
+          priority: medium
+          
+          trigger:
+            days_before_expiration: "program.renewal_window_months * 30"
+            
+          notification:
+            channel: [email, app]
+            message_key: renewal_window_open
+            include:
+              - renewal_deadline
+              - ceu_status
+              - renewal_fee
+
+    # ==========================================
+    # Status Transition Rules
+    # ==========================================
+    - id: status_transitions
+      name: Status Transition Rules
+      name_ja: ステータス遷移ルール
+      description: Rules for expiration-related status changes
+      
+      rules:
+        - id: BR-EXP-030
+          name: Automatic Expiration
+          name_ja: 自動期限切れ
+          description: Automatically expire certificates
+          priority: critical
+          
+          trigger:
+            condition: "valid_until < CURRENT_DATE AND status = 'active'"
+            
+          action:
+            - update_status: expired
+            - record_expiration_timestamp
+            - update_holder_statistics
+            - send_expiration_notification
+            
+          job:
+            type: scheduled
+            frequency: daily
+            time: "00:05:00 UTC"
+            
+        - id: BR-EXP-031
+          name: Lapsed Status
+          name_ja: 失効ステータス
+          description: Mark certificates as lapsed after grace period
+          priority: medium
+          
+          trigger:
+            condition: |
+              status = 'expired' 
+              AND valid_until + grace_period_days < CURRENT_DATE
+              AND NOT renewal_in_progress
+              
+          action:
+            - update_status: lapsed
+            - close_renewal_window
+            - notify_holder
+
+    # ==========================================
+    # CEU Deadline Rules
+    # ==========================================
+    - id: ceu_deadlines
+      name: CEU Deadline Rules
+      name_ja: CEU締切ルール
+      description: Rules for CEU accumulation deadlines
+      
+      rules:
+        - id: BR-EXP-040
+          name: CEU Accumulation Period
+          name_ja: CEU蓄積期間
+          description: CEUs must be earned during certification period
+          priority: high
+          
+          validation:
+            ceu_activity_date: "BETWEEN valid_from AND valid_until"
+            
+          carryover:
+            allowed: true
+            max_percent: 10
+            conditions:
+              - must_meet_minimum_current_period: true
+              - carryover_expires_with_certificate: true
+              
+        - id: BR-EXP-041
+          name: CEU Deadline Warning
+          name_ja: CEU締切警告
+          description: Warn about CEU shortfall
+          priority: medium
+          
+          trigger:
+            days_before_expiration: 90
+            condition: "ceu_earned < ceu_required"
+            
+          notification:
+            channel: [email, app]
+            include:
+              - ceu_required
+              - ceu_earned
+              - ceu_remaining
+              - deadline
+
+  automated_jobs:
+    - job_id: daily_expiration_check
+      description: Check and expire certificates daily
+      schedule: "0 5 * * *"
+      rules: [BR-EXP-030, BR-EXP-031]
+      
+    - job_id: notification_scheduler
+      description: Send scheduled notifications
+      schedule: "0 8 * * *"
+      rules: [BR-EXP-020, BR-EXP-021, BR-EXP-041]
+
+  enforcement:
+    mode: strict
+    automated: true
+    audit_all: true

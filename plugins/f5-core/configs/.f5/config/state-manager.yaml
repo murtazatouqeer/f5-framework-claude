@@ -1,0 +1,295 @@
+# F5 State Manager
+# Version: 1.0.0
+# Manages runtime state and component interactions
+
+# ═══════════════════════════════════════════════════════════════
+# CURRENT STATE SCHEMA
+# ═══════════════════════════════════════════════════════════════
+
+state_schema:
+  session:
+    id: string
+    started_at: datetime
+    status: "active" | "inactive"
+
+  project:
+    name: string
+    stack: string
+    path: string
+
+  gate:
+    current: "D1" | "D2" | "D3" | "D4" | "G2" | "G3" | "G4"
+    status: "in_progress" | "complete"
+    started_at: datetime
+    progress: number  # 0-100
+
+  mode:
+    current: string
+    auto_detected: boolean
+    source: "user" | "context" | "persona" | "default"
+    locked: boolean
+
+  persona:
+    current: string
+    auto_detected: boolean
+    source: "user" | "gate" | "file" | "keyword" | "default"
+    locked: boolean
+
+  verbosity:
+    level: 1-5
+    source: "user" | "mode" | "default"
+
+  agents:
+    active: string[]
+    available: string[]
+    last_invoked: string
+
+  mcp:
+    connected: string[]
+    available: string[]
+    failed: string[]
+
+  skills:
+    loaded: string[]
+    count: number
+
+  context:
+    recent_files: string[]
+    recent_commands: string[]
+    decisions: object[]
+
+# ═══════════════════════════════════════════════════════════════
+# STATE TRANSITIONS
+# ═══════════════════════════════════════════════════════════════
+
+transitions:
+  # When mode changes
+  on_mode_change:
+    actions:
+      - update_verbosity: "from interactions.mode_verbosity"
+      - notify_user: true
+      - log_change: true
+    conditions:
+      - "mode is not locked or user_explicit"
+
+  # When persona changes
+  on_persona_change:
+    actions:
+      - suggest_mode: "from interactions.persona_mode"
+      - load_skills: "from persona skills config"
+      - notify_user: true
+      - log_change: true
+    conditions:
+      - "persona is not locked or user_explicit"
+
+  # When gate changes
+  on_gate_change:
+    actions:
+      - suggest_persona: "from interactions.gate_persona"
+      - load_gate_context: true
+      - create_checkpoint: true
+      - notify_user: true
+      - log_change: true
+
+  # When agent invoked
+  on_agent_invoke:
+    actions:
+      - load_agent_skills: "from interactions.agent_skills"
+      - set_agent_mode: "based on agent type"
+      - track_in_session: true
+      - log_invocation: true
+
+  # When verbosity changes
+  on_verbosity_change:
+    actions:
+      - notify_user: true
+      - log_change: true
+
+  # When session starts
+  on_session_start:
+    actions:
+      - restore_previous_state: "if session_restore enabled"
+      - initialize_context: true
+      - log_session_start: true
+
+  # When session ends
+  on_session_end:
+    actions:
+      - save_current_state: true
+      - create_checkpoint: true
+      - log_session_end: true
+
+# ═══════════════════════════════════════════════════════════════
+# CONFLICT RESOLUTION
+# ═══════════════════════════════════════════════════════════════
+
+conflict_resolution:
+  # Priority order when conflicts occur
+  priority:
+    1: user_explicit      # User explicitly set
+    2: security_override  # Security concerns always win
+    3: context_detection  # Detected from context
+    4: gate_suggestion    # Gate-based suggestion
+    5: default            # Default values
+
+  # Specific conflict rules
+  rules:
+    # If user sets mode, don't auto-change
+    mode:
+      user_explicit_locks: true
+      lock_duration: "until_reset"
+      unlock_command: "/f5-mode reset"
+
+    # If user sets persona, suggest compatible mode
+    persona:
+      user_explicit_locks: true
+      suggest_mode: true
+      force_mode: false
+      unlock_command: "/f5-persona reset"
+
+    # Verbosity can always be overridden
+    verbosity:
+      user_explicit_locks: false
+
+    # Security mode takes precedence
+    security:
+      keywords: ["auth", "password", "security", "sensitive", "encrypt", "jwt", "oauth"]
+      force_mode: security
+      force_persona: security
+      notification: "🔒 Security context detected"
+
+    # Debugging takes precedence over coding
+    debugging:
+      keywords: ["bug", "error", "fix", "issue", "broken", "not working"]
+      force_mode: debugging
+      suggest_persona: qa
+
+# ═══════════════════════════════════════════════════════════════
+# STATE QUERIES
+# ═══════════════════════════════════════════════════════════════
+
+queries:
+  # Get current complete state
+  get_state:
+    returns: "full state object"
+    format: |
+      {
+        session: { id, started_at, status },
+        project: { name, stack, path },
+        gate: { current, status, progress },
+        mode: { current, auto_detected, source },
+        persona: { current, auto_detected, source },
+        verbosity: { level, source },
+        agents: { active, available },
+        mcp: { connected, available },
+        skills: { loaded, count },
+        context: { recent_files, recent_commands, decisions }
+      }
+
+  # Get specific component state
+  get_mode:
+    returns: "{ current, auto_detected, source, locked }"
+
+  get_persona:
+    returns: "{ current, auto_detected, source, locked }"
+
+  get_verbosity:
+    returns: "{ level, source }"
+
+  get_gate:
+    returns: "{ current, status, progress }"
+
+  get_session:
+    returns: "{ id, started_at, status, duration }"
+
+  # Check if something is active
+  is_mode_active:
+    params: ["mode_name"]
+    returns: boolean
+
+  is_persona_active:
+    params: ["persona_name"]
+    returns: boolean
+
+  is_agent_available:
+    params: ["agent_name"]
+    returns: boolean
+
+  is_mcp_connected:
+    params: ["server_name"]
+    returns: boolean
+
+# ═══════════════════════════════════════════════════════════════
+# STATE COMMANDS
+# ═══════════════════════════════════════════════════════════════
+
+commands:
+  # Reset all state to defaults
+  reset_all:
+    description: "Reset all state to defaults"
+    confirmation_required: true
+
+  # Reset specific component
+  reset_mode:
+    description: "Reset mode to default/auto"
+    unlocks: true
+
+  reset_persona:
+    description: "Reset persona to default/auto"
+    unlocks: true
+
+  reset_verbosity:
+    description: "Reset verbosity to mode default"
+
+  # Lock/unlock components
+  lock_mode:
+    description: "Lock current mode"
+    prevents_auto_change: true
+
+  unlock_mode:
+    description: "Unlock mode for auto-detection"
+
+  lock_persona:
+    description: "Lock current persona"
+    prevents_auto_change: true
+
+  unlock_persona:
+    description: "Unlock persona for auto-detection"
+
+# ═══════════════════════════════════════════════════════════════
+# NOTIFICATIONS
+# ═══════════════════════════════════════════════════════════════
+
+notifications:
+  # Notification formats
+  formats:
+    mode_change: "🔄 Mode: {{old}} → {{new}}"
+    persona_change: "🔄 Persona: {{old}} → {{new}}"
+    verbosity_change: "📊 Verbosity: {{old}} → {{new}}"
+    gate_change: "🚪 Gate: {{old}} → {{new}}"
+    security_override: "🔒 Security context detected - switching to security mode"
+    auto_detect: "🔍 Auto-detected: {{component}} = {{value}}"
+
+  # When to show notifications
+  show_on:
+    user_explicit: true
+    auto_detect: true
+    security_override: true
+    session_restore: true
+
+# ═══════════════════════════════════════════════════════════════
+# LOGGING
+# ═══════════════════════════════════════════════════════════════
+
+logging:
+  enabled: true
+  level: "info"
+
+  log_events:
+    - state_change
+    - transition
+    - conflict_resolution
+    - query
+    - command
+
+  format: "[{{timestamp}}] [{{level}}] {{event}}: {{details}}"

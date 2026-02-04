@@ -1,0 +1,508 @@
+name: Renewal Rules
+display_name: Policy Renewal Rules
+description: |
+  Business rules for policy renewal processing.
+  Covers eligibility, premium adjustment, and auto-renewal.
+
+domain: insurance
+subdomain: policy
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - renewal_eligibility
+  - renewal_timing
+  - premium_adjustment
+  - no_claims_bonus
+  - auto_renewal
+  - renewal_terms
+
+rules:
+  # Renewal Eligibility Rules
+  - id: RNW-ELG-001
+    name: Policy Renewable Check
+    category: renewal_eligibility
+    priority: critical
+    description: |
+      Verify policy is eligible for renewal.
+    condition:
+      expression: |
+        product.renewable = true AND
+        policy.status IN ['active', 'lapsed'] AND
+        insured.current_age < product.max_coverage_age
+    failure_action: reject
+    failure_message: "Policy is not eligible for renewal"
+
+  - id: RNW-ELG-002
+    name: Maximum Renewal Age
+    category: renewal_eligibility
+    priority: high
+    description: |
+      Insured age at renewal within limits.
+    condition:
+      expression: "insured.age_at_renewal <= product.max_coverage_age"
+    failure_action: reject
+    failure_message: "Insured exceeds maximum coverage age at renewal"
+
+  - id: RNW-ELG-003
+    name: Claims History Review
+    category: renewal_eligibility
+    priority: high
+    description: |
+      High claims may affect renewal eligibility.
+    condition:
+      expression: "policy.loss_ratio <= 150"
+    failure_action: refer
+    refer_to: "underwriting"
+    failure_message: "High loss ratio - underwriting review required"
+
+  - id: RNW-ELG-004
+    name: Product Still Active
+    category: renewal_eligibility
+    priority: high
+    description: |
+      Product must still be available for renewal.
+    condition:
+      expression: "product.status = 'active'"
+    failure_action: offer_alternative
+    alternative_action:
+      offer: product.successor_product_id
+    failure_message: "Product discontinued - alternative product offered"
+
+  - id: RNW-ELG-005
+    name: Lapsed Policy Reinstatement Window
+    category: renewal_eligibility
+    priority: high
+    description: |
+      Lapsed policy can renew within window.
+    condition:
+      expression: |
+        IF policy.status = 'lapsed'
+        THEN DAYS_BETWEEN(policy.lapse_date, NOW()) <= 180
+    failure_action: reject
+    failure_message: "Reinstatement window expired - new application required"
+
+  - id: RNW-ELG-006
+    name: Fraud Flag Check
+    category: renewal_eligibility
+    priority: critical
+    description: |
+      Policies with fraud indicators not renewed.
+    condition:
+      expression: "policy.fraud_flag = false"
+    failure_action: reject
+    failure_message: "Policy flagged - renewal declined"
+
+  # Renewal Timing Rules
+  - id: RNW-TIM-001
+    name: Renewal Notice Period
+    category: renewal_timing
+    priority: high
+    description: |
+      Send renewal notice in advance.
+    trigger:
+      event: scheduled
+      timing: "policy.expiry_date - 60 days"
+    action: generate_renewal_offer
+    message: "Renewal offer generated 60 days before expiry"
+
+  - id: RNW-TIM-002
+    name: Renewal Reminder
+    category: renewal_timing
+    priority: medium
+    description: |
+      Send reminder if no response.
+    trigger:
+      event: scheduled
+      timing: "policy.expiry_date - 30 days"
+      condition: "renewal.status = 'offer_sent'"
+    action: send_reminder
+    message: "Renewal reminder sent"
+
+  - id: RNW-TIM-003
+    name: Final Renewal Warning
+    category: renewal_timing
+    priority: medium
+    description: |
+      Final warning before expiry.
+    trigger:
+      event: scheduled
+      timing: "policy.expiry_date - 7 days"
+      condition: "renewal.status != 'accepted'"
+    action: send_final_warning
+    message: "Final renewal warning - policy expires in 7 days"
+
+  - id: RNW-TIM-004
+    name: Renewal Grace Period
+    category: renewal_timing
+    priority: high
+    description: |
+      Allow renewal within grace period after expiry.
+    condition:
+      expression: |
+        NOW() <= policy.expiry_date + 30 days
+    effect:
+      allow_renewal: true
+      require_full_premium: true
+    message: "Renewal within grace period - full premium required"
+
+  - id: RNW-TIM-005
+    name: Late Renewal Conditions
+    category: renewal_timing
+    priority: medium
+    description: |
+      Late renewal may require underwriting.
+    condition:
+      expression: |
+        NOW() > policy.expiry_date + 30 days AND
+        NOW() <= policy.expiry_date + 90 days
+    effect:
+      allow_renewal: true
+      require_underwriting: true
+      require_health_declaration: true
+    message: "Late renewal - health declaration required"
+
+  # Premium Adjustment Rules
+  - id: RNW-PRM-001
+    name: Age-Based Premium Recalculation
+    category: premium_adjustment
+    priority: high
+    description: |
+      Recalculate premium based on new age.
+    calculation:
+      method: rate_table_lookup
+      inputs:
+        age: insured.age_at_renewal
+        gender: insured.gender
+        product: product.id
+    note: "Premium increases with age per rate table"
+
+  - id: RNW-PRM-002
+    name: Claims Experience Adjustment
+    category: premium_adjustment
+    priority: high
+    description: |
+      Adjust premium based on claims history.
+    conditions:
+      - condition:
+          expression: "policy.loss_ratio > 100"
+        adjustment:
+          type: loading
+          percentage: "MIN((loss_ratio - 100) * 0.5, 50)"
+      - condition:
+          expression: "policy.loss_ratio > 150"
+        adjustment:
+          type: loading
+          percentage: 75
+          require_approval: true
+
+  - id: RNW-PRM-003
+    name: Inflation Adjustment
+    category: premium_adjustment
+    priority: medium
+    description: |
+      Apply annual inflation adjustment.
+    condition:
+      expression: "product.inflation_adjustment_enabled = true"
+    adjustment:
+      type: inflation
+      percentage: "MIN(cpi_rate, product.max_inflation_increase)"
+    cap: 10
+    message: "Inflation adjustment of {percentage}% applied"
+
+  - id: RNW-PRM-004
+    name: Sum Insured Adjustment
+    category: premium_adjustment
+    priority: medium
+    description: |
+      Adjust premium if sum insured changes.
+    condition:
+      expression: "renewal.proposed_sum_insured != policy.sum_insured"
+    calculation:
+      method: pro_rata
+      formula: "base_premium * (new_sum / old_sum)"
+
+  - id: RNW-PRM-005
+    name: Maximum Premium Increase Limit
+    category: premium_adjustment
+    priority: high
+    description: |
+      Cap total premium increase.
+    validation:
+      expression: "renewal.premium_change_percent <= 20"
+    failure_action: cap
+    cap_value: "current_premium * 1.20"
+    exception:
+      condition: "claims_loading_applied OR regulatory_change"
+      allow_exceed: true
+    message: "Premium increase capped at 20%"
+
+  # No Claims Bonus Rules
+  - id: RNW-NCB-001
+    name: NCB Qualification
+    category: no_claims_bonus
+    priority: high
+    description: |
+      Determine no claims bonus eligibility.
+    condition:
+      expression: |
+        policy.claims_count = 0 AND
+        policy.premium_paid_in_full = true
+    effect:
+      ncb_years: "policy.no_claims_years + 1"
+
+  - id: RNW-NCB-002
+    name: NCB Discount Scale
+    category: no_claims_bonus
+    priority: high
+    description: |
+      Apply NCB discount based on years.
+    calculation:
+      discount_table:
+        1_year: 5
+        2_years: 10
+        3_years: 15
+        4_years: 20
+        5_plus_years: 25
+      max_discount: 25
+    applies_to: base_premium
+
+  - id: RNW-NCB-003
+    name: NCB Protection
+    category: no_claims_bonus
+    priority: medium
+    description: |
+      Protect NCB after first claim.
+    condition:
+      expression: |
+        policy.ncb_protection_rider = true AND
+        policy.claims_count = 1 AND
+        policy.protected_claims_used = 0
+    effect:
+      maintain_ncb: true
+      protected_claims_used: 1
+    message: "NCB protection applied - discount maintained"
+
+  - id: RNW-NCB-004
+    name: NCB Reset After Claim
+    category: no_claims_bonus
+    priority: high
+    description: |
+      Reset NCB years after claim.
+    condition:
+      expression: |
+        policy.claims_count > 0 AND
+        policy.ncb_protection_rider = false
+    effect:
+      ncb_years: 0
+      ncb_discount: 0
+    message: "NCB reset due to claims"
+
+  - id: RNW-NCB-005
+    name: NCB Stepback After Claim
+    category: no_claims_bonus
+    priority: medium
+    description: |
+      Stepback NCB instead of full reset.
+    condition:
+      expression: |
+        policy.claims_count = 1 AND
+        product.ncb_stepback_enabled = true
+    effect:
+      ncb_years: "MAX(0, policy.no_claims_years - 2)"
+    message: "NCB stepped back 2 years due to claim"
+
+  # Auto Renewal Rules
+  - id: RNW-AUTO-001
+    name: Auto Renewal Eligibility
+    category: auto_renewal
+    priority: high
+    description: |
+      Determine if policy qualifies for auto-renewal.
+    condition:
+      expression: |
+        policy.auto_renew_enabled = true AND
+        policy.premium_status = 'paid' AND
+        policy.claims_count <= 2 AND
+        insured.age_at_renewal <= product.max_coverage_age AND
+        renewal.premium_change_percent <= 10
+    effect:
+      auto_renew: true
+    message: "Policy eligible for automatic renewal"
+
+  - id: RNW-AUTO-002
+    name: Auto Renewal Payment
+    category: auto_renewal
+    priority: high
+    description: |
+      Process auto-renewal payment.
+    condition:
+      expression: "policy.auto_pay_enabled = true"
+    action:
+      debit: policy.auto_pay_source
+      amount: renewal.proposed_annual_premium
+      attempt_count: 3
+      retry_interval: 7
+    failure_action: suspend_auto_renewal
+    message: "Auto-renewal payment processed"
+
+  - id: RNW-AUTO-003
+    name: Auto Renewal Opt-Out
+    category: auto_renewal
+    priority: medium
+    description: |
+      Customer can opt out of auto-renewal.
+    trigger:
+      event: customer_request
+      action: opt_out_auto_renewal
+    effect:
+      auto_renew_enabled: false
+    message: "Auto-renewal disabled per customer request"
+
+  - id: RNW-AUTO-004
+    name: Auto Renewal Notification
+    category: auto_renewal
+    priority: medium
+    description: |
+      Notify customer before auto-renewal.
+    trigger:
+      event: scheduled
+      timing: "policy.expiry_date - 14 days"
+      condition: "policy.auto_renew_enabled = true"
+    action: send_auto_renewal_notice
+    content:
+      new_premium: renewal.proposed_annual_premium
+      debit_date: renewal.renewal_date
+      opt_out_deadline: "policy.expiry_date - 3 days"
+
+  # Renewal Terms Rules
+  - id: RNW-TRM-001
+    name: Same Terms Renewal
+    category: renewal_terms
+    priority: high
+    description: |
+      Default to same terms on renewal.
+    default:
+      sum_insured: policy.sum_insured
+      coverages: policy.coverages
+      riders: policy.riders
+      payment_frequency: policy.payment_frequency
+    allow_changes: true
+
+  - id: RNW-TRM-002
+    name: Coverage Removal on Renewal
+    category: renewal_terms
+    priority: medium
+    description: |
+      Allow coverage removal at renewal.
+    condition:
+      expression: "renewal.coverages_removed.count > 0"
+    validation:
+      - expression: "base_coverage NOT IN coverages_removed"
+        failure_message: "Cannot remove base coverage"
+    effect:
+      recalculate_premium: true
+    message: "Coverages removed - premium recalculated"
+
+  - id: RNW-TRM-003
+    name: Sum Insured Increase on Renewal
+    category: renewal_terms
+    priority: medium
+    description: |
+      Allow sum insured increase with conditions.
+    condition:
+      expression: "renewal.proposed_sum_insured > policy.sum_insured"
+    validation:
+      - expression: "increase_percentage <= 25"
+        message: "Increase within auto-approval limit"
+      - expression: "increase_percentage > 25"
+        action: require_underwriting
+        message: "Large increase requires underwriting"
+
+  - id: RNW-TRM-004
+    name: Add New Riders on Renewal
+    category: renewal_terms
+    priority: medium
+    description: |
+      Allow adding riders at renewal.
+    condition:
+      expression: "renewal.new_riders.count > 0"
+    validation:
+      for_each: new_riders
+      checks:
+        - expression: "rider.eligibility_check(insured)"
+        - expression: "rider.max_entry_age >= insured.age_at_renewal"
+    effect:
+      may_require_underwriting: true
+    message: "New riders added - eligibility verified"
+
+  - id: RNW-TRM-005
+    name: Term Extension on Renewal
+    category: renewal_terms
+    priority: medium
+    description: |
+      Allow policy term extension.
+    condition:
+      expression: "renewal.proposed_term > policy.original_term"
+    validation:
+      expression: |
+        insured.age_at_renewal + renewal.proposed_term <= product.max_coverage_age
+    failure_action: adjust
+    adjustment:
+      max_term: "product.max_coverage_age - insured.age_at_renewal"
+    message: "Term extended to maximum allowed"
+
+renewal_workflow:
+  steps:
+    - step: 1
+      name: identify_renewals
+      timing: "expiry - 60 days"
+      action: generate_renewal_list
+
+    - step: 2
+      name: calculate_premium
+      action: apply_renewal_rules
+
+    - step: 3
+      name: generate_offer
+      action: create_renewal_offer
+
+    - step: 4
+      name: send_offer
+      channel: [email, sms, portal]
+
+    - step: 5
+      name: process_response
+      options: [accept, decline, modify]
+
+    - step: 6
+      name: collect_payment
+      deadline: expiry_date
+
+    - step: 7
+      name: issue_renewal
+      action: create_new_policy_year
+
+retention_actions:
+  low_retention_risk:
+    ncb_years: ">= 3"
+    claims_count: 0
+    premium_increase: "< 5%"
+    action: standard_renewal
+
+  medium_retention_risk:
+    premium_increase: "5% - 15%"
+    action:
+      - proactive_contact
+      - explain_increase_reasons
+
+  high_retention_risk:
+    indicators:
+      - premium_increase: "> 15%"
+      - claims_count: ">= 2"
+      - previous_complaint: true
+    action:
+      - retention_call
+      - consider_discount
+      - manager_approval_for_discount

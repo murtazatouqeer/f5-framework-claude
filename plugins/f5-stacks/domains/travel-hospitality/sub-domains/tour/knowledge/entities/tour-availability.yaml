@@ -1,0 +1,238 @@
+name: TourAvailability
+display_name: Tour Availability / Lịch khả dụng
+description: |
+  Real-time availability tracking for tours and activities.
+  Used for calendar display and booking validation.
+
+domain: travel-hospitality
+subdomain: tour
+category: supporting
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: tour_id
+    type: uuid
+    required: false
+
+  - name: activity_id
+    type: uuid
+    required: false
+
+  - name: experience_id
+    type: uuid
+    required: false
+
+  - name: schedule_id
+    type: uuid
+    required: false
+    description: Link to specific schedule
+
+  - name: availability_type
+    type: enum
+    required: true
+    validation:
+      values: [open, limited, sold_out, blocked, closed]
+    default: open
+
+  # Date/Time
+  - name: date
+    type: date
+    required: true
+
+  - name: start_time
+    type: time
+    required: true
+
+  - name: end_time
+    type: time
+    required: false
+
+  - name: time_slot_id
+    type: string
+    required: false
+    description: Identifier for specific time slot
+
+  # Capacity
+  - name: total_capacity
+    type: integer
+    required: true
+
+  - name: booked_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: held_count
+    type: integer
+    required: true
+    default: 0
+    description: Temporarily held during booking
+
+  - name: available_spots
+    type: integer
+    required: true
+    computed: true
+    description: total_capacity - booked_count - held_count
+
+  - name: waitlist_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: waitlist_enabled
+    type: boolean
+    required: true
+    default: false
+
+  # Status Thresholds
+  - name: low_availability_threshold
+    type: integer
+    required: true
+    default: 3
+    description: Show "Limited" when spots <= this
+
+  # Pricing
+  - name: price_override
+    type: decimal
+    required: false
+    description: Special price for this date/time
+
+  - name: pricing_tier
+    type: enum
+    required: false
+    validation:
+      values: [regular, peak, off_peak, promotional]
+
+  # Blocking
+  - name: blocked_reason
+    type: enum
+    required: false
+    validation:
+      values: [weather, holiday, maintenance, private_event, guide_unavailable, manual]
+
+  - name: blocked_note
+    type: text
+    required: false
+
+  - name: blocked_by
+    type: uuid
+    required: false
+
+  - name: blocked_at
+    type: timestamp
+    required: false
+
+  # Guide
+  - name: guide_assigned
+    type: boolean
+    required: true
+    default: false
+
+  - name: guide_id
+    type: uuid
+    required: false
+
+  # Cutoff
+  - name: cutoff_datetime
+    type: timestamp
+    required: true
+
+  - name: last_booking_datetime
+    type: timestamp
+    required: false
+    description: When last booking was made
+
+  # Confirmation Status
+  - name: confirmed_to_operate
+    type: boolean
+    required: true
+    default: false
+
+  - name: minimum_met
+    type: boolean
+    required: true
+    default: false
+
+  - name: min_required
+    type: integer
+    required: true
+    default: 1
+
+  # Last Update
+  - name: last_sync_at
+    type: timestamp
+    required: false
+    description: For external inventory sync
+
+  - name: sync_source
+    type: enum
+    required: false
+    validation:
+      values: [internal, channel_manager, api, manual]
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: tour
+    type: belongs_to
+    entity: Tour
+    required: false
+
+  - name: activity
+    type: belongs_to
+    entity: Activity
+    required: false
+
+  - name: experience
+    type: belongs_to
+    entity: Experience
+    required: false
+
+  - name: schedule
+    type: belongs_to
+    entity: TourSchedule
+    required: false
+
+  - name: guide
+    type: belongs_to
+    entity: Guide
+    required: false
+
+indexes:
+  - [tour_id, date]
+  - [activity_id, date]
+  - [experience_id, date]
+  - [date, start_time]
+  - [availability_type]
+  - [available_spots]
+  - [schedule_id]
+
+business_rules:
+  - BR-AVL-001: booked_count + held_count <= total_capacity
+  - BR-AVL-002: Hold expires after 15 minutes
+  - BR-AVL-003: availability_type = sold_out when available_spots = 0
+  - BR-AVL-004: Cannot book blocked dates
+  - BR-AVL-005: Update in real-time on booking/cancellation
+  - BR-AVL-006: Sync with channel manager within 1 minute
+
+events:
+  - name: availability.updated
+    payload: [id, tour_id, date, available_spots]
+  - name: availability.sold_out
+    payload: [id, tour_id, date]
+  - name: availability.blocked
+    payload: [id, tour_id, date, reason]
+  - name: availability.reopened
+    payload: [id, tour_id, date]
+  - name: availability.low
+    payload: [id, tour_id, date, available_spots]

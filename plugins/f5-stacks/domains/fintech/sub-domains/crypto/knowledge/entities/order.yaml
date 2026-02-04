@@ -1,0 +1,549 @@
+name: Order
+display_name: Order / Lệnh giao dịch
+description: |
+  Trading order placed by a user on the exchange.
+  Supports various order types and execution strategies.
+
+domain: fintech
+sub_domain: crypto
+entity_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique order identifier
+
+  # Business Identifiers
+  order_id:
+    type: string
+    max_length: 20
+    unique: true
+    indexed: true
+    pattern: "ORD-[A-Z0-9]{8}"
+    description: Human-readable order ID
+    example: "ORD-X1Y2Z3W4"
+
+  client_order_id:
+    type: string
+    max_length: 36
+    indexed: true
+    description: Client-provided order ID for tracking
+    example: "my-order-123"
+
+  # User Reference
+  user_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Order owner
+    reference: users.id
+
+  # Trading Pair
+  trading_pair_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Trading pair for the order
+    reference: trading_pairs.id
+
+  symbol:
+    type: string
+    max_length: 20
+    indexed: true
+    description: Trading pair symbol (denormalized)
+    example: "BTC/USDT"
+
+  # Order Type
+  side:
+    type: enum
+    required: true
+    values:
+      - buy
+      - sell
+    description: Order side
+
+  order_type:
+    type: enum
+    required: true
+    values:
+      - limit
+      - market
+      - stop_limit
+      - stop_market
+      - trailing_stop
+    description: Order type
+    definition:
+      limit: Execute at specified price or better
+      market: Execute immediately at best available price
+      stop_limit: Trigger limit order when stop price reached
+      stop_market: Trigger market order when stop price reached
+      trailing_stop: Dynamic stop that follows price
+
+  # Status
+  status:
+    type: enum
+    required: true
+    values:
+      - new
+      - pending
+      - open
+      - partially_filled
+      - filled
+      - cancelled
+      - rejected
+      - expired
+    default: new
+    indexed: true
+    description: Order status
+    definition:
+      new: Order created, not yet processed
+      pending: Awaiting validation/risk check
+      open: Active in order book
+      partially_filled: Partially executed
+      filled: Fully executed
+      cancelled: Cancelled by user or system
+      rejected: Rejected due to validation failure
+      expired: Expired based on time_in_force
+
+  # Time in Force
+  time_in_force:
+    type: enum
+    required: true
+    values:
+      - gtc
+      - ioc
+      - fok
+      - gtd
+    default: gtc
+    description: Order time in force policy
+    definition:
+      gtc: Good Till Cancelled - remains until filled or cancelled
+      ioc: Immediate Or Cancel - fill what's available, cancel rest
+      fok: Fill Or Kill - fill entire order or cancel completely
+      gtd: Good Till Date - expires at specified time
+
+  # Price Information
+  price:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Limit price (required for limit orders)
+
+  stop_price:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Stop trigger price (for stop orders)
+
+  trailing_delta:
+    type: decimal
+    precision: 10
+    scale: 4
+    description: Trailing stop delta (percentage or absolute)
+
+  trailing_type:
+    type: enum
+    values:
+      - percentage
+      - absolute
+    description: How trailing_delta is applied
+
+  # Quantity Information
+  quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    required: true
+    description: Original order quantity
+
+  executed_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Quantity already executed
+
+  remaining_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Remaining quantity to execute
+
+  quote_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Order quantity in quote asset (for market buys)
+
+  executed_quote_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Quote asset quantity used/received
+
+  # Execution Details
+  average_price:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Average execution price
+
+  fills_count:
+    type: integer
+    default: 0
+    description: Number of trades/fills
+
+  # Fees
+  fee_paid:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Total fees paid
+
+  fee_asset_id:
+    type: uuid
+    description: Asset used for fee payment
+    reference: crypto_assets.id
+
+  fee_tier_id:
+    type: uuid
+    description: Applied fee tier
+    reference: fee_tiers.id
+
+  # Advanced Order Options
+  reduce_only:
+    type: boolean
+    default: false
+    description: Only reduce position, don't increase
+
+  post_only:
+    type: boolean
+    default: false
+    description: Only add liquidity (maker only)
+
+  hidden:
+    type: boolean
+    default: false
+    description: Hidden from order book (iceberg)
+
+  iceberg_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Visible quantity for iceberg orders
+
+  # Self-Trade Prevention
+  stp_mode:
+    type: enum
+    values:
+      - none
+      - cancel_taker
+      - cancel_maker
+      - cancel_both
+    default: cancel_taker
+    description: Self-trade prevention mode
+
+  # Timestamps
+  created_at:
+    type: timestamp
+    auto_generate: true
+    indexed: true
+    description: Order creation time
+
+  updated_at:
+    type: timestamp
+    auto_update: true
+    description: Last update time
+
+  opened_at:
+    type: timestamp
+    description: When order was placed in book
+
+  closed_at:
+    type: timestamp
+    description: When order was fully executed or cancelled
+
+  expires_at:
+    type: timestamp
+    description: Expiration time (for GTD orders)
+
+  # Source Information
+  source:
+    type: enum
+    values:
+      - web
+      - mobile
+      - api
+      - bot
+    default: web
+    description: Order source
+
+  ip_address:
+    type: string
+    max_length: 45
+    description: Source IP address
+
+  # Rejection/Cancel Info
+  cancel_reason:
+    type: enum
+    values:
+      - user_request
+      - insufficient_balance
+      - risk_limit
+      - self_trade
+      - expired
+      - admin_action
+      - system_error
+      - market_closed
+    description: Reason for cancellation
+
+  reject_reason:
+    type: string
+    max_length: 500
+    description: Detailed rejection reason
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: new
+  transitions:
+    new:
+      - to: pending
+        event: submit
+        actions:
+          - validate_order
+          - check_balance
+
+      - to: rejected
+        event: validation_failed
+        actions:
+          - log_rejection
+          - notify_user
+
+    pending:
+      - to: open
+        event: accept
+        conditions:
+          - balance_locked
+          - risk_approved
+        actions:
+          - lock_balance
+          - add_to_orderbook
+          - notify_user
+
+      - to: filled
+        event: instant_fill
+        conditions:
+          - is_market_order
+        actions:
+          - execute_trade
+          - update_balance
+
+      - to: rejected
+        event: reject
+        actions:
+          - log_rejection
+          - notify_user
+
+    open:
+      - to: partially_filled
+        event: partial_fill
+        actions:
+          - create_trade
+          - update_quantities
+          - notify_user
+
+      - to: filled
+        event: fill
+        actions:
+          - create_trade
+          - remove_from_orderbook
+          - update_balance
+          - notify_user
+
+      - to: cancelled
+        event: cancel
+        conditions:
+          - user_request OR system_request
+        actions:
+          - remove_from_orderbook
+          - unlock_balance
+          - notify_user
+
+      - to: expired
+        event: expire
+        conditions:
+          - time_in_force_expired
+        actions:
+          - remove_from_orderbook
+          - unlock_balance
+          - notify_user
+
+    partially_filled:
+      - to: partially_filled
+        event: partial_fill
+        actions:
+          - create_trade
+          - update_quantities
+
+      - to: filled
+        event: fill
+        actions:
+          - create_trade
+          - remove_from_orderbook
+          - update_balance
+          - notify_user
+
+      - to: cancelled
+        event: cancel
+        actions:
+          - remove_from_orderbook
+          - unlock_remaining_balance
+          - notify_user
+
+    filled:
+      terminal: true
+
+    cancelled:
+      terminal: true
+
+    rejected:
+      terminal: true
+
+    expired:
+      terminal: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  user:
+    type: belongs_to
+    entity: User
+    foreign_key: user_id
+
+  trading_pair:
+    type: belongs_to
+    entity: TradingPair
+    foreign_key: trading_pair_id
+
+  fee_tier:
+    type: belongs_to
+    entity: FeeTier
+    foreign_key: fee_tier_id
+
+  trades:
+    type: has_many
+    entity: Trade
+    as: buyer_order OR seller_order
+    description: Trades resulting from this order
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_order_user
+    columns: [user_id]
+
+  - name: idx_order_user_status
+    columns: [user_id, status]
+
+  - name: idx_order_pair_status
+    columns: [trading_pair_id, status]
+
+  - name: idx_order_open
+    columns: [trading_pair_id, side, price]
+    condition: "status IN ('open', 'partially_filled')"
+
+  - name: idx_order_client
+    columns: [user_id, client_order_id]
+    unique: true
+    condition: "client_order_id IS NOT NULL"
+
+  - name: idx_order_created
+    columns: [created_at]
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-ORD-001
+    name: Price Required for Limit
+    name_vi: Yêu cầu giá cho lệnh giới hạn
+    description: Limit orders must have a price specified
+    enforcement: validation
+
+  - id: BR-ORD-002
+    name: Stop Price Required
+    name_vi: Yêu cầu giá dừng
+    description: Stop orders must have stop_price specified
+    enforcement: validation
+
+  - id: BR-ORD-003
+    name: Minimum Order Size
+    name_vi: Kích thước lệnh tối thiểu
+    description: Order must meet minimum notional value
+    enforcement: validation
+
+  - id: BR-ORD-004
+    name: Balance Check
+    name_vi: Kiểm tra số dư
+    description: User must have sufficient balance
+    enforcement: pre_order
+
+  - id: BR-ORD-005
+    name: Price Deviation Limit
+    name_vi: Giới hạn chênh lệch giá
+    description: Limit price cannot deviate >10% from market
+    enforcement: validation
+    config:
+      max_deviation_percent: 10
+
+  - id: BR-ORD-006
+    name: Post-Only Rejection
+    name_vi: Từ chối lệnh post-only
+    description: Post-only orders rejected if would take liquidity
+    enforcement: matching_engine
+
+# =============================================================================
+# VALIDATIONS
+# =============================================================================
+validations:
+  quantity:
+    - rule: numericality
+      greater_than: 0
+      message: Quantity must be positive
+
+  price:
+    - rule: numericality
+      greater_than: 0
+      message: Price must be positive
+      if: order_type IN [limit, stop_limit]
+
+  stop_price:
+    - rule: presence
+      if: order_type IN [stop_limit, stop_market, trailing_stop]
+      message: Stop price required for stop orders
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  log_all_operations: true
+  sensitive_fields: [ip_address]
+  retention_years: 7

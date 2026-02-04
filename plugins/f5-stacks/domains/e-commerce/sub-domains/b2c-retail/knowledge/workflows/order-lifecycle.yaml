@@ -1,0 +1,394 @@
+# B2C Retail Order Lifecycle Workflow
+
+name: order-lifecycle
+display_name: Order Lifecycle Management
+version: 1.0.0
+domain: e-commerce
+sub_domain: b2c-retail
+
+description: |
+  Complete order lifecycle from cart to delivery,
+  including payment processing, fulfillment, and returns.
+
+# State Machine
+states:
+  # Cart States
+  - name: cart_active
+    type: initial
+    description: Active shopping cart
+
+  - name: cart_abandoned
+    type: terminal
+    description: Cart abandoned without conversion
+
+  # Order States
+  - name: order_pending
+    description: Order placed, awaiting payment
+    sla: 30 minutes
+
+  - name: order_confirmed
+    description: Order confirmed and payment received
+
+  - name: order_processing
+    description: Order being prepared for shipment
+
+  - name: order_ready_to_ship
+    description: Order packed and ready for pickup
+
+  - name: order_shipped
+    description: Order handed to carrier
+
+  - name: order_in_transit
+    description: Order in transit to customer
+
+  - name: order_out_for_delivery
+    description: Order out for final delivery
+
+  - name: order_delivered
+    type: terminal
+    description: Order successfully delivered
+
+  - name: order_cancelled
+    type: terminal
+    description: Order cancelled
+
+  - name: order_return_requested
+    description: Customer requested return
+
+  - name: order_return_approved
+    description: Return request approved
+
+  - name: order_return_received
+    description: Returned items received
+
+  - name: order_refunded
+    type: terminal
+    description: Refund processed
+
+# Transitions
+transitions:
+  # Cart to Order
+  - name: checkout
+    from: cart_active
+    to: order_pending
+    trigger: customer_checkout
+    conditions:
+      - cart_has_items
+      - items_in_stock
+      - customer_authenticated_or_guest
+    actions:
+      - reserve_inventory
+      - create_order_record
+      - send_order_pending_email
+
+  - name: abandon_cart
+    from: cart_active
+    to: cart_abandoned
+    trigger: timeout
+    timeout: 24 hours
+    conditions:
+      - no_activity_in_cart
+    actions:
+      - send_abandoned_cart_email
+      - release_reserved_inventory
+
+  # Payment Flow
+  - name: confirm_payment
+    from: order_pending
+    to: order_confirmed
+    trigger: payment_success
+    conditions:
+      - payment_verified
+    actions:
+      - update_payment_status
+      - send_order_confirmation_email
+      - deduct_inventory
+      - award_loyalty_points
+      - update_customer_stats
+
+  - name: payment_failed
+    from: order_pending
+    to: order_cancelled
+    trigger: payment_failure
+    conditions:
+      - max_payment_retries_exceeded
+    actions:
+      - release_reserved_inventory
+      - send_payment_failed_email
+
+  - name: payment_timeout
+    from: order_pending
+    to: order_cancelled
+    trigger: timeout
+    timeout: 30 minutes
+    actions:
+      - release_reserved_inventory
+      - send_order_expired_email
+
+  # Fulfillment Flow
+  - name: start_processing
+    from: order_confirmed
+    to: order_processing
+    trigger: warehouse_picks_order
+    actions:
+      - assign_warehouse
+      - create_pick_list
+      - notify_warehouse_staff
+
+  - name: complete_packing
+    from: order_processing
+    to: order_ready_to_ship
+    trigger: packing_complete
+    conditions:
+      - all_items_packed
+      - shipping_label_generated
+    actions:
+      - generate_shipping_label
+      - update_package_weight
+      - schedule_carrier_pickup
+
+  - name: hand_to_carrier
+    from: order_ready_to_ship
+    to: order_shipped
+    trigger: carrier_scan
+    actions:
+      - record_tracking_number
+      - send_shipped_notification
+      - create_shipment_record
+
+  # Shipping Flow
+  - name: carrier_in_transit
+    from: order_shipped
+    to: order_in_transit
+    trigger: carrier_tracking_update
+
+  - name: out_for_delivery
+    from: order_in_transit
+    to: order_out_for_delivery
+    trigger: carrier_out_for_delivery
+    actions:
+      - send_delivery_day_notification
+
+  - name: delivery_complete
+    from: order_out_for_delivery
+    to: order_delivered
+    trigger: delivery_confirmation
+    conditions:
+      - delivery_confirmed
+    actions:
+      - send_delivery_confirmation_email
+      - request_product_review
+      - complete_order_lifecycle
+
+  # Cancellation Flow
+  - name: customer_cancel_pending
+    from: order_pending
+    to: order_cancelled
+    trigger: customer_cancellation
+    conditions:
+      - payment_not_completed
+    actions:
+      - release_reserved_inventory
+      - send_cancellation_email
+
+  - name: customer_cancel_confirmed
+    from: order_confirmed
+    to: order_cancelled
+    trigger: customer_cancellation
+    conditions:
+      - within_cancellation_window
+      - not_yet_shipped
+    actions:
+      - restore_inventory
+      - process_refund
+      - send_cancellation_email
+
+  - name: admin_cancel
+    from: [order_confirmed, order_processing]
+    to: order_cancelled
+    trigger: admin_cancellation
+    conditions:
+      - not_yet_shipped
+    actions:
+      - restore_inventory
+      - process_refund
+      - send_cancellation_email
+      - log_admin_action
+
+  # Return Flow
+  - name: request_return
+    from: order_delivered
+    to: order_return_requested
+    trigger: customer_return_request
+    conditions:
+      - within_return_window
+      - item_eligible_for_return
+    actions:
+      - create_return_request
+      - send_return_instructions
+
+  - name: approve_return
+    from: order_return_requested
+    to: order_return_approved
+    trigger: return_approved
+    actions:
+      - generate_return_label
+      - send_return_label_email
+
+  - name: reject_return
+    from: order_return_requested
+    to: order_delivered
+    trigger: return_rejected
+    actions:
+      - send_return_rejected_email
+
+  - name: receive_return
+    from: order_return_approved
+    to: order_return_received
+    trigger: return_items_received
+    conditions:
+      - items_inspected
+    actions:
+      - update_inventory
+      - inspect_returned_items
+
+  - name: process_refund
+    from: order_return_received
+    to: order_refunded
+    trigger: refund_initiated
+    conditions:
+      - return_inspection_passed
+    actions:
+      - calculate_refund_amount
+      - process_refund_payment
+      - send_refund_confirmation
+      - deduct_loyalty_points
+
+# Business Rules
+business_rules:
+  cancellation_window:
+    duration: 1 hour
+    description: Customer can cancel within 1 hour of order confirmation
+
+  return_window:
+    duration: 30 days
+    description: Returns accepted within 30 days of delivery
+
+  refund_processing:
+    duration: 5-7 business days
+    description: Refund processed within 5-7 business days
+
+  abandoned_cart_recovery:
+    - trigger_after: 1 hour
+      action: first_reminder_email
+    - trigger_after: 24 hours
+      action: second_reminder_email
+      include_discount: 10%
+    - trigger_after: 72 hours
+      action: final_reminder_email
+
+  inventory_reservation:
+    duration: 30 minutes
+    description: Inventory reserved during checkout
+
+# Notifications
+notifications:
+  order_pending:
+    recipient: customer
+    channels: [email]
+    template: order_pending_confirmation
+
+  order_confirmed:
+    recipient: customer
+    channels: [email, sms]
+    template: order_confirmed
+
+  order_shipped:
+    recipient: customer
+    channels: [email, sms, push]
+    template: order_shipped
+    include:
+      - tracking_number
+      - carrier_name
+      - estimated_delivery
+
+  order_delivered:
+    recipient: customer
+    channels: [email, push]
+    template: order_delivered
+
+  order_cancelled:
+    recipient: customer
+    channels: [email]
+    template: order_cancelled
+    include:
+      - cancellation_reason
+      - refund_details
+
+  return_approved:
+    recipient: customer
+    channels: [email]
+    template: return_approved
+    include:
+      - return_label_url
+      - return_instructions
+
+  refund_processed:
+    recipient: customer
+    channels: [email]
+    template: refund_processed
+    include:
+      - refund_amount
+      - refund_method
+      - expected_timeline
+
+# Metrics & KPIs
+metrics:
+  order_conversion_rate:
+    formula: (orders_placed / cart_created) * 100
+    target: "> 3%"
+
+  cart_abandonment_rate:
+    formula: (abandoned_carts / cart_created) * 100
+    target: "< 70%"
+
+  average_order_value:
+    formula: total_revenue / total_orders
+    target: "varies by business"
+
+  order_fulfillment_time:
+    formula: avg(shipped_at - confirmed_at)
+    target: "< 2 days"
+
+  delivery_success_rate:
+    formula: (delivered_orders / shipped_orders) * 100
+    target: "> 98%"
+
+  return_rate:
+    formula: (returned_orders / delivered_orders) * 100
+    target: "< 5%"
+
+# Integration Points
+integrations:
+  payment_gateway:
+    - stripe
+    - paypal
+    - vnpay
+
+  shipping_carrier:
+    - shippo
+    - easypost
+    - carrier_api
+
+  inventory_system:
+    - internal_wms
+    - third_party_erp
+
+  email_service:
+    - sendgrid
+    - mailchimp
+    - ses
+
+  sms_service:
+    - twilio
+    - nexmo

@@ -1,0 +1,426 @@
+name: coverage_verification_rules
+display_name: Coverage Verification Rules
+description: |
+  Business rules for verifying policy coverage applicability, exclusions,
+  conditions, and limits for insurance claims.
+
+domain: insurance
+subdomain: claims
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  coverage_applicability:
+    name: Coverage Applicability Rules
+    description: Rules to determine if coverage applies to the claim
+
+    rules:
+      - id: COV-APP-001
+        name: Coverage Type Match
+        description: Claim type must match an active coverage
+        priority: critical
+        condition: |
+          EXISTS(policy_coverage WHERE
+            policy_coverage.policy_id = claim.policy_id AND
+            policy_coverage.coverage_type MATCHES claim.claim_type AND
+            policy_coverage.status = 'active')
+        error_message: "No matching coverage for this claim type"
+        action: deny_coverage
+        applies_to: [claim, assessment]
+
+      - id: COV-APP-002
+        name: Geographic Coverage
+        description: Loss location must be within covered geography
+        priority: high
+        condition: |
+          claim.loss_location.country IN policy.covered_territories OR
+          policy.worldwide_coverage = true
+        error_message: "Loss location not covered under policy"
+        action: deny_coverage
+        exception_allowed: true
+        applies_to: [claim]
+
+      - id: COV-APP-003
+        name: Insured Person Coverage
+        description: Affected person must be covered under policy
+        priority: critical
+        condition: |
+          claim.affected_person_id IN policy.insured_persons OR
+          policy.covers_family_members = true
+        error_message: "Affected person not covered under policy"
+        action: deny_coverage
+        applies_to: [claim]
+
+      - id: COV-APP-004
+        name: Covered Peril
+        description: Cause of loss must be a covered peril
+        priority: critical
+        condition: |
+          claim.cause_of_loss IN coverage.covered_perils OR
+          coverage.all_risks = true
+        error_message: "Cause of loss is not a covered peril"
+        action: deny_coverage
+        applies_to: [claim, assessment]
+
+      - id: COV-APP-005
+        name: Property Coverage
+        description: Damaged property must be covered item
+        priority: high
+        condition: |
+          claim.claim_category != 'property' OR
+          claim.property_type IN coverage.covered_property_types OR
+          EXISTS(policy_schedule WHERE
+            policy_schedule.item_description MATCHES claim.property_description)
+        error_message: "Property type not covered"
+        action: flag_for_review
+        applies_to: [claim]
+
+  exclusions:
+    name: Policy Exclusion Rules
+    description: Rules for policy exclusions
+
+    rules:
+      - id: COV-EXC-001
+        name: Pre-Existing Condition Exclusion
+        description: Pre-existing conditions excluded for health/life claims
+        priority: critical
+        condition: |
+          claim.claim_category NOT IN ('health', 'life') OR
+          medical_report.is_pre_existing = false OR
+          (medical_report.is_pre_existing = true AND
+           DATEDIFF(claim.loss_date, medical_report.pre_existing_since) >
+           policy.pre_existing_waiting_days)
+        error_message: "Claim involves pre-existing condition within exclusion period"
+        action: deny_claim
+        exception_allowed: true
+        applies_to: [claim, medical_report]
+
+      - id: COV-EXC-002
+        name: Suicide Exclusion
+        description: Suicide excluded within first policy year
+        priority: critical
+        condition: |
+          claim.cause_of_loss != 'suicide' OR
+          DATEDIFF(claim.loss_date, policy.inception_date) > 365
+        error_message: "Suicide within first policy year is excluded"
+        action: deny_claim
+        applies_to: [claim]
+
+      - id: COV-EXC-003
+        name: Intoxication Exclusion
+        description: Claims while under influence excluded
+        priority: high
+        condition: |
+          claim.intoxication_involved = false OR
+          claim.intoxication_involved IS NULL
+        error_message: "Claims involving intoxication are excluded"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: COV-EXC-004
+        name: War and Terrorism Exclusion
+        description: War and terrorism perils excluded
+        priority: critical
+        condition: |
+          claim.cause_of_loss NOT IN ('war', 'terrorism', 'civil_unrest') OR
+          policy.terrorism_cover = true
+        error_message: "War and terrorism exclusion applies"
+        action: deny_claim
+        applies_to: [claim]
+
+      - id: COV-EXC-005
+        name: Wear and Tear Exclusion
+        description: Normal wear and tear excluded
+        priority: high
+        condition: |
+          surveyor_report.cause_category != 'wear_and_tear'
+        error_message: "Normal wear and tear is excluded"
+        action: deny_claim
+        applies_to: [claim, surveyor_report]
+
+      - id: COV-EXC-006
+        name: Intentional Damage Exclusion
+        description: Deliberate or intentional damage excluded
+        priority: critical
+        condition: |
+          surveyor_report.cause_category != 'deliberate' AND
+          fraud_indicator.final_determination != 'fraud_confirmed'
+        error_message: "Intentional damage is excluded"
+        action: deny_claim
+        applies_to: [claim, surveyor_report]
+
+      - id: COV-EXC-007
+        name: Illegal Activity Exclusion
+        description: Claims arising from illegal activity excluded
+        priority: critical
+        condition: |
+          claim.illegal_activity_involved = false OR
+          claim.illegal_activity_involved IS NULL
+        error_message: "Claims arising from illegal activity are excluded"
+        action: deny_claim
+        applies_to: [claim]
+
+      - id: COV-EXC-008
+        name: Cosmetic Procedure Exclusion
+        description: Elective cosmetic procedures excluded
+        priority: medium
+        condition: |
+          claim.claim_category != 'health' OR
+          medical_report.treatment_type != 'cosmetic' OR
+          medical_report.medically_necessary = true
+        error_message: "Elective cosmetic procedures are excluded"
+        action: deny_item
+        applies_to: [claim_item, medical_report]
+
+  conditions:
+    name: Policy Condition Rules
+    description: Rules for policy conditions precedent
+
+    rules:
+      - id: COV-CON-001
+        name: Timely Notification
+        description: Claim must be reported within policy timeframe
+        priority: high
+        condition: |
+          DATEDIFF(fnol.received_at, claim.loss_date) <=
+          COALESCE(coverage.notification_days, policy.notification_days, 30)
+        error_message: "Late notification - condition not met"
+        action: flag_for_review
+        prejudice_review: true
+        applies_to: [claim, fnol]
+
+      - id: COV-CON-002
+        name: Reasonable Care
+        description: Insured must have exercised reasonable care
+        priority: medium
+        condition: |
+          claim.negligence_involved = false OR
+          claim.negligence_level != 'gross'
+        warning_message: "Review reasonable care condition"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: COV-CON-003
+        name: Police Report Condition
+        description: Police report required for specific claim types
+        priority: high
+        condition: |
+          claim.claim_type NOT IN ('theft', 'burglary', 'robbery', 'accident') OR
+          EXISTS(claim_document WHERE
+            document_type = 'police_report')
+        error_message: "Police report required as condition"
+        action: request_document
+        applies_to: [claim]
+
+      - id: COV-CON-004
+        name: Medical Examination Condition
+        description: Medical examination may be required
+        priority: medium
+        condition: |
+          claim.claim_category != 'health' OR
+          claim.claimed_amount <= 50000000 OR
+          EXISTS(medical_report WHERE
+            report_type = 'independent_medical_exam')
+        warning_message: "Independent medical examination may be required"
+        action: request_ime
+        applies_to: [claim]
+
+      - id: COV-CON-005
+        name: Subrogation Rights Preservation
+        description: Insured must preserve subrogation rights
+        priority: medium
+        condition: |
+          claim.subrogation_waived = false OR
+          recovery.waiver_approved = true
+        warning_message: "Subrogation rights may have been compromised"
+        action: flag_for_review
+        applies_to: [claim, recovery]
+
+  limits_and_deductibles:
+    name: Limits and Deductibles Rules
+    description: Rules for applying policy limits and deductibles
+
+    rules:
+      - id: COV-LIM-001
+        name: Coverage Limit Application
+        description: Payment cannot exceed coverage limit
+        priority: critical
+        condition: |
+          assessment.recommended_amount <= coverage.sum_insured
+        calculation: |
+          settlement_amount = MIN(assessment.recommended_amount, coverage.sum_insured)
+        action: apply_limit
+        applies_to: [assessment, settlement]
+
+      - id: COV-LIM-002
+        name: Sub-Limit Application
+        description: Apply applicable sub-limits
+        priority: high
+        condition: |
+          claim_item.approved_amount <=
+          COALESCE(coverage.sub_limits[claim_item.item_type], coverage.sum_insured)
+        calculation: |
+          item_amount = MIN(claim_item.claimed_amount,
+                           coverage.sub_limits[claim_item.item_type])
+        action: apply_sub_limit
+        applies_to: [claim_item]
+
+      - id: COV-LIM-003
+        name: Deductible Application
+        description: Apply policy deductible
+        priority: high
+        condition: |
+          coverage.deductible_amount > 0
+        calculation: |
+          net_amount = gross_amount - coverage.deductible_amount
+        action: apply_deductible
+        applies_to: [settlement]
+
+      - id: COV-LIM-004
+        name: Co-Payment Application
+        description: Apply co-payment percentage
+        priority: high
+        condition: |
+          coverage.co_payment_percentage > 0
+        calculation: |
+          co_payment = gross_amount * (coverage.co_payment_percentage / 100)
+          net_amount = gross_amount - co_payment
+        action: apply_co_payment
+        applies_to: [settlement]
+
+      - id: COV-LIM-005
+        name: Annual Aggregate Limit
+        description: Check annual aggregate limit
+        priority: high
+        condition: |
+          SUM(payment.net_amount WHERE
+            payment.claim.policy_id = policy.id AND
+            payment.processed_date >= policy.current_period_start) +
+          settlement.net_settlement <= coverage.annual_aggregate_limit
+        warning_message: "Annual aggregate limit may be exceeded"
+        action: flag_for_review
+        applies_to: [settlement]
+
+      - id: COV-LIM-006
+        name: Per Occurrence Limit
+        description: Apply per occurrence limit
+        priority: high
+        condition: |
+          SUM(settlement.net_settlement WHERE
+            settlement.claim.occurrence_id = claim.occurrence_id) <=
+          coverage.per_occurrence_limit
+        action: apply_occurrence_limit
+        applies_to: [settlement]
+
+  depreciation:
+    name: Depreciation Rules
+    description: Rules for applying depreciation
+
+    rules:
+      - id: COV-DEP-001
+        name: Standard Depreciation
+        description: Apply standard depreciation for property claims
+        priority: medium
+        condition: |
+          assessment.assessment_basis = 'actual_cash_value'
+        calculation: |
+          depreciation = replacement_cost * (age_years * depreciation_rate_per_year)
+          actual_cash_value = replacement_cost - depreciation
+        action: apply_depreciation
+        applies_to: [assessment, claim_item]
+
+      - id: COV-DEP-002
+        name: Motor Vehicle Depreciation
+        description: Depreciation schedule for motor vehicles
+        priority: medium
+        tables:
+          motor_depreciation:
+            - age_months: 0-6
+              rate: 0.05
+            - age_months: 7-12
+              rate: 0.15
+            - age_months: 13-24
+              rate: 0.20
+            - age_months: 25-36
+              rate: 0.30
+            - age_months: 37-48
+              rate: 0.40
+            - age_months: 49-60
+              rate: 0.50
+            - age_months: 61+
+              rate: 0.60
+        applies_to: [claim_item, surveyor_report]
+
+      - id: COV-DEP-003
+        name: Betterment Adjustment
+        description: Apply betterment for improvements
+        priority: medium
+        condition: |
+          surveyor_report.betterment_applicable = true
+        calculation: |
+          betterment = (new_part_cost - depreciated_part_cost) * betterment_percentage
+          adjusted_amount = repair_cost - betterment
+        action: apply_betterment
+        applies_to: [surveyor_report, settlement]
+
+verification_workflow:
+  stages:
+    - stage: initial_coverage_check
+      rules:
+        - COV-APP-001
+        - COV-APP-003
+      on_failure: reject_claim
+
+    - stage: exclusion_review
+      rules:
+        - COV-EXC-001
+        - COV-EXC-002
+        - COV-EXC-003
+        - COV-EXC-004
+      on_failure: deny_or_review
+
+    - stage: condition_verification
+      rules:
+        - COV-CON-001
+        - COV-CON-002
+        - COV-CON-003
+      on_failure: flag_for_review
+
+    - stage: limit_calculation
+      rules:
+        - COV-LIM-001
+        - COV-LIM-002
+        - COV-LIM-003
+        - COV-LIM-004
+      on_failure: adjust_amount
+
+    - stage: depreciation_application
+      rules:
+        - COV-DEP-001
+        - COV-DEP-002
+        - COV-DEP-003
+      on_failure: calculate_acv
+
+coverage_decision_matrix:
+  outcomes:
+    covered:
+      criteria: "All COV-APP rules pass AND no COV-EXC rules triggered"
+      action: proceed_to_assessment
+
+    excluded:
+      criteria: "Any COV-EXC rule triggered without exception"
+      action: deny_claim
+      letter_template: exclusion_denial
+
+    conditional:
+      criteria: "COV-CON rule failed but prejudice review possible"
+      action: request_additional_info
+
+    partial_coverage:
+      criteria: "Some items covered, some excluded"
+      action: partial_approval
+
+    limit_exceeded:
+      criteria: "Claim exceeds policy limits"
+      action: apply_limits

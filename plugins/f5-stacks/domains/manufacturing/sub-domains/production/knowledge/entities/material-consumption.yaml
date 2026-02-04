@@ -1,0 +1,278 @@
+name: material-consumption
+display_name: Material Consumption
+display_name_vi: Tiêu thụ vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: entity
+
+description: |
+  Records material consumption against work orders, tracking
+  actual usage versus planned (BOM) quantities.
+
+description_vi: |
+  Ghi lại tiêu thụ vật tư theo lệnh sản xuất, theo dõi
+  sử dụng thực tế so với số lượng kế hoạch (BOM).
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      required: true
+
+    - name: transaction_number
+      type: string
+      required: true
+      unique: true
+      auto_generate: true
+      description: Transaction reference
+      description_vi: Số giao dịch
+
+    - name: transaction_type
+      type: enum
+      required: true
+      default: issue
+      values:
+        - issue: Material issued to production
+        - return: Material returned to inventory
+        - backflush: Auto-posted consumption
+        - adjustment: Adjustment
+        - scrap: Scrapped material
+      description_vi: Loại giao dịch
+
+  references:
+    - name: work_order_id
+      type: uuid
+      required: true
+      description: Work order
+      description_vi: Lệnh sản xuất
+
+    - name: work_order_number
+      type: string
+      description: Work order number (denormalized)
+
+    - name: operation_id
+      type: uuid
+      description: Operation that consumed
+      description_vi: Công đoạn tiêu thụ
+
+    - name: bom_item_id
+      type: uuid
+      description: BOM line reference
+
+    - name: production_lot_id
+      type: uuid
+      description: Production lot
+      description_vi: Lô sản xuất
+
+  material:
+    - name: material_id
+      type: uuid
+      required: true
+      description: Material consumed
+      description_vi: Vật tư tiêu thụ
+
+    - name: material_code
+      type: string
+      description: Material code (denormalized)
+      description_vi: Mã vật tư
+
+    - name: material_name
+      type: string
+      description: Material name (denormalized)
+      description_vi: Tên vật tư
+
+    - name: material_lot_number
+      type: string
+      description: Lot number of material used
+      description_vi: Số lô vật tư
+
+    - name: serial_number
+      type: string
+      description: Serial number if tracked
+
+  quantity:
+    - name: quantity
+      type: decimal
+      required: true
+      precision: 15
+      scale: 6
+      description: Quantity consumed
+      description_vi: Số lượng tiêu thụ
+
+    - name: unit_of_measure
+      type: string
+      required: true
+      description: Unit of measure
+      description_vi: Đơn vị tính
+
+    - name: planned_quantity
+      type: decimal
+      description: Planned quantity per BOM
+      description_vi: Số lượng kế hoạch
+
+    - name: variance_quantity
+      type: decimal
+      description: Variance from planned
+      description_vi: Chênh lệch
+
+    - name: variance_reason
+      type: string
+      description: Reason for variance
+      description_vi: Lý do chênh lệch
+
+  source:
+    - name: warehouse_id
+      type: uuid
+      required: true
+      description: Source warehouse
+      description_vi: Kho xuất
+
+    - name: location_id
+      type: uuid
+      description: Source location
+
+    - name: warehouse_code
+      type: string
+      description: Warehouse code (denormalized)
+
+  costing:
+    - name: unit_cost
+      type: decimal
+      precision: 15
+      scale: 6
+      description: Cost per unit
+      description_vi: Giá đơn vị
+
+    - name: total_cost
+      type: decimal
+      precision: 15
+      scale: 4
+      description: Total consumption cost
+      description_vi: Tổng chi phí
+
+    - name: cost_method
+      type: enum
+      values: [standard, average, fifo, specific]
+      description: Costing method used
+
+  timing:
+    - name: transaction_date
+      type: datetime
+      required: true
+      description: Transaction date/time
+      description_vi: Ngày giao dịch
+
+    - name: posting_date
+      type: date
+      required: true
+      description: Accounting posting date
+
+  operator:
+    - name: operator_id
+      type: uuid
+      description: Operator who consumed
+      description_vi: Công nhân tiêu thụ
+
+    - name: issued_by
+      type: uuid
+      description: Who issued material
+      description_vi: Người xuất
+
+  status:
+    - name: status
+      type: enum
+      default: posted
+      values:
+        - pending: Pending posting
+        - posted: Posted to inventory
+        - reversed: Reversed transaction
+      description_vi: Trạng thái
+
+    - name: reversed_by_id
+      type: uuid
+      description: Reversal transaction ID
+
+  notes:
+    - name: notes
+      type: text
+      description: Notes
+      description_vi: Ghi chú
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: uuid
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+relationships:
+  - name: work_order
+    type: belongs_to
+    entity: work_order
+    foreign_key: work_order_id
+
+  - name: operation
+    type: belongs_to
+    entity: operation
+    foreign_key: operation_id
+
+  - name: material
+    type: belongs_to
+    entity: product
+    foreign_key: material_id
+
+  - name: production_lot
+    type: belongs_to
+    entity: production_lot
+    foreign_key: production_lot_id
+
+  - name: warehouse
+    type: belongs_to
+    entity: warehouse
+    foreign_key: warehouse_id
+
+  - name: operator
+    type: belongs_to
+    entity: operator
+    foreign_key: operator_id
+
+  - name: reversal
+    type: has_one
+    entity: material_consumption
+    foreign_key: reversed_by_id
+
+indexes:
+  - columns: [transaction_number]
+    unique: true
+  - columns: [work_order_id]
+  - columns: [material_id]
+  - columns: [transaction_date]
+  - columns: [material_lot_number]
+  - columns: [production_lot_id]
+
+validation_rules:
+  - rule: "quantity != 0"
+    message: "Quantity cannot be zero"
+
+  - rule: "transaction_type = 'return' IMPLIES quantity < 0"
+    message: "Return transactions should have negative quantity"
+
+  - rule: "transaction_type = 'issue' IMPLIES quantity > 0"
+    message: "Issue transactions should have positive quantity"
+
+business_rules:
+  - id: BR-MAT-001
+    name: FIFO consumption
+    description: Materials should be consumed in FIFO order
+    description_vi: Vật tư nên được tiêu thụ theo FIFO
+
+  - id: BR-MAT-002
+    name: Lot tracking
+    description: Lot-controlled materials must have lot number
+    description_vi: Vật tư theo dõi lô phải có số lô

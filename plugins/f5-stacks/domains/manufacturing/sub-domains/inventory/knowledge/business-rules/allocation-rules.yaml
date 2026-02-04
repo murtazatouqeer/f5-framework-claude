@@ -1,0 +1,403 @@
+name: allocation-rules
+display_name: Inventory Allocation Rules
+display_name_vi: Quy tắc phân bổ tồn kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Business rules for allocating available inventory to demands.
+  Covers reservation, hard allocation, picking strategies,
+  and FIFO/FEFO compliance.
+
+rule_categories:
+  - allocation_strategy_rules
+  - reservation_rules
+  - picking_rules
+  - shortage_rules
+  - release_rules
+
+rules:
+  # ============================================
+  # ALLOCATION STRATEGY RULES
+  # ============================================
+  - id: ALLOC-001
+    name: Allocation Hierarchy
+    category: allocation_strategy_rules
+    priority: critical
+    description: |
+      Inventory allocation follows defined hierarchy.
+    allocation_sequence:
+      1: Hard allocations (committed to specific order)
+      2: Soft reservations (planned but not committed)
+      3: Safety stock protection
+      4: Available for general allocation
+    formula: |
+      Available_to_Allocate = On_Hand
+                            - Hard_Allocated
+                            - Soft_Reserved
+                            - Blocked
+                            - In_Quality
+                            - Safety_Stock (if protected)
+
+  - id: ALLOC-002
+    name: FIFO Allocation
+    category: allocation_strategy_rules
+    priority: high
+    description: |
+      First-In-First-Out allocation for non-batch materials.
+    rule: |
+      Allocate from oldest receipt date first
+
+      ORDER BY:
+        1. receipt_date ASC
+        2. location_sequence ASC
+    applies_to: |
+      Material.batch_managed = FALSE
+      OR Material.shelf_life_managed = FALSE
+
+  - id: ALLOC-003
+    name: FEFO Allocation
+    category: allocation_strategy_rules
+    priority: critical
+    description: |
+      First-Expiry-First-Out allocation for shelf-life materials.
+    rule: |
+      Allocate from earliest expiry date first
+
+      ORDER BY:
+        1. expiry_date ASC
+        2. receipt_date ASC (tie-breaker)
+    applies_to: |
+      Material.shelf_life_managed = TRUE
+    validation:
+      - Remaining shelf life >= minimum required
+      - Batch status = 'unrestricted'
+
+  - id: ALLOC-004
+    name: Batch-Specific Allocation
+    category: allocation_strategy_rules
+    priority: high
+    description: |
+      Allocation when specific batch is requested.
+    rule: |
+      IF order specifies batch_number THEN
+        Allocate only from specified batch
+        IF batch unavailable THEN
+          Create shortage exception
+      ELSE
+        Follow FEFO for batch-managed materials
+    use_cases:
+      - Customer requires specific batch
+      - Quality requirement
+      - Traceability requirement
+
+  - id: ALLOC-005
+    name: Location-Based Allocation
+    category: allocation_strategy_rules
+    priority: medium
+    description: |
+      Allocation preferences by location type.
+    strategy:
+      pick_face_first:
+        description: Allocate from forward pick locations first
+        rule: |
+          ORDER BY:
+            1. location_type = 'picking' (first)
+            2. picking_priority ASC
+            3. FIFO/FEFO
+      consolidate:
+        description: Pick from fewer locations
+        rule: |
+          Prefer locations that can fulfill entire quantity
+          Minimize number of picks
+      zone_restriction:
+        description: Respect zone assignments
+        rule: |
+          Allocate only from zones assigned to order type
+
+  # ============================================
+  # RESERVATION RULES
+  # ============================================
+  - id: RES-001
+    name: Soft Reservation
+    category: reservation_rules
+    priority: medium
+    description: |
+      Soft reservation for planned requirements.
+    behavior: |
+      - Reduces available quantity
+      - Does not block physical stock
+      - Can be overridden by higher priority
+      - Automatically releases if not converted
+    auto_release: 7 days if not converted to hard allocation
+    applies_to:
+      - Planned production orders
+      - Forecast-driven reservations
+      - Sales quotations
+
+  - id: RES-002
+    name: Hard Allocation
+    category: reservation_rules
+    priority: high
+    description: |
+      Hard allocation for confirmed requirements.
+    behavior: |
+      - Locks specific quantity at location
+      - Cannot be overridden without release
+      - Physically marked/segregated if required
+      - Creates inventory transaction record
+    applies_to:
+      - Confirmed sales orders
+      - Released production orders
+      - Approved transfer orders
+    release_conditions:
+      - Order cancelled
+      - Manual release
+      - Order shipped/consumed
+
+  - id: RES-003
+    name: Reservation Priority
+    category: reservation_rules
+    priority: high
+    description: |
+      Priority for competing reservations.
+    priority_order:
+      1: Emergency orders
+      2: Customer orders by priority
+      3: Production orders by priority
+      4: Transfer orders
+      5: Planned requirements
+    tie_breaker:
+      - Earlier required date
+      - Higher customer tier
+      - Order sequence number
+
+  - id: RES-004
+    name: Over-Allocation Prevention
+    category: reservation_rules
+    priority: critical
+    description: |
+      Prevent allocating more than available.
+    rule: |
+      Total_Allocated <= Available_Quantity
+
+      IF allocation would exceed available THEN
+        REJECT allocation
+        CREATE shortage record
+        NOTIFY planner/scheduler
+    exception:
+      - Backorder allowed (some order types)
+      - Expected receipt within lead time
+
+  # ============================================
+  # PICKING RULES
+  # ============================================
+  - id: PICK-001
+    name: Wave Planning
+    category: picking_rules
+    priority: medium
+    description: |
+      Group allocations into picking waves.
+    wave_criteria:
+      - Ship date
+      - Carrier
+      - Zone/area
+      - Order priority
+    wave_size:
+      min_orders: 10
+      max_orders: 100
+      time_window: 4 hours
+
+  - id: PICK-002
+    name: Pick Path Optimization
+    category: picking_rules
+    priority: medium
+    description: |
+      Optimize pick sequence for efficiency.
+    strategies:
+      serpentine:
+        description: Up one aisle, down the next
+        applies_to: Single-zone picks
+      zone_picking:
+        description: Pickers stay in assigned zone
+        applies_to: Large warehouses
+      batch_picking:
+        description: Pick multiple orders simultaneously
+        applies_to: Small orders, common items
+
+  - id: PICK-003
+    name: Pick Quantity Rules
+    category: picking_rules
+    priority: high
+    description: |
+      Rules for pick quantity handling.
+    exact_pick:
+      required_for:
+        - Serial-managed items
+        - Customer-specific batches
+        - Hazardous materials
+    over_pick:
+      allowed: false
+      exception: Full unit quantities only
+    short_pick:
+      action: |
+        Record actual picked
+        Create shortage
+        Attempt backfill from alternate location
+
+  - id: PICK-004
+    name: Pick Confirmation
+    category: picking_rules
+    priority: high
+    description: |
+      Confirmation requirements during picking.
+    standard_confirmation:
+      - Scan location
+      - Scan item/batch
+      - Confirm quantity
+    additional_for_regulated:
+      - Verify batch number
+      - Check expiry date
+      - Record serial numbers
+    system_validation:
+      - Correct location
+      - Correct item
+      - Quantity <= allocated
+
+  # ============================================
+  # SHORTAGE RULES
+  # ============================================
+  - id: SHORT-001
+    name: Shortage Detection
+    category: shortage_rules
+    priority: high
+    description: |
+      Detect and record inventory shortages.
+    triggers:
+      - Allocation request > available
+      - Pick cannot be completed
+      - Stock drops below safety stock
+    actions:
+      - Create shortage record
+      - Notify relevant parties
+      - Trigger replenishment if configured
+      - Update ATP/CTP calculations
+
+  - id: SHORT-002
+    name: Shortage Allocation
+    category: shortage_rules
+    priority: critical
+    description: |
+      How to allocate when shortage exists.
+    strategies:
+      proportional:
+        description: Allocate proportionally to all demands
+        formula: |
+          allocation = (order_qty / total_demand) × available
+      priority_based:
+        description: Fulfill highest priority fully first
+        rule: |
+          Allocate 100% to highest priority
+          Then next priority with remaining
+      oldest_first:
+        description: Fulfill oldest orders first
+        rule: |
+          ORDER BY order_date ASC
+    default: priority_based
+
+  - id: SHORT-003
+    name: Backorder Management
+    category: shortage_rules
+    priority: medium
+    description: |
+      Handling of backordered quantities.
+    backorder_allowed:
+      - Sales orders (based on customer agreement)
+      - Non-critical production orders
+    backorder_not_allowed:
+      - Safety-critical items
+      - Emergency orders
+      - Specific customer requirements
+    auto_fulfill:
+      - When stock becomes available
+      - In original priority order
+
+  # ============================================
+  # RELEASE RULES
+  # ============================================
+  - id: REL-001
+    name: Allocation Release Triggers
+    category: release_rules
+    priority: medium
+    description: |
+      When allocations are automatically released.
+    triggers:
+      order_cancelled: Immediate release
+      order_changed: Release excess, reallocate
+      order_shipped: Release upon ship confirm
+      order_consumed: Release upon production confirm
+      soft_reservation_expired: After X days
+    manual_release:
+      - Supervisor approval required
+      - Reason documentation required
+
+  - id: REL-002
+    name: Allocation Expiry
+    category: release_rules
+    priority: low
+    description: |
+      Automatic expiry of allocations.
+    soft_reservation:
+      expiry_days: 7
+      warning_at: 5 days
+    hard_allocation:
+      expiry_days: 30
+      warning_at: 25 days
+      exception: Active production orders
+    action_on_expiry: |
+      Release allocation
+      Notify order owner
+      Update order status
+
+  - id: REL-003
+    name: Reallocation Rules
+    category: release_rules
+    priority: medium
+    description: |
+      Rules for reallocating released inventory.
+    automatic_reallocation:
+      - To next demand in priority queue
+      - To replenish forward pick locations
+      - To satisfy backorders
+    hold_period:
+      description: Brief hold before reallocation
+      duration: 15 minutes
+      purpose: Allow original order to re-claim
+
+compliance:
+  standards:
+    - ISO 9001 (Stock Control)
+    - GMP (Batch Traceability)
+    - FDA 21 CFR Part 11 (FEFO for pharmaceuticals)
+
+metrics:
+  - name: Allocation Fill Rate
+    formula: (Fully allocated orders / Total orders) × 100
+    target: "> 95%"
+
+  - name: FIFO/FEFO Compliance
+    formula: (Correctly sequenced picks / Total picks) × 100
+    target: "> 99%"
+
+  - name: Pick Accuracy
+    formula: (Correct picks / Total picks) × 100
+    target: "> 99.5%"
+
+  - name: Shortage Rate
+    formula: (Shortage events / Total demands) × 100
+    target: "< 2%"
+
+  - name: Allocation Cycle Time
+    formula: AVG(Allocation_Complete - Allocation_Request)
+    target: "< 5 minutes"

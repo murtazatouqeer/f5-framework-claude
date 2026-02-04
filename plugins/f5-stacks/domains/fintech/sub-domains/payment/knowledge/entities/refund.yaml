@@ -1,0 +1,364 @@
+# Refund Entity - Payment refund records
+# Domain: fintech/payment
+# Purpose: Tracks refunds issued against payments
+
+name: Refund
+display_name: Refund
+description: |
+  Represents a refund issued against a payment. Can be full or partial.
+  Refunds are processed back to the original payment method.
+
+  Vietnamese: Đại diện cho hoàn tiền được phát hành cho một giao dịch.
+  Có thể hoàn toàn bộ hoặc một phần. Hoàn tiền về phương thức thanh toán gốc.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: refund_id
+    type: string
+    required: true
+    description: External ID (REF-XXXXXXXX)
+    validation:
+      pattern: "^REF-[A-Z0-9]{8}$"
+
+  - name: payment_id
+    type: uuid
+    required: true
+    description: Original payment being refunded
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant issuing refund
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Refund amount (Số tiền hoàn)
+    validation:
+      min: 1
+
+  - name: currency
+    type: string
+    required: true
+    description: Currency (must match payment)
+    validation:
+      pattern: "^[A-Z]{3}$"
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Refund status (Trạng thái)
+    validation:
+      values: [pending, processing, succeeded, failed, cancelled]
+
+  # Reason
+  - name: reason
+    type: enum
+    required: true
+    description: Reason for refund (Lý do hoàn tiền)
+    validation:
+      values: [requested_by_customer, duplicate, fraudulent, product_not_received, product_unacceptable, subscription_cancelled, other]
+
+  - name: reason_details
+    type: string
+    required: false
+    description: Additional reason details
+    validation:
+      max: 500
+
+  # Failure
+  - name: failure_reason
+    type: string
+    required: false
+    description: Reason if refund failed
+    validation:
+      max: 500
+
+  - name: failure_code
+    type: string
+    required: false
+    description: Error code for failure
+    validation:
+      max: 50
+
+  # Processing
+  - name: destination_type
+    type: enum
+    required: true
+    description: Where refund is sent
+    validation:
+      values: [original_payment_method, balance, other]
+    default: original_payment_method
+
+  - name: destination_details
+    type: json
+    required: false
+    description: Details if destination is 'other'
+
+  # References
+  - name: receipt_number
+    type: string
+    required: false
+    description: Refund receipt number
+    validation:
+      max: 50
+
+  - name: processor_refund_id
+    type: string
+    required: false
+    description: Refund ID from payment processor
+    validation:
+      max: 100
+
+  # Fees
+  - name: fee_refunded
+    type: boolean
+    required: true
+    description: Whether original processing fee was refunded
+    default: false
+
+  - name: merchant_fee
+    type: decimal
+    required: true
+    description: Fee charged to merchant for refund
+    validation:
+      min: 0
+    default: 0
+
+  # Requestor
+  - name: requested_by
+    type: enum
+    required: true
+    description: Who requested the refund
+    validation:
+      values: [customer, merchant, system, admin]
+
+  - name: requested_by_id
+    type: uuid
+    required: false
+    description: ID of person/entity who requested
+
+  # Settlement
+  - name: settlement_id
+    type: uuid
+    required: false
+    description: Settlement that includes this refund
+
+  # Metadata
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  - name: internal_notes
+    type: string
+    required: false
+    description: Internal notes (not visible to customer)
+    validation:
+      max: 1000
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Refund creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: processed_at
+    type: timestamp
+    required: false
+    description: When refund was processed
+
+  - name: completed_at
+    type: timestamp
+    required: false
+    description: When refund completed (funds returned)
+
+  - name: estimated_arrival
+    type: timestamp
+    required: false
+    description: Estimated arrival of funds to customer
+
+relationships:
+  - name: payment
+    type: belongs_to
+    entity: Payment
+    required: true
+    description: Original payment
+
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant issuing refund
+
+  - name: settlement
+    type: belongs_to
+    entity: Settlement
+    required: false
+    description: Settlement batch
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Refund created, awaiting processing (Chờ xử lý)
+    - name: processing
+      description: Being processed (Đang xử lý)
+    - name: succeeded
+      description: Refund successful (Thành công)
+    - name: failed
+      description: Refund failed (Thất bại)
+    - name: cancelled
+      description: Refund cancelled (Đã hủy)
+
+  transitions:
+    - from: pending
+      to: processing
+      trigger: process
+      description: Start processing
+
+    - from: pending
+      to: cancelled
+      trigger: cancel
+      description: Cancel refund
+
+    - from: processing
+      to: succeeded
+      trigger: complete
+      description: Refund successful
+
+    - from: processing
+      to: failed
+      trigger: fail
+      description: Refund failed
+
+    - from: failed
+      to: processing
+      trigger: retry
+      description: Retry failed refund
+
+indexes:
+  - [refund_id]
+  - [payment_id]
+  - [merchant_id, created_at]
+  - [status]
+  - [settlement_id]
+
+events:
+  - name: refund.created
+    description: Refund initiated
+    payload: [id, refund_id, payment_id, amount, reason]
+
+  - name: refund.processing
+    description: Refund processing
+    payload: [id, refund_id]
+
+  - name: refund.succeeded
+    description: Refund completed
+    payload: [id, refund_id, amount, completed_at]
+
+  - name: refund.failed
+    description: Refund failed
+    payload: [id, refund_id, failure_code, failure_reason]
+
+  - name: refund.cancelled
+    description: Refund cancelled
+    payload: [id, refund_id, cancelled_by]
+
+business_rules:
+  - id: BR-REF-001
+    description: Cannot refund more than captured amount minus previous refunds
+    rule: |
+      SUM(refunds.amount WHERE payment_id = X AND status = 'succeeded')
+        + new_refund.amount <= payment.captured_amount
+    vietnamese: Không thể hoàn nhiều hơn số đã capture trừ các lần hoàn trước
+
+  - id: BR-REF-002
+    description: Partial refunds allowed up to original amount
+    rule: |
+      allow_multiple_partial_refunds = true
+      UNTIL total_refunded = captured_amount
+    vietnamese: Cho phép hoàn từng phần đến khi hết số gốc
+
+  - id: BR-REF-003
+    description: Refund to original payment method by default
+    rule: |
+      IF destination_type = 'original_payment_method'
+      THEN refund_to = payment.payment_method
+    vietnamese: Hoàn tiền về phương thức thanh toán gốc
+
+  - id: BR-REF-004
+    description: Refund time limit varies by payment method
+    rule: |
+      card: 180 days from capture
+      bank_transfer: 90 days
+      e_wallet: 30 days
+    vietnamese: Thời hạn hoàn tiền khác nhau theo phương thức
+
+  - id: BR-REF-005
+    description: Processing fees not refunded by default
+    rule: |
+      IF fee_refunded = false
+      THEN merchant retains original processing fee loss
+    vietnamese: Phí xử lý không được hoàn theo mặc định
+
+  - id: BR-REF-006
+    description: Fraudulent refunds require additional verification
+    rule: |
+      IF reason = 'fraudulent'
+      THEN require_evidence = true
+         AND trigger_fraud_review()
+    vietnamese: Hoàn tiền gian lận cần xác minh thêm
+
+api_endpoints:
+  - method: POST
+    path: /v1/refunds
+    description: Create a refund
+
+  - method: GET
+    path: /v1/refunds/{id}
+    description: Get refund details
+
+  - method: GET
+    path: /v1/payments/{payment_id}/refunds
+    description: List refunds for payment
+
+  - method: POST
+    path: /v1/refunds/{id}/cancel
+    description: Cancel pending refund
+
+timing:
+  card_refund:
+    processing: "1-2 business days"
+    customer_receipt: "5-10 business days (depends on issuer)"
+
+  bank_transfer_refund:
+    processing: "1 business day"
+    customer_receipt: "1-3 business days"
+
+  e_wallet_refund:
+    processing: "Instant to 1 hour"
+    customer_receipt: "Instant"
+
+security_considerations:
+  - Verify merchant authorization for refund
+  - Rate limit refund creation
+  - Flag patterns indicating refund abuse
+  - Audit trail for all refund actions
+  - Require reason documentation

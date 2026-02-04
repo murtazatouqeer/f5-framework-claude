@@ -1,0 +1,578 @@
+name: Card Rules
+display_name: Card Business Rules / Quy tắc nghiệp vụ thẻ
+description: |
+  Business rules governing card operations including PIN management,
+  transaction limits, security controls, online transactions,
+  and card replacement procedures.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# PIN MANAGEMENT RULES
+# =============================================================================
+pin_rules:
+  # ---------------------------------------------------------------------------
+  # BR-CRD-001: PIN Requirement for Activation
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-001
+    name: PIN Requirement for Activation
+    name_vi: Yêu cầu mã PIN để kích hoạt
+    priority: critical
+    category: pin
+
+    description: |
+      Card must have PIN set before it can be activated.
+
+    rule: |
+      IF action = 'activate_card'
+      AND pin_set = false
+      THEN block_activation('PIN_NOT_SET')
+
+    pin_creation:
+      length: 4_or_6_digits
+      cannot_be:
+        - sequential: "1234, 4321"
+        - repeated: "1111, 0000"
+        - birth_date: "ddmm, mmdd, yyyy"
+        - phone_last_4: "last 4 digits of registered phone"
+
+    channels:
+      - mobile_app: "Set PIN via app with biometric auth"
+      - atm: "Set PIN at ATM with temporary PIN"
+      - ivr: "Set PIN via IVR with OTP"
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-002: PIN Block After Failed Attempts
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-002
+    name: PIN Block After Failed Attempts
+    name_vi: Khóa PIN sau khi nhập sai
+    priority: critical
+    category: pin
+
+    description: |
+      Block card after 3 consecutive wrong PIN attempts.
+
+    rule: |
+      ON wrong_pin_entry:
+        pin_tries_remaining -= 1
+
+        IF pin_tries_remaining = 0
+        THEN
+          pin_blocked = true
+          card.status = 'blocked'
+          card.blocked_reason = 'pin_blocked'
+          notify_customer('Card blocked due to wrong PIN attempts')
+
+    reset_conditions:
+      successful_pin: "Correct PIN resets counter to max"
+      daily_reset: false  # Does not reset daily
+
+    unblock_process:
+      channels:
+        - contact_center: "ID verification required"
+        - branch: "ID document verification"
+        - mobile_app: "Biometric + OTP verification"
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-003: PIN Change Requirements
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-003
+    name: PIN Change Requirements
+    name_vi: Yêu cầu thay đổi mã PIN
+    priority: high
+    category: pin
+
+    description: |
+      Requirements for changing card PIN.
+
+    authentication:
+      required: otp_verification
+      channels: [sms, smart_otp]
+
+    validation:
+      - current_pin_not_required: "For security if compromised"
+      - new_pin_rules: "Same as creation rules"
+      - cannot_reuse_last: 3
+
+    rule: |
+      ON pin_change_request:
+        verify_otp()
+        validate_new_pin()
+        IF valid
+          update_pin()
+          notify_customer()
+          log_audit_event()
+
+# =============================================================================
+# LIMIT RULES
+# =============================================================================
+limit_rules:
+  # ---------------------------------------------------------------------------
+  # BR-CRD-010: Transaction Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-010
+    name: Card Transaction Limits
+    name_vi: Hạn mức giao dịch thẻ
+    priority: critical
+    category: limits
+
+    description: |
+      Default and configurable transaction limits for cards.
+
+    default_limits:
+      contactless:
+        per_transaction: 1000000
+        requires_pin_above: 1000000
+
+      atm:
+        per_transaction: 10000000
+        daily_total: 30000000
+
+      pos:
+        per_transaction: 50000000
+        daily_total: 100000000
+
+      online:
+        per_transaction: 20000000
+        daily_total: 50000000
+
+    limit_hierarchy:
+      - card_level: "Most restrictive"
+      - account_level: "Account-wide limits"
+      - customer_level: "Overall customer limits"
+
+    rule: |
+      FOR each transaction:
+        check_per_transaction_limit()
+        check_daily_limit()
+        check_monthly_limit()
+
+        IF any limit exceeded
+          decline('LIMIT_EXCEEDED', limit_type)
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-011: Customer Limit Adjustment
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-011
+    name: Customer Limit Adjustment
+    name_vi: Điều chỉnh hạn mức theo yêu cầu
+    priority: medium
+    category: limits
+
+    description: |
+      Customers can adjust their card limits within bank maximums.
+
+    adjustable_limits:
+      - daily_limit: true
+      - monthly_limit: true
+      - per_transaction_limit: true
+      - contactless_limit: true
+      - online_limit: true
+      - international_limit: true
+
+    adjustment_bounds:
+      minimum: 0  # Can disable
+      maximum: bank_maximum_for_card_tier
+
+    authentication:
+      decrease: otp_required
+      increase:
+        below_default: otp_required
+        above_default: manual_review
+
+    temporary_increase:
+      allowed: true
+      max_duration: 7_days
+      max_multiplier: 2x
+      channels: [mobile_app, contact_center]
+
+# =============================================================================
+# SECURITY RULES
+# =============================================================================
+security_rules:
+  # ---------------------------------------------------------------------------
+  # BR-CRD-020: Online Transaction Security
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-020
+    name: Online Transaction Security (3D Secure)
+    name_vi: Bảo mật giao dịch trực tuyến
+    priority: critical
+    category: security
+
+    description: |
+      3D Secure authentication for online card transactions.
+
+    rule: |
+      FOR online_transaction:
+        IF merchant_enrolled_3ds = true
+        THEN
+          initiate_3ds_authentication()
+          verify_otp_or_biometric()
+          IF authenticated
+            proceed_with_authorization()
+          ELSE
+            decline('3DS_FAILED')
+
+    3ds_versions:
+      - version: "2.0"
+        preferred: true
+        frictionless_allowed: true
+      - version: "1.0"
+        fallback: true
+
+    trusted_merchants:
+      enabled: true
+      customer_opt_in: required
+      max_merchants: 10
+      rule: |
+        IF merchant IN customer.trusted_merchants
+        AND amount <= trusted_merchant_limit
+        THEN skip_3ds_challenge()
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-021: International Transaction Control
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-021
+    name: International Transaction Control
+    name_vi: Kiểm soát giao dịch quốc tế
+    priority: critical
+    category: security
+
+    description: |
+      International transactions disabled by default.
+
+    default_state: disabled
+
+    rule: |
+      IF transaction_country != 'VN'
+      AND card.international_enabled = false
+      THEN decline('INTERNATIONAL_DISABLED')
+
+    activation:
+      required: explicit_customer_request
+      authentication: otp_required
+      channels: [mobile_app, contact_center]
+
+    options:
+      - enable_permanently: true
+      - enable_temporarily:
+          duration_options: [7_days, 30_days, 90_days]
+          auto_disable: true
+      - enable_for_country:
+          specific_countries: true
+          max_countries: 10
+
+    high_risk_countries:
+      additional_verification: true
+      lower_limits: true
+      real_time_monitoring: enhanced
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-022: Contactless Security
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-022
+    name: Contactless Transaction Security
+    name_vi: Bảo mật giao dịch không tiếp xúc
+    priority: high
+    category: security
+
+    description: |
+      Security rules for contactless/NFC transactions.
+
+    limits:
+      per_transaction_no_pin: 1000000
+      cumulative_no_pin: 5000000
+      transactions_before_pin: 5
+
+    rule: |
+      IF transaction_type = 'contactless'
+      THEN
+        IF amount > contactless_limit
+          require_pin()
+        ELSE IF cumulative_contactless_since_pin > cumulative_limit
+          require_pin()
+        ELSE IF contactless_count_since_pin >= max_transactions
+          require_pin()
+
+    pin_reset:
+      after_successful_pin: reset_counters
+      after_successful_chip: reset_counters
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-023: Velocity Checks
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-023
+    name: Velocity Checks
+    name_vi: Kiểm tra tốc độ giao dịch
+    priority: high
+    category: security
+
+    description: |
+      Detect unusual transaction velocity patterns.
+
+    checks:
+      same_merchant:
+        max_transactions: 3
+        time_window: 10_minutes
+        action: require_additional_verification
+
+      different_locations:
+        impossible_travel: true
+        time_distance_check: true
+        action: decline_if_impossible
+
+      rapid_succession:
+        max_transactions: 5
+        time_window: 5_minutes
+        action: temporary_hold
+
+    rule: |
+      FOR each transaction:
+        check_velocity_rules()
+        IF violation_detected
+          trigger_fraud_alert()
+          apply_rule_action()
+
+# =============================================================================
+# CARD LIFECYCLE RULES
+# =============================================================================
+lifecycle_rules:
+  # ---------------------------------------------------------------------------
+  # BR-CRD-030: Card Replacement
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-030
+    name: Card Replacement
+    name_vi: Thay thẻ
+    priority: high
+    category: lifecycle
+
+    description: |
+      Rules for card replacement scenarios.
+
+    replacement_types:
+      lost_stolen:
+        immediate_block: true
+        fee: 100000
+        new_card_number: true
+        expedited_available: true
+
+      expired:
+        auto_renewal: true
+        advance_days: 30
+        fee: 0
+        same_card_number: false
+
+      damaged:
+        customer_request: required
+        return_old_card: required
+        fee: 50000
+        same_card_number: false
+
+      upgrade:
+        eligibility_check: required
+        fee: varies_by_tier
+        new_card_number: true
+
+    rule: |
+      ON replacement_request(type):
+        IF type = 'lost_stolen'
+          block_old_card_immediately()
+
+        validate_eligibility()
+        create_replacement_card()
+        link_to_old_card.replacement_for
+
+        IF return_required
+          set_return_deadline(30_days)
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-031: Auto-Renewal
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-031
+    name: Card Auto-Renewal
+    name_vi: Tự động gia hạn thẻ
+    priority: high
+    category: lifecycle
+
+    description: |
+      Automatic card renewal before expiry.
+
+    rule: |
+      AT 30 days before card.expiry_date:
+        IF card.status = 'active'
+        AND account.status = 'active'
+        AND no_renewal_block
+        THEN
+          create_renewal_card()
+          send_renewal_notification()
+
+    renewal_notification_schedule:
+      - days_before: 60
+        message: "Your card will be renewed automatically"
+      - days_before: 30
+        message: "Your new card has been ordered"
+      - days_before: 14
+        message: "Please collect your new card"
+
+    opt_out:
+      allowed: true
+      channels: [mobile_app, contact_center]
+      deadline: 45_days_before_expiry
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-032: Card Cancellation
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-032
+    name: Card Cancellation
+    name_vi: Hủy thẻ
+    priority: medium
+    category: lifecycle
+
+    description: |
+      Rules for permanent card cancellation.
+
+    requirements:
+      - no_pending_transactions
+      - no_outstanding_disputes
+      - settle_all_recurring (notify merchants)
+
+    rule: |
+      ON cancel_request:
+        verify_customer_identity()
+        check_requirements()
+
+        IF requirements_met
+          set_status('cancelled')
+          notify_recurring_merchants()
+          send_cancellation_confirmation()
+        ELSE
+          block_cancellation(reason)
+
+    post_cancellation:
+      reissuance_cooling_period: 90_days
+      card_number_blocked: permanent
+
+# =============================================================================
+# FRAUD RULES
+# =============================================================================
+fraud_rules:
+  # ---------------------------------------------------------------------------
+  # BR-CRD-040: Real-Time Fraud Screening
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-040
+    name: Real-Time Fraud Screening
+    name_vi: Sàng lọc gian lận thời gian thực
+    priority: critical
+    category: fraud
+
+    description: |
+      Real-time fraud detection for all card transactions.
+
+    screening_factors:
+      - transaction_amount
+      - merchant_category
+      - merchant_location
+      - transaction_channel
+      - time_of_day
+      - velocity_pattern
+      - device_fingerprint (online)
+      - ip_address (online)
+      - historical_behavior
+
+    risk_score_actions:
+      low: # 0-30
+        action: approve
+      medium: # 31-70
+        action: approve_with_monitoring
+      high: # 71-90
+        action: step_up_authentication
+      critical: # 91-100
+        action: decline_and_alert
+
+    rule: |
+      FOR each transaction:
+        score = calculate_fraud_risk_score()
+
+        SWITCH score_category:
+          CASE 'critical':
+            decline()
+            alert_fraud_team()
+            notify_customer()
+          CASE 'high':
+            request_additional_auth()
+          CASE 'medium':
+            log_for_review()
+          CASE 'low':
+            proceed_normally()
+
+  # ---------------------------------------------------------------------------
+  # BR-CRD-041: MCC Blocking
+  # ---------------------------------------------------------------------------
+  - id: BR-CRD-041
+    name: Merchant Category Blocking
+    name_vi: Chặn danh mục đơn vị
+    priority: high
+    category: fraud
+
+    description: |
+      Block transactions at certain merchant categories.
+
+    default_blocked:
+      - mcc: "7995"
+        category: "Gambling"
+        override: customer_request_with_approval
+      - mcc: "5993"
+        category: "Cigar/Tobacco"
+        override: none_for_minors
+      - mcc: "5999"
+        category: "Miscellaneous"
+        monitoring: enhanced
+
+    customer_configurable:
+      - online_gambling
+      - adult_entertainment
+      - cryptocurrency_purchases
+
+    rule: |
+      IF transaction.mcc IN blocked_categories
+      AND NOT customer.has_override(mcc)
+      THEN decline('MCC_BLOCKED')
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  card_management_system:
+    - "PIN management module"
+    - "Limit management module"
+    - "Feature toggle controls"
+    - "Velocity monitoring"
+
+  integrations:
+    - "3D Secure provider"
+    - "Fraud detection engine"
+    - "Card network (Visa/Mastercard)"
+    - "ATM switch"
+    - "POS acquiring system"
+
+  real_time_processing:
+    - "Authorization engine"
+    - "Risk scoring engine"
+    - "Limit checking module"
+    - "Fraud screening module"
+
+  batch_processes:
+    - "Daily limit reset"
+    - "Monthly limit reset"
+    - "Auto-renewal trigger"
+    - "Expiry notification"
+
+  customer_channels:
+    - "Mobile app card controls"
+    - "Web banking card management"
+    - "SMS/IVR for blocks"
+    - "Contact center procedures"

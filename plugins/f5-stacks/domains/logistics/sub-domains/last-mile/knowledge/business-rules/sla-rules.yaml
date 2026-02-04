@@ -1,0 +1,457 @@
+name: SLARules
+display_name: SLA Rules
+description: |
+  Business rules for Service Level Agreement management.
+  Covers delivery timeframes, on-time criteria, breach handling, and compensation.
+
+domain: logistics
+subdomain: last-mile
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - timeframe_definitions
+  - on_time_criteria
+  - breach_detection
+  - compensation_rules
+  - reporting_rules
+
+rules:
+  # Timeframe Definitions
+  - id: SLA-001
+    name: Standard Delivery SLA
+    category: timeframe_definitions
+    description: SLA for standard delivery service
+    priority: critical
+    service_level: standard
+    timeframes:
+      same_city:
+        target: 48 hours
+        max: 72 hours
+      inter_city:
+        target: 72 hours
+        max: 120 hours
+      rural:
+        target: 96 hours
+        max: 168 hours
+    clock_start: order_confirmed
+    clock_pause:
+      - customer_requested_delay
+      - address_correction_pending
+      - customs_clearance
+
+  - id: SLA-002
+    name: Express Delivery SLA
+    category: timeframe_definitions
+    description: SLA for express delivery service
+    priority: critical
+    service_level: express
+    timeframes:
+      same_city:
+        target: 24 hours
+        max: 36 hours
+      inter_city:
+        target: 48 hours
+        max: 72 hours
+    clock_start: order_confirmed
+    premium_multiplier: 1.5
+
+  - id: SLA-003
+    name: Same-Day Delivery SLA
+    category: timeframe_definitions
+    description: SLA for same-day delivery service
+    priority: critical
+    service_level: same_day
+    timeframes:
+      cutoff_time: "14:00"
+      delivery_by: "21:00"
+      max_hours: 8
+    conditions:
+      - order_before_cutoff
+      - within_service_area
+      - item_in_stock
+    clock_start: order_confirmed
+
+  - id: SLA-004
+    name: Instant Delivery SLA
+    category: timeframe_definitions
+    description: SLA for instant/on-demand delivery
+    priority: critical
+    service_level: instant
+    timeframes:
+      target: 60 minutes
+      max: 90 minutes
+    conditions:
+      - within_instant_zone
+      - agent_available
+      - small_package_only
+    clock_start: pickup_completed
+
+  - id: SLA-005
+    name: Scheduled Slot SLA
+    category: timeframe_definitions
+    description: SLA for scheduled time slot deliveries
+    priority: critical
+    service_level: scheduled
+    timeframes:
+      window_start: slot.start_time
+      window_end: slot.end_time
+    tolerance:
+      early_arrival: 15 minutes  # before window start
+      late_arrival: 0 minutes    # no tolerance after window end
+    clock_reference: scheduled_slot
+
+  # On-Time Criteria
+  - id: SLA-010
+    name: On-Time Definition - Standard
+    category: on_time_criteria
+    description: What constitutes on-time for standard delivery
+    priority: high
+    criteria: |
+      delivery.completed_at <= delivery.sla_deadline
+    status_mapping:
+      early: "completed_at < sla_deadline - 4 hours"
+      on_time: "completed_at <= sla_deadline"
+      late: "completed_at > sla_deadline"
+      severely_late: "completed_at > sla_deadline + 24 hours"
+
+  - id: SLA-011
+    name: On-Time Definition - Scheduled
+    category: on_time_criteria
+    description: On-time criteria for scheduled deliveries
+    priority: high
+    criteria: |
+      delivery.arrived_at >= slot.start_time - early_tolerance AND
+      delivery.arrived_at <= slot.end_time
+    status_mapping:
+      too_early: "arrived_at < slot.start_time - 15 minutes"
+      on_time: "arrived_at BETWEEN slot.start_time AND slot.end_time"
+      late: "arrived_at > slot.end_time"
+
+  - id: SLA-012
+    name: First Attempt Consideration
+    category: on_time_criteria
+    description: First attempt timing affects SLA calculation
+    priority: high
+    rule: |
+      IF first_attempt.completed_at <= sla_deadline AND
+         first_attempt.status = 'failed' AND
+         first_attempt.reason IN ('customer_not_home', 'access_issue') THEN
+        sla_status = 'attempted_on_time'
+        sla_breach = false
+      END IF
+
+  - id: SLA-013
+    name: External Delay Exclusions
+    category: on_time_criteria
+    description: External factors excluded from SLA calculation
+    priority: high
+    excluded_delays:
+      - severe_weather
+      - natural_disaster
+      - civil_unrest
+      - government_restrictions
+      - customer_caused_delay
+    documentation_required: true
+    approval_required: true
+
+  - id: SLA-014
+    name: Operating Hours Consideration
+    category: on_time_criteria
+    description: SLA clock only runs during operating hours
+    priority: medium
+    rule: |
+      sla_hours = COUNT(hours WHERE operating_hours = true)
+      non_operating_hours EXCLUDED from sla_calculation
+    operating_hours:
+      weekday: "08:00-21:00"
+      saturday: "09:00-18:00"
+      sunday: "10:00-16:00"
+      holiday: "closed"
+
+  # Breach Detection
+  - id: SLA-020
+    name: Proactive Breach Detection
+    category: breach_detection
+    description: Detect potential breaches before they occur
+    priority: critical
+    thresholds:
+      warning: "time_remaining < 4 hours"
+      critical: "time_remaining < 2 hours"
+      imminent: "time_remaining < 1 hour"
+    actions:
+      warning:
+        - notify_operations
+        - prioritize_delivery
+      critical:
+        - escalate_to_supervisor
+        - assign_backup_agent
+        - notify_customer
+      imminent:
+        - emergency_protocol
+        - direct_dispatch
+        - prepare_compensation
+
+  - id: SLA-021
+    name: Breach Recording
+    category: breach_detection
+    description: Record all SLA breaches with details
+    priority: critical
+    recorded_data:
+      - delivery_id
+      - service_level
+      - sla_deadline
+      - actual_completion
+      - delay_duration
+      - root_cause
+      - responsible_party
+      - customer_impact
+      - compensation_provided
+
+  - id: SLA-022
+    name: Breach Categorization
+    category: breach_detection
+    description: Categorize breaches by severity and cause
+    priority: high
+    severity_levels:
+      minor:
+        delay: "< 2 hours"
+        impact: low
+        compensation: optional
+      moderate:
+        delay: "2-12 hours"
+        impact: medium
+        compensation: required
+      severe:
+        delay: "12-24 hours"
+        impact: high
+        compensation: required
+        escalation: required
+      critical:
+        delay: "> 24 hours"
+        impact: critical
+        compensation: maximum
+        escalation: immediate
+        review: mandatory
+
+  - id: SLA-023
+    name: Root Cause Analysis
+    category: breach_detection
+    description: Identify root cause for each breach
+    priority: high
+    cause_categories:
+      operational:
+        - capacity_shortage
+        - routing_inefficiency
+        - agent_performance
+        - vehicle_breakdown
+      external:
+        - weather
+        - traffic
+        - customer_unavailable
+        - address_issue
+      system:
+        - system_outage
+        - data_error
+        - integration_failure
+
+  # Compensation Rules
+  - id: SLA-030
+    name: Automatic Compensation - Minor
+    category: compensation_rules
+    description: Automatic compensation for minor breaches
+    priority: high
+    condition: |
+      breach.severity = 'minor' AND
+      customer.eligible_for_compensation = true
+    compensation:
+      type: credit
+      amount: delivery_fee * 0.25  # 25% refund
+      auto_apply: true
+      notification: email
+
+  - id: SLA-031
+    name: Automatic Compensation - Moderate
+    category: compensation_rules
+    description: Automatic compensation for moderate breaches
+    priority: high
+    condition: |
+      breach.severity = 'moderate'
+    compensation:
+      type: refund
+      amount: delivery_fee * 0.50  # 50% refund
+      auto_apply: true
+      notification: sms_and_email
+      additional:
+        - future_discount_code: 10%
+        - priority_next_delivery: true
+
+  - id: SLA-032
+    name: Automatic Compensation - Severe
+    category: compensation_rules
+    description: Compensation for severe breaches
+    priority: critical
+    condition: |
+      breach.severity = 'severe'
+    compensation:
+      type: full_refund
+      amount: delivery_fee * 1.0  # 100% refund
+      auto_apply: false  # requires approval
+      notification: call_and_email
+      additional:
+        - future_credit: 50000 VND
+        - priority_next_delivery: true
+        - personal_apology: true
+
+  - id: SLA-033
+    name: Premium Customer Compensation
+    category: compensation_rules
+    description: Enhanced compensation for premium customers
+    priority: high
+    condition: |
+      customer.tier IN ('gold', 'platinum') AND
+      breach.occurred = true
+    multiplier: 1.5  # 50% more compensation
+    additional:
+      - dedicated_support_contact
+      - priority_resolution
+      - gift_option
+
+  - id: SLA-034
+    name: Repeat Breach Compensation
+    category: compensation_rules
+    description: Escalated compensation for repeat breaches
+    priority: high
+    condition: |
+      customer.breach_count_30_days >= 2
+    escalation:
+      second_breach:
+        multiplier: 1.5
+        apology: required
+      third_breach:
+        multiplier: 2.0
+        account_review: required
+        manager_contact: required
+
+  - id: SLA-035
+    name: B2B SLA Penalties
+    category: compensation_rules
+    description: Contractual penalties for business customers
+    priority: critical
+    condition: |
+      customer.type = 'business' AND
+      customer.contract.sla_penalties = true
+    penalties:
+      per_breach: contract.penalty_amount
+      monthly_threshold: contract.max_breach_count
+      threshold_exceeded: contract.penalty_escalation
+
+  # Reporting Rules
+  - id: SLA-040
+    name: Daily SLA Report
+    category: reporting_rules
+    description: Daily SLA performance reporting
+    priority: high
+    frequency: daily
+    metrics:
+      - total_deliveries
+      - on_time_deliveries
+      - on_time_percentage
+      - breaches_by_severity
+      - average_delay_time
+      - compensation_total
+    distribution:
+      - operations_manager
+      - zone_supervisors
+
+  - id: SLA-041
+    name: Weekly SLA Analysis
+    category: reporting_rules
+    description: Weekly SLA trend analysis
+    priority: medium
+    frequency: weekly
+    analysis:
+      - trend_comparison
+      - root_cause_patterns
+      - zone_performance
+      - agent_performance
+      - improvement_recommendations
+    distribution:
+      - operations_director
+      - regional_managers
+
+  - id: SLA-042
+    name: Customer SLA Dashboard
+    category: reporting_rules
+    description: Real-time SLA visibility for customers
+    priority: medium
+    visibility:
+      b2b_customers:
+        - real_time_status
+        - historical_performance
+        - breach_notifications
+        - compensation_history
+      b2c_customers:
+        - delivery_status
+        - estimated_time
+        - delay_notifications
+
+  - id: SLA-043
+    name: Agent SLA Scorecard
+    category: reporting_rules
+    description: Individual agent SLA performance
+    priority: medium
+    frequency: daily
+    metrics:
+      - on_time_rate
+      - average_delay
+      - breach_count
+      - customer_feedback
+    impact:
+      - performance_bonus
+      - priority_assignments
+      - training_recommendations
+
+service_levels:
+  - id: standard
+    name: Standard Delivery
+    target_hours: 48
+    max_hours: 72
+
+  - id: express
+    name: Express Delivery
+    target_hours: 24
+    max_hours: 36
+
+  - id: same_day
+    name: Same Day Delivery
+    target_hours: 8
+    max_hours: 12
+
+  - id: instant
+    name: Instant Delivery
+    target_minutes: 60
+    max_minutes: 90
+
+  - id: scheduled
+    name: Scheduled Slot
+    window_tolerance: 0
+    early_tolerance: 15
+
+events:
+  - name: sla.warning
+    description: SLA at risk
+    payload: [delivery_id, time_remaining, risk_level]
+
+  - name: sla.breached
+    description: SLA was breached
+    payload: [delivery_id, delay_duration, severity]
+
+  - name: sla.compensation_issued
+    description: Compensation provided for breach
+    payload: [delivery_id, customer_id, compensation_amount]
+
+  - name: sla.monthly_report
+    description: Monthly SLA report generated
+    payload: [month, overall_rate, total_breaches]

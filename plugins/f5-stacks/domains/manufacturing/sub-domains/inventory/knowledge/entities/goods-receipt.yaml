@@ -1,0 +1,484 @@
+name: GoodsReceipt
+display_name: Goods Receipt / Phiếu nhập kho
+description: |
+  Document recording receipt of materials into inventory.
+  Supports receipt against PO, production, return, or transfer.
+  Triggers inventory updates, quality inspection, and accounting.
+
+domain: manufacturing
+subdomain: inventory
+category: transaction
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: gr_number
+    type: string
+    required: true
+    description: Goods receipt number
+    validation:
+      pattern: "^GR-[0-9]{4}-[0-9]{6}$"
+    example: "GR-2024-000789"
+
+  - name: status
+    type: enum
+    required: true
+    description: Receipt status
+    validation:
+      values: [draft, pending_inspection, inspecting, partially_accepted,
+               accepted, rejected, posted, cancelled]
+    default: draft
+
+  - name: receipt_type
+    type: enum
+    required: true
+    description: Type of goods receipt
+    validation:
+      values:
+        - purchase_order     # Receipt against PO
+        - production         # Receipt from production
+        - customer_return    # Return from customer
+        - transfer           # Stock transfer receipt
+        - free_receipt       # Receipt without PO
+        - consignment        # Consignment stock receipt
+        - subcontracting     # Return from subcontractor
+
+  # Reference
+  - name: reference_type
+    type: enum
+    required: true
+    description: Source document type
+    validation:
+      values: [purchase_order, production_order, sales_return, transfer_order, manual]
+
+  - name: reference_id
+    type: uuid
+    required: false
+    description: Reference document ID
+
+  - name: reference_number
+    type: string
+    required: false
+    description: Reference document number
+    validation:
+      max_length: 30
+
+  # Supplier/Source
+  - name: supplier_id
+    type: uuid
+    required: false
+    description: Supplier (for PO receipts)
+
+  - name: delivery_note_number
+    type: string
+    required: false
+    description: Supplier's delivery note
+    validation:
+      max_length: 30
+
+  - name: bill_of_lading
+    type: string
+    required: false
+    description: Bill of lading number
+    validation:
+      max_length: 30
+
+  # Dates
+  - name: receipt_date
+    type: date
+    required: true
+    description: Date goods were received
+
+  - name: posting_date
+    type: date
+    required: true
+    description: Date for accounting posting
+
+  - name: document_date
+    type: date
+    required: true
+    description: Date on delivery note
+
+  - name: delivery_date
+    type: date
+    required: false
+    description: Actual delivery date
+
+  # Location
+  - name: plant_id
+    type: uuid
+    required: true
+    description: Receiving plant
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+    description: Receiving warehouse
+
+  - name: dock_id
+    type: string
+    required: false
+    description: Receiving dock/door
+    validation:
+      max_length: 20
+
+  # Carrier
+  - name: carrier_name
+    type: string
+    required: false
+    description: Shipping carrier
+    validation:
+      max_length: 100
+
+  - name: tracking_number
+    type: string
+    required: false
+    description: Shipment tracking number
+    validation:
+      max_length: 50
+
+  - name: vehicle_number
+    type: string
+    required: false
+    description: Vehicle/container number
+    validation:
+      max_length: 20
+
+  - name: driver_name
+    type: string
+    required: false
+    description: Driver name
+    validation:
+      max_length: 100
+
+  # Quality
+  - name: inspection_required
+    type: boolean
+    required: true
+    description: Quality inspection required
+    default: false
+
+  - name: inspection_status
+    type: enum
+    required: false
+    description: Inspection status
+    validation:
+      values: [pending, in_progress, passed, failed, partially_passed]
+
+  - name: inspection_id
+    type: uuid
+    required: false
+    description: Quality inspection reference
+
+  - name: inspection_date
+    type: timestamp
+    required: false
+    description: Inspection completion date
+
+  # Quantities summary
+  - name: total_lines
+    type: integer
+    required: false
+    description: Number of line items
+    computed: true
+
+  - name: total_received_qty
+    type: decimal
+    required: false
+    description: Total quantity received
+    computed: true
+
+  - name: total_accepted_qty
+    type: decimal
+    required: false
+    description: Total quantity accepted
+    computed: true
+
+  - name: total_rejected_qty
+    type: decimal
+    required: false
+    description: Total quantity rejected
+    computed: true
+
+  # Value
+  - name: total_value
+    type: decimal
+    required: false
+    description: Total receipt value
+    validation:
+      precision: 2
+    computed: true
+
+  - name: currency
+    type: string
+    required: true
+    description: Value currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  # Accounting
+  - name: gl_posted
+    type: boolean
+    required: true
+    description: Posted to general ledger
+    default: false
+
+  - name: gl_document_number
+    type: string
+    required: false
+    description: GL posting document
+    validation:
+      max_length: 20
+
+  - name: posted_at
+    type: timestamp
+    required: false
+    description: GL posting timestamp
+
+  - name: posted_by
+    type: uuid
+    required: false
+    description: User who posted
+
+  # Discrepancy handling
+  - name: has_discrepancy
+    type: boolean
+    required: false
+    description: Receipt has quantity/quality discrepancy
+    default: false
+
+  - name: discrepancy_notes
+    type: string
+    required: false
+    description: Discrepancy description
+    validation:
+      max_length: 1000
+
+  - name: discrepancy_resolved
+    type: boolean
+    required: false
+    description: Discrepancy has been resolved
+    default: false
+
+  # Notes
+  - name: notes
+    type: string
+    required: false
+    description: Receipt notes
+    validation:
+      max_length: 1000
+
+  - name: internal_notes
+    type: string
+    required: false
+    description: Internal notes
+    validation:
+      max_length: 1000
+
+  # Attachments
+  - name: attachments
+    type: array
+    required: false
+    description: Receipt documents
+    items:
+      type: object
+      properties:
+        name: string
+        type: string
+        url: string
+
+  # Reversal
+  - name: reversed
+    type: boolean
+    required: true
+    description: Receipt has been reversed
+    default: false
+
+  - name: reversal_gr_id
+    type: uuid
+    required: false
+    description: Reversal GR reference
+
+  - name: reversal_reason
+    type: string
+    required: false
+    description: Reason for reversal
+    validation:
+      max_length: 200
+
+  # Audit
+  - name: received_by
+    type: uuid
+    required: true
+    description: User who received goods
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: Cancellation timestamp
+
+  - name: cancelled_by
+    type: uuid
+    required: false
+    description: User who cancelled
+
+  - name: cancellation_reason
+    type: string
+    required: false
+    description: Cancellation reason
+    validation:
+      max_length: 200
+
+relationships:
+  - name: supplier
+    type: belongs_to
+    entity: Supplier
+    required: false
+    description: Supplier (for PO receipts)
+
+  - name: purchase_order
+    type: belongs_to
+    entity: PurchaseOrder
+    required: false
+    description: Source purchase order
+
+  - name: lines
+    type: has_many
+    entity: GoodsReceiptLine
+    description: Receipt line items
+
+  - name: transactions
+    type: has_many
+    entity: InventoryTransaction
+    description: Inventory transactions created
+
+  - name: inspection
+    type: belongs_to
+    entity: QualityInspection
+    required: false
+    description: Quality inspection
+
+  - name: reversal
+    type: belongs_to
+    entity: GoodsReceipt
+    required: false
+    description: Reversing GR
+
+indexes:
+  - [gr_number]
+  - [receipt_type]
+  - [status]
+  - [receipt_date]
+  - [supplier_id]
+  - [reference_type, reference_id]
+  - [plant_id, warehouse_id]
+  - [posting_date]
+  - [received_by]
+
+state_machine:
+  initial: draft
+  states:
+    draft:
+      description: Being prepared
+      transitions:
+        - to: pending_inspection
+          trigger: submit
+          condition: inspection_required AND has_lines
+        - to: accepted
+          trigger: submit
+          condition: NOT inspection_required AND has_lines
+        - to: cancelled
+          trigger: cancel
+    pending_inspection:
+      description: Awaiting quality inspection
+      transitions:
+        - to: inspecting
+          trigger: start_inspection
+          action: create_inspection
+        - to: cancelled
+          trigger: cancel
+    inspecting:
+      description: Quality inspection in progress
+      transitions:
+        - to: accepted
+          trigger: pass_inspection
+        - to: partially_accepted
+          trigger: partial_pass
+        - to: rejected
+          trigger: fail_inspection
+    partially_accepted:
+      description: Partial acceptance after inspection
+      transitions:
+        - to: posted
+          trigger: post
+          action: create_inventory_transactions
+    accepted:
+      description: Accepted for inventory
+      transitions:
+        - to: posted
+          trigger: post
+          action: create_inventory_transactions
+    rejected:
+      description: Quality inspection failed
+      transitions:
+        - to: cancelled
+          trigger: cancel
+          action: notify_supplier
+    posted:
+      description: Posted to inventory
+      final: true
+    cancelled:
+      description: Receipt cancelled
+      final: true
+
+business_rules:
+  - BR-GR-001: GR number auto-generated as GR-YYYY-NNNNNN
+  - BR-GR-002: At least one line item required
+  - BR-GR-003: Receipt date <= posting date
+  - BR-GR-004: Cannot post to closed accounting period
+  - BR-GR-005: Cannot receive more than PO line quantity + tolerance
+  - BR-GR-006: Inspection required if material has inspection flag
+  - BR-GR-007: Location required for all lines
+  - BR-GR-008: Batch number required for batch-managed materials
+  - BR-GR-009: Reversed GR creates negative inventory transaction
+  - BR-GR-010: Cannot modify posted GR
+
+events:
+  - name: gr.created
+    payload: [id, gr_number, receipt_type, supplier_id]
+    description: Goods receipt created
+
+  - name: gr.inspection_required
+    payload: [id, gr_number, inspection_id]
+    description: Inspection initiated
+
+  - name: gr.inspection_complete
+    payload: [id, gr_number, inspection_status, accepted_qty, rejected_qty]
+    description: Inspection completed
+
+  - name: gr.posted
+    payload: [id, gr_number, total_value, transactions_created]
+    description: Posted to inventory
+
+  - name: gr.reversed
+    payload: [id, gr_number, reversal_gr_id, reason]
+    description: Receipt reversed
+
+  - name: gr.discrepancy_detected
+    payload: [id, gr_number, discrepancy_notes]
+    description: Discrepancy found

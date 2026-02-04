@@ -1,0 +1,475 @@
+name: Repayment Rules
+display_name: Repayment Rules / Quy tắc thanh toán
+description: |
+  Business rules for loan repayment processing including payment
+  methods, grace periods, late fees, and payment allocation.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# REPAYMENT SCHEDULE RULES
+# =============================================================================
+schedule_generation:
+  rule_id: RPR-001
+  name: Repayment Schedule Generation
+  name_vi: Tạo lịch trả nợ
+
+  timing:
+    trigger: loan_disbursement
+    first_due_date: "disbursement_date + 30 days"
+    subsequent_due_dates: "same_day_each_month"
+
+  day_handling:
+    if_disbursed_on_29_30_31:
+      action: use_last_day_of_month
+      example: "Disbursed Jan 31 → Feb 28 → Mar 31"
+
+    if_weekend:
+      action: next_business_day
+      description: "If due date falls on weekend, move to next Monday"
+
+    if_holiday:
+      action: next_business_day
+      description: "If due date falls on holiday, move to next business day"
+
+  calculation_methods:
+    emi:
+      name: Equal Monthly Installment
+      name_vi: Trả góp đều hàng tháng
+      formula: "P * (r * (1+r)^n) / ((1+r)^n - 1)"
+      where:
+        P: principal
+        r: monthly_interest_rate
+        n: term_months
+      characteristics:
+        - fixed_monthly_payment
+        - interest_decreasing
+        - principal_increasing
+
+    equal_principal:
+      name: Equal Principal Payment
+      name_vi: Trả gốc đều
+      formula: "(P/n) + (Outstanding * r)"
+      characteristics:
+        - fixed_principal
+        - decreasing_interest
+        - decreasing_payment
+
+    bullet:
+      name: Bullet Payment
+      name_vi: Trả một lần cuối kỳ
+      formula: "Interest_Only_Monthly + Principal_At_End"
+      characteristics:
+        - interest_only_during_term
+        - principal_at_maturity
+      max_term: 12_months
+
+# =============================================================================
+# PAYMENT METHODS
+# =============================================================================
+payment_methods:
+  rule_id: RPR-002
+  name: Accepted Payment Methods
+  name_vi: Phương thức thanh toán được chấp nhận
+
+  methods:
+    bank_transfer:
+      enabled: true
+      processing_time: same_day
+      fee: 0
+      description: "Direct bank transfer to platform account"
+
+    auto_debit:
+      enabled: true
+      processing_time: instant
+      fee: 0
+      setup_required: mandate_authorization
+      description: "Automatic deduction from linked bank account"
+      retry_on_failure: true
+      retry_times: [10:00, 14:00, 18:00]
+
+    internal_wallet:
+      enabled: true
+      processing_time: instant
+      fee: 0
+      description: "Payment from platform wallet balance"
+
+    card_payment:
+      enabled: true
+      processing_time: instant
+      fee: 22000
+      fee_type: flat
+      accepted_cards: [visa, mastercard, jcb]
+      description: "Credit/debit card payment"
+
+    cash_at_partner:
+      enabled: true
+      processing_time: same_day
+      fee: 11000
+      partners: [convenience_stores, payment_points]
+      description: "Cash payment at partner locations"
+
+  preferred_method:
+    order: [auto_debit, internal_wallet, bank_transfer, card_payment]
+    default_setup: auto_debit
+
+# =============================================================================
+# GRACE PERIOD RULES
+# =============================================================================
+grace_period:
+  rule_id: RPR-003
+  name: Grace Period Rules
+  name_vi: Quy tắc thời gian ân hạn
+
+  duration:
+    days: 3
+    description: "3 calendar days after due date"
+
+  during_grace_period:
+    late_fee_applied: false
+    credit_reporting: not_reported
+    delinquency_status: grace_period
+    notifications:
+      - day_1: sms_reminder
+      - day_2: push_notification
+      - day_3: email_warning
+
+  after_grace_period:
+    late_fee_applied: true
+    credit_reporting: reported
+    delinquency_status: 30_dpd_bucket
+    collection_initiated: true
+
+  exceptions:
+    - condition: first_late_payment_ever
+      action: extend_grace_3_days
+      one_time_only: true
+
+    - condition: system_error_prevented_payment
+      action: waive_late_fee
+      documentation_required: true
+
+# =============================================================================
+# LATE FEE RULES
+# =============================================================================
+late_fees:
+  rule_id: RPR-004
+  name: Late Payment Fee Rules
+  name_vi: Quy tắc phí thanh toán trễ
+
+  calculation:
+    method: percentage_per_day
+    rate: 0.5
+    base: overdue_amount
+    start_day: grace_period_end + 1
+    formula: "overdue_amount * 0.5% * days_late"
+
+  caps:
+    maximum_rate: 15.0
+    maximum_amount: null
+    description: "Late fees capped at 15% of overdue amount"
+
+  accrual:
+    frequency: daily
+    compounding: false
+    applied_to: next_payment
+
+  waiver:
+    first_occurrence:
+      eligibility: "no_previous_late_payments"
+      waiver_percentage: 100
+      automatic: true
+
+    subsequent:
+      eligibility: "manager_approval_required"
+      max_waiver: 50
+      unit: percent
+
+  examples:
+    example_1:
+      overdue_amount: 1000000
+      days_late: 10
+      late_fee: "1,000,000 * 0.5% * 10 = 50,000 VND"
+
+    example_2:
+      overdue_amount: 1000000
+      days_late: 40
+      late_fee: "Capped at 15% = 150,000 VND (not 200,000)"
+
+# =============================================================================
+# PAYMENT ALLOCATION RULES
+# =============================================================================
+payment_allocation:
+  rule_id: RPR-005
+  name: Payment Allocation Order
+  name_vi: Thứ tự phân bổ thanh toán
+
+  allocation_order:
+    priority:
+      1: late_fees
+      2: penalties
+      3: accrued_interest
+      4: current_interest
+      5: principal
+    description: "Fees first, then interest, then principal"
+
+  partial_payment:
+    allowed: true
+    minimum_payment: interest_due
+    treatment: apply_in_order
+    effect_on_status: still_delinquent_until_current
+
+  overpayment:
+    allowed: true
+    treatment: apply_to_principal
+    effect: reduces_term_or_payment
+    option: borrower_choice
+    default: reduces_payment
+
+  prepayment:
+    allowed: true
+    penalty_before_6_months: 1.0
+    penalty_after_6_months: 0
+    unit: percent_of_remaining_principal
+
+# =============================================================================
+# AUTO-DEBIT RULES
+# =============================================================================
+auto_debit:
+  rule_id: RPR-006
+  name: Auto-Debit Rules
+  name_vi: Quy tắc trích nợ tự động
+
+  mandate_setup:
+    required_info:
+      - bank_account_number
+      - account_holder_name
+      - bank_code
+      - authorization_signature
+    verification: micro_deposit_or_otp
+    validity: loan_duration
+
+  execution:
+    timing: due_date_morning
+    time: "06:00"
+    timezone: "Asia/Ho_Chi_Minh"
+    amount: scheduled_payment
+
+  retry_logic:
+    on_failure:
+      - retry_1: "due_date 10:00"
+      - retry_2: "due_date 14:00"
+      - retry_3: "due_date 18:00"
+      - retry_4: "due_date+1 06:00"
+      - retry_5: "due_date+2 06:00"
+    max_retries: 5
+    between_retries: 4_hours_minimum
+
+  failure_handling:
+    after_all_retries_fail:
+      - mark_payment_failed
+      - send_notification
+      - initiate_manual_collection
+    reasons_for_failure:
+      - insufficient_funds
+      - account_closed
+      - mandate_cancelled
+      - technical_error
+
+  notifications:
+    before_debit:
+      timing: 3_days_before
+      channel: [sms, push]
+      content: "Payment of X VND will be debited on DATE"
+
+    after_success:
+      timing: immediate
+      channel: [sms, push]
+      content: "Payment successful. New balance: X VND"
+
+    after_failure:
+      timing: immediate
+      channel: [sms, push, email]
+      content: "Payment failed. Please make manual payment"
+
+# =============================================================================
+# EARLY PAYOFF RULES
+# =============================================================================
+early_payoff:
+  rule_id: RPR-007
+  name: Early Payoff Rules
+  name_vi: Quy tắc tất toán sớm
+
+  eligibility:
+    minimum_payments: 1
+    status: not_in_default
+    description: "Must have made at least 1 payment and not in default"
+
+  calculation:
+    payoff_amount: |
+      remaining_principal +
+      accrued_interest +
+      early_payoff_penalty (if applicable) +
+      outstanding_fees
+
+  penalty:
+    within_6_months:
+      rate: 1.0
+      base: remaining_principal
+    after_6_months:
+      rate: 0
+    waiver_conditions:
+      - refinancing_with_platform
+      - hardship_documented
+
+  quote_validity:
+    duration: 7_days
+    description: "Payoff quote valid for 7 days"
+
+  process:
+    steps:
+      1: request_payoff_quote
+      2: receive_quote_with_amount
+      3: make_payment
+      4: loan_closed
+      5: release_lien_if_applicable
+    processing_time: same_day
+
+  investor_impact:
+    notification: immediate
+    principal_return: same_day
+    expected_interest_loss: disclosed
+
+# =============================================================================
+# DELINQUENCY RULES
+# =============================================================================
+delinquency:
+  rule_id: RPR-008
+  name: Delinquency Status Rules
+  name_vi: Quy tắc trạng thái nợ quá hạn
+
+  status_definitions:
+    current:
+      dpd: 0
+      description: "All payments up to date"
+
+    grace_period:
+      dpd: [1, 3]
+      description: "Within grace period"
+
+    30_dpd:
+      dpd: [4, 30]
+      description: "Early delinquency"
+      credit_reporting: yes
+      collection_stage: early
+
+    60_dpd:
+      dpd: [31, 60]
+      description: "Moderate delinquency"
+      collection_stage: soft
+
+    90_dpd:
+      dpd: [61, 90]
+      description: "Serious delinquency"
+      collection_stage: hard
+
+    default:
+      dpd: [91, 180]
+      description: "Default status"
+      collection_stage: legal
+      provision_claim: eligible
+
+    write_off:
+      dpd: "> 180"
+      description: "Write-off candidate"
+      collection_stage: write_off
+
+  status_transitions:
+    improvement:
+      condition: "payment received bringing current"
+      action: upgrade_status
+      credit_reporting: update_positive
+
+    deterioration:
+      condition: "payment missed"
+      action: downgrade_status
+      credit_reporting: update_negative
+
+# =============================================================================
+# PAYMENT NOTIFICATIONS
+# =============================================================================
+notifications:
+  rule_id: RPR-009
+  name: Payment Notification Rules
+  name_vi: Quy tắc thông báo thanh toán
+
+  schedule:
+    before_due:
+      - days: 7
+        channel: [email]
+        content: weekly_reminder
+
+      - days: 3
+        channel: [sms, push]
+        content: upcoming_payment
+
+      - days: 1
+        channel: [sms, push]
+        content: payment_tomorrow
+
+    on_due_date:
+      - time: "09:00"
+        channel: [sms, push]
+        content: payment_due_today
+        if: payment_not_received
+
+    after_due:
+      - days: 1
+        channel: [sms, push, email]
+        content: payment_overdue
+        if: payment_not_received
+
+      - days: 3
+        channel: [sms, push, email]
+        content: grace_ending
+        if: payment_not_received
+
+      - days: 7
+        channel: [sms, push, email, call]
+        content: late_payment_warning
+
+  confirmation:
+    on_payment:
+      channel: [sms, push]
+      timing: immediate
+      content: payment_confirmation
+
+    on_completion:
+      channel: [sms, push, email]
+      timing: immediate
+      content: loan_completion
+
+# =============================================================================
+# AUDIT & COMPLIANCE
+# =============================================================================
+audit:
+  enabled: true
+  log_all_payments: true
+  log_allocation_decisions: true
+  log_fee_calculations: true
+  retention_years: 10
+
+compliance:
+  consumer_protection:
+    clear_disclosure: required
+    payment_history_access: provided
+    dispute_resolution: available
+
+  credit_reporting:
+    bureau: CIC_Vietnam
+    reporting_frequency: monthly
+    report_positives: yes
+    report_negatives: yes

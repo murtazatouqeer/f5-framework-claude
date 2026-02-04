@@ -1,0 +1,213 @@
+name: StorageRules
+display_name: Storage Business Rules
+description: |
+  Business rules governing inventory storage, location management,
+  and warehouse space utilization.
+
+domain: logistics
+subdomain: warehouse
+category: business-rules
+
+rules:
+  # Location Management
+  - id: BR-STR-001
+    name: Location Capacity Enforcement
+    description: |
+      Items cannot be stored in locations that exceed their capacity limits.
+      System must validate weight, volume, and unit capacity.
+    severity: critical
+    entities: [Location, Inventory]
+    conditions:
+      - total_weight <= location.max_weight_kg
+      - total_volume <= location.max_volume_cbm
+      - total_units <= location.max_units
+    actions:
+      - reject_putaway_if_exceeded
+      - suggest_alternative_location
+    exceptions:
+      - supervisor_override_with_reason
+
+  - id: BR-STR-002
+    name: Temperature Zone Compliance
+    description: |
+      Items with temperature requirements must be stored in appropriate zones.
+      Chilled items in chilled zones, frozen in frozen zones.
+    severity: critical
+    entities: [Item, Zone, Location]
+    conditions:
+      - item.storage_class == location.zone.zone_type OR
+      - item.temperature_range within zone.temperature_range
+    actions:
+      - prevent_storage_in_wrong_zone
+      - alert_supervisor
+    exceptions:
+      - temporary_staging_max_30_minutes
+
+  - id: BR-STR-003
+    name: Hazmat Storage Separation
+    description: |
+      Hazardous materials must be stored in designated hazmat zones
+      with proper separation from incompatible materials.
+    severity: critical
+    entities: [Item, Zone, Inventory]
+    conditions:
+      - item.hazmat == true implies zone.hazmat_certified == true
+      - incompatible_materials_separated
+    actions:
+      - reject_putaway_to_non_hazmat_zone
+      - ensure_minimum_separation_distance
+    compliance: [OSHA, EPA, DOT]
+
+  - id: BR-STR-004
+    name: Stackability Rules
+    description: |
+      Only stackable items can be stored on top of other items.
+      Heavy items must be at bottom of stack.
+    severity: high
+    entities: [Item, Location, Inventory]
+    conditions:
+      - item.stackable == true for stacked items
+      - heavier_items_at_bottom
+      - max_stack_height <= location.max_height
+    actions:
+      - prevent_unsafe_stacking
+      - suggest_floor_location_for_non_stackable
+
+  # Velocity Slotting
+  - id: BR-STR-005
+    name: ABC Velocity Slotting
+    description: |
+      Fast-moving (A class) items should be stored in prime pick locations.
+      Slow-moving (C class) items in less accessible locations.
+    severity: medium
+    entities: [Item, Location]
+    conditions:
+      - A_class_items in velocity_class_A_locations
+      - B_class_items in velocity_class_B_locations
+      - C_class_items in velocity_class_C_locations
+    actions:
+      - recommend_optimal_location
+      - flag_non_optimal_placement
+    triggers:
+      - velocity_recalculation_monthly
+
+  - id: BR-STR-006
+    name: Pick Face Proximity
+    description: |
+      Items frequently picked together should be stored near each other.
+      Minimize travel distance for common order combinations.
+    severity: low
+    entities: [Item, Location]
+    conditions:
+      - affinity_items within same_zone OR adjacent_aisles
+    actions:
+      - suggest_affinity_based_slotting
+      - analyze_order_patterns_weekly
+
+  # Lot and Expiry
+  - id: BR-STR-007
+    name: FEFO Expiry Location
+    description: |
+      For FEFO-managed items, earlier expiry lots must be more accessible
+      than later expiry lots to ensure proper rotation.
+    severity: high
+    entities: [Lot, Inventory, Location]
+    conditions:
+      - item.allocation_method == 'FEFO'
+      - earlier_expiry_in_forward_pick_locations
+    actions:
+      - prioritize_forward_pick_replenishment
+      - alert_if_newer_lot_more_accessible
+
+  - id: BR-STR-008
+    name: Lot Segregation
+    description: |
+      Different lots of the same item should be stored in separate LPNs
+      or clearly marked locations to prevent mixing.
+    severity: high
+    entities: [Lot, Inventory, Location]
+    conditions:
+      - single_lot_per_lpn OR
+      - clear_lot_separation_in_location
+    actions:
+      - reject_mixed_lot_putaway
+      - require_new_lpn_for_different_lot
+    exceptions:
+      - bulk_storage_with_lot_tracking
+
+  # Space Optimization
+  - id: BR-STR-009
+    name: Location Consolidation
+    description: |
+      When inventory is depleted, consolidate partial LPNs to free locations.
+      Trigger consolidation when location < 25% utilized.
+    severity: low
+    entities: [Inventory, Location]
+    conditions:
+      - location_utilization < 25%
+      - same_item_in_multiple_partial_locations
+    actions:
+      - create_consolidation_task
+      - prioritize_consolidation_in_picking_zone
+
+  - id: BR-STR-010
+    name: Empty Location Cleanup
+    description: |
+      Empty locations should be marked available for putaway.
+      Remove stale reservations after 24 hours.
+    severity: medium
+    entities: [Location, Inventory]
+    conditions:
+      - location.quantity_on_hand == 0
+      - no_active_tasks_for_location
+    actions:
+      - mark_location_available
+      - clear_reservations_after_24h
+
+  # Cross-Docking
+  - id: BR-STR-011
+    name: Cross-Dock Priority
+    description: |
+      Cross-dock items bypass storage and go directly to staging.
+      Must be processed within 4 hours of receipt.
+    severity: high
+    entities: [InboundOrder, Inventory, Location]
+    conditions:
+      - order.order_type == 'cross_dock'
+      - matching_outbound_order_exists
+    actions:
+      - route_to_staging_area
+      - create_immediate_pick_task
+      - sla_alert_at_3_hours
+
+  # Reserved Locations
+  - id: BR-STR-012
+    name: Dedicated Storage
+    description: |
+      Some items have dedicated storage locations that cannot be
+      used for other items even when empty.
+    severity: medium
+    entities: [Item, Location]
+    conditions:
+      - location.dedicated_item_id IS NOT NULL
+      - only_dedicated_item_stored
+    actions:
+      - reject_other_items_from_dedicated_location
+      - allow_empty_dedicated_location
+
+validation_triggers:
+  - before_putaway
+  - before_transfer
+  - on_location_change
+  - daily_compliance_check
+
+metrics:
+  - name: location_utilization
+    formula: (occupied_locations / total_locations) * 100
+    target: "> 85%"
+  - name: slotting_compliance
+    formula: (correctly_slotted / total_items) * 100
+    target: "> 90%"
+  - name: temperature_violations
+    formula: count(temperature_violations)
+    target: "0"

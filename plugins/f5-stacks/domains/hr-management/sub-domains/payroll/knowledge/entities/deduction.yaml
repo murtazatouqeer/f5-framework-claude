@@ -1,0 +1,416 @@
+name: deduction
+display_name: Payroll Deduction
+description: |
+  Individual deduction entries for payroll processing, including statutory
+  deductions (tax, insurance), voluntary deductions, and other withholdings.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Deduction
+  table_name: payroll_deductions
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: payslip_id
+      type: uuid
+      required: true
+
+    - name: employee_id
+      type: uuid
+      required: true
+
+    - name: period_id
+      type: uuid
+      required: true
+
+    # Deduction Type
+    - name: deduction_code
+      type: string
+      length: 20
+      required: true
+
+    - name: deduction_name
+      type: string
+      length: 100
+      required: true
+
+    - name: deduction_category
+      type: enum
+      values: [statutory, insurance, tax, loan, advance, union, voluntary, penalty, other]
+      required: true
+
+    # Calculation
+    - name: calculation_type
+      type: enum
+      values: [fixed, percentage, formula, remaining_balance]
+      required: true
+
+    - name: base_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Base for percentage calculation
+
+    - name: rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Rate if fixed or percentage
+
+    - name: formula
+      type: text
+      description: Custom formula if applicable
+
+    - name: amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    # Pre/Post Tax
+    - name: timing
+      type: enum
+      values: [pre_tax, post_tax]
+      required: true
+      description: Whether deducted before or after tax
+
+    # Limits
+    - name: has_limit
+      type: boolean
+      default: false
+
+    - name: max_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: min_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: ytd_amount
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: total_limit
+      type: decimal
+      precision: 18
+      scale: 2
+      description: Lifetime limit for loans
+
+    # Recurring
+    - name: is_recurring
+      type: boolean
+      default: false
+
+    - name: start_date
+      type: date
+
+    - name: end_date
+      type: date
+
+    - name: remaining_periods
+      type: integer
+      description: For fixed-term deductions
+
+    # Source Reference
+    - name: source_type
+      type: enum
+      values: [statutory, loan, advance, union_dues, benefit, manual, penalty]
+
+    - name: source_id
+      type: uuid
+      description: Reference to source record
+
+    # Status
+    - name: status
+      type: enum
+      values: [pending, calculated, approved, processed, cancelled, suspended]
+      default: pending
+
+    - name: suspension_reason
+      type: text
+
+    # Priority
+    - name: priority
+      type: integer
+      default: 50
+      description: Processing order (lower = first)
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: payslip
+      type: belongs_to
+      entity: PaySlip
+      foreign_key: payslip_id
+
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: period
+      type: belongs_to
+      entity: PayrollPeriod
+      foreign_key: period_id
+
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: source_id
+      condition: "source_type = 'loan'"
+
+  indexes:
+    - columns: [payslip_id, deduction_code]
+      unique: true
+    - columns: [employee_id, period_id]
+    - columns: [deduction_code]
+    - columns: [deduction_category]
+    - columns: [status]
+    - columns: [source_type, source_id]
+
+  deduction_types:
+    statutory_insurance:
+      - code: SI_EE
+        name: BHXH (NLĐ)
+        category: insurance
+        timing: pre_tax
+        calculation: percentage
+        rate: 8.0
+        priority: 10
+
+      - code: HI_EE
+        name: BHYT (NLĐ)
+        category: insurance
+        timing: pre_tax
+        calculation: percentage
+        rate: 1.5
+        priority: 11
+
+      - code: UI_EE
+        name: BHTN (NLĐ)
+        category: insurance
+        timing: pre_tax
+        calculation: percentage
+        rate: 1.0
+        priority: 12
+
+    tax:
+      - code: PIT
+        name: Thuế TNCN
+        category: tax
+        timing: post_tax
+        calculation: formula
+        formula: progressive_tax
+        priority: 20
+
+    loans:
+      - code: LOAN_REPAY
+        name: Trả nợ vay
+        category: loan
+        timing: post_tax
+        calculation: fixed
+        priority: 30
+
+      - code: ADVANCE_REPAY
+        name: Hoàn tạm ứng
+        category: advance
+        timing: post_tax
+        calculation: fixed
+        priority: 31
+
+    union:
+      - code: UNION_DUES
+        name: Phí công đoàn
+        category: union
+        timing: post_tax
+        calculation: percentage
+        rate: 1.0
+        priority: 40
+
+    voluntary:
+      - code: VOL_PENSION
+        name: Hưu trí tự nguyện
+        category: voluntary
+        timing: pre_tax
+        calculation: fixed
+        priority: 50
+
+      - code: LIFE_INS
+        name: Bảo hiểm nhân thọ
+        category: voluntary
+        timing: post_tax
+        calculation: fixed
+        priority: 51
+
+      - code: HEALTH_INS_EXTRA
+        name: BHYT bổ sung
+        category: voluntary
+        timing: post_tax
+        calculation: fixed
+        priority: 52
+
+    penalties:
+      - code: ABSENCE
+        name: Trừ ngày nghỉ không phép
+        category: penalty
+        timing: post_tax
+        calculation: formula
+        priority: 60
+
+      - code: LATE_PENALTY
+        name: Phạt đi trễ
+        category: penalty
+        timing: post_tax
+        calculation: fixed
+        priority: 61
+
+      - code: DAMAGE
+        name: Bồi thường thiệt hại
+        category: penalty
+        timing: post_tax
+        calculation: fixed
+        priority: 62
+
+    other:
+      - code: PARKING
+        name: Phí gửi xe
+        category: other
+        timing: post_tax
+        calculation: fixed
+        priority: 70
+
+      - code: CANTEEN
+        name: Tiền ăn ca
+        category: other
+        timing: post_tax
+        calculation: fixed
+        priority: 71
+
+  deduction_priority_order:
+    description: "Processing order when net pay is insufficient"
+    order:
+      - priority: 1
+        codes: [SI_EE, HI_EE, UI_EE]
+        name: Statutory Insurance
+        mandatory: true
+
+      - priority: 2
+        codes: [PIT]
+        name: Personal Income Tax
+        mandatory: true
+
+      - priority: 3
+        codes: [UNION_DUES]
+        name: Union Dues
+        mandatory: false
+
+      - priority: 4
+        codes: [LOAN_REPAY, ADVANCE_REPAY]
+        name: Loans and Advances
+        mandatory: false
+
+      - priority: 5
+        codes: [VOL_PENSION, LIFE_INS]
+        name: Voluntary Benefits
+        mandatory: false
+
+      - priority: 6
+        codes: [ABSENCE, LATE_PENALTY, DAMAGE]
+        name: Penalties
+        mandatory: false
+
+      - priority: 7
+        codes: [PARKING, CANTEEN]
+        name: Other
+        mandatory: false
+
+  validations:
+    - field: amount
+      rule: non_negative
+      message: "Deduction amount cannot be negative"
+
+    - field: amount
+      rule: lte
+      compare_to: max_amount
+      when: has_limit is true
+      message: "Deduction exceeds maximum limit"
+
+  computed_fields:
+    - name: amount
+      formula: |
+        CASE calculation_type
+          WHEN 'fixed' THEN rate
+          WHEN 'percentage' THEN base_amount * (rate / 100)
+          WHEN 'remaining_balance' THEN total_limit - ytd_amount
+          ELSE 0
+        END
+
+  net_pay_protection:
+    description: "Ensure minimum net pay after deductions"
+    rules:
+      - rule: minimum_wage_protection
+        description: "Net pay cannot go below regional minimum wage"
+        exception: "Statutory deductions always apply"
+
+      - rule: voluntary_suspension
+        description: "Suspend voluntary deductions if net pay insufficient"
+        action: "Mark as suspended, carry forward"
+
+      - rule: loan_partial
+        description: "Partial loan deduction if full amount unavailable"
+        action: "Deduct available, adjust loan balance"
+
+  hooks:
+    on_calculate:
+      - validate_deduction_code
+      - calculate_amount
+      - check_limits
+      - update_ytd
+
+    on_process:
+      - apply_priority_order
+      - check_net_pay_protection
+      - update_source_balances
+
+  audit:
+    track:
+      - amount
+      - status
+
+    retention: 10_years
+
+compliance:
+  - standard: Vietnam_Labor_Code
+    article: Article_102
+    requirement: Wage deduction limits
+  - standard: BHXH_Law
+    requirement: Mandatory insurance deductions
+  - standard: PIT_Law
+    requirement: Tax withholding

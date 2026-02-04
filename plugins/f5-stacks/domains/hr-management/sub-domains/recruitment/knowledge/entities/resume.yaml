@@ -1,0 +1,287 @@
+name: resume
+display_name: Resume / CV
+description: |
+  Resume or CV document uploaded by or for a candidate. Includes storage,
+  parsing, and skills extraction capabilities.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Resume
+  table_name: resumes
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: candidate_id
+      type: uuid
+      required: true
+
+    - name: application_id
+      type: uuid
+      description: If uploaded for specific application
+
+    # File Storage
+    - name: file_name
+      type: string
+      length: 255
+      required: true
+
+    - name: file_type
+      type: enum
+      values: [pdf, doc, docx, txt, rtf]
+      required: true
+
+    - name: file_size_bytes
+      type: integer
+
+    - name: file_url
+      type: string
+      length: 1000
+      description: Storage URL (S3, etc.)
+
+    - name: file_hash
+      type: string
+      length: 64
+      description: SHA-256 hash for deduplication
+
+    # Status
+    - name: status
+      type: enum
+      values: [uploaded, parsing, parsed, failed]
+      default: uploaded
+
+    - name: is_primary
+      type: boolean
+      default: false
+      description: Primary/current resume for candidate
+
+    - name: version
+      type: integer
+      default: 1
+      description: Resume version number
+
+    # Parsed Content
+    - name: raw_text
+      type: text
+      description: Full extracted text content
+
+    - name: parsed_data
+      type: jsonb
+      description: Structured parsed data
+      example: |
+        {
+          "name": "John Doe",
+          "email": "john@example.com",
+          "phone": "+1234567890",
+          "summary": "Experienced software engineer...",
+          "experience": [
+            {
+              "title": "Senior Engineer",
+              "company": "Tech Corp",
+              "start_date": "2020-01",
+              "end_date": "present",
+              "description": "Led team of 5..."
+            }
+          ],
+          "education": [
+            {
+              "degree": "B.S. Computer Science",
+              "institution": "State University",
+              "graduation_year": "2015"
+            }
+          ],
+          "skills": ["Python", "Java", "AWS"],
+          "certifications": ["AWS Solutions Architect"],
+          "languages": ["English", "Spanish"]
+        }
+
+    # Extracted Fields
+    - name: extracted_name
+      type: string
+      length: 200
+
+    - name: extracted_email
+      type: string
+      length: 255
+
+    - name: extracted_phone
+      type: string
+      length: 50
+
+    - name: extracted_location
+      type: string
+      length: 200
+
+    - name: extracted_summary
+      type: text
+
+    # Experience
+    - name: experience_entries
+      type: jsonb
+      description: Parsed work experience entries
+
+    - name: total_experience_years
+      type: decimal
+      precision: 4
+      scale: 1
+      description: Calculated total years
+
+    - name: most_recent_title
+      type: string
+      length: 200
+
+    - name: most_recent_company
+      type: string
+      length: 200
+
+    # Education
+    - name: education_entries
+      type: jsonb
+      description: Parsed education entries
+
+    - name: highest_education_level
+      type: enum
+      values: [high_school, associate, bachelor, master, doctorate, other]
+
+    # Skills
+    - name: extracted_skills
+      type: jsonb
+      description: Skills extracted from resume
+      example: |
+        [
+          {"skill": "Python", "mentions": 5, "context": "5 years experience"},
+          {"skill": "AWS", "mentions": 3, "context": "certified"}
+        ]
+
+    - name: skill_categories
+      type: jsonb
+      description: Skills grouped by category
+
+    # Certifications & Languages
+    - name: extracted_certifications
+      type: jsonb
+
+    - name: extracted_languages
+      type: jsonb
+
+    # Parsing Metadata
+    - name: parser_version
+      type: string
+      length: 20
+
+    - name: parsing_confidence
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Parser confidence score (0-100)
+
+    - name: parsing_errors
+      type: jsonb
+      description: Any parsing issues encountered
+
+    - name: parsed_at
+      type: timestamp
+
+    # Source
+    - name: source
+      type: enum
+      values: [candidate_upload, recruiter_upload, linkedin_import, agency, parsed_email]
+      default: candidate_upload
+
+    - name: uploaded_by_id
+      type: uuid
+      description: User who uploaded (if not candidate)
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: candidate
+      type: belongs_to
+      entity: Candidate
+      foreign_key: candidate_id
+
+    - name: application
+      type: belongs_to
+      entity: Application
+      foreign_key: application_id
+
+    - name: uploaded_by
+      type: belongs_to
+      entity: User
+      foreign_key: uploaded_by_id
+
+  indexes:
+    - columns: [candidate_id]
+    - columns: [application_id]
+    - columns: [file_hash]
+    - columns: [status]
+    - columns: [is_primary]
+    - type: fulltext
+      columns: [raw_text]
+
+  state_machine:
+    field: status
+    initial: uploaded
+    transitions:
+      - from: uploaded
+        to: parsing
+        action: start_parsing
+        triggers: [queue_parsing_job]
+
+      - from: parsing
+        to: parsed
+        action: complete_parsing
+        triggers: [update_candidate_skills, index_for_search]
+
+      - from: parsing
+        to: failed
+        action: fail_parsing
+        triggers: [notify_for_manual_review]
+
+      - from: failed
+        to: parsing
+        action: retry_parsing
+
+  hooks:
+    after_create:
+      - calculate_file_hash
+      - check_duplicate
+      - queue_parsing
+
+    after_parsed:
+      - update_candidate_profile
+      - extract_and_match_skills
+      - calculate_experience_years
+
+  validations:
+    - field: file_size_bytes
+      rule: maximum
+      value: 10485760  # 10MB
+      message: "Resume file cannot exceed 10MB"
+
+    - field: file_type
+      rule: inclusion
+      in: [pdf, doc, docx, txt, rtf]
+      message: "Unsupported file format"
+
+  privacy:
+    pii_fields: [raw_text, extracted_name, extracted_email, extracted_phone]
+    retention_policy: same_as_candidate

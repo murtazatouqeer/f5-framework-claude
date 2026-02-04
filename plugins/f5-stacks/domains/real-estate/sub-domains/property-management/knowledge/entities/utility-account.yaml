@@ -1,0 +1,304 @@
+# Utility Account Entity
+# F5 Framework v2.0 - Real Estate/Property Management
+# Tài khoản tiện ích / 公共料金アカウント
+
+entity:
+  name: UtilityAccount
+  name_vi: Tài khoản tiện ích
+  name_ja: 公共料金アカウント
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Represents utility accounts (electricity, water, gas, internet)
+    associated with properties or units. Tracks meter readings,
+    billing, and payment responsibility allocation.
+
+  # Primary Key
+  identifier:
+    field: id
+    type: uuid
+    generated: true
+
+  # Business Keys
+  business_keys:
+    account_id:
+      pattern: "UTL-{TYPE}-{XXXX}"
+      example: "UTL-ELEC-0001"
+      unique: true
+
+  # Attributes
+  attributes:
+    # References
+    property_id:
+      type: uuid
+      required: true
+    unit_id:
+      type: uuid
+      description: "Null for common area utilities"
+    lease_id:
+      type: uuid
+      description: "Current lease responsible for payment"
+
+    # Utility Type
+    utility_type:
+      type: enum
+      values:
+        - electricity
+        - water
+        - gas
+        - internet
+        - cable_tv
+        - trash
+        - sewer
+        - other
+      required: true
+      name_vi:
+        electricity: Điện
+        water: Nước
+        gas: Gas
+        internet: Internet
+        cable_tv: Truyền hình cáp
+        trash: Rác
+        sewer: Thoát nước
+        other: Khác
+
+    # Status
+    status:
+      type: enum
+      values:
+        - active
+        - inactive
+        - suspended
+        - closed
+      default: active
+      name_vi:
+        active: Đang hoạt động
+        inactive: Ngừng hoạt động
+        suspended: Tạm ngưng
+        closed: Đã đóng
+
+    # Provider Information
+    provider:
+      type: object
+      properties:
+        provider_name:
+          type: string
+          required: true
+        account_number:
+          type: string
+          required: true
+        meter_number:
+          type: string
+        customer_name:
+          type: string
+          description: "Name on the account"
+        billing_address:
+          type: string
+        contact_phone:
+          type: string
+        contact_email:
+          type: string
+        online_portal_url:
+          type: string
+          format: url
+
+    # Responsibility
+    responsibility:
+      type: object
+      properties:
+        paid_by:
+          type: enum
+          values:
+            - tenant
+            - landlord
+            - shared
+            - included_in_rent
+          required: true
+          name_vi:
+            tenant: Người thuê
+            landlord: Chủ nhà
+            shared: Chia sẻ
+            included_in_rent: Bao gồm trong tiền thuê
+        landlord_pays_up_to:
+          type: money
+          description: "Cap amount landlord covers"
+        tenant_share_percent:
+          type: decimal
+          description: "For shared utilities"
+        allocation_method:
+          type: enum
+          values: [individual_meter, ratio, flat_fee, per_person]
+
+    # Current Reading
+    current_reading:
+      type: object
+      properties:
+        last_reading:
+          type: decimal
+        reading_date:
+          type: date
+        reading_unit:
+          type: string
+          examples: ["kWh", "m³", "gallons"]
+        photo_url:
+          type: string
+
+    # Billing
+    billing:
+      type: object
+      properties:
+        billing_cycle:
+          type: enum
+          values: [monthly, bi_monthly, quarterly]
+        billing_day:
+          type: integer
+          min: 1
+          max: 28
+        average_monthly_bill:
+          type: money
+        last_bill_amount:
+          type: money
+        last_bill_date:
+          type: date
+        next_bill_due:
+          type: date
+        auto_pay_enabled:
+          type: boolean
+          default: false
+
+    # History
+    history:
+      type: object
+      properties:
+        readings:
+          type: array
+          items:
+            type: object
+            properties:
+              reading_date:
+                type: date
+              reading_value:
+                type: decimal
+              usage:
+                type: decimal
+              bill_amount:
+                type: money
+              paid_date:
+                type: date
+        average_usage:
+          type: decimal
+          computed: true
+        highest_bill:
+          type: money
+        lowest_bill:
+          type: money
+
+    # Alerts
+    alerts:
+      type: object
+      properties:
+        unusual_usage_threshold:
+          type: decimal
+          description: "Percentage above average to trigger alert"
+        alert_on_late_bill:
+          type: boolean
+          default: true
+        alert_recipients:
+          type: array
+          items:
+            type: string
+            format: email
+
+    # Metadata
+    notes:
+      type: text
+    created_at:
+      type: timestamp
+      auto: create
+    updated_at:
+      type: timestamp
+      auto: update
+
+  # Relationships
+  relationships:
+    property:
+      type: belongs_to
+      entity: ManagedProperty
+      foreign_key: property_id
+    unit:
+      type: belongs_to
+      entity: Unit
+      foreign_key: unit_id
+    lease:
+      type: belongs_to
+      entity: Lease
+      foreign_key: lease_id
+    charges:
+      type: has_many
+      entity: RentCharge
+      condition: "charge_type LIKE 'utility_%'"
+
+  # State Machine
+  state_machine:
+    field: status
+    states:
+      - active
+      - inactive
+      - suspended
+      - closed
+    transitions:
+      - from: active
+        to: suspended
+        event: suspend
+        action: notify_provider
+      - from: suspended
+        to: active
+        event: reactivate
+      - from: [active, inactive, suspended]
+        to: closed
+        event: close
+        action: final_reading
+      - from: active
+        to: inactive
+        event: deactivate
+      - from: inactive
+        to: active
+        event: activate
+
+  # Indexes
+  indexes:
+    - fields: [account_id]
+      unique: true
+    - fields: [property_id, utility_type]
+    - fields: [unit_id, utility_type]
+    - fields: [provider.account_number]
+    - fields: [status]
+
+  # Validation Rules
+  validations:
+    - rule: "account_number must be unique per provider"
+      condition: "unique_within(provider_name, account_number)"
+    - rule: "tenant_share_percent must be between 0 and 100"
+      condition: "tenant_share_percent.nil? || (tenant_share_percent >= 0 && tenant_share_percent <= 100)"
+
+  # Events
+  events:
+    - account_created
+    - account_activated
+    - reading_recorded
+    - bill_received
+    - payment_made
+    - unusual_usage_detected
+    - account_suspended
+    - account_closed
+
+  # Audit
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - responsibility
+      - current_reading
+      - billing

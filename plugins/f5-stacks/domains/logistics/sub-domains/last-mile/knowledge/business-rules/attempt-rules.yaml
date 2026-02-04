@@ -1,0 +1,387 @@
+name: AttemptRules
+display_name: Delivery Attempt Rules
+description: |
+  Business rules for delivery attempt management.
+  Covers max attempts, reattempt timing, failure handling, and escalation.
+
+domain: logistics
+subdomain: last-mile
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - attempt_limits
+  - reattempt_scheduling
+  - failure_handling
+  - escalation_rules
+  - customer_communication
+
+rules:
+  # Attempt Limits
+  - id: ATT-001
+    name: Maximum Attempts Standard
+    category: attempt_limits
+    description: Maximum delivery attempts for standard service
+    priority: critical
+    service_level: standard
+    max_attempts: 3
+    action_after_max: return_to_sender
+
+  - id: ATT-002
+    name: Maximum Attempts Premium
+    category: attempt_limits
+    description: Maximum delivery attempts for premium service
+    priority: critical
+    service_level: premium
+    max_attempts: 5
+    action_after_max: customer_choice
+
+  - id: ATT-003
+    name: Maximum Attempts COD
+    category: attempt_limits
+    description: COD deliveries get fewer attempts due to cash handling
+    priority: high
+    condition: |
+      delivery.is_cod = true
+    max_attempts: 2
+    action_after_max: return_to_sender
+
+  - id: ATT-004
+    name: Perishable Item Attempts
+    category: attempt_limits
+    description: Perishable items have limited attempt window
+    priority: critical
+    condition: |
+      delivery.is_perishable = true
+    max_attempts: 1
+    max_attempt_window: 4 hours
+    action_after_max: dispose_or_return
+
+  - id: ATT-005
+    name: High-Value Item Attempts
+    category: attempt_limits
+    description: High-value items require more careful handling
+    priority: high
+    condition: |
+      delivery.declared_value > 5000000  # VND
+    max_attempts: 2
+    requirements:
+      - same_agent_preferred: true
+      - supervisor_notified: true
+      - photo_required_each_attempt: true
+
+  # Reattempt Scheduling Rules
+  - id: ATT-010
+    name: Minimum Reattempt Interval
+    category: reattempt_scheduling
+    description: Minimum time between delivery attempts
+    priority: high
+    validation: |
+      new_attempt.scheduled_time >= last_attempt.completed_at + min_interval
+    min_intervals:
+      customer_not_home: 4 hours
+      address_issue: 24 hours
+      refused_delivery: 24 hours
+      weather_related: 2 hours
+
+  - id: ATT-011
+    name: Same-Day Reattempt Window
+    category: reattempt_scheduling
+    description: Reattempt same day only within window
+    priority: medium
+    condition: |
+      last_attempt.date = TODAY
+    validation: |
+      NOW() < operating_hours.close - 2 hours
+    action_if_invalid: schedule_next_day
+
+  - id: ATT-012
+    name: Reattempt at Different Time
+    category: reattempt_scheduling
+    description: Schedule reattempt at different time if customer preference known
+    priority: medium
+    condition: |
+      last_failure_reason = 'customer_not_home'
+    algorithm: |
+      IF recipient.preferred_times IS NOT NULL THEN
+        schedule_at(recipient.preferred_times[0])
+      ELSE IF last_attempt.time_slot = 'morning' THEN
+        schedule_at('evening')
+      ELSE
+        schedule_at('morning')
+      END IF
+
+  - id: ATT-013
+    name: Weekend Reattempt Preference
+    category: reattempt_scheduling
+    description: Offer weekend reattempt for working customers
+    priority: low
+    condition: |
+      last_failure_reason = 'customer_not_home' AND
+      last_attempt.day_of_week IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')
+    suggestion: |
+      OFFER weekend_slot WITH priority
+
+  - id: ATT-014
+    name: Agent Availability for Reattempt
+    category: reattempt_scheduling
+    description: Prefer same agent for reattempt if available
+    priority: medium
+    preference: |
+      IF original_agent.available_at(reattempt_time) THEN
+        ASSIGN original_agent
+      ELSE
+        ASSIGN nearest_available_agent
+      END IF
+
+  # Failure Handling Rules
+  - id: ATT-020
+    name: Customer Not Home Actions
+    category: failure_handling
+    description: Actions when customer is not home
+    priority: high
+    failure_reason: customer_not_home
+    required_actions:
+      - leave_door_tag: true
+      - take_photo_of_door: true
+      - send_sms_notification: true
+      - log_attempt_time: true
+    next_steps:
+      - offer_rescheduling
+      - suggest_pickup_point
+      - suggest_neighbor_delivery
+
+  - id: ATT-021
+    name: Wrong Address Actions
+    category: failure_handling
+    description: Actions when address is incorrect
+    priority: high
+    failure_reason: wrong_address
+    required_actions:
+      - call_customer: true
+      - update_address_if_corrected: true
+      - flag_address_for_review: true
+    customer_contact_attempts: 3
+    action_if_unreachable: return_to_hub
+
+  - id: ATT-022
+    name: Refused Delivery Actions
+    category: failure_handling
+    description: Actions when customer refuses delivery
+    priority: high
+    failure_reason: refused
+    required_actions:
+      - document_refusal_reason: true
+      - get_signature_if_possible: true
+      - take_photo_of_package: true
+      - notify_sender: true
+    next_steps:
+      - initiate_return_process
+      - hold_at_hub_pending_instruction
+
+  - id: ATT-023
+    name: Access Issue Actions
+    category: failure_handling
+    description: Actions when location is inaccessible
+    priority: medium
+    failure_reason: access_issue
+    sub_reasons:
+      - building_security
+      - locked_gate
+      - no_parking
+      - construction_blocked
+    required_actions:
+      - call_customer_for_assistance: true
+      - document_access_issue: true
+      - take_photo: true
+    next_steps:
+      - offer_alternative_location
+      - suggest_pickup_point
+      - schedule_reattempt_with_instructions
+
+  - id: ATT-024
+    name: Damaged Package Discovery
+    category: failure_handling
+    description: Actions when package damage discovered at delivery
+    priority: critical
+    failure_reason: damaged_package
+    required_actions:
+      - document_damage_with_photos: true
+      - notify_customer: true
+      - offer_acceptance_with_note: true
+      - escalate_to_operations: true
+    customer_options:
+      - accept_with_damage_note
+      - refuse_and_claim
+      - inspect_then_decide
+
+  # Escalation Rules
+  - id: ATT-030
+    name: Second Attempt Escalation
+    category: escalation_rules
+    description: Escalate after second failed attempt
+    priority: medium
+    condition: |
+      delivery.attempt_count = 2
+    actions:
+      - notify_customer_service: true
+      - send_priority_notification_to_customer: true
+      - review_delivery_instructions: true
+
+  - id: ATT-031
+    name: Final Attempt Warning
+    category: escalation_rules
+    description: Notify customer before final attempt
+    priority: high
+    condition: |
+      delivery.attempt_count = max_attempts - 1
+    actions:
+      - send_final_attempt_warning: true
+      - call_customer: true
+      - offer_alternatives:
+          - pickup_point
+          - locker
+          - alternative_address
+          - specific_time_slot
+
+  - id: ATT-032
+    name: SLA Breach Escalation
+    category: escalation_rules
+    description: Escalate if SLA is at risk
+    priority: critical
+    condition: |
+      delivery.sla_deadline - NOW() < 4 hours AND
+      delivery.attempt_count >= 1
+    actions:
+      - alert_operations_supervisor: true
+      - assign_senior_agent: true
+      - enable_real_time_tracking: true
+      - prepare_compensation_offer: true
+
+  - id: ATT-033
+    name: VIP Customer Escalation
+    category: escalation_rules
+    description: Immediate escalation for VIP customer failures
+    priority: critical
+    condition: |
+      recipient.is_vip = true AND
+      delivery.attempt_count >= 1
+    actions:
+      - notify_account_manager: true
+      - assign_dedicated_agent: true
+      - provide_direct_contact: true
+      - offer_premium_rescheduling: true
+
+  # Customer Communication Rules
+  - id: ATT-040
+    name: Attempt Notification
+    category: customer_communication
+    description: Notify customer of delivery attempt
+    priority: high
+    timing: immediately_after_attempt
+    channels:
+      primary: sms
+      secondary: push_notification
+      fallback: email
+    content:
+      - attempt_time
+      - failure_reason
+      - next_steps
+      - rescheduling_link
+
+  - id: ATT-041
+    name: Pre-Reattempt Confirmation
+    category: customer_communication
+    description: Confirm with customer before reattempt
+    priority: medium
+    timing: 2_hours_before_reattempt
+    actions:
+      - send_confirmation_request
+      - allow_rescheduling
+      - confirm_address_correct
+      - request_special_instructions
+
+  - id: ATT-042
+    name: Final Attempt Communication
+    category: customer_communication
+    description: Communicate urgency of final attempt
+    priority: critical
+    timing: 24_hours_before_final_attempt
+    channels: all
+    content:
+      - final_attempt_warning
+      - return_policy
+      - alternative_options
+      - contact_information
+    require_acknowledgment: true
+
+  - id: ATT-043
+    name: Return Initiation Notice
+    category: customer_communication
+    description: Notify when return process begins
+    priority: high
+    timing: after_max_attempts
+    content:
+      - return_reason
+      - refund_information
+      - claim_process
+      - contact_for_questions
+
+failure_reasons:
+  - code: NOT_HOME
+    description: Customer not home
+    reattempt_allowed: true
+    hold_at_hub: optional
+
+  - code: WRONG_ADDRESS
+    description: Address incorrect or incomplete
+    reattempt_allowed: true
+    requires_address_update: true
+
+  - code: REFUSED
+    description: Customer refused delivery
+    reattempt_allowed: false
+    initiate_return: true
+
+  - code: ACCESS_DENIED
+    description: Cannot access delivery location
+    reattempt_allowed: true
+    requires_instructions: true
+
+  - code: DAMAGED
+    description: Package damaged
+    reattempt_allowed: false
+    requires_claim: true
+
+  - code: WRONG_ITEM
+    description: Customer claims wrong item
+    reattempt_allowed: false
+    requires_verification: true
+
+  - code: COD_REJECTED
+    description: Customer cannot/won't pay COD
+    reattempt_allowed: true
+    cod_only: true
+
+  - code: SECURITY_ISSUE
+    description: Security concerns at location
+    reattempt_allowed: false
+    requires_investigation: true
+
+events:
+  - name: attempt.completed
+    description: Delivery attempt finished
+    payload: [delivery_id, attempt_number, result, reason]
+
+  - name: attempt.rescheduled
+    description: Reattempt scheduled
+    payload: [delivery_id, attempt_number, scheduled_time]
+
+  - name: attempt.max_reached
+    description: Maximum attempts reached
+    payload: [delivery_id, total_attempts, action]
+
+  - name: attempt.escalated
+    description: Attempt failure escalated
+    payload: [delivery_id, escalation_level, assigned_to]

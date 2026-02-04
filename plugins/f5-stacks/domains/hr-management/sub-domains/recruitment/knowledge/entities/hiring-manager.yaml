@@ -1,0 +1,277 @@
+name: hiring-manager
+display_name: Hiring Manager
+description: |
+  Hiring manager profile for recruitment context. Tracks their hiring
+  activity, preferences, interview availability, and collaboration metrics.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: HiringManager
+  table_name: hiring_managers
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: user_id
+      type: uuid
+      required: true
+      unique: true
+      description: Link to user account
+
+    - name: employee_id
+      type: uuid
+      required: true
+      description: Link to employee record
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, inactive, on_leave]
+      default: active
+
+    # Profile
+    - name: title
+      type: string
+      length: 200
+
+    - name: department_id
+      type: uuid
+      required: true
+
+    - name: team_id
+      type: uuid
+
+    - name: location_id
+      type: uuid
+
+    # Hiring Authority
+    - name: can_create_requisitions
+      type: boolean
+      default: true
+
+    - name: can_approve_requisitions
+      type: boolean
+      default: false
+      description: Can approve other's requisitions
+
+    - name: can_make_offers
+      type: boolean
+      default: false
+
+    - name: offer_approval_limit
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Max salary can approve
+
+    - name: headcount_budget
+      type: integer
+      description: Approved headcount
+
+    # Preferences
+    - name: interview_preferences
+      type: jsonb
+      description: Interview scheduling preferences
+      example: |
+        {
+          "preferred_days": ["tuesday", "thursday"],
+          "preferred_times": ["10:00-12:00", "14:00-16:00"],
+          "max_interviews_per_day": 3,
+          "interview_duration_default": 60,
+          "buffer_between_interviews": 15,
+          "timezone": "America/Los_Angeles"
+        }
+
+    - name: calendar_id
+      type: string
+      length: 200
+      description: Calendar integration ID
+
+    - name: video_platform_preference
+      type: enum
+      values: [zoom, teams, meet, no_preference]
+      default: no_preference
+
+    # Communication
+    - name: notification_preferences
+      type: jsonb
+      example: |
+        {
+          "new_application": "immediate",
+          "interview_scheduled": "immediate",
+          "feedback_reminder": "daily_digest",
+          "offer_status_change": "immediate"
+        }
+
+    - name: preferred_communication
+      type: enum
+      values: [email, slack, teams, phone]
+      default: email
+
+    # Current Activity
+    - name: active_requisitions_count
+      type: integer
+      default: 0
+
+    - name: pending_reviews_count
+      type: integer
+      default: 0
+      description: Candidates awaiting review
+
+    - name: upcoming_interviews_count
+      type: integer
+      default: 0
+
+    - name: pending_feedback_count
+      type: integer
+      default: 0
+      description: Interviews needing feedback
+
+    # Historical Metrics
+    - name: total_hires
+      type: integer
+      default: 0
+      description: All-time hires
+
+    - name: hires_this_year
+      type: integer
+      default: 0
+
+    - name: avg_time_to_hire_days
+      type: decimal
+      precision: 6
+      scale: 2
+
+    - name: avg_time_to_review_hours
+      type: decimal
+      precision: 6
+      scale: 2
+      description: Time to review candidates
+
+    - name: feedback_submission_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: % of interviews with timely feedback
+
+    - name: offer_approval_time_avg_hours
+      type: decimal
+      precision: 6
+      scale: 2
+
+    # Quality Metrics
+    - name: quality_of_hire_avg
+      type: decimal
+      precision: 3
+      scale: 2
+      description: Average performance of hires
+
+    - name: retention_rate_1yr
+      type: decimal
+      precision: 5
+      scale: 2
+      description: % of hires still employed after 1 year
+
+    - name: hiring_accuracy_score
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Interview rating vs actual performance correlation
+
+    # Collaboration
+    - name: preferred_recruiters
+      type: jsonb
+      description: Recruiters they work well with
+
+    - name: interview_panel_members
+      type: jsonb
+      description: Preferred interviewers for their roles
+
+    # Training
+    - name: interview_training_completed
+      type: boolean
+      default: false
+
+    - name: training_completion_date
+      type: date
+
+    - name: bias_training_completed
+      type: boolean
+      default: false
+
+    - name: certifications
+      type: jsonb
+      description: Hiring-related certifications
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: User
+      foreign_key: user_id
+
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: department
+      type: belongs_to
+      entity: Department
+      foreign_key: department_id
+
+    - name: requisitions
+      type: has_many
+      entity: JobRequisition
+      foreign_key: hiring_manager_id
+
+    - name: applications
+      type: has_many
+      entity: Application
+      foreign_key: hiring_manager_id
+
+    - name: interviews
+      type: has_many
+      entity: Interview
+      through: interviewer assignments
+
+  indexes:
+    - columns: [user_id]
+      unique: true
+    - columns: [employee_id]
+    - columns: [department_id]
+    - columns: [status]
+
+  hooks:
+    after_hire_recorded:
+      - update_hires_count
+      - recalculate_quality_metrics
+
+    daily_refresh:
+      - update_pending_counts
+      - calculate_feedback_rates
+      - sync_calendar_availability
+
+  computed_fields:
+    - name: responsiveness_score
+      formula: "calculate_from_review_times_and_feedback_rates"
+      description: How responsive they are in the hiring process

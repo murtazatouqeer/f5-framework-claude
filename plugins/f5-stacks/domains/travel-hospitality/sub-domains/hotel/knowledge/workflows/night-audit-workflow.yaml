@@ -1,0 +1,487 @@
+name: night-audit-workflow
+display_name: Night Audit Workflow
+display_name_vi: Quy trình kiểm toán đêm
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Comprehensive night audit workflow for end-of-day processing including
+  room charge posting, account reconciliation, report generation, and
+  business date rollover.
+
+description_vi: |
+  Quy trình kiểm toán đêm toàn diện cho xử lý cuối ngày bao gồm ghi phí phòng,
+  đối chiếu tài khoản, tạo báo cáo và chuyển ngày kinh doanh.
+
+workflow:
+  id: WF-NA-AUDIT
+  name: Night Audit Process
+  type: sequential_critical
+
+  trigger:
+    types:
+      - scheduled_time (typically 11:00 PM - 2:00 AM)
+      - manual_initiation
+
+  actors:
+    - night_auditor: Night Audit Agent
+    - system: PMS
+    - supervisor: Night Manager
+    - finance: Accounting (next day)
+
+  states:
+    - pre_audit
+    - room_charges_posted
+    - reconciliation_in_progress
+    - reports_generated
+    - date_rolled
+    - audit_complete
+
+  critical_requirements:
+    - must_complete_before_new_business_day
+    - all_transactions_must_balance
+    - no_open_issues_at_completion
+
+steps:
+  - id: STEP-01
+    name: Pre-Audit Preparation
+    name_vi: Chuẩn bị trước kiểm toán
+    description: Prepare for night audit process
+    state: pre_audit
+    actor: night_auditor | system
+    timing: typically 11:00 PM
+    process:
+      - verify_audit_readiness:
+          - all_outlets_closed_or_reported
+          - pos_batches_closed
+          - credit_card_batches_ready
+      - run_pre_audit_report:
+          identifies:
+            - pending_departures
+            - no_shows
+            - rate_variances
+            - room_status_discrepancies
+            - high_balance_folios
+      - resolve_discrepancies:
+          priority: room_status
+          action: physical_verification_if_needed
+    outputs:
+      - pre_audit_checklist_complete
+      - discrepancies_resolved
+    next: STEP-02
+
+  - id: STEP-02
+    name: Process No-Shows
+    name_vi: Xử lý không đến
+    description: Handle reservations that didn't arrive
+    state: pre_audit
+    actor: night_auditor
+    process:
+      - identify_no_shows:
+          criteria:
+            - status: confirmed OR guaranteed
+            - arrival_date: today
+            - checked_in: false
+      - FOR EACH no_show:
+          - verify_not_late_arrival:
+              check: with_front_desk
+          - apply_no_show_charge:
+              IF guaranteed:
+                charge: first_night + tax
+              IF non_guaranteed:
+                no_charge
+          - update_reservation:
+              status: no_show
+          - release_inventory:
+              for: remaining_nights
+          - notify_channel:
+              IF ota_booking:
+                send: no_show_notification
+    outputs:
+      - no_shows_processed: count
+      - charges_applied: total
+      - inventory_released: room_nights
+    next: STEP-03
+
+  - id: STEP-03
+    name: Process Due-Outs
+    name_vi: Xử lý trả phòng chưa hoàn tất
+    description: Handle guests who haven't checked out
+    state: pre_audit
+    actor: night_auditor
+    process:
+      - identify_due_outs:
+          criteria:
+            - status: checked_in
+            - departure_date: today
+            - checked_out: false
+      - FOR EACH due_out:
+          - verify_status:
+              options:
+                - guest_extended (update_dates)
+                - guest_departed (process_checkout)
+                - guest_still_present (note_late_checkout)
+          - IF extended:
+              update: reservation_dates
+              post: additional_night_charges
+          - IF departed_not_checked_out:
+              process: express_checkout
+              charge: card_on_file
+          - IF late_checkout:
+              post: late_checkout_charge (if_applicable)
+    outputs:
+      - due_outs_resolved: count
+      - extensions_processed: count
+      - express_checkouts: count
+    next: STEP-04
+
+  - id: STEP-04
+    name: Post Room Charges
+    name_vi: Ghi phí phòng
+    description: Post daily room charges to all occupied rooms
+    state: room_charges_posted
+    actor: system
+    process:
+      - identify_occupied_rooms:
+          status: checked_in
+          departure_date: > today
+      - FOR EACH occupied_room:
+          - calculate_room_charge:
+              base_rate: per_reservation
+              extra_person: per_policy
+              package_elements: if_applicable
+          - calculate_taxes:
+              room_tax
+              occupancy_tax
+              tourism_tax
+              service_charge
+          - post_charges:
+              to: guest_folio
+              posting_date: business_date
+              transaction_code: room_charge
+          - post_taxes:
+              separate_line_items
+          - post_packages:
+              breakfast_credit
+              other_inclusions
+      - verify_postings:
+          total_rooms_posted
+          total_revenue
+          exceptions_flagged
+    outputs:
+      - rooms_posted: count
+      - room_revenue: total
+      - tax_posted: total
+      - exceptions: list
+    next: STEP-05
+
+  - id: STEP-05
+    name: Verify Rate Postings
+    name_vi: Xác minh ghi giá
+    description: Review and approve rate variances
+    state: room_charges_posted
+    actor: night_auditor
+    process:
+      - run_rate_variance_report:
+          compares:
+            - posted_rate vs booked_rate
+            - identifies: variances
+      - FOR EACH variance:
+          - investigate_reason:
+              - rate_change_approved
+              - manual_override
+              - system_error
+          - IF legitimate:
+              document: reason
+              approve: posting
+          - IF error:
+              correct: rate
+              repost: correct_amount
+          - IF requires_approval:
+              flag: for_management_review
+    outputs:
+      - variances_reviewed: count
+      - corrections_made: count
+      - pending_approval: count
+    next: STEP-06
+
+  - id: STEP-06
+    name: Guest Ledger Reconciliation
+    name_vi: Đối chiếu sổ cái khách
+    description: Balance guest folios and ledgers
+    state: reconciliation_in_progress
+    actor: night_auditor | system
+    process:
+      - calculate_guest_ledger:
+          opening_balance: from_yesterday
+          plus: todays_charges
+          minus: todays_payments
+          equals: closing_balance
+      - verify_folio_balances:
+          sum_of_all_open_folios
+          must_equal: guest_ledger_balance
+      - investigate_discrepancies:
+          IF difference:
+            find_source
+            correct_entries
+      - review_high_balances:
+          threshold: credit_limit
+          action: flag_for_review
+      - verify_city_ledger:
+          transfers_in
+          transfers_out
+          balance
+    outputs:
+      - guest_ledger_balanced: boolean
+      - total_guest_receivables: amount
+      - city_ledger_balanced: boolean
+    next: STEP-07
+
+  - id: STEP-07
+    name: Cash Reconciliation
+    name_vi: Đối chiếu tiền mặt
+    description: Reconcile cash transactions and drawers
+    state: reconciliation_in_progress
+    actor: night_auditor
+    process:
+      - collect_cash_reports:
+          from: each_cashier
+          include: shift_close_reports
+      - count_cash_drawers:
+          OR: verify_shift_counts
+      - reconcile_each_drawer:
+          system_total: expected
+          physical_count: actual
+          variance: over_short
+      - document_variances:
+          amount
+          cashier
+          explanation_if_any
+      - prepare_deposit:
+          total_cash_collected
+          deposit_slip
+    outputs:
+      - cash_reconciled: boolean
+      - total_cash: amount
+      - variances: amount
+      - deposit_prepared: amount
+    next: STEP-08
+
+  - id: STEP-08
+    name: Credit Card Settlement
+    name_vi: Quyết toán thẻ tín dụng
+    description: Settle credit card batches
+    state: reconciliation_in_progress
+    actor: night_auditor | system
+    process:
+      - review_credit_card_transactions:
+          by_card_type
+          total_amount
+      - verify_batch_totals:
+          system_total vs gateway_total
+          investigate_differences
+      - close_batches:
+          submit: for_settlement
+          record: batch_numbers
+      - verify_settlement:
+          confirmation_received
+          expected_deposit_date
+      - reconcile_tips:
+          reported_tips
+          paid_to_staff
+    outputs:
+      - batches_closed: count
+      - settlement_total: amount
+      - expected_deposit: date
+    next: STEP-09
+
+  - id: STEP-09
+    name: Trial Balance
+    name_vi: Bảng cân đối thử
+    description: Verify all accounts balance
+    state: reconciliation_in_progress
+    actor: system | night_auditor
+    process:
+      - run_trial_balance:
+          all_accounts
+          debits_equal_credits
+      - verify_balance:
+          IF balanced:
+            proceed: to_reports
+          IF not_balanced:
+            investigate: find_error
+            correct: before_continuing
+      - document_findings:
+          trial_balance_report
+          notes_on_adjustments
+    outputs:
+      - trial_balance_status: balanced
+      - total_debits: amount
+      - total_credits: amount
+    required: must_balance_to_continue
+    next: STEP-10
+
+  - id: STEP-10
+    name: Generate Reports
+    name_vi: Tạo báo cáo
+    description: Generate night audit and management reports
+    state: reports_generated
+    actor: system
+    process:
+      - generate_standard_reports:
+          manager_report:
+            - occupancy_statistics
+            - revenue_by_category
+            - ADR_and_RevPAR
+            - arrivals_departures
+            - forecast_comparison
+          daily_revenue_report:
+            - room_revenue
+            - F&B_revenue
+            - other_revenue
+            - total_revenue
+          statistics_report:
+            - rooms_sold
+            - rooms_available
+            - occupancy_percentage
+            - average_rate
+            - market_segment_breakdown
+          AR_aging:
+            - current
+            - 30_days
+            - 60_days
+            - 90_plus_days
+          cashier_report:
+            - by_cashier
+            - transaction_summary
+            - variances
+      - generate_operational_reports:
+          housekeeping_forecast
+          arrival_list
+          departure_list
+          VIP_list
+          trace_report
+      - distribute_reports:
+          email: management_distribution
+          print: required_copies
+    outputs:
+      - reports_generated: list
+      - distribution_complete: boolean
+    next: STEP-11
+
+  - id: STEP-11
+    name: Business Date Roll
+    name_vi: Chuyển ngày kinh doanh
+    description: Advance system to new business date
+    state: date_rolled
+    actor: system | night_auditor
+    process:
+      - verify_readiness:
+          - all_steps_complete
+          - trial_balance_balanced
+          - reports_generated
+          - no_pending_issues
+      - backup_data:
+          before_date_roll
+          verify_completion
+      - roll_business_date:
+          advance: to_next_day
+          update: all_date_references
+      - update_inventory:
+          new_date_availability
+          update_channels
+      - reset_daily_counters:
+          transaction_numbers
+          report_sequences
+      - verify_roll:
+          new_date_active
+          systems_functioning
+    outputs:
+      - new_business_date: date
+      - roll_successful: boolean
+    critical: irreversible_without_special_procedure
+    next: STEP-12
+
+  - id: STEP-12
+    name: Audit Completion
+    name_vi: Hoàn tất kiểm toán
+    description: Finalize audit and handover
+    state: audit_complete
+    actor: night_auditor
+    process:
+      - complete_checklist:
+          all_items_verified
+          signatures_obtained
+      - document_exceptions:
+          issues_encountered
+          resolutions_applied
+          pending_items
+      - prepare_handover:
+          for: morning_shift
+          include:
+            - issues_for_attention
+            - VIP_arrivals
+            - special_events
+      - file_documentation:
+          reports_filed
+          supporting_documents
+      - log_audit_completion:
+          auditor_name
+          completion_time
+          notes
+    outputs:
+      - audit_log_complete
+      - handover_ready
+    next: END
+
+error_handling:
+  - error: trial_balance_not_balanced
+    action: investigate_and_correct_before_roll
+    escalation: cannot_proceed_until_balanced
+
+  - error: credit_card_batch_failed
+    action: retry_or_manual_settlement
+    escalation: notify_supervisor
+
+  - error: system_error_during_roll
+    action: restore_from_backup
+    escalation: IT_support_required
+
+  - error: unresolved_discrepancy
+    action: document_and_flag
+    escalation: management_review_next_day
+
+audit_controls:
+  segregation_of_duties:
+    - night_auditor_does_not_handle_cash
+    - supervisor_reviews_audit
+    - finance_reconciles_next_day
+
+  documentation:
+    - all_adjustments_documented
+    - approval_trail_maintained
+    - reports_archived
+
+  verification:
+    - dual_verification_for_large_adjustments
+    - management_sign_off_on_reports
+
+timing_guidelines:
+  start_time: "11:00 PM"
+  target_completion: "2:00 AM"
+  latest_completion: "6:00 AM"
+  date_roll_window: "2:00 AM - 4:00 AM"
+
+metrics:
+  - name: audit_completion_time
+    target: "< 3 hours"
+
+  - name: balancing_accuracy
+    target: "100%"
+
+  - name: exception_rate
+    target: "< 2%"
+
+  - name: report_distribution_time
+    target: "by 7:00 AM"

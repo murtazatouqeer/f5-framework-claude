@@ -1,0 +1,428 @@
+# Billing Rules
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Rules for telehealth billing and reimbursement
+
+business_rules:
+  id: billing-rules
+  name: Telehealth Billing Rules
+  name_ja: 遠隔医療請求ルール
+  description: Rules for billing and coding telehealth services
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  categories:
+    - id: cpt-coding
+      name: CPT Coding
+      description: Procedure code rules for telehealth
+
+    - id: modifiers
+      name: Modifiers
+      description: Billing modifier requirements
+
+    - id: place-of-service
+      name: Place of Service
+      description: POS code requirements
+
+    - id: payer-rules
+      name: Payer-Specific Rules
+      description: Rules by payer type
+
+    - id: documentation
+      name: Documentation Requirements
+      description: Required documentation for billing
+
+  rules:
+    # CPT Coding
+    - id: BR-BIL-001
+      name: Synchronous Telehealth CPT Codes
+      category: cpt-coding
+      priority: high
+      description: CPT codes for real-time video visits
+      
+      coding_guidance:
+        evaluation_management:
+          office_outpatient:
+            new_patient: [99201, 99202, 99203, 99204, 99205]
+            established_patient: [99211, 99212, 99213, 99214, 99215]
+            telehealth_eligible: true
+            documentation: Same as in-person
+            
+          telehealth_specific:
+            - code: 99441
+              description: "Telephone E/M, 5-10 minutes"
+              modality: audio_only
+            - code: 99442
+              description: "Telephone E/M, 11-20 minutes"
+              modality: audio_only
+            - code: 99443
+              description: "Telephone E/M, 21-30 minutes"
+              modality: audio_only
+              
+        psychiatric_services:
+          - code: 90832
+            description: "Psychotherapy, 30 min"
+          - code: 90834
+            description: "Psychotherapy, 45 min"
+          - code: 90837
+            description: "Psychotherapy, 60 min"
+          - code: 90839
+            description: "Psychotherapy for crisis, first 60 min"
+            
+      validation:
+        on: claim_submission
+        action: |
+          VERIFY cpt_code IN telehealth_eligible_codes
+          APPLY appropriate_modifier
+          CHECK documentation_supports_code
+
+    - id: BR-BIL-002
+      name: Asynchronous (Store-and-Forward) Codes
+      category: cpt-coding
+      priority: medium
+      description: CPT codes for asynchronous telehealth
+      
+      store_and_forward_codes:
+        - code_range: G2010
+          description: "Remote evaluation of patient images"
+          requirements:
+            - Patient-transmitted images
+            - Provider review and response
+            
+        - code_range: G2012
+          description: "Virtual check-in, 5-10 minutes"
+          requirements:
+            - Patient-initiated
+            - Audio/video communication
+            - Not related to E/M in prior 7 days
+            
+      validation:
+        on: claim_submission
+        action: |
+          IF modality = 'asynchronous' THEN
+            SELECT appropriate_async_code
+            DOCUMENT patient_submission_date
+            DOCUMENT provider_response_date
+
+    - id: BR-BIL-003
+      name: Remote Patient Monitoring Codes
+      category: cpt-coding
+      priority: high
+      description: CPT codes for RPM services
+      
+      rpm_codes:
+        device_supply:
+          - code: 99453
+            description: "Initial setup and patient education"
+            frequency: Once per episode
+            
+        data_collection:
+          - code: 99454
+            description: "Device supply with daily recording"
+            requirements:
+              - 16+ days of data per 30-day period
+              - Automatic data transmission
+              
+        data_review:
+          - code: 99457
+            description: "RPM treatment management, first 20 min"
+            requirements:
+              - 20+ minutes clinical staff time
+              - Per calendar month
+              
+          - code: 99458
+            description: "RPM treatment management, additional 20 min"
+            requirements:
+              - Additional 20+ minutes
+              - Add-on code
+              
+      validation:
+        on: monthly_rpm_billing
+        action: |
+          COUNT data_transmission_days
+          IF days >= 16 THEN
+            ALLOW 99454
+          SUM clinical_staff_time
+          IF time >= 20 THEN
+            ALLOW 99457
+          IF time >= 40 THEN
+            ALLOW 99457 + 99458
+
+    # Modifiers
+    - id: BR-BIL-010
+      name: Telehealth Modifier Requirements
+      category: modifiers
+      priority: high
+      description: Required modifiers for telehealth claims
+      
+      modifiers:
+        modifier_95:
+          description: "Synchronous telemedicine service"
+          use_when:
+            - Real-time audio-video
+            - Interactive telecommunication
+          payer_acceptance: Most commercial, Medicare
+          
+        modifier_93:
+          description: "Audio-only telehealth service"
+          use_when:
+            - Telephone/audio-only visit
+            - When video not feasible
+          payer_acceptance: Limited, check payer
+          note: Added during COVID-19, may be temporary
+          
+        modifier_GT:
+          description: "Via interactive audio and video"
+          use_when: Some payers instead of 95
+          legacy: Being phased out by most payers
+          
+        modifier_GQ:
+          description: "Asynchronous (store-and-forward)"
+          use_when:
+            - Store-and-forward services
+            - Federal telemedicine programs
+            
+      validation:
+        on: claim_submission
+        action: |
+          IF modality = 'video' THEN
+            ADD modifier_95
+          ELSE IF modality = 'audio_only' THEN
+            CHECK payer_accepts_audio_only
+            IF accepted THEN ADD modifier_93
+          ELSE IF modality = 'asynchronous' THEN
+            ADD modifier_GQ
+
+    # Place of Service
+    - id: BR-BIL-020
+      name: Place of Service Codes
+      category: place-of-service
+      priority: high
+      description: POS code requirements for telehealth
+      
+      pos_codes:
+        pos_02:
+          description: "Telehealth Provided Other Than in Patient's Home"
+          use_when:
+            - Patient at healthcare facility
+            - Patient at originating site
+          examples:
+            - Doctor's office
+            - Hospital
+            - Skilled nursing facility
+            - Community mental health center
+            
+        pos_10:
+          description: "Telehealth Provided in Patient's Home"
+          use_when:
+            - Patient at their residence
+            - Patient in private location
+          effective_date: "April 2022"
+          note: Previously used POS 02 for all
+          
+      cms_guidance:
+        medicare_policy:
+          - Use POS where patient is located
+          - Affects payment rate for some services
+          - POS 02 may pay facility rate
+          - POS 10 may pay non-facility rate
+          
+      validation:
+        on: claim_submission
+        action: |
+          GET patient_location_type
+          IF location = 'home' THEN
+            SET pos_code = '10'
+          ELSE
+            SET pos_code = '02'
+          VERIFY pos_matches_documentation
+
+    # Payer-Specific Rules
+    - id: BR-BIL-030
+      name: Medicare Telehealth Rules
+      category: payer-rules
+      priority: high
+      description: Medicare-specific telehealth billing rules
+      
+      medicare_rules:
+        eligible_services:
+          list: CMS publishes annual list
+          check: cms.gov/telehealth
+          
+        geographic_restrictions:
+          historical: Rural areas only
+          current: Expanded during PHE
+          future: Check current CMS policy
+          
+        originating_site:
+          historical: Specific facility types only
+          current: Home added during PHE
+          future: Some services permanent
+          
+        established_patient:
+          some_services: Require prior relationship
+          mental_health: Expanded access
+          
+        audio_only:
+          allowed: Certain mental health services
+          conditions: Patient consent, technological limitations
+          
+      validation:
+        on: medicare_claim
+        action: |
+          VERIFY service_on_medicare_telehealth_list
+          CHECK geographic_eligibility (if applicable)
+          VERIFY established_patient (if required)
+          APPLY medicare_specific_rules
+
+    - id: BR-BIL-031
+      name: Medicaid Telehealth Rules
+      category: payer-rules
+      priority: high
+      description: State Medicaid telehealth billing rules
+      
+      medicaid_rules:
+        state_variation:
+          description: Each state has own Medicaid telehealth policy
+          
+        common_elements:
+          covered_services: Varies by state
+          modalities: Video required by some, audio-only by others
+          eligible_providers: State-specific list
+          reimbursement: May differ from in-person
+          
+        check_requirements:
+          - State Medicaid manual
+          - Provider bulletin updates
+          - Managed care organization policies
+          
+      validation:
+        on: medicaid_claim
+        action: |
+          LOOKUP state_medicaid_rules(patient_state)
+          VERIFY service_covered
+          APPLY state_specific_coding
+          USE correct_modifier_for_state
+
+    - id: BR-BIL-032
+      name: Commercial Payer Parity Laws
+      category: payer-rules
+      priority: high
+      description: State telehealth parity requirements
+      
+      parity_laws:
+        payment_parity:
+          description: Same reimbursement as in-person
+          states: Majority of states have some form
+          variations:
+            - Full parity (same payment)
+            - Partial parity (certain services)
+            - No parity requirement
+            
+        coverage_parity:
+          description: Same services covered
+          states: Many states require
+          
+        check_state_law:
+          - When state law applies
+          - Which services covered
+          - Which payers affected (ERISA exemption)
+          
+      validation:
+        on: claim_submission
+        action: |
+          IF payer = 'commercial' THEN
+            LOOKUP state_parity_law(patient_state)
+            IF parity_applies THEN
+              EXPECT same_reimbursement
+            TRACK parity_compliance
+
+    # Documentation Requirements
+    - id: BR-BIL-040
+      name: Telehealth Documentation Requirements
+      category: documentation
+      priority: high
+      description: Required documentation for telehealth billing
+      
+      required_elements:
+        visit_type:
+          - Document telehealth visit
+          - Note modality (video, audio, async)
+          
+        consent:
+          - Patient consent for telehealth documented
+          - Recording consent if applicable
+          
+        location:
+          patient: State/location during visit
+          provider: Provider location
+          
+        technology:
+          - Platform used
+          - Any technical issues
+          
+        clinical_content:
+          - Same standard as in-person
+          - History, exam (as appropriate), decision making
+          - Medical necessity supported
+          
+        time_based_services:
+          - Start and end time
+          - Total time if time-based billing
+          
+      validation:
+        on: chart_completion
+        action: |
+          CHECK all_required_elements_present
+          VERIFY consent_documented
+          VERIFY location_documented
+          FLAG if_missing_elements
+
+    - id: BR-BIL-041
+      name: Medical Necessity Documentation
+      category: documentation
+      priority: high
+      description: Document medical necessity for telehealth
+      
+      medical_necessity:
+        demonstrate:
+          - Condition appropriate for telehealth
+          - Services rendered clinically appropriate
+          - Same standard of care as in-person
+          
+        additional_for_audio_only:
+          - Why video not feasible
+          - Patient limitations or preferences
+          - Documentation of audio quality
+          
+      validation:
+        on: claim_submission
+        action: |
+          VERIFY medical_necessity_documented
+          IF audio_only THEN
+            REQUIRE video_barrier_documentation
+
+  reimbursement_tracking:
+    metrics:
+      - claim_acceptance_rate
+      - denial_reasons
+      - average_reimbursement
+      - parity_compliance
+      
+    alerts:
+      - high_denial_rate
+      - payer_policy_changes
+      - modifier_rejection_patterns
+
+  audit:
+    log_all_claims: true
+    retention_days: 2555
+    required_fields:
+      - visit_id
+      - cpt_code
+      - modifier
+      - pos_code
+      - payer
+      - amount_billed
+      - amount_paid
+      - denial_reason

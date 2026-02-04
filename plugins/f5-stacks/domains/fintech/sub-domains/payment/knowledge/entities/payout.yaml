@@ -1,0 +1,426 @@
+# Payout Entity - Merchant disbursements
+# Domain: fintech/payment
+# Purpose: Tracks payouts to merchant bank accounts
+
+name: Payout
+display_name: Payout
+description: |
+  Represents a disbursement of funds from the platform to a merchant's
+  bank account. Can be automatic (from settlement) or manual.
+
+  Vietnamese: Đại diện cho việc giải ngân từ nền tảng đến tài khoản ngân hàng
+  của merchant. Có thể tự động (từ quyết toán) hoặc thủ công.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: payout_id
+    type: string
+    required: true
+    description: External ID (PO-XXXXXXXX)
+    validation:
+      pattern: "^PO-[A-Z0-9]{8}$"
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant receiving payout
+
+  - name: merchant_account_id
+    type: uuid
+    required: true
+    description: Destination bank account
+
+  # Source
+  - name: source_type
+    type: enum
+    required: true
+    description: Source of payout funds
+    validation:
+      values: [settlement, balance, manual]
+
+  - name: settlement_id
+    type: uuid
+    required: false
+    description: Reference to settlement (if from settlement)
+
+  # Destination
+  - name: destination_type
+    type: enum
+    required: true
+    description: Destination type
+    validation:
+      values: [bank_account, card, e_wallet]
+    default: bank_account
+
+  - name: destination_details
+    type: json
+    required: false
+    description: |
+      Destination summary (for display):
+      {
+        "bank_name": "Vietcombank",
+        "account_last4": "1234",
+        "account_holder": "CONG TY ABC"
+      }
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Payout amount (Số tiền giải ngân)
+    validation:
+      min: 1
+
+  - name: currency
+    type: string
+    required: true
+    description: Currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+
+  - name: fee_amount
+    type: decimal
+    required: true
+    description: Payout fee (if any)
+    validation:
+      min: 0
+    default: 0
+
+  - name: net_amount
+    type: decimal
+    required: true
+    description: Net amount after fee (amount - fee)
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Payout status (Trạng thái)
+    validation:
+      values: [pending, in_transit, paid, failed, cancelled, reversed]
+
+  # Failure
+  - name: failure_code
+    type: string
+    required: false
+    description: Failure code
+    validation:
+      max: 50
+
+  - name: failure_message
+    type: string
+    required: false
+    description: Failure reason
+    validation:
+      max: 500
+
+  # Bank References
+  - name: bank_reference
+    type: string
+    required: false
+    description: Bank transaction reference
+    validation:
+      max: 100
+
+  - name: trace_id
+    type: string
+    required: false
+    description: Wire/ACH trace ID
+    validation:
+      max: 100
+
+  # Statement
+  - name: statement_descriptor
+    type: string
+    required: false
+    description: Text on bank statement
+    validation:
+      max: 22
+
+  - name: description
+    type: string
+    required: false
+    description: Internal description
+    validation:
+      max: 500
+
+  # Transfer Method
+  - name: transfer_method
+    type: enum
+    required: true
+    description: Transfer method
+    validation:
+      values: [napas, swift, ach, wire, instant, manual]
+    default: napas
+
+  - name: is_instant
+    type: boolean
+    required: true
+    description: Instant payout (higher fee)
+    default: false
+
+  # Timing
+  - name: arrival_date
+    type: date
+    required: false
+    description: Expected arrival date
+
+  - name: arrival_time_estimate
+    type: string
+    required: false
+    description: Estimated time window
+    validation:
+      max: 50
+
+  # Balance
+  - name: balance_before
+    type: decimal
+    required: false
+    description: Merchant balance before payout
+
+  - name: balance_after
+    type: decimal
+    required: false
+    description: Merchant balance after payout
+
+  # Approvals (for manual payouts)
+  - name: requires_approval
+    type: boolean
+    required: true
+    description: Requires manual approval
+    default: false
+
+  - name: approved_by
+    type: uuid
+    required: false
+    description: Approver ID
+
+  - name: approved_at
+    type: timestamp
+    required: false
+    description: Approval timestamp
+
+  # Metadata
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: initiated_at
+    type: timestamp
+    required: false
+    description: When payout was initiated to bank
+
+  - name: paid_at
+    type: timestamp
+    required: false
+    description: When payout was confirmed paid
+
+  - name: reversed_at
+    type: timestamp
+    required: false
+    description: When payout was reversed
+
+relationships:
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant receiving payout
+
+  - name: merchant_account
+    type: belongs_to
+    entity: MerchantAccount
+    required: true
+    description: Destination account
+
+  - name: settlement
+    type: belongs_to
+    entity: Settlement
+    required: false
+    description: Source settlement
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Payout created, awaiting initiation (Chờ xử lý)
+    - name: in_transit
+      description: Funds in transit to bank (Đang chuyển)
+    - name: paid
+      description: Funds deposited (Đã nhận)
+    - name: failed
+      description: Payout failed (Thất bại)
+    - name: cancelled
+      description: Payout cancelled (Đã hủy)
+    - name: reversed
+      description: Funds returned/reversed (Đã hoàn trả)
+
+  transitions:
+    - from: pending
+      to: in_transit
+      trigger: initiate
+      description: Initiate bank transfer
+
+    - from: pending
+      to: cancelled
+      trigger: cancel
+      description: Cancel before initiation
+
+    - from: in_transit
+      to: paid
+      trigger: confirm_deposit
+      description: Bank confirms deposit
+
+    - from: in_transit
+      to: failed
+      trigger: fail
+      description: Transfer failed
+
+    - from: in_transit
+      to: reversed
+      trigger: reverse
+      description: Bank reversed transfer
+
+    - from: paid
+      to: reversed
+      trigger: reverse
+      description: Funds returned
+
+    - from: failed
+      to: pending
+      trigger: retry
+      description: Retry failed payout
+
+indexes:
+  - [payout_id]
+  - [merchant_id, created_at]
+  - [merchant_account_id]
+  - [settlement_id]
+  - [status]
+  - [arrival_date]
+
+events:
+  - name: payout.created
+    description: Payout created
+    payload: [id, payout_id, merchant_id, amount, arrival_date]
+
+  - name: payout.initiated
+    description: Payout initiated to bank
+    payload: [id, payout_id, initiated_at]
+
+  - name: payout.paid
+    description: Payout confirmed paid
+    payload: [id, payout_id, amount, paid_at]
+
+  - name: payout.failed
+    description: Payout failed
+    payload: [id, payout_id, failure_code, failure_message]
+
+  - name: payout.reversed
+    description: Payout reversed
+    payload: [id, payout_id, reversed_at, reason]
+
+business_rules:
+  - id: BR-PO-001
+    description: Payout only to verified merchant accounts
+    rule: |
+      merchant_account.status = 'verified'
+    vietnamese: Chỉ giải ngân đến tài khoản đã xác minh
+
+  - id: BR-PO-002
+    description: Payout amount cannot exceed available balance
+    rule: |
+      amount <= merchant.available_balance
+    vietnamese: Số tiền không vượt quá số dư khả dụng
+
+  - id: BR-PO-003
+    description: Minimum payout threshold
+    rule: |
+      amount >= merchant.minimum_payout_amount
+    vietnamese: Số tiền tối thiểu để giải ngân
+
+  - id: BR-PO-004
+    description: Instant payouts incur additional fee
+    rule: |
+      IF is_instant = true
+      THEN fee_amount = instant_payout_fee
+    vietnamese: Giải ngân tức thì có phí thêm
+
+  - id: BR-PO-005
+    description: Large payouts require approval
+    rule: |
+      IF amount > approval_threshold
+      THEN requires_approval = true
+    vietnamese: Giải ngân lớn cần phê duyệt
+
+  - id: BR-PO-006
+    description: Failed payouts auto-retry
+    rule: |
+      IF status = 'failed' AND retry_count < 3
+      THEN schedule_retry(next_business_day)
+    vietnamese: Tự động thử lại khi thất bại
+
+api_endpoints:
+  - method: GET
+    path: /v1/payouts
+    description: List payouts
+
+  - method: GET
+    path: /v1/payouts/{id}
+    description: Get payout details
+
+  - method: POST
+    path: /v1/payouts
+    description: Create manual payout
+
+  - method: POST
+    path: /v1/payouts/{id}/cancel
+    description: Cancel pending payout
+
+  - method: GET
+    path: /v1/merchants/{merchant_id}/payouts
+    description: List merchant payouts
+
+timing:
+  napas:
+    initiation: "Daily at 14:00"
+    arrival: "Same day or next business day"
+
+  instant:
+    initiation: "Immediate"
+    arrival: "Within 30 minutes"
+    fee: "0.5% (min 5,000 VND)"
+
+  swift:
+    initiation: "Within 1 business day"
+    arrival: "2-5 business days"
+    fee: "Fixed 150,000 VND"
+
+security_considerations:
+  - Verify destination matches merchant
+  - Dual approval for large amounts
+  - Rate limit payout creation
+  - Monitor for unusual patterns
+  - Audit trail for all payouts
+  - Encrypt bank account details

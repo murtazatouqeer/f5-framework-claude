@@ -1,0 +1,359 @@
+name: bom-rules
+display_name: Bill of Materials Rules
+display_name_vi: Quy tắc định mức vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: business-rules
+
+description: |
+  Business rules for Bill of Materials management including structure,
+  versioning, effectivity, and engineering change control.
+
+description_vi: |
+  Quy tắc quản lý định mức vật tư bao gồm cấu trúc,
+  phiên bản, hiệu lực và kiểm soát thay đổi kỹ thuật.
+
+rule_categories:
+  - structure
+  - versioning
+  - effectivity
+  - validation
+  - substitution
+
+rules:
+  structure:
+    - id: BOM-001
+      name: single_level_structure
+      description: BOM must have single parent product
+      description_vi: BOM phải có một sản phẩm cha duy nhất
+      condition: always
+      validation: |
+        COUNT(parent_product) = 1
+        parent_product.type IN ('finished_good', 'semi_finished', 'subassembly')
+      priority: critical
+      category: structure
+
+    - id: BOM-002
+      name: no_circular_reference
+      description: Prevent circular references in BOM structure
+      description_vi: Ngăn tham chiếu vòng trong cấu trúc BOM
+      condition: on_bom_item_add
+      validation: |
+        component NOT IN ancestors(parent_product)
+        -- Component cannot be an ancestor of parent
+      error_message: "Circular reference detected in BOM structure"
+      priority: critical
+      category: structure
+
+    - id: BOM-003
+      name: level_depth_limit
+      description: Limit BOM nesting depth
+      description_vi: Giới hạn độ sâu lồng BOM
+      condition: always
+      validation: bom_level <= max_bom_levels
+      parameters:
+        max_bom_levels: 15
+      priority: high
+      category: structure
+
+    - id: BOM-004
+      name: phantom_bom_flattening
+      description: Flatten phantom BOM during explosion
+      description_vi: Làm phẳng BOM ảo khi phân rã
+      condition: bom_item.bom_type = 'phantom'
+      action: |
+        REPLACE phantom_item WITH phantom_item.components
+        MULTIPLY quantities accordingly
+      priority: high
+      category: structure
+
+    - id: BOM-005
+      name: by_product_handling
+      description: Handle by-products and co-products
+      description_vi: Xử lý sản phẩm phụ và đồng sản phẩm
+      condition: bom_item.item_type IN ('by_product', 'co_product')
+      action: |
+        by_product.quantity = parent_quantity * yield_ratio
+        ADD by_product TO inventory ON production_complete
+      priority: medium
+      category: structure
+
+  versioning:
+    - id: VER-001
+      name: version_immutability
+      description: Released BOM versions are immutable
+      description_vi: Phiên bản BOM đã phát hành không thể sửa đổi
+      condition: bom.status = 'released'
+      action: |
+        REJECT direct_modification
+        REQUIRE new_version FOR changes
+      priority: critical
+      category: versioning
+
+    - id: VER-002
+      name: version_numbering
+      description: Semantic versioning for BOM revisions
+      description_vi: Đánh số phiên bản ngữ nghĩa cho BOM
+      format: "major.minor"
+      rules: |
+        major_increment: structural_changes OR component_addition_removal
+        minor_increment: quantity_changes OR notes_update
+      priority: high
+      category: versioning
+
+    - id: VER-003
+      name: single_active_version
+      description: Only one version active for any date
+      description_vi: Chỉ một phiên bản hoạt động cho bất kỳ ngày nào
+      condition: always
+      validation: |
+        FOR any date:
+          COUNT(active_versions WHERE effective_from <= date AND effective_to >= date) = 1
+      priority: critical
+      category: versioning
+
+    - id: VER-004
+      name: engineering_change_approval
+      description: Changes require ECO approval
+      description_vi: Thay đổi yêu cầu phê duyệt ECO
+      condition: bom.change_type != 'draft'
+      action: |
+        CREATE engineering_change_order
+        REQUIRE approval_workflow
+        UPDATE bom ON approval_complete
+      priority: high
+      category: versioning
+
+  effectivity:
+    - id: EFF-001
+      name: date_effectivity
+      description: Apply BOM based on effective dates
+      description_vi: Áp dụng BOM dựa trên ngày hiệu lực
+      condition: bom.effectivity_type = 'date'
+      action: |
+        active_bom = bom.WHERE(
+          effective_from <= production_date AND
+          (effective_to IS NULL OR effective_to >= production_date)
+        )
+      priority: critical
+      category: effectivity
+
+    - id: EFF-002
+      name: serial_effectivity
+      description: Apply BOM based on serial number range
+      description_vi: Áp dụng BOM dựa trên dãy số serial
+      condition: bom.effectivity_type = 'serial'
+      action: |
+        active_bom = bom.WHERE(
+          serial_from <= product_serial AND
+          (serial_to IS NULL OR serial_to >= product_serial)
+        )
+      priority: high
+      category: effectivity
+
+    - id: EFF-003
+      name: lot_effectivity
+      description: Apply BOM based on production lot
+      description_vi: Áp dụng BOM dựa trên lô sản xuất
+      condition: bom.effectivity_type = 'lot'
+      action: |
+        active_bom = bom.WHERE(lot_id = production_lot.id)
+      priority: high
+      category: effectivity
+
+    - id: EFF-004
+      name: effectivity_gap_prevention
+      description: Prevent gaps in effectivity coverage
+      description_vi: Ngăn khoảng trống trong phạm vi hiệu lực
+      condition: on_effectivity_change
+      validation: |
+        NO gaps BETWEEN effective_to OF version[n]
+          AND effective_from OF version[n+1]
+      priority: critical
+      category: effectivity
+
+  validation:
+    - id: VAL-001
+      name: quantity_validation
+      description: Component quantities must be positive
+      description_vi: Số lượng thành phần phải dương
+      condition: always
+      validation: |
+        bom_item.quantity_per > 0
+        bom_item.quantity_per <= 99999.9999
+      priority: critical
+      category: validation
+
+    - id: VAL-002
+      name: uom_consistency
+      description: Unit of measure consistency check
+      description_vi: Kiểm tra tính nhất quán đơn vị đo
+      condition: on_bom_item_add
+      validation: |
+        bom_item.uom IS convertible_to component.base_uom
+      priority: high
+      category: validation
+
+    - id: VAL-003
+      name: lead_time_validation
+      description: Validate component lead times
+      description_vi: Xác nhận thời gian giao hàng thành phần
+      condition: on_bom_release
+      warning_if: |
+        ANY component.lead_time > parent.lead_time
+      message: "Component lead time exceeds parent - review planning"
+      priority: medium
+      category: validation
+
+    - id: VAL-004
+      name: cost_rollup_validation
+      description: Validate cost rollup accuracy
+      description_vi: Xác nhận độ chính xác tổng hợp chi phí
+      condition: on_cost_calculation
+      calculation: |
+        component_cost = SUM(
+          bom_item.quantity_per *
+          component.standard_cost *
+          (1 + scrap_percent/100)
+        )
+        material_cost = component_cost / yield_percent * 100
+      priority: high
+      category: validation
+
+    - id: VAL-005
+      name: completeness_check
+      description: BOM must be complete before release
+      description_vi: BOM phải hoàn chỉnh trước khi phát hành
+      condition: on_bom_release
+      validation: |
+        ALL required_fields ARE NOT NULL
+        COUNT(bom_items) >= 1 OR bom_type = 'phantom'
+        routing EXISTS IF product.make_buy = 'make'
+      priority: critical
+      category: validation
+
+  substitution:
+    - id: SUB-001
+      name: substitute_availability
+      description: Check primary before using substitute
+      description_vi: Kiểm tra chính trước khi dùng thay thế
+      condition: on_material_allocation
+      action: |
+        IF primary_component.available >= required_qty THEN
+          USE primary_component
+        ELSE IF substitute.available >= required_qty THEN
+          USE substitute
+          LOG substitution_event
+        ELSE
+          RAISE material_shortage
+      priority: high
+      category: substitution
+
+    - id: SUB-002
+      name: substitute_approval
+      description: Certain substitutions require approval
+      description_vi: Một số thay thế cần phê duyệt
+      condition: substitute.approval_required = true
+      action: |
+        REQUEST approval_from = 'quality_engineer'
+        AWAIT approval_before_use
+      priority: high
+      category: substitution
+
+    - id: SUB-003
+      name: substitute_priority
+      description: Use substitutes in priority order
+      description_vi: Sử dụng thay thế theo thứ tự ưu tiên
+      condition: multiple_substitutes_available
+      action: |
+        selected_substitute = substitutes.ORDER_BY(priority ASC).FIRST()
+      priority: medium
+      category: substitution
+
+    - id: SUB-004
+      name: substitute_quantity_conversion
+      description: Convert quantities for different UOM substitutes
+      description_vi: Chuyển đổi số lượng cho thay thế khác đơn vị
+      condition: substitute.uom != primary.uom
+      action: |
+        substitute_qty = primary_qty * conversion_factor
+      priority: high
+      category: substitution
+
+bom_explosion_rules:
+  - type: full_explosion
+    description: Explode all levels to raw materials
+    use_case: MRP planning, costing
+
+  - type: single_level
+    description: Explode one level only
+    use_case: Work order material requirements
+
+  - type: indented
+    description: Show hierarchy with indentation
+    use_case: BOM reports, documentation
+
+  - type: summarized
+    description: Consolidate duplicate components
+    use_case: Purchase planning
+
+scrap_handling:
+  - rule: Include scrap in gross requirements
+    formula: gross_qty = net_qty * (1 + scrap_percent/100)
+
+  - rule: Operation-level scrap accumulates
+    formula: cumulative_scrap = PRODUCT(1 + operation_scrap[i]/100)
+
+  - rule: Scrap factor cannot exceed 100%
+    validation: scrap_percent <= 100
+
+yield_handling:
+  - rule: Yield affects output quantity
+    formula: output_qty = input_qty * yield_percent/100
+
+  - rule: Yield less than 100% increases input requirement
+    formula: input_required = output_required / (yield_percent/100)
+
+costing_rules:
+  material_cost:
+    formula: SUM(component_qty * component_cost * (1 + scrap%))
+
+  labor_cost:
+    source: routing_operations
+    formula: SUM(operation_time * labor_rate)
+
+  overhead_cost:
+    methods:
+      - percentage_of_material
+      - percentage_of_labor
+      - machine_hour_rate
+
+  total_cost:
+    formula: material_cost + labor_cost + overhead_cost
+
+engineering_change_types:
+  - type: mandatory
+    description: Must implement by effective date
+    approval_level: engineering_manager
+
+  - type: when_depleted
+    description: Implement when old stock exhausted
+    approval_level: production_planner
+
+  - type: optional
+    description: Can implement at convenience
+    approval_level: supervisor
+
+integration_points:
+  - system: PLM
+    data: engineering_boms, ecn
+    direction: inbound
+
+  - system: ERP
+    data: manufacturing_bom, costing
+    direction: bidirectional
+
+  - system: MRP
+    data: bom_explosion, requirements
+    direction: outbound

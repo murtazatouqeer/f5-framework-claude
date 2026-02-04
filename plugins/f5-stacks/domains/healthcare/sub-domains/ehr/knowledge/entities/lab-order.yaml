@@ -1,0 +1,544 @@
+name: LabOrder
+display_name: Lab Order / Đơn xét nghiệm
+description: |
+  Laboratory test order entity for CPOE (Computerized Provider Order Entry).
+  Supports order workflows from entry through specimen collection
+  and result reporting.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: order
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: order_number
+      display_name: Order Number
+      type: string
+      pattern: "^LAB-[0-9]{12}$"
+      example: "LAB-202401150001"
+      auto_generated: true
+
+    - name: accession_number
+      type: string
+      description: Lab's tracking number
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: draft
+      description: Order being composed
+
+    - value: pending
+      description: Awaiting signature
+
+    - value: signed
+      description: Signed, ready for collection
+
+    - value: collected
+      description: Specimen collected
+
+    - value: received
+      description: Specimen received at lab
+
+    - value: in_progress
+      description: Testing in progress
+
+    - value: preliminary
+      description: Preliminary results available
+
+    - value: completed
+      description: Final results available
+
+    - value: cancelled
+      description: Order cancelled
+
+    - value: entered_in_error
+      description: Entered in error
+
+  default: draft
+
+state_machine:
+  initial: draft
+  transitions:
+    draft:
+      - to: pending
+        event: submit
+      - to: cancelled
+        event: cancel
+
+    pending:
+      - to: signed
+        event: sign_order
+      - to: draft
+        event: return_to_draft
+      - to: cancelled
+        event: cancel
+
+    signed:
+      - to: collected
+        event: specimen_collected
+      - to: cancelled
+        event: cancel
+
+    collected:
+      - to: received
+        event: lab_received
+
+    received:
+      - to: in_progress
+        event: begin_testing
+
+    in_progress:
+      - to: preliminary
+        event: preliminary_results
+      - to: completed
+        event: final_results
+
+    preliminary:
+      - to: completed
+        event: finalize_results
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: ordering_provider_id
+      type: uuid
+      required: true
+      references: Provider
+
+    - name: ordering_provider_name
+      type: string
+
+  order_details:
+    - name: order_type
+      type: enum
+      required: true
+      values:
+        - lab
+        - pathology
+        - microbiology
+        - blood_bank
+        - cytology
+        - genetics
+
+    - name: priority
+      type: enum
+      required: true
+      values:
+        - value: routine
+          description: Standard turnaround time
+          target_hours: 24
+
+        - value: urgent
+          description: Expedited processing
+          target_hours: 4
+
+        - value: stat
+          description: Immediate priority
+          target_hours: 1
+
+        - value: asap
+          description: As soon as possible
+          target_hours: 2
+
+        - value: timed
+          description: Specific collection time
+      default: routine
+
+    - name: tests
+      type: array
+      required: true
+      items:
+        type: object
+        properties:
+          test_code:
+            type: string
+            description: LOINC code
+          test_name:
+            type: string
+          test_name_vi:
+            type: string
+          cpt_code:
+            type: string
+          panel_id:
+            type: uuid
+            description: If part of a panel
+
+    - name: panel_id
+      type: uuid
+      description: Ordered panel (e.g., BMP, CMP, CBC)
+
+    - name: panel_name
+      type: string
+
+  specimen:
+    - name: specimen_type
+      type: enum
+      required: true
+      values:
+        - blood
+        - serum
+        - plasma
+        - urine
+        - stool
+        - sputum
+        - csf
+        - tissue
+        - swab
+        - fluid
+        - other
+
+    - name: specimen_source
+      type: string
+      description: Collection site
+
+    - name: collection_method
+      type: enum
+      values:
+        - venipuncture
+        - fingerstick
+        - capillary
+        - catheter
+        - arterial
+        - midstream
+        - aspirate
+        - biopsy
+        - swab
+
+    - name: collection_instructions
+      type: text
+
+    - name: fasting_required
+      type: boolean
+      default: false
+
+    - name: fasting_hours
+      type: integer
+
+    - name: special_handling
+      type: array
+      items:
+        type: enum
+        values:
+          - ice
+          - protect_from_light
+          - warm
+          - ambient
+          - frozen
+
+  timing:
+    - name: ordered_at
+      type: timestamp
+      auto_set: on_create
+
+    - name: signed_at
+      type: timestamp
+
+    - name: scheduled_collection_at
+      type: timestamp
+
+    - name: collected_at
+      type: timestamp
+
+    - name: received_at_lab
+      type: timestamp
+
+    - name: resulted_at
+      type: timestamp
+
+    - name: expected_result_at
+      type: timestamp
+      computed: true
+
+  collection:
+    - name: specimen_id
+      type: string
+
+    - name: collected_by
+      type: uuid
+      references: User
+
+    - name: collection_site
+      type: string
+
+    - name: collection_notes
+      type: text
+
+    - name: volume_collected
+      type: decimal
+
+    - name: volume_unit
+      type: string
+
+    - name: tubes_collected
+      type: array
+      items:
+        type: object
+        properties:
+          tube_type:
+            type: string
+          tube_color:
+            type: enum
+            values: [red, lavender, green, blue, gray, gold, yellow, pink]
+          quantity:
+            type: integer
+
+  clinical_info:
+    - name: clinical_indication
+      type: string
+      description: Reason for test
+
+    - name: diagnosis_codes
+      type: array
+      items:
+        type: string
+      description: ICD-10 codes
+
+    - name: relevant_history
+      type: text
+
+    - name: current_medications
+      type: array
+      items:
+        type: string
+
+  performing_lab:
+    - name: performing_lab_id
+      type: uuid
+      references: Laboratory
+
+    - name: performing_lab_name
+      type: string
+
+    - name: performing_lab_clia
+      type: string
+      description: CLIA number
+
+    - name: send_out_lab
+      type: boolean
+      default: false
+      description: Sent to reference lab
+
+    - name: reference_lab_name
+      type: string
+
+  results:
+    - name: result_ids
+      type: array
+      items:
+        type: uuid
+        references: LabResult
+
+    - name: has_critical_results
+      type: boolean
+      default: false
+
+    - name: critical_acknowledged
+      type: boolean
+      default: false
+
+    - name: critical_acknowledged_by
+      type: uuid
+      references: Provider
+
+    - name: critical_acknowledged_at
+      type: timestamp
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: ordering_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: ordering_provider_id
+
+  - name: results
+    type: one_to_many
+    target: LabResult
+    foreign_key: order_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-LAB-001
+    name: Provider Signature Required
+    description: Lab orders must be signed by authorized provider
+    rule: |
+      status != 'draft'
+      REQUIRES ordering_provider_id IS NOT NULL AND signed_at IS NOT NULL
+
+  - id: BR-LAB-002
+    name: At Least One Test
+    description: Order must include at least one test
+    rule: tests.count >= 1 OR panel_id IS NOT NULL
+
+  - id: BR-LAB-003
+    name: Clinical Indication
+    description: Clinical indication recommended for all orders
+    rule: |
+      WARN IF clinical_indication IS NULL AND diagnosis_codes IS EMPTY
+
+  - id: BR-LAB-004
+    name: STAT Priority Handling
+    description: STAT orders require immediate notification
+    rule: |
+      priority = 'stat'
+      TRIGGERS notify_lab_immediately
+
+  - id: BR-LAB-005
+    name: Fasting Instructions
+    description: Fasting tests require instructions
+    rule: |
+      fasting_required = TRUE
+      REQUIRES provide_fasting_instructions
+
+  - id: BR-LAB-006
+    name: Specimen Timing
+    description: Certain tests require specific timing
+    rule: |
+      test.requires_timing = TRUE
+      REQUIRES scheduled_collection_at IS NOT NULL
+
+  - id: BR-LAB-007
+    name: Duplicate Order Check
+    description: Warn about duplicate orders
+    rule: |
+      ON_CREATE: check_recent_orders(patient_id, tests, 24_hours)
+      IF duplicate_found THEN warn_duplicate
+
+  - id: BR-LAB-008
+    name: Critical Result Acknowledgment
+    description: Critical results require provider acknowledgment
+    rule: |
+      has_critical_results = TRUE
+      REQUIRES critical_acknowledged = TRUE
+      WITHIN 1 hour
+
+  - id: BR-LAB-009
+    name: Medical Necessity
+    description: Check medical necessity for billing
+    rule: |
+      diagnosis_codes MUST support_medical_necessity FOR tests
+
+  - id: BR-LAB-010
+    name: ABN for Non-Covered
+    description: ABN required for non-covered tests
+    rule: |
+      IF test NOT covered_by_insurance
+      THEN require_abn_acknowledgment
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_lab_order_number
+    columns: [order_number]
+    unique: true
+
+  - name: idx_lab_order_patient
+    columns: [patient_id]
+
+  - name: idx_lab_order_provider
+    columns: [ordering_provider_id]
+
+  - name: idx_lab_order_encounter
+    columns: [encounter_id]
+
+  - name: idx_lab_order_status
+    columns: [status]
+
+  - name: idx_lab_order_priority
+    columns: [priority]
+    condition: "status NOT IN ('completed', 'cancelled')"
+
+  - name: idx_lab_order_date
+    columns: [ordered_at]
+
+# =============================================================================
+# SEED DATA - COMMON PANELS
+# =============================================================================
+seed_data:
+  common_panels:
+    - code: BMP
+      name: Basic Metabolic Panel
+      name_vi: Xét nghiệm sinh hóa cơ bản
+      tests:
+        - { loinc: "2345-7", name: "Glucose" }
+        - { loinc: "3094-0", name: "BUN" }
+        - { loinc: "2160-0", name: "Creatinine" }
+        - { loinc: "2951-2", name: "Sodium" }
+        - { loinc: "2823-3", name: "Potassium" }
+        - { loinc: "2075-0", name: "Chloride" }
+        - { loinc: "1963-8", name: "CO2" }
+        - { loinc: "17861-6", name: "Calcium" }
+
+    - code: CBC
+      name: Complete Blood Count
+      name_vi: Công thức máu
+      tests:
+        - { loinc: "6690-2", name: "WBC" }
+        - { loinc: "789-8", name: "RBC" }
+        - { loinc: "718-7", name: "Hemoglobin" }
+        - { loinc: "4544-3", name: "Hematocrit" }
+        - { loinc: "777-3", name: "Platelets" }
+        - { loinc: "787-2", name: "MCV" }
+        - { loinc: "785-6", name: "MCH" }
+        - { loinc: "786-4", name: "MCHC" }
+
+    - code: LFT
+      name: Liver Function Tests
+      name_vi: Chức năng gan
+      tests:
+        - { loinc: "1742-6", name: "ALT" }
+        - { loinc: "1920-8", name: "AST" }
+        - { loinc: "6768-6", name: "Alkaline Phosphatase" }
+        - { loinc: "1975-2", name: "Total Bilirubin" }
+        - { loinc: "1968-7", name: "Direct Bilirubin" }
+        - { loinc: "2885-2", name: "Total Protein" }
+        - { loinc: "1751-7", name: "Albumin" }
+
+    - code: LIPID
+      name: Lipid Panel
+      name_vi: Bộ mỡ máu
+      fasting: true
+      tests:
+        - { loinc: "2093-3", name: "Total Cholesterol" }
+        - { loinc: "2571-8", name: "Triglycerides" }
+        - { loinc: "2085-9", name: "HDL" }
+        - { loinc: "13457-7", name: "LDL Calculated" }

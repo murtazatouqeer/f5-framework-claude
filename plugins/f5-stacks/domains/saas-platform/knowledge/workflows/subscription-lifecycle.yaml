@@ -1,0 +1,613 @@
+name: Subscription Lifecycle
+display_name: Subscription Lifecycle Workflow / Quy trình vòng đời đăng ký
+description: |
+  Complete workflow managing subscription state transitions including
+  trials, upgrades, downgrades, renewals, and cancellations.
+
+domain: saas-platform
+workflow_type: state_machine
+version: "1.0"
+
+# =============================================================================
+# STATE MACHINE DEFINITION
+# =============================================================================
+state_machine:
+  name: subscription_status
+  initial_state: trialing
+
+  states:
+    trialing:
+      description: "In trial period, no payment required"
+      description_vi: "Trong thời gian dùng thử, không yêu cầu thanh toán"
+
+    active:
+      description: "Subscription is active and paid"
+      description_vi: "Đăng ký đang hoạt động và đã thanh toán"
+
+    past_due:
+      description: "Payment failed, in dunning process"
+      description_vi: "Thanh toán thất bại, trong quá trình thu nợ"
+
+    unpaid:
+      description: "Multiple payment failures, service degraded"
+      description_vi: "Nhiều lần thanh toán thất bại, dịch vụ bị giảm"
+
+    paused:
+      description: "Temporarily paused by customer"
+      description_vi: "Tạm dừng bởi khách hàng"
+
+    cancelled:
+      description: "Subscription has ended"
+      description_vi: "Đăng ký đã kết thúc"
+
+  transitions:
+    - name: convert_trial
+      from: trialing
+      to: active
+      trigger: payment_success
+      description: "Trial converts to paid subscription"
+
+    - name: trial_expired
+      from: trialing
+      to: cancelled
+      trigger: trial_end_no_payment
+      description: "Trial ends without conversion"
+
+    - name: payment_failed
+      from: active
+      to: past_due
+      trigger: payment_failure
+      description: "Payment attempt failed"
+
+    - name: payment_recovered
+      from: past_due
+      to: active
+      trigger: payment_success
+      description: "Payment recovered during dunning"
+
+    - name: dunning_failed
+      from: past_due
+      to: unpaid
+      trigger: max_retries_exceeded
+      description: "All payment retries exhausted"
+
+    - name: unpaid_recovered
+      from: unpaid
+      to: active
+      trigger: payment_success
+      description: "Payment recovered after unpaid"
+
+    - name: unpaid_cancelled
+      from: unpaid
+      to: cancelled
+      trigger: grace_period_expired
+      description: "Grace period expired, subscription cancelled"
+
+    - name: pause_subscription
+      from: active
+      to: paused
+      trigger: customer_pause_request
+      description: "Customer pauses subscription"
+
+    - name: resume_subscription
+      from: paused
+      to: active
+      trigger: customer_resume_request
+      description: "Customer resumes subscription"
+
+    - name: cancel_active
+      from: active
+      to: cancelled
+      trigger: customer_cancellation
+      description: "Customer cancels active subscription"
+
+    - name: cancel_past_due
+      from: past_due
+      to: cancelled
+      trigger: customer_cancellation
+      description: "Customer cancels during dunning"
+
+# =============================================================================
+# WORKFLOW: TRIAL CONVERSION
+# =============================================================================
+workflows:
+  trial_conversion:
+    name: Trial to Paid Conversion
+    name_vi: Chuyển đổi dùng thử sang trả phí
+    description: "Handles trial expiration and conversion to paid subscription"
+
+    trigger:
+      type: scheduled
+      schedule: "Check daily at 00:00 UTC"
+      condition: "trial_end <= today AND status = 'trialing'"
+
+    steps:
+      - id: TC-01
+        name: Check Payment Method
+        type: decision
+        condition: "payment_method EXISTS AND payment_method.is_valid"
+        branches:
+          true: TC-02
+          false: TC-05
+
+      - id: TC-02
+        name: Generate First Invoice
+        type: action
+        actions:
+          - generate_invoice
+          - calculate_prorations
+          - apply_discounts
+          - finalize_invoice
+
+      - id: TC-03
+        name: Charge Payment Method
+        type: action
+        actions:
+          - create_payment_intent
+          - attempt_charge
+          - handle_3ds_if_required
+
+        on_success: TC-04
+        on_failure: TC-06
+
+      - id: TC-04
+        name: Activate Subscription
+        type: action
+        actions:
+          - set_status: active
+          - set_current_period_start: today
+          - set_current_period_end: today + billing_interval
+          - send_welcome_to_paid_email
+          - emit_event: subscription.activated
+
+      - id: TC-05
+        name: Handle No Payment Method
+        type: action
+        actions:
+          - send_payment_required_email
+          - apply_grace_period: 7_days
+          - restrict_to_read_only
+
+        timeout:
+          duration: 7_days
+          on_timeout: TC-08
+
+      - id: TC-06
+        name: Handle Payment Failure
+        type: action
+        actions:
+          - send_payment_failed_email
+          - start_dunning_sequence
+          - set_status: past_due
+
+      - id: TC-07
+        name: Grace Period Active
+        type: wait
+        duration: 7_days
+        condition: "payment_method.is_valid"
+        on_condition_met: TC-02
+
+      - id: TC-08
+        name: Cancel Trial
+        type: action
+        actions:
+          - set_status: cancelled
+          - set_cancellation_reason: trial_expired
+          - send_trial_expired_email
+          - emit_event: subscription.trial_expired
+
+  # =============================================================================
+  # WORKFLOW: UPGRADE
+  # =============================================================================
+  upgrade:
+    name: Plan Upgrade
+    name_vi: Nâng cấp gói
+    description: "Handles upgrading to a higher tier plan"
+
+    trigger:
+      type: user_action
+      action: "Select higher tier plan"
+
+    steps:
+      - id: UP-01
+        name: Validate Upgrade
+        type: validation
+        checks:
+          - target_plan_exists
+          - target_plan_tier > current_tier
+          - payment_method_valid
+
+      - id: UP-02
+        name: Calculate Proration
+        type: calculation
+        formula: |
+          days_remaining = current_period_end - today
+          days_in_period = current_period_end - current_period_start
+
+          unused_credit = (current_plan_price / days_in_period) * days_remaining
+          new_plan_charge = (new_plan_price / days_in_period) * days_remaining
+
+          proration_amount = new_plan_charge - unused_credit
+
+      - id: UP-03
+        name: Create Proration Invoice
+        type: action
+        condition: "proration_amount > 1.00"
+        actions:
+          - create_invoice
+          - add_credit_line_item: unused_credit
+          - add_charge_line_item: new_plan_charge
+          - finalize_invoice
+
+      - id: UP-04
+        name: Charge Proration
+        type: action
+        condition: "proration_invoice EXISTS"
+        actions:
+          - charge_invoice
+          - handle_failure: UP-07
+
+        on_success: UP-05
+
+      - id: UP-05
+        name: Apply Upgrade
+        type: action
+        actions:
+          - update_plan_id
+          - update_tier
+          - update_features_immediately
+          - update_limits_immediately
+          - recalculate_next_invoice
+
+      - id: UP-06
+        name: Notify Customer
+        type: notification
+        actions:
+          - send_upgrade_confirmation_email
+          - show_in_app_confirmation
+          - emit_event: subscription.upgraded
+
+      - id: UP-07
+        name: Handle Upgrade Payment Failure
+        type: error_handling
+        actions:
+          - keep_current_plan
+          - notify_payment_failed
+          - offer_retry_option
+
+  # =============================================================================
+  # WORKFLOW: DOWNGRADE
+  # =============================================================================
+  downgrade:
+    name: Plan Downgrade
+    name_vi: Hạ cấp gói
+    description: "Handles downgrading to a lower tier plan"
+
+    trigger:
+      type: user_action
+      action: "Select lower tier plan"
+
+    steps:
+      - id: DN-01
+        name: Validate Downgrade
+        type: validation
+        checks:
+          - target_plan_exists
+          - target_plan_tier < current_tier
+
+      - id: DN-02
+        name: Check Usage Compatibility
+        type: validation
+        checks:
+          - name: seats_check
+            condition: "current_seats <= new_plan.max_seats"
+            on_failure: DN-03
+
+          - name: storage_check
+            condition: "current_storage <= new_plan.max_storage"
+            on_failure: DN-03
+
+          - name: feature_check
+            action: "List features that will be lost"
+
+      - id: DN-03
+        name: Handle Over-Limit
+        type: user_interaction
+        condition: "usage > new_plan_limits"
+        display:
+          message: "Your current usage exceeds the new plan limits"
+          details:
+            - "Current seats: {current_seats}, New limit: {new_limit}"
+            - "Current storage: {current_storage}GB, New limit: {new_limit}GB"
+          actions:
+            - "Reduce usage before downgrading"
+            - "Cancel downgrade"
+            - "Force downgrade (will restrict access)"
+
+      - id: DN-04
+        name: Schedule Downgrade
+        type: action
+        actions:
+          - set_scheduled_plan_change: end_of_period
+          - record_downgrade_reason
+          - send_downgrade_scheduled_email
+
+      - id: DN-05
+        name: Execute Downgrade
+        type: scheduled_action
+        trigger: "current_period_end"
+        actions:
+          - update_plan_id
+          - update_tier
+          - apply_new_limits
+          - disable_unavailable_features
+          - generate_new_period_invoice
+          - emit_event: subscription.downgraded
+
+  # =============================================================================
+  # WORKFLOW: RENEWAL
+  # =============================================================================
+  renewal:
+    name: Subscription Renewal
+    name_vi: Gia hạn đăng ký
+    description: "Handles automatic subscription renewal at period end"
+
+    trigger:
+      type: scheduled
+      schedule: "7 days before period_end"
+
+    steps:
+      - id: RN-01
+        name: Generate Renewal Invoice
+        type: action
+        actions:
+          - calculate_subscription_amount
+          - add_usage_charges
+          - apply_recurring_discounts
+          - calculate_taxes
+          - create_draft_invoice
+
+      - id: RN-02
+        name: Finalize Invoice
+        type: action
+        schedule: "3 days before due"
+        actions:
+          - finalize_invoice
+          - send_invoice_email
+
+      - id: RN-03
+        name: Process Payment
+        type: action
+        schedule: "On due date"
+        actions:
+          - charge_default_payment_method
+          - handle_3ds_if_required
+
+        on_success: RN-04
+        on_failure: RN-05
+
+      - id: RN-04
+        name: Renewal Success
+        type: action
+        actions:
+          - mark_invoice_paid
+          - advance_billing_period
+          - send_receipt_email
+          - emit_event: subscription.renewed
+
+      - id: RN-05
+        name: Renewal Failure
+        type: action
+        actions:
+          - set_status: past_due
+          - send_payment_failed_email
+          - start_dunning_sequence
+          - emit_event: subscription.payment_failed
+
+  # =============================================================================
+  # WORKFLOW: CANCELLATION
+  # =============================================================================
+  cancellation:
+    name: Subscription Cancellation
+    name_vi: Hủy đăng ký
+    description: "Handles customer-initiated cancellation"
+
+    trigger:
+      type: user_action
+      action: "Request cancellation"
+
+    steps:
+      - id: CN-01
+        name: Collect Cancellation Reason
+        type: user_interaction
+        display:
+          title: "We're sorry to see you go"
+          fields:
+            - reason_category:
+                type: select
+                options:
+                  - too_expensive
+                  - missing_features
+                  - switching_competitor
+                  - business_closed
+                  - not_using_enough
+                  - technical_issues
+                  - other
+
+            - feedback:
+                type: textarea
+                optional: true
+                placeholder: "Help us improve..."
+
+      - id: CN-02
+        name: Offer Retention
+        type: conditional
+        condition: "retention_offer_eligible"
+        actions:
+          - display_retention_offer
+          - wait_for_response
+
+        retention_offers:
+          too_expensive:
+            offer: "20% off for 3 months"
+            condition: "tenure > 3 months"
+
+          not_using_enough:
+            offer: "Free onboarding session"
+
+        on_accept: CN-08
+        on_decline: CN-03
+
+      - id: CN-03
+        name: Confirm Cancellation
+        type: user_interaction
+        display:
+          title: "Confirm Cancellation"
+          warning: "Your subscription will remain active until {period_end}"
+          consequences:
+            - "Access continues until {period_end}"
+            - "Data retained for 30 days after cancellation"
+            - "No refund for remaining period"
+          cta: "Confirm Cancellation"
+
+      - id: CN-04
+        name: Schedule Cancellation
+        type: action
+        actions:
+          - set_cancel_at_period_end: true
+          - set_cancelled_at: now
+          - set_cancellation_reason: from_form
+          - send_cancellation_confirmation_email
+
+      - id: CN-05
+        name: Execute Cancellation
+        type: scheduled_action
+        trigger: "current_period_end"
+        actions:
+          - set_status: cancelled
+          - disable_paid_features
+          - start_data_retention_countdown
+          - emit_event: subscription.cancelled
+
+      - id: CN-06
+        name: Post-Cancellation
+        type: action
+        actions:
+          - send_final_invoice_if_needed
+          - trigger_winback_sequence: 30_days
+          - archive_for_analytics
+
+      - id: CN-07
+        name: Undo Cancellation
+        type: conditional
+        condition: "cancel_at_period_end AND before_period_end"
+        trigger: "User requests undo"
+        actions:
+          - set_cancel_at_period_end: false
+          - clear_cancelled_at
+          - send_cancellation_reversed_email
+
+      - id: CN-08
+        name: Apply Retention Offer
+        type: action
+        actions:
+          - apply_discount_coupon
+          - clear_cancellation_intent
+          - send_retention_success_email
+          - emit_event: subscription.retention_success
+
+  # =============================================================================
+  # WORKFLOW: PAUSE
+  # =============================================================================
+  pause:
+    name: Subscription Pause
+    name_vi: Tạm dừng đăng ký
+    description: "Handles temporarily pausing subscription (Professional/Enterprise)"
+
+    trigger:
+      type: user_action
+      action: "Request pause"
+      condition: "tier IN ['professional', 'enterprise']"
+
+    steps:
+      - id: PA-01
+        name: Validate Pause Eligibility
+        type: validation
+        checks:
+          - tenure >= 3_months
+          - pause_count_this_year < 2
+          - no_outstanding_invoices
+
+      - id: PA-02
+        name: Configure Pause
+        type: user_interaction
+        display:
+          fields:
+            - pause_duration:
+                type: select
+                options: [1_month, 2_months, 3_months]
+            - pause_reason:
+                type: textarea
+                optional: true
+
+        info:
+          - "Data will be preserved"
+          - "Access will be disabled"
+          - "Billing will be suspended"
+          - "Auto-resume after {duration}"
+
+      - id: PA-03
+        name: Execute Pause
+        type: action
+        actions:
+          - set_status: paused
+          - set_paused_at: now
+          - set_resume_at: now + duration
+          - suspend_billing
+          - disable_access
+          - send_pause_confirmation_email
+
+      - id: PA-04
+        name: Auto Resume
+        type: scheduled_action
+        trigger: "resume_at"
+        actions:
+          - set_status: active
+          - resume_billing
+          - enable_access
+          - charge_next_invoice
+          - send_resume_notification
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+events:
+  - name: subscription.activated
+    payload: [subscription_id, tenant_id, plan_id]
+
+  - name: subscription.upgraded
+    payload: [subscription_id, old_plan, new_plan, proration_amount]
+
+  - name: subscription.downgraded
+    payload: [subscription_id, old_plan, new_plan]
+
+  - name: subscription.renewed
+    payload: [subscription_id, invoice_id, amount]
+
+  - name: subscription.payment_failed
+    payload: [subscription_id, invoice_id, failure_reason]
+
+  - name: subscription.cancelled
+    payload: [subscription_id, reason, effective_date]
+
+  - name: subscription.paused
+    payload: [subscription_id, duration, resume_date]
+
+  - name: subscription.resumed
+    payload: [subscription_id, paused_duration]
+
+  - name: subscription.trial_expired
+    payload: [subscription_id, had_payment_method]
+
+  - name: subscription.retention_success
+    payload: [subscription_id, offer_type, discount_applied]

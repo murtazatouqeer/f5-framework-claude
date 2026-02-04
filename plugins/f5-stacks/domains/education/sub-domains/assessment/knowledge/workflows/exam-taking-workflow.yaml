@@ -1,0 +1,584 @@
+# Exam Taking Workflow
+# F5 Framework v2.0 - Education/Assessment
+# Complete workflow for candidates taking exams
+
+workflow:
+  id: exam_taking
+  name: Exam Taking Workflow
+  name_ja: 受験ワークフロー
+  description: End-to-end workflow for candidates taking an exam
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+  
+  trigger:
+    type: candidate_action
+    action: start_exam
+    
+  actors:
+    - id: candidate
+      name: Candidate
+      name_ja: 受験者
+      responsibilities:
+        - Complete identity verification
+        - Answer questions
+        - Submit exam
+        
+    - id: proctor
+      name: Proctor
+      name_ja: 監督者
+      responsibilities:
+        - Monitor candidate
+        - Handle incidents
+        - Approve accommodations
+        
+    - id: system
+      name: System
+      name_ja: システム
+      responsibilities:
+        - Enforce rules
+        - Track time
+        - Auto-grade responses
+
+  preconditions:
+    - exam.status = 'active'
+    - within_availability_window
+    - candidate_has_remaining_attempts
+    - no_active_attempt_exists
+
+  stages:
+    # ==========================================
+    # Stage 1: Pre-Exam
+    # ==========================================
+    - id: pre_exam
+      name: Pre-Exam Setup
+      name_ja: 受験前準備
+      description: Preparation before starting the exam
+      
+      steps:
+        - id: access_verification
+          name: Access Verification
+          name_ja: アクセス確認
+          actor: system
+          action:
+            type: verify
+            checks:
+              - candidate_eligibility
+              - remaining_attempts
+              - cooldown_period
+              - access_code_if_required
+          validation:
+            rules: [EXR-020, EXR-021, EXR-030, EXR-032]
+            
+        - id: apply_accommodations
+          name: Apply Accommodations
+          name_ja: 配慮措置適用
+          actor: system
+          condition: candidate.has_active_accommodation
+          action:
+            type: apply
+            entity: accommodation
+            adjustments:
+              - extra_time
+              - assistive_technology
+              - format_changes
+              - proctoring_modifications
+            validation:
+              rules: [PRC-060]
+              
+        - id: system_check
+          name: System Requirements Check
+          name_ja: システム要件確認
+          actor: system
+          action:
+            type: verify
+            checks:
+              - browser_compatibility
+              - javascript_enabled
+              - cookies_enabled
+              - screen_resolution
+              - stable_connection
+            on_failure:
+              show_requirements: true
+              block_start: true
+              
+        - id: instructions_review
+          name: Review Instructions
+          name_ja: 説明確認
+          actor: candidate
+          action:
+            type: display
+            content: exam.instructions
+            require_acknowledgment: true
+            display_info:
+              - duration
+              - total_questions
+              - passing_score
+              - navigation_rules
+              - submission_rules
+              
+      transition:
+        on_complete: proctoring_setup
+        skip_if: NOT exam.requires_proctoring
+        skip_to: exam_start
+        
+    # ==========================================
+    # Stage 2: Proctoring Setup
+    # ==========================================
+    - id: proctoring_setup
+      name: Proctoring Setup
+      name_ja: 監視設定
+      description: Setup proctoring if required
+      condition: exam.requires_proctoring
+      
+      steps:
+        - id: create_proctor_session
+          name: Create Proctor Session
+          name_ja: 監視セッション作成
+          actor: system
+          action:
+            type: create
+            entity: proctor_session
+            fields:
+              - proctoring_type: exam.proctoring_type
+              - status: pending
+              
+        - id: identity_verification
+          name: Identity Verification
+          name_ja: 本人確認
+          actor: candidate
+          action:
+            type: verify_identity
+            methods:
+              - photo_id_capture
+              - face_match
+            validation:
+              rules: [PRC-001, PRC-002, PRC-003]
+            on_failure:
+              retry_count: 3
+              escalate_to: proctor
+              
+        - id: environment_check
+          name: Environment Check
+          name_ja: 環境チェック
+          actor: candidate
+          action:
+            type: environment_setup
+            checks:
+              - webcam_working
+              - microphone_working
+              - room_scan
+              - desk_area_clear
+            validation:
+              rules: [PRC-010, PRC-011, PRC-012]
+              
+        - id: start_recording
+          name: Start Recording
+          name_ja: 録画開始
+          actor: system
+          action:
+            type: start_recording
+            streams:
+              - video
+              - audio
+              - screen
+            validation:
+              rules: [PRC-040]
+              
+        - id: proctor_approval
+          name: Proctor Approval
+          name_ja: 監督者承認
+          actor: proctor
+          condition: proctoring_type = 'live'
+          action:
+            type: approve
+            checklist:
+              - identity_verified
+              - environment_acceptable
+              - no_prohibited_items
+              
+      transition:
+        on_complete: exam_start
+        
+    # ==========================================
+    # Stage 3: Exam Start
+    # ==========================================
+    - id: exam_start
+      name: Exam Start
+      name_ja: 試験開始
+      description: Initialize and start the exam
+      
+      steps:
+        - id: create_attempt
+          name: Create Attempt
+          name_ja: 受験記録作成
+          actor: system
+          action:
+            type: create
+            entity: exam_attempt
+            fields:
+              - exam_id
+              - candidate_id
+              - attempt_number: next_attempt_number
+              - status: in_progress
+              - actual_start: now()
+              - duration_allowed_minutes: calculated_duration
+              
+        - id: prepare_questions
+          name: Prepare Questions
+          name_ja: 問題準備
+          actor: system
+          action:
+            type: prepare
+            operations:
+              - select_from_pool_if_configured
+              - randomize_order_if_configured
+              - randomize_options_if_configured
+              - create_response_records
+            outputs:
+              - question_sequence
+            validation:
+              rules: [SEC-010, SEC-011, SEC-012]
+              
+        - id: apply_security
+          name: Apply Security Measures
+          name_ja: セキュリティ適用
+          actor: system
+          condition: exam.browser_lockdown
+          action:
+            type: apply_lockdown
+            features:
+              - fullscreen_mode
+              - disable_right_click
+              - disable_copy_paste
+              - block_new_tabs
+            validation:
+              rules: [SEC-001, SEC-002]
+              
+        - id: start_timer
+          name: Start Timer
+          name_ja: タイマー開始
+          actor: system
+          condition: exam.time_limit_enabled
+          action:
+            type: start_timer
+            duration: attempt.duration_allowed_minutes
+            warnings: exam.warning_intervals
+            on_expire: auto_submit_if_configured
+            
+      transition:
+        on_complete: question_answering
+        
+    # ==========================================
+    # Stage 4: Question Answering
+    # ==========================================
+    - id: question_answering
+      name: Question Answering
+      name_ja: 問題回答
+      description: Main exam-taking phase
+      
+      steps:
+        - id: display_question
+          name: Display Question
+          name_ja: 問題表示
+          actor: system
+          action:
+            type: display
+            entity: question
+            index: current_question_index
+            include:
+              - question_text
+              - media
+              - options
+              - point_value_if_shown
+              
+        - id: record_response
+          name: Record Response
+          name_ja: 回答記録
+          actor: candidate
+          action:
+            type: save
+            entity: response
+            auto_save: true
+            auto_save_interval_seconds: 30
+            track:
+              - time_spent
+              - answer_changes
+              
+        - id: flag_question
+          name: Flag Question
+          name_ja: 問題フラグ
+          actor: candidate
+          optional: true
+          condition: exam.allow_flag
+          action:
+            type: toggle_flag
+            entity: response
+            field: is_flagged
+            
+        - id: navigate_questions
+          name: Navigate Questions
+          name_ja: 問題移動
+          actor: candidate
+          action:
+            type: navigate
+            options:
+              - next
+              - previous: if_allowed
+              - jump_to: if_all_at_once
+            validation:
+              rules: [EXR-022]
+              
+        - id: handle_time_warning
+          name: Handle Time Warning
+          name_ja: 時間警告処理
+          actor: system
+          trigger: timer_warning
+          action:
+            type: notify
+            message: "{minutes} minutes remaining"
+            validation:
+              rules: [EXR-041]
+              
+        - id: monitor_activity
+          name: Monitor Activity
+          name_ja: 活動監視
+          actor: system
+          condition: exam.requires_proctoring
+          action:
+            type: continuous_monitor
+            checks:
+              - face_detection
+              - tab_switches
+              - browser_focus
+              - audio_analysis
+            validation:
+              rules: [PRC-020, PRC-021, PRC-022, PRC-024, PRC-025]
+              
+      transition:
+        on_complete: review_submission
+        on_timeout: auto_submit
+        loop_until: all_questions_viewed OR time_expired
+        
+    # ==========================================
+    # Stage 5: Review and Submission
+    # ==========================================
+    - id: review_submission
+      name: Review and Submission
+      name_ja: 確認・提出
+      description: Review answers and submit exam
+      
+      steps:
+        - id: show_summary
+          name: Show Summary
+          name_ja: サマリー表示
+          actor: system
+          condition: exam.allow_review
+          action:
+            type: display
+            content:
+              - questions_answered
+              - questions_unanswered
+              - questions_flagged
+              - time_remaining
+              
+        - id: review_answers
+          name: Review Answers
+          name_ja: 回答確認
+          actor: candidate
+          optional: true
+          condition: exam.allow_review
+          action:
+            type: review
+            allow_changes: true
+            navigate_to_flagged: true
+            
+        - id: submission_check
+          name: Submission Check
+          name_ja: 提出チェック
+          actor: system
+          action:
+            type: validate
+            checks:
+              - unanswered_questions
+              - flagged_questions
+            warn_if:
+              - questions_unanswered > 0
+              - questions_flagged > 0
+            validation:
+              rules: [EXR-050]
+              
+        - id: confirm_submission
+          name: Confirm Submission
+          name_ja: 提出確認
+          actor: candidate
+          action:
+            type: confirm
+            message: "Are you sure you want to submit? You cannot change answers after submission."
+            message_ja: "提出してもよろしいですか？提出後は回答を変更できません。"
+            validation:
+              rules: [EXR-051]
+              
+        - id: submit_exam
+          name: Submit Exam
+          name_ja: 試験提出
+          actor: candidate
+          action:
+            type: submit
+            entity: exam_attempt
+            set_fields:
+              - status: submitted
+              - submitted_at: now()
+              - duration_used_seconds: calculated
+              
+      transition:
+        on_complete: post_submission
+        
+    # ==========================================
+    # Stage 6: Auto Submit (Timeout)
+    # ==========================================
+    - id: auto_submit
+      name: Auto Submit
+      name_ja: 自動提出
+      description: Automatic submission on timeout
+      trigger: timer_expired
+      condition: exam.auto_submit_on_timeout
+      
+      steps:
+        - id: save_final_responses
+          name: Save Final Responses
+          name_ja: 最終回答保存
+          actor: system
+          action:
+            type: save_all
+            entity: response
+            
+        - id: auto_submit_attempt
+          name: Auto Submit Attempt
+          name_ja: 受験自動提出
+          actor: system
+          action:
+            type: submit
+            entity: exam_attempt
+            set_fields:
+              - status: submitted
+              - submitted_at: now()
+              - auto_submitted: true
+            validation:
+              rules: [EXR-040]
+              
+        - id: notify_candidate
+          name: Notify Candidate
+          name_ja: 受験者通知
+          actor: system
+          action:
+            type: notify
+            message: "Time expired. Your exam has been automatically submitted."
+            message_ja: "時間切れです。試験は自動的に提出されました。"
+            
+      transition:
+        on_complete: post_submission
+        
+    # ==========================================
+    # Stage 7: Post Submission
+    # ==========================================
+    - id: post_submission
+      name: Post Submission
+      name_ja: 提出後処理
+      description: Process after exam submission
+      
+      steps:
+        - id: stop_proctoring
+          name: Stop Proctoring
+          name_ja: 監視停止
+          actor: system
+          condition: exam.requires_proctoring
+          action:
+            type: complete
+            entity: proctor_session
+            set_fields:
+              - status: completed
+              - session_end: now()
+            stop_recording: true
+            
+        - id: release_lockdown
+          name: Release Lockdown
+          name_ja: ロックダウン解除
+          actor: system
+          condition: exam.browser_lockdown
+          action:
+            type: release_lockdown
+            exit_fullscreen: true
+            
+        - id: trigger_grading
+          name: Trigger Grading
+          name_ja: 採点開始
+          actor: system
+          action:
+            type: trigger_workflow
+            workflow: grading_workflow
+            input:
+              - attempt_id
+              
+        - id: show_completion
+          name: Show Completion
+          name_ja: 完了表示
+          actor: system
+          action:
+            type: display
+            content:
+              - completion_message
+              - time_used
+              - score_if_immediate
+              - next_steps
+              
+        - id: send_confirmation
+          name: Send Confirmation
+          name_ja: 確認送信
+          actor: system
+          action:
+            type: notify
+            method: email
+            template: exam_completion
+            include:
+              - exam_title
+              - submission_time
+              - confirmation_number
+              
+  completion:
+    status: submitted
+    outputs:
+      - attempt_id
+      - submission_time
+      - confirmation_number
+      
+  error_handling:
+    - type: connection_lost
+      action: auto_save
+      resume_allowed: true
+      grace_period_minutes: 5
+      
+    - type: browser_crash
+      action: preserve_responses
+      resume_allowed: true
+      
+    - type: proctoring_failure
+      action: escalate_to_proctor
+      pause_timer: if_live_proctor
+      
+  time_management:
+    warnings:
+      - minutes: 30
+        message: "30 minutes remaining"
+      - minutes: 10
+        message: "10 minutes remaining"
+      - minutes: 5
+        message: "5 minutes remaining - consider reviewing your answers"
+      - minutes: 1
+        message: "1 minute remaining!"
+        
+  pause_handling:
+    allowed: exam.allow_navigation
+    max_pauses: 3
+    max_pause_duration_minutes: 5
+    proctor_approval_required: exam.requires_proctoring

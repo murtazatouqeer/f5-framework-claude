@@ -1,0 +1,635 @@
+# Closing Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Transaction closing/settlement management
+
+entity:
+  name: Closing
+  name_vi: Hoàn tất giao dịch
+  name_ja: クロージング
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Manages the closing/settlement process of a real estate transaction.
+    Coordinates all parties, documents, funds, and final transfer steps.
+
+  # Database Configuration
+  database:
+    table_name: closings
+    primary_key: id
+    indexes:
+      - columns: [closing_id]
+        unique: true
+      - columns: [transaction_id]
+        unique: true
+      - columns: [status]
+      - columns: [scheduled_date]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: closing_id
+      type: string
+      format: "CLS-{YYYYMMDD}-{XXXXXX}"
+      unique: true
+      description: Closing reference ID
+      example: "CLS-20241215-C1D2E3"
+
+    - name: transaction_id
+      type: uuid
+      required: true
+      foreign_key: transactions.id
+      description: Associated transaction
+
+    - name: contract_id
+      type: uuid
+      required: true
+      foreign_key: contracts.id
+      description: Associated contract
+
+    - name: escrow_id
+      type: uuid
+      nullable: true
+      foreign_key: escrows.id
+      description: Associated escrow
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - scheduled
+        - preparing
+        - documents_ready
+        - funds_pending
+        - ready
+        - in_progress
+        - completed
+        - delayed
+        - cancelled
+      default: scheduled
+      description: Closing status
+
+    # Schedule
+    - name: scheduled_date
+      type: date
+      required: true
+      description: Planned closing date
+
+    - name: scheduled_time
+      type: time
+      nullable: true
+      description: Planned closing time
+
+    - name: actual_date
+      type: date
+      nullable: true
+      description: Actual closing date
+
+    - name: actual_time
+      type: time
+      nullable: true
+
+    # Location
+    - name: location_type
+      type: enum
+      values:
+        - notary_office
+        - bank
+        - agency_office
+        - attorney_office
+        - remote
+        - property_site
+      description: Type of closing location
+
+    - name: location_name
+      type: string
+      nullable: true
+
+    - name: location_address
+      type: string
+      nullable: true
+
+    - name: is_remote_closing
+      type: boolean
+      default: false
+
+    - name: video_conference_link
+      type: string
+      nullable: true
+
+    # Participants
+    - name: required_attendees
+      type: jsonb
+      description: Who must attend
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            party_type: { type: string }
+            name: { type: string }
+            user_id: { type: string }
+            role: { type: string }
+            is_required: { type: boolean }
+
+    - name: confirmed_attendees
+      type: jsonb
+      description: Confirmed attendance
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            party_type: { type: string }
+            name: { type: string }
+            confirmed_at: { type: string, format: datetime }
+            attending_method: { type: string, enum: [in_person, remote, representative] }
+            representative_name: { type: string }
+            power_of_attorney_url: { type: string }
+
+    - name: actual_attendees
+      type: jsonb
+      nullable: true
+      description: Who actually attended
+
+    # Documents
+    - name: closing_documents
+      type: jsonb
+      description: Required closing documents
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            document_type: { type: string }
+            name: { type: string }
+            status: { type: string, enum: [pending, prepared, signed, recorded] }
+            prepared_by: { type: string }
+            prepared_at: { type: string, format: datetime }
+            url: { type: string }
+            requires_signature: { type: boolean }
+            signed_by: { type: array, items: { type: string } }
+
+    - name: required_documents
+      type: array
+      items: string
+      description: List of required document types
+
+    - name: outstanding_documents
+      type: array
+      items: string
+      description: Documents not yet ready
+
+    - name: all_documents_ready
+      type: boolean
+      default: false
+
+    # Financial - Closing Statement
+    - name: closing_statement
+      type: jsonb
+      description: Settlement statement details
+      schema:
+        type: object
+        properties:
+          purchase_price: { type: number }
+          adjustments: { type: array }
+          buyer_credits: { type: number }
+          seller_credits: { type: number }
+          buyer_debits: { type: number }
+          seller_debits: { type: number }
+          buyer_due_at_closing: { type: number }
+          seller_proceeds: { type: number }
+          generated_at: { type: string, format: datetime }
+
+    - name: buyer_closing_costs
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+      description: Total buyer costs
+
+    - name: seller_closing_costs
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+      description: Total seller costs
+
+    - name: adjustments
+      type: jsonb
+      description: Prorated adjustments
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            item: { type: string }
+            amount: { type: number }
+            paid_by: { type: string, enum: [buyer, seller] }
+            proration_date: { type: string, format: date }
+            notes: { type: string }
+
+    - name: final_amount_due_from_buyer
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: final_amount_to_seller
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    # Funds
+    - name: wire_instructions
+      type: jsonb
+      nullable: true
+      description: Wire transfer instructions
+      schema:
+        type: object
+        properties:
+          bank_name: { type: string }
+          account_number: { type: string }
+          account_name: { type: string }
+          swift_code: { type: string }
+          reference: { type: string }
+
+    - name: funds_received
+      type: boolean
+      default: false
+
+    - name: funds_received_at
+      type: timestamp
+      nullable: true
+
+    - name: funds_amount_received
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: funds_verified
+      type: boolean
+      default: false
+
+    - name: funds_verified_at
+      type: timestamp
+      nullable: true
+
+    - name: funds_verified_by
+      type: uuid
+      nullable: true
+
+    # Title
+    - name: title_clear
+      type: boolean
+      default: false
+      description: Title verified clear
+
+    - name: title_insurance_required
+      type: boolean
+      default: false
+
+    - name: title_insurance_issued
+      type: boolean
+      default: false
+
+    - name: title_insurance_policy_number
+      type: string
+      nullable: true
+
+    - name: title_insurance_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    # Recording
+    - name: deed_prepared
+      type: boolean
+      default: false
+
+    - name: deed_signed
+      type: boolean
+      default: false
+
+    - name: deed_notarized
+      type: boolean
+      default: false
+
+    - name: deed_recorded
+      type: boolean
+      default: false
+
+    - name: recording_date
+      type: date
+      nullable: true
+
+    - name: recording_number
+      type: string
+      nullable: true
+      description: Land registration number
+
+    - name: recording_office
+      type: string
+      nullable: true
+
+    - name: recording_fee
+      type: decimal
+      precision: 12
+      scale: 2
+      nullable: true
+
+    # Tax
+    - name: transfer_tax_paid
+      type: boolean
+      default: false
+
+    - name: transfer_tax_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: transfer_tax_receipt
+      type: string
+      nullable: true
+
+    # Possession
+    - name: keys_handed_over
+      type: boolean
+      default: false
+
+    - name: keys_handover_at
+      type: timestamp
+      nullable: true
+
+    - name: possession_transferred
+      type: boolean
+      default: false
+
+    - name: possession_transfer_at
+      type: timestamp
+      nullable: true
+
+    - name: final_walkthrough_completed
+      type: boolean
+      default: false
+
+    - name: final_walkthrough_date
+      type: date
+      nullable: true
+
+    - name: walkthrough_issues
+      type: jsonb
+      nullable: true
+      description: Issues found in walkthrough
+
+    # Completion
+    - name: closing_started_at
+      type: timestamp
+      nullable: true
+
+    - name: closing_completed_at
+      type: timestamp
+      nullable: true
+
+    - name: completed_by
+      type: uuid
+      nullable: true
+
+    # Delay
+    - name: delay_reason
+      type: text
+      nullable: true
+
+    - name: original_scheduled_date
+      type: date
+      nullable: true
+
+    - name: delay_count
+      type: integer
+      default: 0
+
+    # Cancellation
+    - name: cancelled_at
+      type: timestamp
+      nullable: true
+
+    - name: cancellation_reason
+      type: text
+      nullable: true
+
+    # Notes
+    - name: closing_notes
+      type: text
+      nullable: true
+
+    - name: special_instructions
+      type: text
+      nullable: true
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: contract
+      type: belongs_to
+      entity: Contract
+      foreign_key: contract_id
+
+    - name: escrow
+      type: belongs_to
+      entity: Escrow
+      foreign_key: escrow_id
+
+    - name: documents
+      type: has_many
+      entity: Document
+      foreign_key: closing_id
+
+  # State Machine
+  state_machine:
+    field: status
+    initial: scheduled
+    transitions:
+      - from: scheduled
+        to: preparing
+        trigger: start_preparation
+        action: notify_parties
+
+      - from: preparing
+        to: documents_ready
+        trigger: documents_complete
+        guard: all_documents_ready
+
+      - from: documents_ready
+        to: funds_pending
+        trigger: await_funds
+
+      - from: funds_pending
+        to: ready
+        trigger: funds_verified
+        guard: funds_received_and_verified
+
+      - from: [preparing, documents_ready]
+        to: ready
+        trigger: skip_to_ready
+        guard: fast_track_eligible
+
+      - from: ready
+        to: in_progress
+        trigger: begin_closing
+        action: start_closing_session
+
+      - from: in_progress
+        to: completed
+        trigger: complete
+        guard: all_steps_done
+        action: finalize_closing
+
+      - from: [scheduled, preparing, documents_ready, funds_pending, ready]
+        to: delayed
+        trigger: delay
+        action: record_delay
+
+      - from: delayed
+        to: scheduled
+        trigger: reschedule
+        action: update_schedule
+
+      - from: [scheduled, preparing, documents_ready, funds_pending, ready, delayed]
+        to: cancelled
+        trigger: cancel
+        action: record_cancellation
+
+  # Computed Fields
+  computed_fields:
+    - name: days_until_closing
+      formula: "scheduled_date - CURRENT_DATE"
+
+    - name: is_ready_to_close
+      formula: "all_documents_ready AND funds_verified AND title_clear"
+
+    - name: is_overdue
+      formula: "scheduled_date < CURRENT_DATE AND status NOT IN ('completed', 'cancelled')"
+
+  # Business Rules
+  business_rules:
+    - rule: BR-CLS-001
+      name: Pre-closing requirements
+      description: All requirements must be met before closing
+
+    - rule: BR-CLS-002
+      name: Fund verification
+      description: Funds must be verified before proceeding
+
+    - rule: BR-CLS-003
+      name: Recording after closing
+      description: Deed must be recorded within 30 days
+
+    - rule: BR-CLS-004
+      name: Tax payment before recording
+      description: Transfer tax must be paid before land registration
+
+  # Validations
+  validations:
+    - field: scheduled_date
+      rule: not_past
+      when: status == 'scheduled'
+      message: "Scheduled date cannot be in the past"
+
+    - field: funds_amount_received
+      rule: gte_field
+      compare_to: final_amount_due_from_buyer
+      when: funds_received
+      message: "Received funds must cover amount due"
+
+  # Events
+  events:
+    - name: closing.scheduled
+      trigger: on_create
+      payload: [id, transaction_id, scheduled_date]
+      notifications:
+        - recipient: all_parties
+          template: closing_scheduled
+
+    - name: closing.ready
+      trigger: on_transition_to_ready
+      payload: [id, transaction_id]
+      notifications:
+        - recipient: all_parties
+          template: closing_ready
+
+    - name: closing.completed
+      trigger: on_transition_to_completed
+      payload: [id, transaction_id, final_amount_to_seller]
+      notifications:
+        - recipient: all_parties
+          template: closing_completed
+
+    - name: closing.delayed
+      trigger: on_transition_to_delayed
+      payload: [id, delay_reason, new_date]
+      notifications:
+        - recipient: all_parties
+          template: closing_delayed
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/closings
+        description: List closings
+
+      - method: GET
+        path: /api/closings/{id}
+        description: Get closing details
+
+      - method: POST
+        path: /api/transactions/{transaction_id}/closing
+        description: Schedule closing
+
+      - method: PUT
+        path: /api/closings/{id}
+        description: Update closing details
+
+      - method: POST
+        path: /api/closings/{id}/verify-funds
+        description: Verify funds received
+
+      - method: POST
+        path: /api/closings/{id}/complete
+        description: Complete closing
+
+      - method: GET
+        path: /api/closings/{id}/statement
+        description: Get closing statement

@@ -1,0 +1,617 @@
+name: margin-trading
+display_name: Margin Trading
+description: |
+  Margin trading process from account opening to monitoring
+  and handling margin calls. Includes borrowing, trading,
+  and forced liquidation when needed.
+
+domain: fintech/stock-trading
+version: "1.0"
+type: sequential_with_parallel
+
+actors:
+  - id: investor
+    name: Investor
+    description: Customer using margin
+
+  - id: margin_system
+    name: Margin System
+    description: Core margin management system
+
+  - id: credit_engine
+    name: Credit Engine
+    description: Assesses and grants margin limits
+
+  - id: risk_engine
+    name: Risk Management Engine
+    description: Monitors and alerts risks
+
+  - id: trading_system
+    name: Trading System
+    description: Executes trades
+
+  - id: liquidation_engine
+    name: Liquidation Engine
+    description: Handles force sell
+
+  - id: broker
+    name: Broker
+    description: Staff supporting customers
+
+states:
+  # ===== ACCOUNT SETUP STATES =====
+  - id: margin_application
+    name: Margin Application
+    description: Customer submits margin account application
+    terminal: false
+
+  - id: credit_assessment
+    name: Credit Assessment
+    description: System assesses creditworthiness
+    terminal: false
+
+  - id: margin_approved
+    name: Margin Approved
+    description: Margin account approved
+    terminal: false
+
+  - id: margin_rejected
+    name: Margin Rejected
+    description: Not eligible for margin account
+    terminal: true
+
+  - id: margin_active
+    name: Margin Active
+    description: Margin account operating normally
+    terminal: false
+
+  # ===== TRADING STATES =====
+  - id: order_submitted
+    name: Order Submitted
+    description: Margin order submitted
+    terminal: false
+
+  - id: margin_checking
+    name: Margin Checking
+    description: Checking buying power and margin requirement
+    terminal: false
+
+  - id: margin_insufficient
+    name: Margin Insufficient
+    description: Insufficient buying power for order
+    terminal: false
+
+  - id: order_approved
+    name: Order Approved
+    description: Order passed margin check
+    terminal: false
+
+  - id: order_executed
+    name: Order Executed
+    description: Order has been filled
+    terminal: false
+
+  # ===== MONITORING STATES =====
+  - id: monitoring
+    name: Monitoring
+    description: Continuously monitoring margin ratio
+    terminal: false
+
+  - id: warning_zone
+    name: Warning Zone
+    description: Margin ratio near margin call threshold
+    terminal: false
+
+  - id: margin_call
+    name: Margin Call
+    description: Margin ratio below required threshold
+    terminal: false
+
+  - id: force_sell_warning
+    name: Force Sell Warning
+    description: Will be forced to sell if not replenished
+    terminal: false
+
+  - id: force_selling
+    name: Force Selling
+    description: System executing forced liquidation
+    terminal: false
+
+  - id: force_sell_completed
+    name: Force Sell Completed
+    description: Force sell completed
+    terminal: false
+
+  # ===== RESOLUTION STATES =====
+  - id: margin_restored
+    name: Margin Restored
+    description: Margin ratio returned to safe level
+    terminal: false
+
+  - id: account_closed
+    name: Account Closed
+    description: Margin account closed
+    terminal: true
+
+margin_parameters:
+  initial_margin:
+    description: Initial margin requirement
+    value: 50%
+    explanation: Minimum 50% equity when opening position
+
+  maintenance_margin:
+    description: Maintenance margin requirement
+    value: 30%
+    explanation: Margin call threshold
+
+  force_sell_margin:
+    description: Force sell threshold
+    value: 25%
+    explanation: Mandatory force sell threshold
+
+  warning_margin:
+    description: Warning threshold
+    value: 35%
+    explanation: Early warning threshold
+
+transitions:
+  # ===== ACCOUNT SETUP FLOW =====
+  - from: margin_application
+    to: credit_assessment
+    trigger: submit_application
+    actor: investor
+    conditions:
+      - Has regular trading account
+      - KYC completed
+      - Eligible for margin account
+    actions:
+      - Check trading history
+      - Collect financial information
+
+  - from: credit_assessment
+    to: margin_approved
+    trigger: assessment_passed
+    actor: credit_engine
+    conditions:
+      - Credit score meets threshold
+      - Sufficient collateral
+    actions:
+      - Determine margin limit
+      - Determine interest rate
+      - Create margin contract
+
+  - from: credit_assessment
+    to: margin_rejected
+    trigger: assessment_failed
+    actor: credit_engine
+    conditions:
+      - Low credit score
+      - Or insufficient assets
+    actions:
+      - Notify rejection reason
+      - Log
+
+  - from: margin_approved
+    to: margin_active
+    trigger: activate_margin
+    actor: investor
+    conditions:
+      - Electronic contract signed
+      - Terms read and agreed
+    actions:
+      - Activate margin feature
+      - Record credit limit
+      - Start monitoring
+
+  # ===== TRADING FLOW =====
+  - from: margin_active
+    to: order_submitted
+    trigger: place_margin_order
+    actor: investor
+    actions:
+      - Receive margin order
+      - Mark as margin order
+
+  - from: order_submitted
+    to: margin_checking
+    trigger: start_margin_check
+    actor: margin_system
+    actions:
+      - Calculate current buying power
+      - Calculate margin requirement for order
+
+  - from: margin_checking
+    to: margin_insufficient
+    trigger: insufficient_buying_power
+    actor: margin_system
+    conditions:
+      - Buying power < order value
+    actions:
+      - Notify reason
+      - Suggest reducing quantity
+
+  - from: margin_insufficient
+    to: order_submitted
+    trigger: modify_order
+    actor: investor
+    conditions:
+      - Adjust quantity/price
+    actions:
+      - Update order information
+
+  - from: margin_insufficient
+    to: margin_active
+    trigger: cancel_order
+    actor: investor
+    actions:
+      - Cancel order
+      - Return to monitoring state
+
+  - from: margin_checking
+    to: order_approved
+    trigger: margin_check_passed
+    actor: margin_system
+    conditions:
+      - Sufficient buying power
+      - Within margin limit
+    actions:
+      - Mark margin approved
+      - Temporarily calculate margin used
+
+  - from: order_approved
+    to: order_executed
+    trigger: order_filled
+    actor: trading_system
+    actions:
+      - Update position
+      - Recalculate margin ratio
+      - Start calculating interest (if borrowing)
+
+  - from: order_executed
+    to: monitoring
+    trigger: enter_monitoring
+    actor: margin_system
+    actions:
+      - Update margin debt
+      - Calculate new margin ratio
+      - Schedule monitoring
+
+  # ===== MONITORING FLOW =====
+  - from: monitoring
+    to: warning_zone
+    trigger: margin_ratio_declining
+    actor: risk_engine
+    conditions:
+      - Margin ratio < 35% (warning threshold)
+      - Margin ratio >= 30% (maintenance)
+    actions:
+      - Send warning via SMS/email/app
+      - Suggest adding cash/selling shares
+
+  - from: warning_zone
+    to: monitoring
+    trigger: margin_improved
+    actor: risk_engine
+    conditions:
+      - Margin ratio >= 35%
+    actions:
+      - Clear warning
+      - Notify safe status
+
+  - from: warning_zone
+    to: margin_call
+    trigger: margin_call_triggered
+    actor: risk_engine
+    conditions:
+      - Margin ratio < 30% (maintenance margin)
+    actions:
+      - Issue official margin call
+      - Call customer
+      - Request replenishment within T+1
+
+  - from: monitoring
+    to: margin_call
+    trigger: sudden_drop
+    actor: risk_engine
+    conditions:
+      - Sharp price decline
+      - Margin ratio drops below 30%
+    actions:
+      - Issue emergency margin call
+      - Contact customer immediately
+
+  # ===== MARGIN CALL RESOLUTION FLOW =====
+  - from: margin_call
+    to: margin_restored
+    trigger: deposit_received
+    actor: investor
+    conditions:
+      - Deposited additional cash/securities
+      - Margin ratio >= 30%
+    actions:
+      - Update balance
+      - Recalculate margin ratio
+      - Clear margin call
+
+  - from: margin_call
+    to: margin_restored
+    trigger: sell_to_cover
+    actor: investor
+    conditions:
+      - Sold some securities
+      - Margin ratio >= 30%
+    actions:
+      - Execute sell order
+      - Repay partial margin debt
+      - Recalculate margin ratio
+
+  - from: margin_restored
+    to: monitoring
+    trigger: return_to_monitoring
+    actor: margin_system
+    actions:
+      - Return to normal monitoring
+      - Log recovery
+
+  - from: margin_call
+    to: force_sell_warning
+    trigger: no_action_deadline
+    actor: margin_system
+    conditions:
+      - Exceeded T+1 without replenishment
+      - Margin ratio still < 30%
+    actions:
+      - Send force sell warning
+      - Notify final deadline
+
+  - from: margin_call
+    to: force_sell_warning
+    trigger: critical_margin
+    actor: risk_engine
+    conditions:
+      - Margin ratio < 25%
+    actions:
+      - Emergency force sell warning
+
+  # ===== FORCE SELL FLOW =====
+  - from: force_sell_warning
+    to: margin_restored
+    trigger: last_minute_deposit
+    actor: investor
+    conditions:
+      - Deposited cash in time
+      - Margin ratio >= 30%
+    actions:
+      - Cancel force sell
+      - Update status
+
+  - from: force_sell_warning
+    to: force_selling
+    trigger: initiate_force_sell
+    actor: liquidation_engine
+    conditions:
+      - Exceeded deadline without replenishment
+      - Or margin ratio < 25%
+    actions:
+      - Select securities to sell
+      - Prioritize high liquidity securities
+      - Place ATC/ATO orders
+
+  - from: force_selling
+    to: force_sell_completed
+    trigger: force_sell_executed
+    actor: trading_system
+    actions:
+      - Execute sell orders
+      - Recover margin debt
+      - Calculate penalty fee (if any)
+
+  - from: force_sell_completed
+    to: margin_restored
+    trigger: margin_recovered
+    actor: margin_system
+    conditions:
+      - Margin ratio >= 30%
+    actions:
+      - Notify customer
+      - Return to monitoring
+
+  - from: force_sell_completed
+    to: force_selling
+    trigger: still_underwater
+    actor: risk_engine
+    conditions:
+      - Margin ratio still < 25%
+    actions:
+      - Continue selling more
+      - Until margin ratio reaches 30%
+
+  - from: force_sell_completed
+    to: account_closed
+    trigger: portfolio_liquidated
+    actor: margin_system
+    conditions:
+      - All securities sold
+      - Still in debt or no assets remaining
+    actions:
+      - Recover debt (if any)
+      - Close margin account
+      - Convert to regular account
+
+credit_scoring:
+  factors:
+    - name: trading_history
+      weight: 30%
+      description: Trading history past 12 months
+
+    - name: asset_value
+      weight: 25%
+      description: Total asset value
+
+    - name: income_stability
+      weight: 20%
+      description: Income and stable funding sources
+
+    - name: kyc_score
+      weight: 15%
+      description: KYC score and credibility
+
+    - name: margin_history
+      weight: 10%
+      description: Margin usage history (if any)
+
+  tiers:
+    - tier: platinum
+      credit_score: ">= 850"
+      margin_limit: "3x net asset value"
+      interest_rate: "base + 0%"
+
+    - tier: gold
+      credit_score: "750-849"
+      margin_limit: "2.5x net asset value"
+      interest_rate: "base + 0.5%"
+
+    - tier: silver
+      credit_score: "650-749"
+      margin_limit: "2x net asset value"
+      interest_rate: "base + 1%"
+
+    - tier: standard
+      credit_score: "550-649"
+      margin_limit: "1.5x net asset value"
+      interest_rate: "base + 1.5%"
+
+sla:
+  margin_check:
+    target: 50ms
+    description: Margin check time
+
+  margin_call_notification:
+    target: 1 minute
+    description: Margin call notification time
+
+  force_sell_execution:
+    target: "Market open"
+    description: Force sell executed at next session
+
+  credit_assessment:
+    target: 24 hours
+    description: Credit assessment time
+
+diagram: |
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │                              MARGIN TRADING                                      │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+  ╔═══════════════════════════════════════════════════════════════════════════════╗
+  ║                              ACCOUNT SETUP                                     ║
+  ╠═══════════════════════════════════════════════════════════════════════════════╣
+  ║  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                     ║
+  ║  │  Apply for   │───>│  Credit      │───>│  Approve &   │                     ║
+  ║  │  Margin      │    │  Assessment  │    │  Activate    │                     ║
+  ║  └──────────────┘    └──────┬───────┘    └──────────────┘                     ║
+  ║                             │ Not qualified                                   ║
+  ║                             ▼                                                  ║
+  ║                      ┌──────────────┐                                          ║
+  ║                      │   Rejected   │                                          ║
+  ║                      └──────────────┘                                          ║
+  ╚═══════════════════════════════════════════════════════════════════════════════╝
+                                  │ Qualified
+                                  ▼
+  ╔═══════════════════════════════════════════════════════════════════════════════╗
+  ║                                 TRADING                                        ║
+  ╠═══════════════════════════════════════════════════════════════════════════════╣
+  ║                       ┌──────────────────────┐                                 ║
+  ║                       │   MARGIN ACTIVE      │ <──────────────────────────┐    ║
+  ║                       └──────────┬───────────┘                            │    ║
+  ║                                  │ Place margin order                     │    ║
+  ║                                  ▼                                        │    ║
+  ║                       ┌──────────────────────┐                            │    ║
+  ║                       │   MARGIN CHECKING    │                            │    ║
+  ║                       └──────────┬───────────┘                            │    ║
+  ║                 ┌────────────────┼────────────────┐                       │    ║
+  ║                 │                │                │                       │    ║
+  ║                 ▼                ▼                ▼                       │    ║
+  ║         ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                │    ║
+  ║         │ Insufficient│  │   Approved  │  │   Cancel    │────────────────┘    ║
+  ║         │ Buying Power│  └──────┬──────┘  └─────────────┘                     ║
+  ║         └──────┬──────┘         │                                             ║
+  ║                │                ▼                                             ║
+  ║                │       ┌─────────────────┐                                    ║
+  ║                │       │    EXECUTED     │                                    ║
+  ║                │       └─────────────────┘                                    ║
+  ║                │                                                              ║
+  ║                └──────────► Modify Order ────────────────────────────────────►║
+  ╚═══════════════════════════════════════════════════════════════════════════════╝
+                                  │
+                                  ▼
+  ╔═══════════════════════════════════════════════════════════════════════════════╗
+  ║                              MARGIN MONITORING                                 ║
+  ╠═══════════════════════════════════════════════════════════════════════════════╣
+  ║                                                                               ║
+  ║     MARGIN RATIO    50%    40%    35%    30%    25%    20%    10%    0%      ║
+  ║     ════════════════════════════════════════════════════════════════════     ║
+  ║     │    SAFE   │ WARNING │ MARGIN │ FORCE  │                                ║
+  ║     │   ZONE    │  ZONE   │  CALL  │  SELL  │                                ║
+  ║     └───────────┴─────────┴────────┴────────┘                                ║
+  ║                                                                               ║
+  ║     ┌──────────────────────┐                                                  ║
+  ║     │     MONITORING       │ <───────────────────────────────────────┐       ║
+  ║     │    (Monitoring)      │                                         │       ║
+  ║     └──────────┬───────────┘                                         │       ║
+  ║                │ Ratio < 35%                                         │       ║
+  ║                ▼                                                     │       ║
+  ║     ┌──────────────────────┐                                         │       ║
+  ║     │    WARNING ZONE      │──────► Deposit/Sell ────────────────────┤       ║
+  ║     │     (Warning)        │                                         │       ║
+  ║     └──────────┬───────────┘                                         │       ║
+  ║                │ Ratio < 30%                                         │       ║
+  ║                ▼                                                     │       ║
+  ║     ┌──────────────────────┐                                         │       ║
+  ║     │     MARGIN CALL      │──────► Deposit/Sell ────────────────────┤       ║
+  ║     │  (Margin call T+1)   │                                         │       ║
+  ║     └──────────┬───────────┘                                         │       ║
+  ║                │ No replenishment OR Ratio < 25%                     │       ║
+  ║                ▼                                                     │       ║
+  ║     ┌──────────────────────┐                                         │       ║
+  ║     │  FORCE SELL WARNING  │──────► Last minute deposit ─────────────┤       ║
+  ║     │  (Force sell warning)│                                         │       ║
+  ║     └──────────┬───────────┘                                         │       ║
+  ║                │ Deadline passed                                     │       ║
+  ║                ▼                                                     │       ║
+  ║     ┌──────────────────────┐     ┌──────────────────┐               │       ║
+  ║     │    FORCE SELLING     │────>│  FORCE SELL      │───────────────┘       ║
+  ║     │  (Force liquidation) │     │  COMPLETED       │                       ║
+  ║     └──────────────────────┘     └──────────────────┘                       ║
+  ║                                                                              ║
+  ╚═══════════════════════════════════════════════════════════════════════════════╝
+
+metrics:
+  - name: margin_utilization
+    description: Margin utilization rate
+    formula: margin_used / margin_limit × 100
+    target: "< 70%"
+
+  - name: margin_call_rate
+    description: Margin call account rate
+    formula: accounts_with_call / total_margin_accounts × 100
+    target: "< 5%"
+
+  - name: force_sell_rate
+    description: Force sell rate
+    formula: force_sell_events / total_margin_accounts × 100
+    target: "< 1%"
+
+  - name: recovery_rate
+    description: Recovery rate after margin call
+    formula: recovered / margin_called × 100
+    target: ">= 90%"
+
+  - name: avg_margin_ratio
+    description: Average portfolio margin ratio
+    target: ">= 50%"
+
+  - name: interest_revenue
+    description: Margin interest revenue
+    formula: SUM(daily_interest)
+    target: "As planned"

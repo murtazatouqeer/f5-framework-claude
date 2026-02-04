@@ -1,0 +1,579 @@
+name: material-issue-workflow
+display_name: Material Issue Workflow
+display_name_vi: Quy trình xuất vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: workflow
+
+description: |
+  Workflow for issuing materials from warehouse to production floor,
+  including picking, staging, and consumption tracking.
+
+description_vi: |
+  Quy trình xuất vật tư từ kho đến xưởng sản xuất,
+  bao gồm lấy hàng, chuẩn bị và theo dõi tiêu thụ.
+
+trigger:
+  events:
+    - work_order_released
+    - material_request_created
+    - kanban_signal_received
+    - floor_stock_replenishment
+  conditions:
+    - work_order.status = 'released'
+    - materials_required > 0
+
+actors:
+  - id: production_planner
+    name: Production Planner
+    name_vi: Kế hoạch viên sản xuất
+    responsibilities:
+      - Generate material requirements
+      - Approve shortage handling
+
+  - id: warehouse_clerk
+    name: Warehouse Clerk
+    name_vi: Thủ kho
+    responsibilities:
+      - Process picking lists
+      - Pick materials
+      - Record transactions
+
+  - id: material_handler
+    name: Material Handler
+    name_vi: Nhân viên vận chuyển
+    responsibilities:
+      - Deliver materials
+      - Stage at work centers
+      - Return excess materials
+
+  - id: operator
+    name: Machine Operator
+    name_vi: Công nhân vận hành
+    responsibilities:
+      - Receive materials
+      - Confirm receipt
+      - Report consumption
+
+  - id: supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Approve over-issues
+      - Handle shortages
+
+states:
+  - id: requested
+    name: Requested
+    name_vi: Đã yêu cầu
+    description: Material request created
+
+  - id: picking
+    name: Picking
+    name_vi: Đang lấy hàng
+    description: Materials being picked
+
+  - id: staged
+    name: Staged
+    name_vi: Đã chuẩn bị
+    description: Materials staged for delivery
+
+  - id: delivered
+    name: Delivered
+    name_vi: Đã giao
+    description: Delivered to work center
+
+  - id: consumed
+    name: Consumed
+    name_vi: Đã tiêu thụ
+    description: Materials consumed in production
+
+  - id: returned
+    name: Returned
+    name_vi: Đã trả lại
+    description: Excess materials returned
+
+steps:
+  - id: generate_material_request
+    name: Generate Material Request
+    name_vi: Tạo yêu cầu vật tư
+    state: requested
+    actor: system
+    trigger: work_order_released
+
+    actions:
+      - action: explode_bom
+        inputs:
+          - work_order_id
+          - quantity
+        outputs:
+          - material_requirements_list
+
+      - action: calculate_gross_requirements
+        formula: |
+          gross_qty = net_qty * (1 + scrap_factor)
+        outputs:
+          - gross_requirements
+
+      - action: check_already_issued
+        description: Deduct previously issued quantities
+
+      - action: generate_picking_list
+        outputs:
+          - picking_list
+          - picking_sequence
+
+    validations:
+      - rule: all_items_have_inventory
+        message: All items must have inventory records
+
+    next_step: check_availability
+
+  - id: check_availability
+    name: Check Availability
+    name_vi: Kiểm tra khả dụng
+    state: requested
+    actor: warehouse_clerk
+
+    actions:
+      - action: check_inventory_levels
+        for_each: material_in_picking_list
+        outputs:
+          - availability_status
+
+      - action: identify_shortages
+        condition: available < required
+        outputs:
+          - shortage_list
+
+      - action: check_reserved_stock
+        description: Check if stock reserved for other orders
+
+      - action: identify_locations
+        description: Find optimal picking locations
+        method: fifo_location_selection
+        outputs:
+          - picking_locations
+
+    decision_point:
+      - condition: all_materials_available
+        next: allocate_inventory
+      - condition: partial_shortage
+        next: handle_shortage
+      - condition: complete_shortage
+        next: escalate_shortage
+
+    next_step: handle_shortage
+
+  - id: handle_shortage
+    name: Handle Shortage
+    name_vi: Xử lý thiếu hụt
+    state: requested
+    actor: production_planner
+    trigger: shortage_detected
+
+    actions:
+      - action: evaluate_shortage
+        inputs:
+          - shortage_list
+          - work_order_priority
+        outputs:
+          - shortage_impact
+
+      - action: check_substitutes
+        description: Check for approved substitute materials
+        outputs:
+          - available_substitutes
+
+      - action: check_reallocation
+        description: Check if can reallocate from lower priority orders
+        outputs:
+          - reallocation_options
+
+      - action: decide_handling
+        options:
+          - use_substitute: If approved substitute available
+          - issue_partial: If partial issue acceptable
+          - wait_for_receipt: If incoming purchase order
+          - hold_work_order: If critical shortage
+
+    decision_point:
+      - condition: substitute_approved
+        action: substitute_material
+        next: allocate_inventory
+      - condition: partial_acceptable
+        action: issue_partial
+        next: allocate_inventory
+      - condition: must_wait
+        action: hold_request
+        next: end_workflow
+
+    next_step: allocate_inventory
+
+  - id: allocate_inventory
+    name: Allocate Inventory
+    name_vi: Phân bổ tồn kho
+    state: requested
+    actor: system
+
+    actions:
+      - action: reserve_inventory
+        description: Soft reserve inventory for this work order
+        inputs:
+          - material_list
+          - quantities
+          - locations
+        outputs:
+          - reservation_records
+
+      - action: select_lots
+        method: fifo_or_fefo
+        rules:
+          - exclude_quarantined
+          - exclude_expired
+          - prefer_same_lot
+        outputs:
+          - selected_lots
+
+      - action: create_allocation_records
+        outputs:
+          - allocation_ids
+
+    validations:
+      - rule: lot_status = 'available'
+        message: Can only allocate available lots
+
+    transitions:
+      - to: picking
+        condition: allocation_complete
+        action: release_to_warehouse
+
+    next_step: pick_materials
+
+  - id: pick_materials
+    name: Pick Materials
+    name_vi: Lấy hàng
+    state: picking
+    actor: warehouse_clerk
+
+    actions:
+      - action: print_picking_list
+        outputs:
+          - printed_pick_list
+          - pick_labels
+
+      - action: pick_from_locations
+        for_each: item_in_picking_list
+        steps:
+          - navigate_to_location
+          - verify_material
+          - pick_quantity
+          - label_picked_items
+          - confirm_pick
+
+      - action: handle_pick_issues
+        issues:
+          - location_empty: report_and_find_alternate
+          - quantity_short: pick_available_report_variance
+          - damaged_material: quarantine_find_alternate
+
+      - action: record_picked_quantities
+        outputs:
+          - pick_confirmation
+          - actual_quantities
+
+    validations:
+      - rule: picked_qty <= allocated_qty
+        message: Cannot pick more than allocated
+
+      - rule: lot_numbers_recorded
+        message: All lot numbers must be recorded
+
+    transitions:
+      - to: staged
+        condition: picking_complete
+        action: move_to_staging
+
+    next_step: stage_materials
+
+  - id: stage_materials
+    name: Stage Materials
+    name_vi: Chuẩn bị vật tư
+    state: staged
+    actor: material_handler
+
+    actions:
+      - action: move_to_staging_area
+        inputs:
+          - picked_materials
+          - staging_location
+        outputs:
+          - staging_record
+
+      - action: organize_by_work_order
+        description: Group materials by work order
+
+      - action: verify_kit_completeness
+        condition: kitting_required
+        checks:
+          - all_items_present
+          - quantities_correct
+          - documentation_complete
+
+      - action: label_staging_container
+        outputs:
+          - container_label
+          - work_order_reference
+
+      - action: notify_production
+        message: "Materials staged for WO {work_order_number}"
+
+    validations:
+      - rule: staging_location_valid
+        message: Staging location must be valid
+
+    next_step: deliver_to_production
+
+  - id: deliver_to_production
+    name: Deliver to Production
+    name_vi: Giao đến sản xuất
+    state: staged
+    actor: material_handler
+
+    actions:
+      - action: load_for_delivery
+        inputs:
+          - staged_materials
+          - work_center_destination
+
+      - action: transport_to_work_center
+        method: delivery_route
+
+      - action: verify_delivery_point
+        description: Confirm correct work center
+
+      - action: unload_materials
+        location: point_of_use_or_staging
+
+      - action: obtain_receipt_confirmation
+        from: operator_or_supervisor
+        outputs:
+          - receipt_signature
+          - receipt_timestamp
+
+    validations:
+      - rule: work_center_matches_work_order
+        message: Materials must go to correct work center
+
+    transitions:
+      - to: delivered
+        condition: delivery_confirmed
+        action: record_issue_transaction
+
+    next_step: record_issue_transaction
+
+  - id: record_issue_transaction
+    name: Record Issue Transaction
+    name_vi: Ghi nhận giao dịch xuất
+    state: delivered
+    actor: system
+
+    actions:
+      - action: create_issue_transaction
+        inputs:
+          - work_order_id
+          - material_id
+          - quantity
+          - lot_number
+          - location
+        outputs:
+          - issue_transaction_id
+
+      - action: update_inventory
+        operations:
+          - deduct_from_warehouse_location
+          - add_to_wip_location
+
+      - action: update_work_order_materials
+        description: Update work order material status
+
+      - action: update_lot_tracking
+        description: Link lot to work order for traceability
+
+      - action: post_cost
+        description: Post material cost to work order
+
+    validations:
+      - rule: inventory_sufficient
+        message: Cannot issue more than available
+
+    next_step: track_consumption
+
+  - id: track_consumption
+    name: Track Consumption
+    name_vi: Theo dõi tiêu thụ
+    state: delivered
+    actor: operator
+    ongoing: true
+
+    actions:
+      - action: record_actual_consumption
+        method: manual_or_backflush
+        inputs:
+          - material_id
+          - quantity_used
+          - lot_number
+
+      - action: track_variance
+        formula: |
+          variance = actual_consumption - standard_consumption
+        outputs:
+          - consumption_variance
+
+      - action: report_scrap
+        condition: material_scrapped
+        inputs:
+          - scrap_quantity
+          - scrap_reason
+        outputs:
+          - scrap_record
+
+      - action: identify_excess
+        condition: production_complete
+        outputs:
+          - excess_material_list
+
+    transitions:
+      - to: consumed
+        condition: production_complete AND no_excess
+
+      - to: returned
+        condition: excess_material_exists
+        next: return_excess_materials
+
+  - id: return_excess_materials
+    name: Return Excess Materials
+    name_vi: Trả vật tư dư
+    state: delivered
+    actor: material_handler
+    trigger: excess_material_identified
+
+    actions:
+      - action: identify_returnable
+        criteria:
+          - material_condition = 'good'
+          - not_contaminated
+          - within_shelf_life
+
+      - action: package_for_return
+        description: Package materials for warehouse return
+
+      - action: transport_to_warehouse
+        destination: receiving_area_or_original_location
+
+      - action: process_return
+        actor: warehouse_clerk
+        outputs:
+          - return_transaction
+          - updated_inventory
+
+      - action: reverse_issue
+        description: Create negative issue transaction
+
+      - action: dispose_non_returnable
+        condition: material_not_returnable
+        options:
+          - scrap
+          - rework
+          - dispose
+
+    validations:
+      - rule: return_reason_documented
+        message: Return reason must be documented
+
+    transitions:
+      - to: returned
+        condition: return_processed
+
+kpis:
+  - metric: Pick Accuracy
+    formula: (correct_picks / total_picks) * 100
+    target: "> 99.5%"
+
+  - metric: Delivery Lead Time
+    formula: AVG(delivery_time - request_time)
+    target: "< 4 hours"
+
+  - metric: Material Availability
+    formula: (orders_with_materials / total_orders) * 100
+    target: "> 98%"
+
+  - metric: Consumption Variance
+    formula: (actual - standard) / standard * 100
+    target: "< 5%"
+
+  - metric: Return Rate
+    formula: (returned_value / issued_value) * 100
+    target: "< 3%"
+
+issue_methods:
+  - method: pre_kit
+    description: Materials picked and staged before production
+    use_case: Complex assemblies, organized production
+    workflow_variation: full_staging_step
+
+  - method: floor_stock
+    description: Common items stocked at work center
+    use_case: Low-value, high-usage items
+    workflow_variation: replenishment_based
+
+  - method: point_of_use
+    description: Materials delivered directly to machine
+    use_case: JIT manufacturing
+    workflow_variation: direct_delivery
+
+  - method: backflush
+    description: Consumption recorded at completion
+    use_case: Repetitive manufacturing
+    workflow_variation: post_consumption_recording
+
+notifications:
+  - event: picking_list_generated
+    recipients: [warehouse_clerk]
+    message: "New picking list for WO {wo_number}"
+
+  - event: shortage_detected
+    recipients: [planner, supervisor]
+    message: "Material shortage: {material} for WO {wo_number}"
+
+  - event: materials_staged
+    recipients: [material_handler, supervisor]
+    message: "Materials staged for WO {wo_number}"
+
+  - event: materials_delivered
+    recipients: [operator]
+    message: "Materials delivered for WO {wo_number}"
+
+  - event: variance_exceeded
+    recipients: [supervisor, planner]
+    message: "Material variance exceeded threshold: {variance}%"
+
+integrations:
+  - system: WMS
+    events:
+      - picking_complete
+      - inventory_movement
+    data: locations, quantities, lots
+
+  - system: ERP
+    events:
+      - issue_transaction
+      - return_transaction
+    data: inventory_value, cost_postings
+
+  - system: MES
+    events:
+      - consumption_recorded
+      - backflush_triggered
+    data: real_time_consumption

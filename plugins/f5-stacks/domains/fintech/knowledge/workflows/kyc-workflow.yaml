@@ -1,0 +1,609 @@
+name: kyc-workflow
+display_name: Customer Verification Process (KYC)
+description: |
+  Complete process for verifying new customer identity,
+  from registration start to approval and account activation.
+  Applies to both eKYC (electronic) and traditional KYC (at branch).
+
+domain: fintech
+version: "1.0"
+type: sequential_with_branches
+
+actors:
+  - id: customer
+    name: Customer
+    description: Person registering for new account
+
+  - id: system
+    name: Automated system
+    description: Automated processing steps of the system
+
+  - id: ocr_service
+    name: OCR Service
+    description: Optical Character Recognition service
+
+  - id: face_service
+    name: Face Recognition Service
+    description: Face matching and liveness verification service
+
+  - id: aml_service
+    name: AML Service
+    description: Check PEP, sanctions, blacklist
+
+  - id: kyc_officer
+    name: KYC Officer
+    description: Manual KYC processing staff
+
+  - id: compliance_manager
+    name: Compliance Manager
+    description: Approve high-risk cases
+
+states:
+  - id: registration_started
+    name: Registration started
+    description: Customer starts new registration process
+    terminal: false
+
+  - id: basic_info_submitted
+    name: Basic info submitted
+    description: Customer entered name, email, phone number
+    terminal: false
+
+  - id: phone_verification_pending
+    name: Phone verification pending
+    description: Waiting for customer to enter OTP code
+    terminal: false
+
+  - id: phone_verified
+    name: Phone verified
+    description: Phone number verified via OTP
+    terminal: false
+
+  - id: document_upload_pending
+    name: Document upload pending
+    description: Waiting for customer to capture/upload Citizen ID/National ID
+    terminal: false
+
+  - id: document_uploaded
+    name: Document uploaded
+    description: Document image uploaded
+    terminal: false
+
+  - id: ocr_processing
+    name: OCR processing
+    description: System recognizing information from image
+    terminal: false
+
+  - id: ocr_completed
+    name: OCR completed
+    description: Information extracted from document
+    terminal: false
+
+  - id: ocr_failed
+    name: OCR failed
+    description: Cannot recognize information from image
+    terminal: false
+
+  - id: selfie_pending
+    name: Selfie pending
+    description: Waiting for customer to take selfie
+    terminal: false
+
+  - id: liveness_check
+    name: Liveness check in progress
+    description: System verifying real person
+    terminal: false
+
+  - id: face_matching
+    name: Face matching in progress
+    description: Compare selfie with photo on document
+    terminal: false
+
+  - id: face_match_success
+    name: Face match success
+    description: Selfie face matches document
+    terminal: false
+
+  - id: face_match_failed
+    name: Face match failed
+    description: Face does not match, need retry or support
+    terminal: false
+
+  - id: aml_screening
+    name: AML screening
+    description: Check PEP, sanctions, blacklist lists
+    terminal: false
+
+  - id: aml_clear
+    name: AML clear
+    description: No alerts from AML check
+    terminal: false
+
+  - id: aml_flagged
+    name: AML flagged
+    description: Alert detected, manual review needed
+    terminal: false
+
+  - id: risk_assessment
+    name: Risk assessment
+    description: System calculates customer risk score
+    terminal: false
+
+  - id: auto_approved
+    name: Auto approved
+    description: Low-risk customer, auto approved
+    terminal: false
+
+  - id: manual_review_required
+    name: Manual review required
+    description: KYC officer needs to review profile
+    terminal: false
+
+  - id: manual_review_in_progress
+    name: Manual review in progress
+    description: KYC officer reviewing profile
+    terminal: false
+
+  - id: additional_info_required
+    name: Additional info required
+    description: Request customer to provide additional documents/information
+    terminal: false
+
+  - id: compliance_review_required
+    name: Compliance review required
+    description: PEP or high-risk case
+    terminal: false
+
+  - id: compliance_review_in_progress
+    name: Compliance review in progress
+    description: Compliance manager approving
+    terminal: false
+
+  - id: approved
+    name: Approved
+    description: KYC approved, ready to activate
+    terminal: false
+
+  - id: rejected
+    name: Rejected
+    description: KYC rejected, cannot open account
+    terminal: true
+
+  - id: activated
+    name: Activated
+    description: Account activated, ready to use
+    terminal: true
+
+  - id: expired
+    name: Expired
+    description: Time limit exceeded, must restart
+    terminal: true
+
+transitions:
+  # ===== REGISTRATION FLOW =====
+  - from: registration_started
+    to: basic_info_submitted
+    trigger: submit_basic_info
+    actor: customer
+    conditions:
+      - Name not empty
+      - Valid email
+      - Valid phone number
+    actions:
+      - Save basic information
+      - Send OTP to phone number
+
+  - from: basic_info_submitted
+    to: phone_verification_pending
+    trigger: send_otp
+    actor: system
+    actions:
+      - Generate 6-digit OTP code
+      - Send SMS
+
+  - from: phone_verification_pending
+    to: phone_verified
+    trigger: verify_otp
+    actor: customer
+    conditions:
+      - OTP correct
+      - Within time limit (3 minutes)
+      - Not exceeded 5 wrong attempts
+    actions:
+      - Mark phone_verified = true
+      - Log verification
+
+  - from: phone_verification_pending
+    to: phone_verification_pending
+    trigger: resend_otp
+    actor: customer
+    conditions:
+      - 60 seconds passed since last send
+      - Not exceeded 3 resend attempts
+    actions:
+      - Generate new OTP
+      - Send SMS
+    on_failure: expired
+
+  # ===== DOCUMENT VERIFICATION FLOW =====
+  - from: phone_verified
+    to: document_upload_pending
+    trigger: proceed_to_document
+    actor: system
+    actions:
+      - Display document capture instructions
+
+  - from: document_upload_pending
+    to: document_uploaded
+    trigger: upload_document
+    actor: customer
+    conditions:
+      - Front image uploaded
+      - Back image uploaded (if old Citizen ID)
+    actions:
+      - Save image to storage
+      - Check basic image quality
+
+  - from: document_uploaded
+    to: ocr_processing
+    trigger: start_ocr
+    actor: system
+    actions:
+      - Send image to OCR service
+
+  - from: ocr_processing
+    to: ocr_completed
+    trigger: ocr_success
+    actor: ocr_service
+    conditions:
+      - Successfully recognized required fields
+      - Confidence >= 85%
+    actions:
+      - Save OCR data
+      - Compare with entered information
+
+  - from: ocr_processing
+    to: ocr_failed
+    trigger: ocr_failure
+    actor: ocr_service
+    actions:
+      - Log error
+      - Notify customer
+
+  - from: ocr_failed
+    to: document_upload_pending
+    trigger: retry_upload
+    actor: customer
+    conditions:
+      - Not exceeded 5 attempts
+    actions:
+      - Reset upload state
+
+  # ===== FACE VERIFICATION FLOW =====
+  - from: ocr_completed
+    to: selfie_pending
+    trigger: proceed_to_selfie
+    actor: system
+    actions:
+      - Display selfie capture instructions
+
+  - from: selfie_pending
+    to: liveness_check
+    trigger: submit_selfie
+    actor: customer
+    actions:
+      - Save selfie image/video
+      - Send to liveness service
+
+  - from: liveness_check
+    to: face_matching
+    trigger: liveness_passed
+    actor: face_service
+    conditions:
+      - Liveness score >= 85%
+    actions:
+      - Record liveness passed
+      - Proceed with face matching
+
+  - from: liveness_check
+    to: selfie_pending
+    trigger: liveness_failed
+    actor: face_service
+    conditions:
+      - Not exceeded 3 attempts
+    actions:
+      - Notify to retry
+
+  - from: face_matching
+    to: face_match_success
+    trigger: face_matched
+    actor: face_service
+    conditions:
+      - Match score >= 80%
+    actions:
+      - Save match result
+
+  - from: face_matching
+    to: face_match_failed
+    trigger: face_not_matched
+    actor: face_service
+    actions:
+      - Log no match
+      - Escalate to manual review if exceeded 2 times
+
+  - from: face_match_failed
+    to: selfie_pending
+    trigger: retry_selfie
+    actor: customer
+    conditions:
+      - Not exceeded 3 attempts
+    actions:
+      - Reset selfie state
+
+  - from: face_match_failed
+    to: manual_review_required
+    trigger: escalate_to_manual
+    actor: system
+    conditions:
+      - Failed 3 attempts
+    actions:
+      - Create review ticket
+      - Notify customer
+
+  # ===== AML SCREENING FLOW =====
+  - from: face_match_success
+    to: aml_screening
+    trigger: start_aml_check
+    actor: system
+    actions:
+      - Send information to AML service
+      - Check PEP, Sanctions, Blacklist
+
+  - from: aml_screening
+    to: aml_clear
+    trigger: aml_passed
+    actor: aml_service
+    conditions:
+      - No hit from PEP list
+      - No hit from Sanctions list
+      - No hit from Blacklist
+    actions:
+      - Record AML clear
+
+  - from: aml_screening
+    to: aml_flagged
+    trigger: aml_hit
+    actor: aml_service
+    actions:
+      - Record alert
+      - Escalate to manual review
+
+  # ===== RISK ASSESSMENT FLOW =====
+  - from: aml_clear
+    to: risk_assessment
+    trigger: assess_risk
+    actor: system
+    actions:
+      - Calculate risk score based on
+      - Nationality, occupation, income, source of funds
+
+  - from: risk_assessment
+    to: auto_approved
+    trigger: low_risk
+    actor: system
+    conditions:
+      - Risk score <= 30
+      - No special flags
+    actions:
+      - Mark auto_approved
+      - Record approval time
+
+  - from: risk_assessment
+    to: manual_review_required
+    trigger: medium_risk
+    actor: system
+    conditions:
+      - Risk score > 30 AND <= 70
+    actions:
+      - Create review case
+      - Assign to KYC officer
+
+  - from: risk_assessment
+    to: compliance_review_required
+    trigger: high_risk
+    actor: system
+    conditions:
+      - Risk score > 70
+      - OR is PEP
+    actions:
+      - Create compliance case
+      - Notify Compliance Manager
+
+  # ===== MANUAL REVIEW FLOW =====
+  - from: [manual_review_required, aml_flagged]
+    to: manual_review_in_progress
+    trigger: claim_case
+    actor: kyc_officer
+    actions:
+      - Assign case to officer
+      - Record review start time
+
+  - from: manual_review_in_progress
+    to: approved
+    trigger: approve
+    actor: kyc_officer
+    conditions:
+      - Reviewed all documents
+      - Confirmed information accuracy
+    actions:
+      - Mark approved
+      - Record approver
+
+  - from: manual_review_in_progress
+    to: additional_info_required
+    trigger: request_more_info
+    actor: kyc_officer
+    actions:
+      - Send additional request to customer
+      - Record required additional information
+
+  - from: manual_review_in_progress
+    to: rejected
+    trigger: reject
+    actor: kyc_officer
+    conditions:
+      - Has valid rejection reason
+    actions:
+      - Record rejection reason
+      - Send notification to customer
+
+  - from: additional_info_required
+    to: manual_review_in_progress
+    trigger: submit_additional_info
+    actor: customer
+    actions:
+      - Update additional information
+      - Notify officer
+
+  # ===== COMPLIANCE REVIEW FLOW =====
+  - from: compliance_review_required
+    to: compliance_review_in_progress
+    trigger: compliance_claim
+    actor: compliance_manager
+    actions:
+      - Assign to compliance manager
+
+  - from: compliance_review_in_progress
+    to: approved
+    trigger: compliance_approve
+    actor: compliance_manager
+    conditions:
+      - Completed EDD
+      - Acceptable risk
+    actions:
+      - Approve with EDD condition
+      - Mark enhanced monitoring
+
+  - from: compliance_review_in_progress
+    to: rejected
+    trigger: compliance_reject
+    actor: compliance_manager
+    actions:
+      - Record rejection reason
+      - Report if needed
+
+  # ===== ACTIVATION FLOW =====
+  - from: [auto_approved, approved]
+    to: activated
+    trigger: activate_account
+    actor: system
+    actions:
+      - Create account
+      - Grant corresponding KYC level
+      - Send activation notification
+
+  # ===== TIMEOUT FLOW =====
+  - from: [registration_started, basic_info_submitted, phone_verification_pending,
+          document_upload_pending, selfie_pending, additional_info_required]
+    to: expired
+    trigger: timeout
+    actor: system
+    conditions:
+      - Over 7 days without activity
+    actions:
+      - Mark expired
+      - Send email notification
+
+sla:
+  ekyc_auto:
+    target: 3 minutes
+    description: eKYC auto from start to activation
+  ekyc_with_manual:
+    target: 24 hours
+    description: eKYC with manual review
+  compliance_review:
+    target: 48 hours
+    description: Compliance review for PEP/high-risk
+  additional_info:
+    target: 7 days
+    description: Customer deadline for additional info
+
+diagram: |
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │                           KYC PROCESS - FINTECH                                  │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │  START       │────>│ BASIC INFO   │────>│  VERIFY      │
+  │  REGISTER    │     │              │     │   OTP        │
+  └──────────────┘     └──────────────┘     └──────┬───────┘
+                                                   │
+                       ┌───────────────────────────┘
+                       ▼
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │  UPLOAD      │────>│  PROCESS     │────>│  CAPTURE     │
+  │  DOCUMENT    │     │   OCR        │     │  SELFIE      │
+  └──────────────┘     └──────────────┘     └──────┬───────┘
+                                                   │
+                       ┌───────────────────────────┘
+                       ▼
+  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
+  │  LIVENESS    │────>│  FACE        │────>│  AML         │
+  │  CHECK       │     │  MATCH       │     │  CHECK       │
+  └──────────────┘     └──────────────┘     └──────┬───────┘
+                                                   │
+                 ┌─────────────────────────────────┼─────────────────────────────────┐
+                 │                                 │                                 │
+                 ▼                                 ▼                                 ▼
+  ┌──────────────────────┐          ┌──────────────────────┐          ┌──────────────────────┐
+  │   LOW RISK           │          │   MEDIUM RISK        │          │   HIGH RISK/PEP      │
+  │   (Auto Approve)     │          │   (Manual Review)    │          │ (Compliance Review)  │
+  └──────────┬───────────┘          └──────────┬───────────┘          └──────────┬───────────┘
+             │                                 │                                  │
+             │                                 ▼                                  ▼
+             │                      ┌──────────────────────┐          ┌──────────────────────┐
+             │                      │   KYC OFFICER        │          │  COMPLIANCE MGR      │
+             │                      │   REVIEW             │          │  REVIEW              │
+             │                      └──────────┬───────────┘          └──────────┬───────────┘
+             │                                 │                                  │
+             │         ┌───────────────────────┼──────────────────────────────────┤
+             │         │                       │                                  │
+             │         ▼                       ▼                                  ▼
+             │  ┌─────────────┐        ┌─────────────┐                   ┌─────────────┐
+             │  │ REQUEST     │        │  APPROVE    │                   │  REJECT     │
+             │  │ MORE INFO   │        │             │                   │             │
+             │  └──────┬──────┘        └─────┬─────┘                   └────────────┘
+             │         │                     │
+             │         └─────────────────────┤
+             │                               │
+             └───────────────────────────────┤
+                                             ▼
+                               ┌──────────────────────┐
+                               │     ACTIVATE         │
+                               │     ACCOUNT          │
+                               └──────────────────────┘
+
+metrics:
+  - name: kyc_completion_rate
+    description: KYC completion rate
+    formula: (activated / registration_started) * 100
+    target: ">= 70%"
+
+  - name: auto_approval_rate
+    description: Auto approval rate
+    formula: (auto_approved / (auto_approved + manual_review)) * 100
+    target: ">= 80%"
+
+  - name: avg_completion_time
+    description: Average completion time
+    target: "<= 5 minutes (eKYC auto)"
+
+  - name: rejection_rate
+    description: Rejection rate
+    formula: (rejected / registration_started) * 100
+    target: "<= 10%"
+
+  - name: drop_off_rate
+    description: Drop-off rate
+    formula: (expired / registration_started) * 100
+    target: "<= 20%"

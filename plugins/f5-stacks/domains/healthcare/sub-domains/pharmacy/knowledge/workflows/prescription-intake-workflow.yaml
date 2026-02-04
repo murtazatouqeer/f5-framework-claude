@@ -1,0 +1,423 @@
+# Prescription Intake Workflow
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Workflow for receiving and entering prescriptions
+
+workflow:
+  id: prescription-intake-workflow
+  name: Prescription Intake
+  name_ja: 処方箋受付
+  description: Workflow for receiving and processing new prescriptions
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - e_prescription_received
+      - fax_prescription_received
+      - phone_prescription_called
+      - written_prescription_presented
+      - transfer_request_received
+
+  actors:
+    - id: pharmacy_clerk
+      role: Pharmacy Clerk
+      description: Handles initial intake and data entry
+      
+    - id: pharmacy_tech
+      role: Pharmacy Technician
+      description: Performs prescription entry and processing
+      
+    - id: pharmacist
+      role: Pharmacist
+      description: Verifies prescriptions and handles clinical issues
+      
+    - id: system
+      role: Pharmacy System
+      description: Automated processing and validation
+
+  preconditions:
+    - Pharmacy system operational
+    - Staff logged in with appropriate permissions
+    - Prescriber database accessible
+    - Drug database current
+
+  steps:
+    # E-Prescription Intake
+    - step: 1
+      id: receive_eprescription
+      name: Receive E-Prescription
+      actor: system
+      description: Receive and parse electronic prescription
+      optional: true
+      
+      trigger: e_prescription_received
+      
+      actions:
+        - Receive NCPDP SCRIPT message
+        - Parse prescription data
+        - Validate message format
+        - Match to patient profile
+        - Create prescription record
+        
+      e_prescription_sources:
+        - Surescripts NewRx
+        - Surescripts EPCS (controlled)
+        - Direct from EHR
+        
+      automatic_capture:
+        - Patient demographics
+        - Prescriber information
+        - Drug, quantity, directions
+        - Refill authorization
+        - Diagnosis codes (if provided)
+        
+      database_operations:
+        - CREATE prescription with status = 'received'
+        - LINK to patient profile
+        - LOG receipt timestamp
+        
+      next_step: 5
+
+    # Fax Prescription Intake
+    - step: 2
+      id: receive_fax
+      name: Receive Faxed Prescription
+      actor: pharmacy_clerk
+      description: Process faxed prescription
+      optional: true
+      
+      trigger: fax_prescription_received
+      
+      actions:
+        - Retrieve fax from queue
+        - Review for legibility
+        - Verify fax source
+        - Scan/attach to system
+        
+      fax_requirements:
+        - Legible prescription image
+        - Prescriber identification
+        - All required elements visible
+        
+      controlled_substance_fax:
+        schedule_II: "Not allowed (emergency exception only)"
+        schedule_III_V: "Allowed in most states"
+        
+      database_operations:
+        - CREATE prescription with status = 'received'
+        - ATTACH fax image
+        - SET origin_type = 'fax'
+        
+      next_step: 4
+
+    # Phone Prescription Intake
+    - step: 3
+      id: receive_phone
+      name: Receive Phone Prescription
+      actor: pharmacy_tech
+      description: Take phone prescription from prescriber
+      optional: true
+      
+      trigger: phone_prescription_called
+      
+      caller_verification:
+        - Verify prescriber identity
+        - Confirm callback number
+        - Check prescriber authorization
+        
+      information_capture:
+        required:
+          - Patient name and DOB
+          - Drug, strength, form
+          - Quantity and days supply
+          - Directions (sig)
+          - Refills authorized
+          - Prescriber name and callback
+        controlled_substances:
+          - DEA number
+          - Emergency documentation (Schedule II)
+          
+      controlled_substance_phone:
+        schedule_II: "Emergency only - 72 hour supply max"
+        schedule_III_V: "Allowed"
+        
+      database_operations:
+        - CREATE prescription with status = 'received'
+        - SET origin_type = 'phone'
+        - DOCUMENT caller information
+        
+      next_step: 4
+
+    # Manual Data Entry
+    - step: 4
+      id: data_entry
+      name: Prescription Data Entry
+      actor: pharmacy_tech
+      description: Enter prescription into pharmacy system
+      
+      data_entry_elements:
+        patient:
+          - Select or create patient profile
+          - Verify demographics
+          - Confirm insurance information
+        prescriber:
+          - Search by NPI or name
+          - Create if not found
+          - Verify DEA for controlled
+        drug:
+          - Select by name, NDC, or scan
+          - Confirm strength and form
+          - Select generic if appropriate
+        prescription_details:
+          - Quantity
+          - Days supply
+          - Directions (sig)
+          - Refills
+          - DAW code
+          - Written date
+          
+      validation_during_entry:
+        - Drug found in database
+        - Quantity reasonable
+        - Days supply appropriate
+        - Sig parseable
+        - Prescriber valid
+        
+      database_operations:
+        - UPDATE prescription with entered data
+        - SET status = 'entered'
+        - LOG entered_by and timestamp
+        
+      next_step: 5
+
+    # Patient Profile Verification
+    - step: 5
+      id: patient_verification
+      name: Patient Profile Verification
+      actor: pharmacy_tech
+      description: Verify and update patient profile
+      
+      verification_items:
+        demographics:
+          - Name spelling
+          - Date of birth
+          - Address current
+          - Phone number(s)
+        clinical:
+          - Allergies current
+          - Health conditions
+          - Pregnancy status
+        insurance:
+          - Primary insurance active
+          - Secondary if applicable
+          - Group/member ID accurate
+          
+      new_patient_requirements:
+        - HIPAA consent obtained
+        - Complete demographic entry
+        - Allergy documentation
+        
+      database_operations:
+        - UPDATE patient_profile as needed
+        - LOG profile_verified
+        
+      next_step: 6
+
+    # Insurance Verification
+    - step: 6
+      id: insurance_check
+      name: Insurance Eligibility Check
+      actor: system
+      description: Verify patient insurance eligibility
+      
+      eligibility_check:
+        - Submit E1 eligibility transaction
+        - Parse response
+        - Update copay estimates
+        - Check formulary status
+        
+      eligibility_outcomes:
+        eligible:
+          display: "Coverage verified"
+          action: Continue processing
+        not_eligible:
+          display: "Coverage not found"
+          action: Offer cash price, check for other coverage
+        plan_limitations:
+          display: "Coverage limitations apply"
+          action: Display PA/quantity limit requirements
+          
+      database_operations:
+        - STORE eligibility response
+        - UPDATE estimated_copay
+        
+      next_step: 7
+
+    # DUR Screening
+    - step: 7
+      id: dur_screening
+      name: Drug Utilization Review
+      actor: system
+      description: Perform clinical drug review
+      
+      dur_checks:
+        - Drug-drug interactions
+        - Drug-allergy interactions
+        - Drug-disease interactions
+        - Therapeutic duplication
+        - Dose validation
+        - Age/gender appropriateness
+        
+      dur_outcomes:
+        pass:
+          action: Continue to verification
+        soft_alert:
+          action: Display alerts, allow acknowledgment
+        hard_stop:
+          action: Require pharmacist review
+          
+      related_rules:
+        - BR-DUR-001 through BR-DUR-016
+        
+      database_operations:
+        - LOG all DUR results
+        - STORE alerts for pharmacist review
+        
+      next_step: 8 or 9 (based on DUR result)
+
+    # Pharmacist Clinical Review
+    - step: 8
+      id: clinical_review
+      name: Pharmacist Clinical Review
+      actor: pharmacist
+      optional: true
+      description: Review clinical alerts and concerns
+      
+      trigger: DUR hard stop or complex prescription
+      
+      review_items:
+        - DUR alerts requiring intervention
+        - Unusual doses or quantities
+        - Prescriber clarification needed
+        - Patient clinical concerns
+        
+      resolution_options:
+        approve:
+          action: Document clinical decision, continue
+        contact_prescriber:
+          action: Call for clarification, document
+        reject:
+          action: Cannot fill, notify patient
+        modify:
+          action: Therapeutic interchange, prescriber approval
+          
+      database_operations:
+        - LOG clinical_review_outcome
+        - DOCUMENT pharmacist_decision
+        
+      next_step: 9
+
+    # Entry Verification
+    - step: 9
+      id: entry_verification
+      name: Pharmacist Entry Verification
+      actor: pharmacist
+      description: Verify prescription entry accuracy
+      
+      verification_points:
+        prescription_content:
+          - Drug correct
+          - Dose appropriate
+          - Quantity matches
+          - Sig accurate
+          - Refills authorized
+        patient:
+          - Correct patient
+          - DOB verified
+        prescriber:
+          - Valid prescriber
+          - DEA valid (if controlled)
+          - License active
+          
+      verification_against_source:
+        e_prescription: "Compare to electronic record"
+        fax: "Compare to faxed image"
+        phone: "Verify documentation"
+        written: "Compare to hard copy"
+        
+      database_operations:
+        - UPDATE prescription with verified_by
+        - SET status = 'verified'
+        - LOG verification_datetime
+        
+      next_step: 10
+
+    # Queue for Filling
+    - step: 10
+      id: queue_for_fill
+      name: Queue for Filling
+      actor: system
+      description: Add prescription to fill queue
+      
+      queue_priority:
+        stat: "Immediate priority"
+        wait: "Standard queue"
+        scheduled: "Future fill date"
+        
+      queue_assignment:
+        - Assign to fill queue
+        - Calculate estimated completion
+        - Generate workflow ticket/label
+        
+      notifications:
+        patient:
+          - Estimated ready time
+          - Copay estimate
+        staff:
+          - New prescription in queue
+          
+      database_operations:
+        - SET status = 'pending_fill'
+        - CREATE fill_queue_entry
+        - CALCULATE estimated_ready_time
+        
+      next_step: Exit to dispensing-workflow
+
+  completion:
+    status: prescription_ready_for_fill
+    outputs:
+      - prescription_record
+      - patient_profile_updated
+      - insurance_verification
+      - dur_results
+      - fill_queue_entry
+
+  error_handling:
+    patient_not_found:
+      action: Create new patient profile
+      
+    prescriber_not_found:
+      action: Create prescriber, verify credentials
+      
+    drug_not_in_formulary:
+      action: Alert staff, offer alternatives
+      
+    insurance_rejected:
+      action: Verify card info, offer cash price
+      
+    dur_hard_stop:
+      action: Route to pharmacist review
+
+  metrics:
+    track:
+      - time_to_entry
+      - entry_error_rate
+      - dur_alert_rate
+      - pharmacist_intervention_rate
+      - prescriptions_per_hour
+      
+  audit:
+    log_all_steps: true
+    retention_days: 2555
+    hipaa_compliant: true

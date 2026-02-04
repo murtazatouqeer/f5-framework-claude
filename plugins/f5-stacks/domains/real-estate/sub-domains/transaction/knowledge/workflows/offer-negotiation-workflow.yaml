@@ -1,0 +1,552 @@
+# Offer Negotiation Workflow
+# F5 Framework v2.0 - Real Estate/Transaction
+# Complete offer and counter-offer negotiation process
+
+workflow:
+  name: OfferNegotiationWorkflow
+  name_vi: Quy trình đàm phán đề nghị
+  name_ja: オファー交渉ワークフロー
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    End-to-end workflow for purchase offer submission, negotiation,
+    counter-offers, and acceptance in real estate transactions.
+
+  # Workflow Metadata
+  metadata:
+    owner: transaction_team
+    estimated_duration: 1-14_days
+    complexity: moderate
+    automation_level: semi_automated
+    requires_human_approval: true
+
+  # Actors
+  actors:
+    buyer:
+      role: Purchaser
+      responsibilities:
+        - Submit offers
+        - Respond to counter-offers
+        - Provide earnest money
+        - Sign acceptance documents
+    seller:
+      role: Property owner
+      responsibilities:
+        - Review offers
+        - Accept, reject, or counter
+        - Sign acceptance documents
+    buyer_agent:
+      role: Buyer's representative
+      responsibilities:
+        - Prepare offer documents
+        - Present offers
+        - Negotiate on behalf of buyer
+        - Communicate responses
+    listing_agent:
+      role: Seller's representative
+      responsibilities:
+        - Present offers to seller
+        - Advise on market conditions
+        - Prepare counter-offers
+        - Communicate responses
+    system:
+      role: Platform automation
+      responsibilities:
+        - Track deadlines
+        - Send notifications
+        - Generate documents
+        - Record history
+
+  # Workflow States
+  states:
+    offer_preparation:
+      name: Offer Preparation
+      name_vi: Chuẩn bị đề nghị
+      description: Buyer prepares offer with agent assistance
+      entry_actions:
+        - load_property_details
+        - check_buyer_qualification
+      exit_actions:
+        - validate_offer_completeness
+      timeout: 7_days
+      timeout_action: expire_draft
+
+    offer_submitted:
+      name: Offer Submitted
+      name_vi: Đề nghị đã gửi
+      description: Offer submitted to seller
+      entry_actions:
+        - notify_listing_agent
+        - notify_seller
+        - start_expiration_timer
+      exit_actions:
+        - log_response_time
+
+    under_review:
+      name: Under Review
+      name_vi: Đang xem xét
+      description: Seller reviewing offer
+      entry_actions:
+        - notify_buyer_agent_of_review
+      reminders:
+        - at: 24_hours_before_expiration
+          to: [seller, listing_agent]
+        - at: 4_hours_before_expiration
+          to: [all_parties]
+
+    counter_offer_pending:
+      name: Counter Offer Pending
+      name_vi: Chờ đề nghị ngược
+      description: Counter offer sent, awaiting buyer response
+      entry_actions:
+        - notify_buyer
+        - notify_buyer_agent
+        - start_counter_expiration_timer
+
+    buyer_reviewing_counter:
+      name: Buyer Reviewing Counter
+      name_vi: Người mua xem xét đề nghị ngược
+      description: Buyer considering counter offer
+
+    offer_accepted:
+      name: Offer Accepted
+      name_vi: Đề nghị được chấp nhận
+      description: Offer accepted by seller
+      entry_actions:
+        - notify_all_parties
+        - generate_acceptance_document
+        - initiate_deposit_collection
+      terminal: false
+      next_workflow: contract_workflow
+
+    offer_rejected:
+      name: Offer Rejected
+      name_vi: Đề nghị bị từ chối
+      description: Offer declined by seller
+      entry_actions:
+        - notify_buyer
+        - notify_buyer_agent
+        - log_rejection_reason
+      terminal: true
+
+    offer_expired:
+      name: Offer Expired
+      name_vi: Đề nghị hết hạn
+      description: Offer expired without response
+      entry_actions:
+        - notify_all_parties
+        - log_expiration
+      terminal: true
+
+    offer_withdrawn:
+      name: Offer Withdrawn
+      name_vi: Đề nghị đã rút
+      description: Buyer withdrew offer
+      entry_actions:
+        - notify_seller
+        - notify_listing_agent
+        - log_withdrawal_reason
+      terminal: true
+
+    multiple_offers:
+      name: Multiple Offers
+      name_vi: Nhiều đề nghị
+      description: Seller has multiple offers to review
+      entry_actions:
+        - compile_offer_comparison
+        - notify_all_buyer_agents_of_multiple
+
+  # Transitions
+  transitions:
+    - from: offer_preparation
+      to: offer_submitted
+      trigger: submit_offer
+      conditions:
+        - offer_complete
+        - buyer_verified
+        - earnest_money_committed
+      actions:
+        - timestamp_submission
+        - generate_offer_id
+        - send_to_listing_agent
+
+    - from: offer_submitted
+      to: under_review
+      trigger: seller_opens_offer
+      actions:
+        - log_review_start
+        - notify_buyer_agent
+
+    - from: under_review
+      to: offer_accepted
+      trigger: accept_offer
+      conditions:
+        - not_expired
+        - seller_authorized
+      actions:
+        - record_acceptance
+        - notify_all_parties
+        - initiate_contract_phase
+
+    - from: under_review
+      to: offer_rejected
+      trigger: reject_offer
+      conditions:
+        - seller_authorized
+      actions:
+        - record_rejection
+        - capture_reason
+
+    - from: under_review
+      to: counter_offer_pending
+      trigger: send_counter_offer
+      conditions:
+        - counter_differs_from_original
+        - seller_authorized
+      actions:
+        - create_counter_offer
+        - mark_original_as_countered
+        - notify_buyer
+
+    - from: under_review
+      to: multiple_offers
+      trigger: additional_offer_received
+      actions:
+        - add_to_offer_pool
+        - notify_all_buyers_of_multiple
+
+    - from: counter_offer_pending
+      to: buyer_reviewing_counter
+      trigger: buyer_opens_counter
+      actions:
+        - log_review_start
+
+    - from: buyer_reviewing_counter
+      to: offer_accepted
+      trigger: accept_counter
+      conditions:
+        - not_expired
+        - buyer_authorized
+      actions:
+        - record_acceptance
+        - finalize_terms
+
+    - from: buyer_reviewing_counter
+      to: counter_offer_pending
+      trigger: send_counter_to_counter
+      conditions:
+        - counter_chain_not_exceeded
+        - differs_from_previous
+      actions:
+        - create_buyer_counter
+        - increment_counter_count
+
+    - from: buyer_reviewing_counter
+      to: offer_withdrawn
+      trigger: withdraw_from_negotiation
+      actions:
+        - record_withdrawal
+
+    - from: [offer_submitted, under_review]
+      to: offer_expired
+      trigger: expiration_reached
+      conditions:
+        - current_time_exceeds_expiration
+      actions:
+        - mark_expired
+        - notify_all
+
+    - from: [offer_submitted, under_review]
+      to: offer_withdrawn
+      trigger: buyer_withdraws
+      conditions:
+        - not_yet_accepted
+      actions:
+        - mark_withdrawn
+        - notify_seller
+
+    - from: multiple_offers
+      to: offer_accepted
+      trigger: accept_one_offer
+      actions:
+        - accept_selected
+        - reject_or_backup_others
+
+  # Activities
+  activities:
+    prepare_offer:
+      name: Prepare Offer
+      name_vi: Chuẩn bị đề nghị
+      actor: buyer_agent
+      steps:
+        - step: 1
+          name: Gather buyer information
+          inputs:
+            - buyer_identification
+            - pre_approval_letter
+            - proof_of_funds
+          outputs:
+            - verified_buyer_profile
+        - step: 2
+          name: Research property
+          inputs:
+            - property_listing
+            - market_comparables
+            - property_history
+          outputs:
+            - property_analysis
+        - step: 3
+          name: Determine offer terms
+          inputs:
+            - buyer_preferences
+            - market_analysis
+            - property_condition
+          outputs:
+            - proposed_terms
+        - step: 4
+          name: Complete offer form
+          inputs:
+            - proposed_terms
+            - standard_contingencies
+            - special_requests
+          outputs:
+            - offer_document
+        - step: 5
+          name: Review with buyer
+          inputs:
+            - offer_document
+          outputs:
+            - buyer_approved_offer
+        - step: 6
+          name: Collect signatures
+          inputs:
+            - buyer_approved_offer
+          outputs:
+            - signed_offer
+
+    present_offer:
+      name: Present Offer
+      name_vi: Trình bày đề nghị
+      actor: listing_agent
+      steps:
+        - step: 1
+          name: Review offer completeness
+          validation:
+            - all_required_fields_complete
+            - signatures_present
+            - earnest_money_specified
+        - step: 2
+          name: Schedule presentation
+          timing: within_24_hours
+        - step: 3
+          name: Present to seller
+          include:
+            - offer_summary
+            - buyer_qualification
+            - market_context
+            - agent_recommendation
+        - step: 4
+          name: Answer seller questions
+        - step: 5
+          name: Record seller decision
+
+    negotiate_counter:
+      name: Negotiate Counter Offer
+      name_vi: Đàm phán đề nghị ngược
+      actors: [listing_agent, buyer_agent]
+      steps:
+        - step: 1
+          name: Identify negotiation points
+          items:
+            - price
+            - closing_date
+            - contingencies
+            - inclusions_exclusions
+            - special_terms
+        - step: 2
+          name: Draft counter offer
+          actor: listing_agent
+        - step: 3
+          name: Present counter to buyer
+          actor: buyer_agent
+        - step: 4
+          name: Buyer considers response
+          options:
+            - accept_counter
+            - counter_again
+            - withdraw
+        - step: 5
+          name: Document response
+
+    handle_multiple_offers:
+      name: Handle Multiple Offers
+      name_vi: Xử lý nhiều đề nghị
+      actor: listing_agent
+      steps:
+        - step: 1
+          name: Notify all parties
+          notification: multiple_offers_received
+        - step: 2
+          name: Create comparison matrix
+          compare:
+            - price
+            - terms
+            - buyer_qualification
+            - contingencies
+            - closing_timeline
+        - step: 3
+          name: Present all offers
+          to: seller
+          format: side_by_side_comparison
+        - step: 4
+          name: Seller decision
+          options:
+            - accept_best_offer
+            - counter_one_offer
+            - counter_multiple
+            - request_highest_and_best
+        - step: 5
+          name: Communicate decisions
+          to: all_buyer_agents
+
+  # Business Rules Integration
+  business_rules:
+    - rule_ref: BR-OFF-001  # Minimum earnest money
+    - rule_ref: BR-OFF-010  # Default expiration
+    - rule_ref: BR-OFF-020  # Counter terminates original
+    - rule_ref: BR-OFF-021  # Counter chain limit
+    - rule_ref: BR-OFF-040  # Acceptance must be communicated
+
+  # Notifications
+  notifications:
+    offer_submitted:
+      recipients: [listing_agent, seller]
+      template: offer_submitted
+      channels: [email, sms, app]
+      content:
+        subject: "New Purchase Offer Received"
+        body: |
+          A new purchase offer has been submitted for {property_address}.
+          Offer Price: {offer_price}
+          Expires: {expiration_date}
+
+    offer_under_review:
+      recipients: [buyer_agent, buyer]
+      template: offer_under_review
+      channels: [email, app]
+
+    counter_offer_sent:
+      recipients: [buyer_agent, buyer]
+      template: counter_offer
+      channels: [email, sms, app]
+      content:
+        subject: "Counter Offer Received"
+        body: |
+          The seller has submitted a counter offer.
+          Counter Price: {counter_price}
+          Expires: {expiration_date}
+          Please review and respond.
+
+    offer_accepted:
+      recipients: [all_parties]
+      template: offer_accepted
+      channels: [email, sms, app]
+      priority: high
+      content:
+        subject: "🎉 Offer Accepted!"
+        body: |
+          Congratulations! The offer has been accepted.
+          Final Price: {accepted_price}
+          Next Steps: Contract preparation will begin.
+
+    offer_rejected:
+      recipients: [buyer_agent, buyer]
+      template: offer_rejected
+      channels: [email, app]
+
+    offer_expiring_soon:
+      recipients: [seller, listing_agent]
+      template: expiration_warning
+      channels: [email, sms, app]
+      timing: [24_hours, 4_hours]
+
+    multiple_offers_notice:
+      recipients: [buyer_agents]
+      template: multiple_offers
+      channels: [email, app]
+      content:
+        subject: "Multiple Offers Situation"
+        body: |
+          Please be advised that the seller has received
+          multiple offers on {property_address}.
+
+  # Documents Generated
+  documents:
+    offer_form:
+      template: purchase_offer_template
+      required_fields:
+        - property_address
+        - buyer_name
+        - offer_price
+        - earnest_money
+        - closing_date
+        - contingencies
+      signatures: [buyer]
+
+    counter_offer_form:
+      template: counter_offer_template
+      required_fields:
+        - original_offer_reference
+        - modified_terms
+        - expiration
+      signatures: [seller]
+
+    acceptance_form:
+      template: acceptance_template
+      required_fields:
+        - final_terms
+        - acceptance_date
+      signatures: [accepting_party]
+
+  # Metrics
+  metrics:
+    - name: average_negotiation_rounds
+      description: Average counter-offer rounds per transaction
+      target: "< 3"
+    - name: offer_to_acceptance_time
+      description: Average days from offer to acceptance
+      target: "< 5 days"
+    - name: offer_acceptance_rate
+      description: Percentage of offers that result in acceptance
+      target: "> 60%"
+    - name: expiration_rate
+      description: Percentage of offers that expire
+      target: "< 10%"
+
+  # Error Handling
+  error_handling:
+    offer_validation_failed:
+      action: return_to_preparation
+      notification: validation_errors
+    submission_failed:
+      action: retry_with_backoff
+      max_retries: 3
+    notification_failed:
+      action: queue_for_retry
+      fallback: manual_notification
+
+  # Audit Trail
+  audit:
+    tracked_events:
+      - offer_created
+      - offer_submitted
+      - offer_viewed
+      - counter_created
+      - response_submitted
+      - offer_accepted
+      - offer_rejected
+      - offer_expired
+      - offer_withdrawn
+    retention: 7_years

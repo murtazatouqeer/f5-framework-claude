@@ -1,0 +1,577 @@
+name: ImagingOrder
+display_name: Imaging Order / Đơn chẩn đoán hình ảnh
+description: |
+  Radiology and imaging order entity for X-ray, CT, MRI, ultrasound,
+  and other diagnostic imaging studies. Supports DICOM integration
+  and structured reporting.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: order
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: order_number
+      display_name: Order Number
+      type: string
+      pattern: "^IMG-[0-9]{12}$"
+      example: "IMG-202401150001"
+      auto_generated: true
+
+    - name: accession_number
+      type: string
+      description: Radiology accession number
+
+    - name: study_instance_uid
+      type: string
+      description: DICOM Study Instance UID
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: draft
+      description: Order being composed
+
+    - value: pending
+      description: Awaiting signature
+
+    - value: signed
+      description: Signed, ready for scheduling
+
+    - value: scheduled
+      description: Exam scheduled
+
+    - value: arrived
+      description: Patient arrived for exam
+
+    - value: in_progress
+      description: Exam in progress
+
+    - value: completed
+      description: Exam completed, awaiting interpretation
+
+    - value: preliminary
+      description: Preliminary report available
+
+    - value: final
+      description: Final report available
+
+    - value: cancelled
+      description: Order cancelled
+
+    - value: no_show
+      description: Patient did not arrive
+
+  default: draft
+
+state_machine:
+  initial: draft
+  transitions:
+    draft:
+      - to: pending
+        event: submit
+      - to: cancelled
+        event: cancel
+
+    pending:
+      - to: signed
+        event: sign_order
+      - to: draft
+        event: return_to_draft
+
+    signed:
+      - to: scheduled
+        event: schedule_exam
+      - to: cancelled
+        event: cancel
+
+    scheduled:
+      - to: arrived
+        event: patient_check_in
+      - to: no_show
+        event: mark_no_show
+      - to: cancelled
+        event: cancel
+
+    arrived:
+      - to: in_progress
+        event: begin_exam
+
+    in_progress:
+      - to: completed
+        event: complete_exam
+
+    completed:
+      - to: preliminary
+        event: preliminary_report
+      - to: final
+        event: final_report
+
+    preliminary:
+      - to: final
+        event: finalize_report
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: ordering_provider_id
+      type: uuid
+      required: true
+      references: Provider
+
+    - name: ordering_provider_name
+      type: string
+
+    - name: referring_provider_id
+      type: uuid
+      references: Provider
+
+  study_details:
+    - name: modality
+      type: enum
+      required: true
+      values:
+        - value: XR
+          description: X-Ray/Radiograph
+        - value: CT
+          description: Computed Tomography
+        - value: MR
+          description: Magnetic Resonance
+        - value: US
+          description: Ultrasound
+        - value: NM
+          description: Nuclear Medicine
+        - value: PT
+          description: PET Scan
+        - value: MG
+          description: Mammography
+        - value: FL
+          description: Fluoroscopy
+        - value: DX
+          description: Digital Radiography
+        - value: CR
+          description: Computed Radiography
+
+    - name: procedure_code
+      type: string
+      description: CPT/HCPCS code
+
+    - name: procedure_name
+      type: string
+      required: true
+
+    - name: procedure_name_vi
+      type: string
+
+    - name: body_part
+      type: enum
+      values:
+        - head
+        - brain
+        - neck
+        - spine_cervical
+        - spine_thoracic
+        - spine_lumbar
+        - chest
+        - abdomen
+        - pelvis
+        - upper_extremity
+        - lower_extremity
+        - shoulder
+        - elbow
+        - wrist
+        - hand
+        - hip
+        - knee
+        - ankle
+        - foot
+        - whole_body
+
+    - name: laterality
+      type: enum
+      values: [left, right, bilateral, not_applicable]
+
+    - name: views
+      type: array
+      items:
+        type: string
+      description: Views ordered (e.g., PA, Lateral)
+
+    - name: priority
+      type: enum
+      values:
+        - routine
+        - urgent
+        - stat
+        - asap
+      default: routine
+
+  clinical_info:
+    - name: clinical_indication
+      type: string
+      required: true
+      description: Reason for exam
+
+    - name: diagnosis_codes
+      type: array
+      items:
+        type: string
+
+    - name: relevant_history
+      type: text
+
+    - name: comparison_studies
+      type: array
+      items:
+        type: object
+        properties:
+          study_date:
+            type: date
+          accession_number:
+            type: string
+          description:
+            type: string
+
+  contrast:
+    - name: contrast_required
+      type: boolean
+      default: false
+
+    - name: contrast_type
+      type: enum
+      values:
+        - iodinated_iv
+        - iodinated_oral
+        - gadolinium
+        - barium
+        - none
+
+    - name: contrast_allergy_checked
+      type: boolean
+      default: false
+
+    - name: premedication_required
+      type: boolean
+      default: false
+
+    - name: premedication_protocol
+      type: string
+
+    - name: renal_function_checked
+      type: boolean
+      default: false
+
+    - name: egfr_value
+      type: decimal
+
+    - name: egfr_date
+      type: date
+
+  scheduling:
+    - name: scheduled_date
+      type: date
+
+    - name: scheduled_time
+      type: time
+
+    - name: scheduled_duration_minutes
+      type: integer
+
+    - name: facility_id
+      type: uuid
+      references: Facility
+
+    - name: department_id
+      type: uuid
+      references: Department
+
+    - name: room
+      type: string
+
+    - name: equipment_id
+      type: string
+
+  patient_prep:
+    - name: preparation_instructions
+      type: text
+
+    - name: fasting_required
+      type: boolean
+      default: false
+
+    - name: fasting_hours
+      type: integer
+
+    - name: medication_hold
+      type: array
+      items:
+        type: object
+        properties:
+          medication:
+            type: string
+          hold_hours_before:
+            type: integer
+          reason:
+            type: string
+
+    - name: pregnancy_screening_required
+      type: boolean
+
+    - name: pregnancy_status
+      type: enum
+      values: [not_pregnant, pregnant, unknown, not_applicable]
+
+    - name: lmp_date
+      type: date
+      description: Last menstrual period
+
+  safety:
+    - name: safety_screening_completed
+      type: boolean
+      default: false
+
+    - name: mri_safety_form_completed
+      type: boolean
+
+    - name: implant_screening
+      type: boolean
+
+    - name: implants
+      type: array
+      items:
+        type: object
+        properties:
+          type:
+            type: string
+          mri_safe:
+            type: enum
+            values: [safe, conditional, unsafe, unknown]
+
+    - name: claustrophobia
+      type: boolean
+      default: false
+
+    - name: sedation_required
+      type: boolean
+      default: false
+
+  timing:
+    - name: ordered_at
+      type: timestamp
+      auto_set: on_create
+
+    - name: signed_at
+      type: timestamp
+
+    - name: exam_start_time
+      type: timestamp
+
+    - name: exam_end_time
+      type: timestamp
+
+    - name: preliminary_report_time
+      type: timestamp
+
+    - name: final_report_time
+      type: timestamp
+
+  radiologist:
+    - name: interpreting_radiologist_id
+      type: uuid
+      references: Provider
+
+    - name: interpreting_radiologist_name
+      type: string
+
+  report:
+    - name: report_id
+      type: uuid
+      references: MedicalRecord
+
+    - name: findings
+      type: text
+
+    - name: impression
+      type: text
+
+    - name: critical_finding
+      type: boolean
+      default: false
+
+    - name: critical_finding_communicated
+      type: boolean
+
+    - name: critical_finding_communicated_to
+      type: string
+
+    - name: critical_finding_communicated_at
+      type: timestamp
+
+    - name: recommendations
+      type: array
+      items:
+        type: string
+
+    - name: birads_category
+      type: enum
+      values: ["0", "1", "2", "3", "4", "5", "6"]
+      description: BI-RADS for mammography
+
+    - name: follow_up_recommended
+      type: boolean
+
+    - name: follow_up_timeframe
+      type: string
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: ordering_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: ordering_provider_id
+
+  - name: interpreting_radiologist
+    type: many_to_one
+    target: Provider
+    foreign_key: interpreting_radiologist_id
+
+  - name: report
+    type: one_to_one
+    target: MedicalRecord
+    foreign_key: report_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-IMG-001
+    name: Clinical Indication Required
+    description: All imaging orders require clinical indication
+    rule: clinical_indication IS NOT NULL
+
+  - id: BR-IMG-002
+    name: Contrast Allergy Check
+    description: Check allergies before ordering contrast
+    rule: |
+      contrast_required = TRUE
+      REQUIRES contrast_allergy_checked = TRUE
+
+  - id: BR-IMG-003
+    name: Renal Function for Contrast
+    description: Check renal function for IV contrast
+    rule: |
+      contrast_type IN ('iodinated_iv', 'gadolinium')
+      REQUIRES renal_function_checked = TRUE
+      AND egfr_date >= CURRENT_DATE - INTERVAL '30 days'
+
+  - id: BR-IMG-004
+    name: MRI Safety Screening
+    description: MRI requires safety screening
+    rule: |
+      modality = 'MR'
+      REQUIRES mri_safety_form_completed = TRUE
+      AND implant_screening = TRUE
+
+  - id: BR-IMG-005
+    name: Pregnancy Screening
+    description: Ionizing radiation requires pregnancy screening
+    rule: |
+      modality IN ('XR', 'CT', 'FL', 'NM', 'PT', 'MG')
+      AND patient.gender = 'female'
+      AND patient.age BETWEEN 10 AND 55
+      REQUIRES pregnancy_screening_required = TRUE
+
+  - id: BR-IMG-006
+    name: Critical Finding Communication
+    description: Critical findings require immediate communication
+    rule: |
+      critical_finding = TRUE
+      REQUIRES critical_finding_communicated = TRUE
+      WITHIN 60 minutes of discovery
+
+  - id: BR-IMG-007
+    name: Report Turnaround
+    description: Reports due within specified timeframe
+    rule: |
+      IF priority = 'stat' THEN report_due_hours = 1
+      IF priority = 'urgent' THEN report_due_hours = 4
+      IF priority = 'routine' THEN report_due_hours = 24
+
+  - id: BR-IMG-008
+    name: Comparison Studies
+    description: Include relevant prior studies for comparison
+    rule: |
+      SUGGEST comparison_studies FROM patient.imaging_history
+      WHERE body_part = current.body_part
+      AND study_date >= CURRENT_DATE - INTERVAL '2 years'
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_imaging_order_number
+    columns: [order_number]
+    unique: true
+
+  - name: idx_imaging_accession
+    columns: [accession_number]
+    unique: true
+    condition: "accession_number IS NOT NULL"
+
+  - name: idx_imaging_patient
+    columns: [patient_id]
+
+  - name: idx_imaging_encounter
+    columns: [encounter_id]
+
+  - name: idx_imaging_provider
+    columns: [ordering_provider_id]
+
+  - name: idx_imaging_status
+    columns: [status]
+
+  - name: idx_imaging_modality
+    columns: [modality]
+
+  - name: idx_imaging_scheduled
+    columns: [scheduled_date, scheduled_time]
+
+  - name: idx_imaging_critical
+    columns: [critical_finding]
+    condition: "critical_finding = TRUE"

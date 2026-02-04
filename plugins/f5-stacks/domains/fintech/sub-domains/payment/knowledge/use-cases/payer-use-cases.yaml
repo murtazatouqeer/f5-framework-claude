@@ -1,0 +1,405 @@
+# Payer Use Cases
+# Domain: fintech/payment
+# Actor: Customer/Payer making payments
+
+name: Payer Use Cases
+display_name: Payer Use Cases
+description: |
+  Use cases for customers/payers interacting with the payment system
+  including making payments, managing payment methods, and handling refunds.
+
+  Vietnamese: Các use case cho khách hàng/người thanh toán tương tác với
+  hệ thống thanh toán bao gồm thực hiện thanh toán, quản lý phương thức
+  thanh toán và xử lý hoàn tiền.
+
+domain: fintech
+sub_domain: payment
+category: use-cases
+actor: payer
+version: "1.0.0"
+
+use_cases:
+  # ============ PAYMENT USE CASES ============
+  - id: UC-PAY-001
+    name: Make Payment with Card
+    vietnamese: Thanh toán bằng thẻ
+    description: Customer completes a payment using a credit or debit card
+    actor: payer
+    preconditions:
+      - Customer has items in cart/checkout
+      - Merchant is active and can accept payments
+      - Customer has a valid payment card
+    trigger: Customer clicks "Pay Now" button
+    main_flow:
+      1: System displays payment form
+      2: Customer enters card details (number, expiry, CVV)
+      3: Customer enters billing address (if required)
+      4: Customer clicks "Complete Payment"
+      5: System validates card details (Luhn check, expiry)
+      6: System performs fraud check
+      7: System initiates 3D Secure if required
+      8: Customer completes 3DS challenge (if applicable)
+      9: System authorizes payment with card network
+      10: System captures payment (if auto-capture)
+      11: System displays payment confirmation
+      12: System sends receipt email to customer
+    alternative_flows:
+      A1_card_declined:
+        trigger: Card is declined at step 9
+        steps:
+          - System displays decline reason
+          - Customer can retry with different card
+          - Return to step 2
+      A2_3ds_failed:
+        trigger: 3DS authentication fails at step 8
+        steps:
+          - System displays authentication failure
+          - Customer can retry or use different card
+          - Return to step 2
+      A3_fraud_blocked:
+        trigger: Fraud check fails at step 6
+        steps:
+          - System displays "payment could not be processed"
+          - Customer can contact support
+    postconditions:
+      - Payment is captured and recorded
+      - Customer receives confirmation
+      - Merchant is notified
+    business_rules:
+      - BR-PPR-001: Amount validation
+      - BR-PPR-003: Card validation
+      - BR-PPR-010: 3DS requirement
+
+  - id: UC-PAY-002
+    name: Make Payment with E-Wallet
+    vietnamese: Thanh toán bằng ví điện tử
+    description: Customer completes payment using an e-wallet (MoMo, ZaloPay, etc.)
+    actor: payer
+    preconditions:
+      - Customer has items in cart/checkout
+      - Merchant accepts e-wallet payments
+      - Customer has e-wallet app installed
+    trigger: Customer selects e-wallet payment option
+    main_flow:
+      1: System displays available e-wallet options
+      2: Customer selects preferred e-wallet (MoMo, ZaloPay, VNPay)
+      3: System generates payment request
+      4: System redirects customer to e-wallet app/page
+      5: Customer confirms payment in e-wallet app
+      6: E-wallet processes payment
+      7: System receives payment confirmation
+      8: System displays payment success
+      9: System sends receipt email
+    alternative_flows:
+      A1_wallet_timeout:
+        trigger: Customer doesn't confirm within timeout
+        steps:
+          - Payment expires
+          - Customer is notified of timeout
+          - Customer can retry payment
+      A2_insufficient_balance:
+        trigger: E-wallet has insufficient funds
+        steps:
+          - System displays insufficient balance error
+          - Customer can top up or use different method
+    postconditions:
+      - Payment completed via e-wallet
+      - Customer receives confirmation
+    business_rules:
+      - BR-PPR-070: E-wallet balance check
+      - BR-FEE-003: E-wallet fee calculation
+
+  - id: UC-PAY-003
+    name: Make Payment with Bank Transfer
+    vietnamese: Thanh toán bằng chuyển khoản ngân hàng
+    description: Customer completes payment via bank transfer
+    actor: payer
+    preconditions:
+      - Merchant accepts bank transfer
+      - Customer has bank account
+    trigger: Customer selects bank transfer option
+    main_flow:
+      1: System displays bank transfer instructions
+      2: System generates unique transfer reference
+      3: Customer transfers funds to designated account
+      4: System monitors for incoming transfer
+      5: System matches transfer to payment reference
+      6: System confirms payment
+      7: System sends confirmation to customer
+    alternative_flows:
+      A1_wrong_amount:
+        trigger: Transfer amount doesn't match
+        steps:
+          - System flags for manual review
+          - Support contacts customer
+      A2_missing_reference:
+        trigger: Reference not included in transfer
+        steps:
+          - System attempts to match by amount/date
+          - May require manual reconciliation
+    postconditions:
+      - Bank transfer received and matched
+      - Payment confirmed
+    business_rules:
+      - BR-PPR-071: Bank transfer timeout
+      - BR-FEE-004: Bank transfer fee
+
+  - id: UC-PAY-004
+    name: Save Payment Method
+    vietnamese: Lưu phương thức thanh toán
+    description: Customer saves a payment method for future use
+    actor: payer
+    preconditions:
+      - Customer is authenticated
+      - Customer has valid payment method
+    trigger: Customer checks "Save for future payments" during checkout
+    main_flow:
+      1: Customer enters payment method details
+      2: Customer confirms saving the method
+      3: System tokenizes payment method
+      4: System verifies payment method (small authorization)
+      5: System voids verification charge
+      6: System stores tokenized method
+      7: System displays confirmation of saved method
+    alternative_flows:
+      A1_verification_failed:
+        trigger: Small authorization fails
+        steps:
+          - System notifies customer of failure
+          - Payment method not saved
+    postconditions:
+      - Payment method securely tokenized and stored
+      - Available for future payments
+    business_rules:
+      - BR-PMT-001: Card data tokenization
+      - BR-PMT-003: One default per type
+
+  - id: UC-PAY-005
+    name: Pay with Saved Payment Method
+    vietnamese: Thanh toán bằng phương thức đã lưu
+    description: Customer uses a previously saved payment method
+    actor: payer
+    preconditions:
+      - Customer is authenticated
+      - Customer has saved payment methods
+    trigger: Customer selects saved payment method at checkout
+    main_flow:
+      1: System displays customer's saved payment methods
+      2: Customer selects preferred saved method
+      3: Customer confirms payment
+      4: System retrieves tokenized payment data
+      5: System processes payment with token
+      6: System displays confirmation
+    alternative_flows:
+      A1_card_expired:
+        trigger: Saved card has expired
+        steps:
+          - System notifies customer
+          - System attempts network update
+          - If updated, proceed; else request new card
+    postconditions:
+      - Payment processed using saved method
+    business_rules:
+      - BR-PMT-002: Auto-update expired cards
+      - BR-PMT-005: Revoked methods not usable
+
+  - id: UC-PAY-006
+    name: Complete 3D Secure Authentication
+    vietnamese: Hoàn thành xác thực 3D Secure
+    description: Customer completes 3D Secure challenge
+    actor: payer
+    preconditions:
+      - Payment requires 3D Secure
+      - Customer's card supports 3DS
+    trigger: System redirects to 3DS challenge
+    main_flow:
+      1: System redirects to issuing bank's 3DS page
+      2: Customer receives OTP or authenticates via app
+      3: Customer enters OTP or confirms in bank app
+      4: Bank verifies authentication
+      5: System receives authentication result
+      6: Payment continues with authentication data
+    alternative_flows:
+      A1_otp_wrong:
+        trigger: Customer enters wrong OTP
+        steps:
+          - Bank allows retry (up to 3 times)
+          - If exceeded, authentication fails
+      A2_timeout:
+        trigger: Customer doesn't complete in time
+        steps:
+          - Authentication expires
+          - Payment fails
+    postconditions:
+      - 3DS authentication completed
+      - Payment proceeds with authentication proof
+    business_rules:
+      - BR-PPR-010 to BR-PPR-013: 3DS rules
+
+  # ============ REFUND USE CASES ============
+  - id: UC-PAY-010
+    name: Request Refund
+    vietnamese: Yêu cầu hoàn tiền
+    description: Customer requests a refund for a payment
+    actor: payer
+    preconditions:
+      - Customer has a completed payment
+      - Payment is within refund window
+    trigger: Customer initiates refund request
+    main_flow:
+      1: Customer navigates to order/payment history
+      2: Customer selects payment to refund
+      3: Customer clicks "Request Refund"
+      4: System displays refund form
+      5: Customer selects refund reason
+      6: Customer provides additional details (optional)
+      7: Customer submits refund request
+      8: System validates refund eligibility
+      9: System submits refund to merchant
+      10: System displays refund status
+    alternative_flows:
+      A1_outside_window:
+        trigger: Refund requested outside window
+        steps:
+          - System informs customer of policy
+          - Suggests contacting support
+      A2_partial_refund:
+        trigger: Only partial refund eligible
+        steps:
+          - System shows maximum refundable amount
+          - Customer proceeds with partial refund
+    postconditions:
+      - Refund request submitted
+      - Customer notified of status
+    business_rules:
+      - BR-REF-001 to BR-REF-006: Refund rules
+
+  - id: UC-PAY-011
+    name: View Payment History
+    vietnamese: Xem lịch sử thanh toán
+    description: Customer views their payment transaction history
+    actor: payer
+    preconditions:
+      - Customer is authenticated
+    trigger: Customer navigates to payment history
+    main_flow:
+      1: Customer clicks "Payment History"
+      2: System retrieves customer's transactions
+      3: System displays transaction list with filters
+      4: Customer can filter by date, status, merchant
+      5: Customer clicks on transaction for details
+      6: System displays full transaction details
+    postconditions:
+      - Customer views their payment history
+
+  - id: UC-PAY-012
+    name: Download Payment Receipt
+    vietnamese: Tải biên lai thanh toán
+    description: Customer downloads a receipt for a payment
+    actor: payer
+    preconditions:
+      - Customer has completed payment
+      - Payment succeeded
+    trigger: Customer requests receipt download
+    main_flow:
+      1: Customer navigates to payment details
+      2: Customer clicks "Download Receipt"
+      3: System generates PDF receipt
+      4: System downloads receipt to customer device
+    alternative_flows:
+      A1_email_receipt:
+        trigger: Customer clicks "Email Receipt"
+        steps:
+          - System sends receipt to registered email
+    postconditions:
+      - Customer has receipt document
+
+  # ============ PAYMENT METHOD MANAGEMENT ============
+  - id: UC-PAY-020
+    name: View Saved Payment Methods
+    vietnamese: Xem phương thức thanh toán đã lưu
+    description: Customer views their saved payment methods
+    actor: payer
+    preconditions:
+      - Customer is authenticated
+    trigger: Customer navigates to payment methods
+    main_flow:
+      1: Customer clicks "Payment Methods"
+      2: System retrieves saved methods
+      3: System displays methods with masked details
+      4: Customer can see card last4, expiry, type
+      5: Customer can see which is default
+    postconditions:
+      - Customer views saved payment methods
+
+  - id: UC-PAY-021
+    name: Remove Saved Payment Method
+    vietnamese: Xóa phương thức thanh toán đã lưu
+    description: Customer removes a saved payment method
+    actor: payer
+    preconditions:
+      - Customer has saved payment methods
+    trigger: Customer clicks "Remove" on payment method
+    main_flow:
+      1: Customer selects payment method to remove
+      2: Customer clicks "Remove"
+      3: System asks for confirmation
+      4: Customer confirms removal
+      5: System revokes payment method
+      6: System confirms removal
+    alternative_flows:
+      A1_active_subscription:
+        trigger: Method is used for active subscription
+        steps:
+          - System warns about affected subscription
+          - Customer must update subscription first
+    postconditions:
+      - Payment method revoked
+      - No longer usable
+    business_rules:
+      - BR-PMT-005: Revoked methods cannot be reactivated
+
+  - id: UC-PAY-022
+    name: Set Default Payment Method
+    vietnamese: Đặt phương thức thanh toán mặc định
+    description: Customer sets a payment method as default
+    actor: payer
+    preconditions:
+      - Customer has multiple saved methods
+    trigger: Customer clicks "Set as Default"
+    main_flow:
+      1: Customer selects payment method
+      2: Customer clicks "Set as Default"
+      3: System updates default status
+      4: System removes default from previous method
+      5: System confirms change
+    postconditions:
+      - Selected method is now default
+    business_rules:
+      - BR-PMT-003: One default per type per customer
+
+# ============ ACTOR PROFILE ============
+actor_profile:
+  id: payer
+  name: Payer/Customer
+  description: End user making payments for goods or services
+  vietnamese: Người dùng cuối thực hiện thanh toán cho hàng hóa hoặc dịch vụ
+  goals:
+    - Complete payments quickly and securely
+    - Save payment methods for convenience
+    - Track payment history
+    - Request refunds when needed
+  pain_points:
+    - Complex checkout processes
+    - Payment failures without clear reasons
+    - Slow refund processing
+    - Security concerns
+
+# ============ REQUIREMENTS TRACEABILITY ============
+requirements_traceability:
+  - use_case: UC-PAY-001
+    requirements: [FR-PAY-001, FR-PAY-002, NFR-SEC-001]
+  - use_case: UC-PAY-004
+    requirements: [FR-PAY-010, NFR-SEC-002]
+  - use_case: UC-PAY-010
+    requirements: [FR-REF-001, FR-REF-002]

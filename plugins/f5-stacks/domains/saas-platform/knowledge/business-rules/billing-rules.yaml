@@ -1,0 +1,633 @@
+name: Billing Rules
+display_name: Billing Rules / Quy tắc thanh toán
+description: |
+  Business rules governing invoicing, payment processing, dunning,
+  tax calculation, and financial operations.
+
+domain: saas-platform
+rule_category: billing
+version: "1.0"
+compliance: [PCI-DSS, SOC2]
+
+# =============================================================================
+# INVOICE RULES
+# =============================================================================
+invoice_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-INV-001 - Invoice Number Generation
+  # ---------------------------------------------------------------------------
+  - id: BIL-INV-001
+    name: Invoice Number Generation
+    name_vi: Tạo số hóa đơn
+    severity: high
+    description: |
+      Invoice numbers are sequential and globally unique.
+      Format: INV-YYYY-NNNNN
+    description_vi: |
+      Số hóa đơn là tuần tự và duy nhất toàn cục.
+      Định dạng: INV-YYYY-NNNNN
+
+    format:
+      pattern: "INV-{year}-{sequence:05d}"
+      examples:
+        - "INV-2024-00001"
+        - "INV-2024-00002"
+        - "INV-2025-00001"  # Resets yearly
+
+    generation_rules:
+      - "Sequence resets to 1 each year"
+      - "Atomic increment to prevent duplicates"
+      - "Cannot be reused even if voided"
+      - "Invoice numbers are immutable once assigned"
+
+    implementation: |
+      -- PostgreSQL sequence
+      CREATE SEQUENCE invoice_number_seq_2024 START 1;
+
+      SELECT CONCAT('INV-', EXTRACT(YEAR FROM NOW()), '-',
+                    LPAD(nextval('invoice_number_seq_' || EXTRACT(YEAR FROM NOW()))::text, 5, '0'));
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-INV-002 - Invoice Immutability
+  # ---------------------------------------------------------------------------
+  - id: BIL-INV-002
+    name: Invoice Immutability
+    name_vi: Tính bất biến của hóa đơn
+    severity: critical
+    description: |
+      Finalized invoices cannot be modified.
+      Corrections require credit notes or new invoices.
+    description_vi: |
+      Hóa đơn đã hoàn tất không thể sửa đổi.
+      Điều chỉnh yêu cầu ghi chú tín dụng hoặc hóa đơn mới.
+
+    rules:
+      draft_invoices:
+        editable: true
+        fields_editable: all
+
+      finalized_invoices:
+        editable: false
+        allowed_changes:
+          - "Add payment record"
+          - "Add credit note reference"
+          - "Update status (paid, void)"
+          - "Add notes/memo"
+
+        corrections:
+          for_errors: "Issue credit note + new invoice"
+          for_refunds: "Issue credit note"
+          for_disputes: "Issue credit note after resolution"
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-INV-003 - Invoice Due Dates
+  # ---------------------------------------------------------------------------
+  - id: BIL-INV-003
+    name: Invoice Due Dates
+    name_vi: Ngày đáo hạn hóa đơn
+    severity: medium
+    description: |
+      Due dates based on payment terms and billing cycle.
+      Enterprise can have custom payment terms.
+    description_vi: |
+      Ngày đáo hạn dựa trên điều khoản thanh toán và chu kỳ thanh toán.
+      Enterprise có thể có điều khoản thanh toán tùy chỉnh.
+
+    payment_terms:
+      default:
+        due_on_receipt: true  # Credit card billing
+        net_days: 0
+
+      enterprise_standard:
+        net_days: 30
+
+      enterprise_custom:
+        options: [15, 30, 45, 60]
+        requires: sales_approval
+
+    calculation: |
+      due_date = invoice_date + net_days
+      // If due_date falls on weekend, extend to next business day
+
+# =============================================================================
+# PAYMENT PROCESSING RULES
+# =============================================================================
+payment_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-PAY-001 - Payment Methods
+  # ---------------------------------------------------------------------------
+  - id: BIL-PAY-001
+    name: Accepted Payment Methods
+    name_vi: Phương thức thanh toán chấp nhận
+    severity: medium
+    description: |
+      Payment methods vary by tier and region.
+    description_vi: |
+      Phương thức thanh toán khác nhau theo cấp và vùng.
+
+    by_tier:
+      free:
+        methods: []  # No payment required
+
+      starter:
+        methods:
+          - credit_card
+          - debit_card
+        auto_charge: required
+
+      professional:
+        methods:
+          - credit_card
+          - debit_card
+          - ach_debit
+        auto_charge: required
+
+      enterprise:
+        methods:
+          - credit_card
+          - debit_card
+          - ach_debit
+          - wire_transfer
+          - purchase_order
+        auto_charge: optional
+
+    regional_methods:
+      us:
+        - credit_card
+        - ach_debit
+
+      eu:
+        - credit_card
+        - sepa_debit
+        - wire_transfer
+
+      asia:
+        - credit_card
+        - wire_transfer
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-PAY-002 - Payment Security
+  # ---------------------------------------------------------------------------
+  - id: BIL-PAY-002
+    name: Payment Security
+    name_vi: Bảo mật thanh toán
+    severity: critical
+    description: |
+      All payment processing follows PCI-DSS requirements.
+      No raw card data stored in our systems.
+    description_vi: |
+      Tất cả xử lý thanh toán tuân theo yêu cầu PCI-DSS.
+      Không lưu trữ dữ liệu thẻ thô trong hệ thống của chúng tôi.
+
+    pci_compliance:
+      card_data_storage: prohibited
+      stored_data:
+        - card_last4
+        - card_brand
+        - card_expiry_month
+        - card_expiry_year
+        - processor_token
+
+      tokenization:
+        provider: stripe
+        token_format: "pm_*"
+
+      transmission:
+        - "TLS 1.2+ for all payment data"
+        - "Direct browser-to-processor tokenization"
+        - "Server never sees raw card numbers"
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-PAY-003 - Payment Retry Logic
+  # ---------------------------------------------------------------------------
+  - id: BIL-PAY-003
+    name: Payment Retry Logic
+    name_vi: Logic thử lại thanh toán
+    severity: high
+    description: |
+      Failed payments are retried according to smart retry schedule.
+      Retry timing optimized based on failure reason.
+    description_vi: |
+      Thanh toán thất bại được thử lại theo lịch thử lại thông minh.
+      Thời gian thử lại được tối ưu hóa dựa trên lý do thất bại.
+
+    retry_schedule:
+      default: [1, 3, 7, 14]  # Days after initial failure
+
+      by_failure_reason:
+        insufficient_funds:
+          schedule: [3, 7, 14]  # Wait longer for funds
+          retry_time: "10:00 UTC"  # Morning for payday
+
+        card_declined:
+          schedule: [1, 3, 7]
+          max_retries: 3
+
+        card_expired:
+          schedule: []  # No retry, request new card
+          action: "Request updated payment method"
+
+        temporary_failure:
+          schedule: [0.25, 1, 3]  # Retry quickly
+          retry_time: "Immediate for first retry"
+
+        fraud_suspected:
+          schedule: []  # No retry
+          action: "Contact customer support required"
+
+    smart_retry:
+      enabled: true
+      features:
+        - "Retry at optimal time based on historical success"
+        - "Consider customer timezone for retry timing"
+        - "Machine learning model for retry scheduling"
+
+# =============================================================================
+# DUNNING RULES
+# =============================================================================
+dunning_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-DUN-001 - Dunning Sequence
+  # ---------------------------------------------------------------------------
+  - id: BIL-DUN-001
+    name: Dunning Sequence
+    name_vi: Trình tự thu nợ
+    severity: high
+    description: |
+      Systematic dunning process for failed payments.
+      Escalates from email to account restriction.
+    description_vi: |
+      Quy trình thu nợ có hệ thống cho thanh toán thất bại.
+      Leo thang từ email đến hạn chế tài khoản.
+
+    sequence:
+      day_0:  # Payment failed
+        status: past_due
+        actions:
+          - "Send payment failed email"
+          - "Show in-app notification"
+          - "First retry attempt"
+
+      day_3:
+        actions:
+          - "Second retry attempt"
+          - "Send reminder email"
+          - "SMS notification (if opted in)"
+
+      day_7:
+        status: past_due
+        actions:
+          - "Third retry attempt"
+          - "Send urgent payment required email"
+          - "Add banner to dashboard"
+
+      day_14:
+        status: unpaid
+        actions:
+          - "Final retry attempt"
+          - "Send final notice email"
+          - "Restrict new data creation"
+          - "API rate limit reduced to 10%"
+
+      day_21:
+        actions:
+          - "Send suspension warning"
+          - "Read-only access"
+          - "API access disabled"
+
+      day_30:
+        status: cancelled
+        actions:
+          - "Cancel subscription"
+          - "Send cancellation notice"
+          - "Start data retention period"
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-DUN-002 - Dunning Exemptions
+  # ---------------------------------------------------------------------------
+  - id: BIL-DUN-002
+    name: Dunning Exemptions
+    name_vi: Miễn trừ thu nợ
+    severity: medium
+    description: |
+      Certain accounts exempt from automatic dunning actions.
+    description_vi: |
+      Một số tài khoản được miễn trừ khỏi hành động thu nợ tự động.
+
+    exemptions:
+      enterprise_custom_terms:
+        - "Net-30+ payment terms"
+        - "Manual dunning handled by account manager"
+
+      disputed_invoices:
+        - "Pause dunning during dispute resolution"
+        - "Resume after resolution"
+
+      payment_arrangement:
+        - "Custom payment plan approved by sales"
+        - "Follow payment plan schedule instead"
+
+      bankruptcy_notification:
+        - "Legal hold on all dunning"
+        - "Transfer to legal team"
+
+# =============================================================================
+# TAX RULES
+# =============================================================================
+tax_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-TAX-001 - Tax Calculation
+  # ---------------------------------------------------------------------------
+  - id: BIL-TAX-001
+    name: Tax Calculation
+    name_vi: Tính thuế
+    severity: high
+    description: |
+      Tax calculated based on customer location and business status.
+      Integration with tax calculation service for accuracy.
+    description_vi: |
+      Thuế được tính dựa trên vị trí khách hàng và tình trạng doanh nghiệp.
+      Tích hợp với dịch vụ tính thuế để đảm bảo chính xác.
+
+    tax_types:
+      us_sales_tax:
+        applies_to: "US customers"
+        rate: "State and local dependent"
+        nexus_states: [CA, NY, TX, FL, WA, IL]  # Where we have nexus
+
+      eu_vat:
+        applies_to: "EU customers"
+        rate: "Country dependent (17-27%)"
+        reverse_charge: "B2B with valid VAT ID"
+
+      uk_vat:
+        applies_to: "UK customers"
+        rate: 20
+        reverse_charge: "B2B with valid VAT ID"
+
+      canada_gst_hst:
+        applies_to: "Canadian customers"
+        rate: "Province dependent"
+
+    calculation_service:
+      provider: stripe_tax
+      fallback: avalara
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-TAX-002 - Tax Exemptions
+  # ---------------------------------------------------------------------------
+  - id: BIL-TAX-002
+    name: Tax Exemptions
+    name_vi: Miễn thuế
+    severity: high
+    description: |
+      Business customers may be exempt from certain taxes.
+      Valid tax ID required for exemption.
+    description_vi: |
+      Khách hàng doanh nghiệp có thể được miễn một số loại thuế.
+      Yêu cầu mã số thuế hợp lệ để được miễn.
+
+    exemptions:
+      eu_reverse_charge:
+        requirement: "Valid EU VAT ID"
+        validation: "VIES database check"
+        result: "0% VAT, customer accounts for VAT"
+        invoice_note: "Reverse charge - VAT to be accounted for by customer"
+
+      us_exempt_organization:
+        requirement: "Valid exemption certificate"
+        validation: "Manual review"
+        result: "Exempt from state sales tax"
+
+      reseller:
+        requirement: "Valid reseller certificate"
+        validation: "Manual review"
+        result: "Exempt from sales tax"
+
+    tax_id_validation:
+      eu_vat:
+        service: vies
+        format: "Country code + number"
+        examples: ["DE123456789", "FR12345678901"]
+
+      us_ein:
+        format: "XX-XXXXXXX"
+
+      uk_vat:
+        format: "GB + 9 or 12 digits"
+
+# =============================================================================
+# REFUND RULES
+# =============================================================================
+refund_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-REF-001 - Refund Policy
+  # ---------------------------------------------------------------------------
+  - id: BIL-REF-001
+    name: Refund Policy
+    name_vi: Chính sách hoàn tiền
+    severity: high
+    description: |
+      Standard refund policy varies by situation and tenure.
+    description_vi: |
+      Chính sách hoàn tiền tiêu chuẩn khác nhau theo tình huống và thời gian.
+
+    policy:
+      within_money_back_period:
+        duration: 30_days
+        amount: full
+        reason_required: false
+        applies_to: [starter, professional]
+
+      after_money_back_period:
+        amount: prorated_or_none
+        reason_required: true
+        review_required: true
+
+      annual_subscriptions:
+        first_30_days: full_refund
+        after_30_days: prorated_at_discretion
+        after_6_months: no_refund
+
+    automatic_refunds:
+      duplicate_charge: full
+      billing_error: full
+      service_outage_sla: prorated
+
+    refund_method:
+      - "Original payment method when possible"
+      - "Account credit if original method unavailable"
+      - "Check for amounts > $500 if card refund fails"
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-REF-002 - Credit Notes
+  # ---------------------------------------------------------------------------
+  - id: BIL-REF-002
+    name: Credit Notes
+    name_vi: Ghi chú tín dụng
+    severity: high
+    description: |
+      Credit notes issued for refunds, adjustments, and corrections.
+    description_vi: |
+      Ghi chú tín dụng được phát hành cho hoàn tiền, điều chỉnh và sửa lỗi.
+
+    credit_note_rules:
+      number_format: "CN-YYYY-NNNNN"
+
+      required_fields:
+        - credit_note_number
+        - original_invoice_reference
+        - reason
+        - line_items
+        - amount
+        - tax_adjustment
+
+      application:
+        auto_apply: "Applied to next invoice"
+        manual_refund: "Can be refunded to payment method"
+        expiration: "No expiration"
+
+# =============================================================================
+# CURRENCY RULES
+# =============================================================================
+currency_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-CUR-001 - Supported Currencies
+  # ---------------------------------------------------------------------------
+  - id: BIL-CUR-001
+    name: Supported Currencies
+    name_vi: Đơn vị tiền tệ hỗ trợ
+    severity: medium
+    description: |
+      Billing currency based on customer location.
+      Price displayed and charged in customer's currency.
+    description_vi: |
+      Đơn vị tiền tệ thanh toán dựa trên vị trí khách hàng.
+      Giá hiển thị và tính phí bằng đơn vị tiền tệ của khách hàng.
+
+    supported_currencies:
+      primary:
+        - USD
+        - EUR
+        - GBP
+
+      secondary:
+        - CAD
+        - AUD
+        - JPY
+        - SGD
+
+    currency_selection:
+      - "Based on billing country"
+      - "Locked at subscription creation"
+      - "Cannot be changed mid-subscription"
+
+    pricing:
+      strategy: localized_pricing
+      examples:
+        starter:
+          USD: 29
+          EUR: 27
+          GBP: 23
+
+    fx_handling:
+      conversion: "At time of transaction"
+      rate_source: "Payment processor rate"
+      customer_bears_fx_risk: false
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-CUR-002 - Multi-Currency Reporting
+  # ---------------------------------------------------------------------------
+  - id: BIL-CUR-002
+    name: Multi-Currency Reporting
+    name_vi: Báo cáo đa tiền tệ
+    severity: medium
+    description: |
+      Financial reports normalized to base currency.
+    description_vi: |
+      Báo cáo tài chính được chuẩn hóa về đơn vị tiền tệ cơ sở.
+
+    reporting:
+      base_currency: USD
+      conversion_rate: "Monthly average rate"
+      rate_source: "ECB reference rates"
+
+      reports:
+        - mrr_report: "Base currency"
+        - arr_report: "Base currency"
+        - revenue_by_currency: "Multi-currency breakdown"
+
+# =============================================================================
+# DISCOUNT & COUPON RULES
+# =============================================================================
+discount_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-DIS-001 - Coupon Application
+  # ---------------------------------------------------------------------------
+  - id: BIL-DIS-001
+    name: Coupon Application
+    name_vi: Áp dụng mã giảm giá
+    severity: medium
+    description: |
+      Rules for applying discount coupons to subscriptions.
+    description_vi: |
+      Quy tắc áp dụng mã giảm giá cho đăng ký.
+
+    coupon_types:
+      percentage:
+        example: "20% off"
+        max_value: 100
+        applies_to: subtotal
+
+      fixed_amount:
+        example: "$50 off"
+        min_purchase: "Must exceed coupon value"
+        applies_to: subtotal
+
+      free_months:
+        example: "2 months free"
+        implementation: "100% discount for N months"
+
+    application_rules:
+      - "One coupon per subscription"
+      - "Cannot combine coupons"
+      - "Applied before tax calculation"
+      - "Recurring coupons apply each billing cycle"
+      - "One-time coupons apply to first invoice only"
+
+    restrictions:
+      plan_restrictions: "Can be limited to specific plans"
+      new_customers_only: "Can require first-time subscription"
+      minimum_term: "Can require minimum commitment"
+      expiration: "Coupons can have end dates"
+
+  # ---------------------------------------------------------------------------
+  # Rule: BIL-DIS-002 - Volume Discounts
+  # ---------------------------------------------------------------------------
+  - id: BIL-DIS-002
+    name: Volume Discounts
+    name_vi: Giảm giá theo số lượng
+    severity: medium
+    description: |
+      Automatic discounts based on seat count or usage volume.
+    description_vi: |
+      Giảm giá tự động dựa trên số lượng chỗ ngồi hoặc khối lượng sử dụng.
+
+    seat_discounts:
+      tiers:
+        - range: [1, 10]
+          discount: 0
+        - range: [11, 25]
+          discount: 5
+        - range: [26, 50]
+          discount: 10
+        - range: [51, 100]
+          discount: 15
+        - range: [101, null]
+          discount: 20  # Max discount
+
+    annual_commitment_discount:
+      percentage: 17
+      stackable_with_volume: true
+      calculation: |
+        final_price = base_price * (1 - volume_discount) * (1 - annual_discount)

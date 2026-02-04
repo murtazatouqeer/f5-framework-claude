@@ -1,0 +1,652 @@
+# Tenant Onboarding Workflow
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy trình tiếp nhận người thuê / テナントオンボーディングワークフロー
+
+workflow:
+  name: TenantOnboardingWorkflow
+  name_vi: Quy trình tiếp nhận người thuê
+  name_ja: テナントオンボーディングワークフロー
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Complete workflow for onboarding new tenants from application
+    receipt through move-in and account setup. Ensures thorough
+    screening, proper documentation, and smooth transition.
+
+  # Workflow Triggers
+  triggers:
+    - event: application_submitted
+      source: tenant_portal
+    - event: application_received
+      source: property_manager
+    - event: inquiry_converted
+      source: leasing_agent
+
+  # Primary Actors
+  actors:
+    primary:
+      - tenant_applicant
+      - property_manager
+    supporting:
+      - leasing_agent
+      - screening_service
+      - maintenance_staff
+      - accounting
+
+  # Referenced Entities
+  entities:
+    - Tenant
+    - Lease
+    - Unit
+    - SecurityDeposit
+    - MoveInOut
+    - Inspection
+
+  # Business Rules Applied
+  business_rules:
+    - TenantScreeningRules
+    - LeaseRules
+    - RentRules
+
+  # ==========================================
+  # WORKFLOW STEPS
+  # ==========================================
+
+  steps:
+    - step_id: WF-TOB-001
+      name: Receive Application
+      name_vi: Nhận đơn đăng ký
+      order: 1
+      description: |
+        Receive and log rental application with all
+        required documentation.
+
+      inputs:
+        - completed_application_form
+        - government_id_copy
+        - income_verification
+        - employment_verification
+        - previous_landlord_contacts
+        - application_fee
+
+      actions:
+        - action: create_application_record
+          system: property_management
+        - action: collect_application_fee
+          system: payment_gateway
+        - action: verify_document_completeness
+          system: document_management
+        - action: acknowledge_receipt
+          system: notification
+
+      outputs:
+        - application_id
+        - receipt_confirmation
+        - document_checklist_status
+
+      validations:
+        - all_required_documents_present
+        - application_fee_received
+        - valid_id_verified
+
+      sla:
+        acknowledgment: 24_hours
+        completeness_check: 48_hours
+
+      next_step: WF-TOB-002
+
+      error_handling:
+        incomplete_documents:
+          action: request_missing_documents
+          deadline: 48_hours
+          escalation: auto_cancel_if_not_completed
+
+    - step_id: WF-TOB-002
+      name: Screen Applicant
+      name_vi: Sàng lọc ứng viên
+      order: 2
+      description: |
+        Conduct comprehensive tenant screening including
+        credit, background, and rental history checks.
+
+      inputs:
+        - application_id
+        - applicant_consent
+        - screening_criteria
+
+      actions:
+        - action: submit_credit_check
+          system: credit_bureau
+          condition: credit_check_available
+        - action: submit_background_check
+          system: background_service
+        - action: calculate_income_ratio
+          system: property_management
+          rule: BR-SCR-001
+        - action: check_eviction_history
+          system: court_records
+
+      outputs:
+        - credit_report
+        - background_report
+        - income_verification_result
+        - eviction_check_result
+        - screening_score
+
+      validations:
+        - income_meets_minimum: "3x monthly rent"
+        - no_disqualifying_history
+        - valid_references
+
+      sla:
+        completion: 3_business_days
+
+      decision_point:
+        condition: screening_score
+        outcomes:
+          approved: WF-TOB-003
+          conditional: WF-TOB-002a
+          denied: WF-TOB-DENY
+
+    - step_id: WF-TOB-002a
+      name: Conditional Review
+      name_vi: Xem xét có điều kiện
+      order: 2.5
+      description: |
+        Handle conditional approvals requiring additional
+        review or mitigation measures.
+
+      inputs:
+        - screening_results
+        - conditional_factors
+
+      actions:
+        - action: evaluate_mitigation_options
+          options:
+            - larger_deposit
+            - guarantor_required
+            - prepaid_rent
+            - shorter_initial_term
+        - action: present_options_to_applicant
+          system: notification
+        - action: obtain_manager_approval
+          system: approval_workflow
+
+      outputs:
+        - conditional_terms
+        - mitigation_requirements
+        - approval_decision
+
+      decision_point:
+        condition: applicant_accepts_conditions
+        outcomes:
+          accepted: WF-TOB-003
+          declined: WF-TOB-DENY
+
+    - step_id: WF-TOB-003
+      name: Verify References
+      name_vi: Xác minh tham chiếu
+      order: 3
+      description: |
+        Contact and verify all provided references
+        including previous landlords and employer.
+
+      inputs:
+        - reference_contact_list
+        - verification_questions
+
+      actions:
+        - action: contact_previous_landlord
+          questions:
+            - lease_dates_confirmed
+            - payment_history
+            - lease_violations
+            - would_rent_again
+          attempts: 3
+        - action: verify_employment
+          questions:
+            - employment_confirmed
+            - position_title
+            - income_verification
+        - action: document_responses
+          system: property_management
+
+      outputs:
+        - landlord_reference_report
+        - employment_verification_report
+        - reference_summary
+
+      validations:
+        - at_least_one_landlord_contacted
+        - employment_verified
+
+      sla:
+        completion: 2_business_days
+
+      next_step: WF-TOB-004
+
+    - step_id: WF-TOB-004
+      name: Approve Application
+      name_vi: Phê duyệt đơn đăng ký
+      order: 4
+      description: |
+        Final approval decision based on all
+        screening and verification results.
+
+      inputs:
+        - screening_results
+        - reference_verification
+        - approval_criteria
+
+      actions:
+        - action: compile_approval_package
+          system: property_management
+        - action: obtain_approval
+          approver: property_manager
+        - action: notify_applicant
+          system: notification
+          template: approval_notification
+        - action: update_unit_status
+          new_status: pending_lease
+
+      outputs:
+        - approval_letter
+        - conditional_terms_if_any
+        - next_steps_instructions
+
+      sla:
+        decision: 24_hours
+        notification: 2_hours_after_decision
+
+      next_step: WF-TOB-005
+
+    - step_id: WF-TOB-005
+      name: Prepare Lease
+      name_vi: Chuẩn bị hợp đồng
+      order: 5
+      description: |
+        Generate lease agreement with all terms,
+        conditions, and addenda.
+
+      inputs:
+        - approved_application
+        - unit_details
+        - lease_terms
+        - conditional_requirements
+
+      actions:
+        - action: generate_lease_document
+          system: document_generation
+          template: standard_lease
+        - action: add_required_addenda
+          addenda:
+            - rules_and_regulations
+            - pet_addendum_if_applicable
+            - parking_agreement
+            - utility_responsibility
+        - action: calculate_move_in_costs
+          items:
+            - first_month_rent
+            - security_deposit
+            - pet_deposit_if_applicable
+            - prorated_rent_if_applicable
+        - action: prepare_for_signing
+          system: e_signature
+
+      outputs:
+        - lease_document
+        - addenda_package
+        - move_in_cost_statement
+        - signing_instructions
+
+      sla:
+        preparation: 24_hours
+
+      next_step: WF-TOB-006
+
+    - step_id: WF-TOB-006
+      name: Collect Deposit
+      name_vi: Thu tiền đặt cọc
+      order: 6
+      description: |
+        Collect security deposit and first month's rent
+        before lease signing.
+
+      inputs:
+        - move_in_cost_statement
+        - payment_instructions
+
+      actions:
+        - action: send_payment_request
+          system: payment_gateway
+        - action: receive_payment
+          methods:
+            - bank_transfer: preferred
+            - certified_check: acceptable
+            - credit_card: with_fee_disclosure
+        - action: verify_payment_cleared
+          system: banking
+        - action: issue_receipt
+          system: accounting
+        - action: create_deposit_record
+          entity: SecurityDeposit
+
+      outputs:
+        - payment_confirmation
+        - deposit_receipt
+        - funds_cleared_confirmation
+
+      validations:
+        - full_amount_received
+        - funds_cleared
+
+      sla:
+        payment_due: 3_business_days
+        verification: 24_hours_after_receipt
+
+      next_step: WF-TOB-007
+
+      error_handling:
+        payment_not_received:
+          action: send_reminder
+          escalation: cancel_application
+          deadline: 5_business_days
+
+    - step_id: WF-TOB-007
+      name: Sign Lease
+      name_vi: Ký hợp đồng
+      order: 7
+      description: |
+        Execute lease agreement with all required
+        signatures from all parties.
+
+      inputs:
+        - prepared_lease
+        - payment_confirmation
+        - all_parties
+
+      actions:
+        - action: schedule_signing
+          options:
+            - in_person_signing
+            - electronic_signature
+        - action: review_terms_with_tenant
+          items:
+            - rent_amount_due_date
+            - deposit_terms
+            - rules_policies
+            - maintenance_responsibilities
+        - action: obtain_signatures
+          signatories:
+            - all_adult_occupants
+            - landlord_or_representative
+            - guarantor_if_applicable
+        - action: notarize_if_required
+          condition: lease_term_over_6_months
+        - action: distribute_copies
+          recipients:
+            - tenant
+            - landlord
+            - property_manager
+
+      outputs:
+        - executed_lease
+        - signed_addenda
+        - distribution_confirmation
+
+      validations:
+        - all_required_signatures_obtained
+        - all_pages_initialed
+        - notarization_complete_if_required
+
+      sla:
+        signing_completion: 3_business_days
+
+      next_step: WF-TOB-008
+
+    - step_id: WF-TOB-008
+      name: Move-In Inspection
+      name_vi: Kiểm tra khi nhận nhà
+      order: 8
+      description: |
+        Conduct thorough unit inspection to document
+        condition before occupancy.
+
+      inputs:
+        - executed_lease
+        - unit_id
+        - inspection_checklist
+
+      actions:
+        - action: schedule_inspection
+          with_tenant: recommended
+        - action: conduct_inspection
+          checklist:
+            - all_rooms
+            - all_appliances
+            - all_fixtures
+            - walls_floors_ceilings
+            - windows_doors
+            - utilities_working
+        - action: document_condition
+          methods:
+            - photos: required
+            - video: recommended
+            - written_notes: required
+        - action: record_meter_readings
+          meters:
+            - electricity
+            - water
+            - gas_if_applicable
+        - action: obtain_tenant_signature
+          on: inspection_report
+
+      outputs:
+        - move_in_inspection_report
+        - condition_photos
+        - meter_readings
+        - tenant_acknowledgment
+
+      entity_created:
+        - type: MoveInOut
+          move_type: move_in
+        - type: Inspection
+          inspection_type: move_in
+
+      sla:
+        before_key_handover: required
+
+      next_step: WF-TOB-009
+
+    - step_id: WF-TOB-009
+      name: Handover Keys
+      name_vi: Bàn giao chìa khóa
+      order: 9
+      description: |
+        Official key handover marking the start of
+        tenancy possession.
+
+      inputs:
+        - completed_inspection
+        - all_payments_confirmed
+        - executed_lease
+
+      actions:
+        - action: prepare_keys
+          items:
+            - unit_keys: quantity_per_lease
+            - mailbox_key
+            - common_area_access_cards
+            - parking_access_if_applicable
+        - action: obtain_key_receipt
+          system: property_management
+        - action: update_unit_status
+          new_status: occupied
+        - action: update_tenant_status
+          new_status: active
+        - action: record_occupancy_start
+          date: key_handover_date
+
+      outputs:
+        - key_receipt_signed
+        - access_credentials
+        - occupancy_start_confirmation
+
+      validations:
+        - all_move_in_funds_received
+        - inspection_completed
+        - lease_fully_executed
+
+      next_step: WF-TOB-010
+
+    - step_id: WF-TOB-010
+      name: Setup Accounts
+      name_vi: Thiết lập tài khoản
+      order: 10
+      description: |
+        Create all necessary accounts and records
+        for new tenant.
+
+      inputs:
+        - tenant_information
+        - lease_terms
+        - unit_details
+
+      actions:
+        - action: create_tenant_portal_account
+          system: tenant_portal
+        - action: setup_rent_ledger
+          system: accounting
+        - action: create_recurring_charges
+          charges:
+            - monthly_rent
+            - pet_rent_if_applicable
+            - parking_if_applicable
+        - action: setup_auto_pay
+          condition: tenant_opts_in
+        - action: transfer_utilities
+          condition: tenant_responsible
+        - action: add_to_communication_lists
+          lists:
+            - property_announcements
+            - maintenance_updates
+            - emergency_contacts
+
+      outputs:
+        - portal_login_credentials
+        - rent_schedule
+        - utility_transfer_confirmation
+        - communication_preferences
+
+      sla:
+        completion: 24_hours_after_move_in
+
+      next_step: WF-TOB-011
+
+    - step_id: WF-TOB-011
+      name: Welcome Tenant
+      name_vi: Chào đón người thuê
+      order: 11
+      description: |
+        Complete onboarding with welcome package and
+        orientation information.
+
+      inputs:
+        - tenant_record
+        - property_information
+
+      actions:
+        - action: send_welcome_package
+          contents:
+            - welcome_letter
+            - property_handbook
+            - emergency_contacts
+            - maintenance_request_instructions
+            - community_guidelines
+            - local_area_information
+        - action: schedule_follow_up
+          timing: 7_days_after_move_in
+          purpose: check_satisfaction
+        - action: close_onboarding_workflow
+          system: property_management
+
+      outputs:
+        - welcome_package_delivered
+        - follow_up_scheduled
+        - onboarding_complete_status
+
+      notifications:
+        - to: property_manager
+          message: "New tenant onboarding completed"
+        - to: maintenance
+          message: "New tenant at unit - add to rounds"
+
+      workflow_complete: true
+
+    # Denial Branch
+    - step_id: WF-TOB-DENY
+      name: Deny Application
+      name_vi: Từ chối đơn đăng ký
+      order: 99
+      description: |
+        Handle application denial with proper
+        notification and documentation.
+
+      inputs:
+        - denial_reasons
+        - screening_results
+
+      actions:
+        - action: prepare_denial_letter
+          content:
+            - general_reason_category
+            - adverse_action_notice_if_credit
+            - right_to_dispute_information
+        - action: refund_application_fee
+          condition: per_policy
+        - action: send_denial_notification
+          system: notification
+        - action: document_denial
+          system: property_management
+        - action: release_unit_hold
+          new_status: available
+
+      outputs:
+        - denial_letter
+        - adverse_action_notice
+        - refund_confirmation
+
+      record_retention:
+        denied_applications: 2_years
+
+      workflow_complete: true
+
+  # ==========================================
+  # WORKFLOW METRICS
+  # ==========================================
+
+  metrics:
+    - name: application_to_move_in_time
+      description: "Total time from application to key handover"
+      target: 10_business_days
+
+    - name: approval_rate
+      description: "Percentage of applications approved"
+      target: 70%
+
+    - name: time_to_decision
+      description: "Time from complete application to decision"
+      target: 5_business_days
+
+    - name: screening_completion_rate
+      description: "Percentage of screenings completed on time"
+      target: 95%
+
+  # Summary
+  summary:
+    total_steps: 12
+    decision_points: 2
+    average_duration: 7-14_days
+    critical_path: "Application → Screen → Approve → Lease → Move-In"

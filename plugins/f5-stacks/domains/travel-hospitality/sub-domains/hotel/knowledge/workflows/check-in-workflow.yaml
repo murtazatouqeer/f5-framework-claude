@@ -1,0 +1,426 @@
+name: check-in-workflow
+display_name: Guest Check-in Workflow
+display_name_vi: Quy trình nhận phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Complete check-in workflow from guest arrival through room key issuance,
+  including reservation lookup, room assignment, registration, and
+  payment guarantee verification.
+
+description_vi: |
+  Quy trình nhận phòng hoàn chỉnh từ khi khách đến đến khi cấp chìa khóa,
+  bao gồm tra cứu đặt phòng, phân phòng, đăng ký và xác minh bảo đảm thanh toán.
+
+workflow:
+  id: WF-CHK-IN
+  name: Guest Check-in
+  type: sequential_with_branches
+
+  trigger:
+    types:
+      - guest_arrival
+      - early_check_in_request
+      - mobile_check_in
+      - kiosk_check_in
+
+  actors:
+    - guest: Arriving customer
+    - front_desk: Front desk agent
+    - system: PMS
+    - housekeeping: Room status
+    - security: Key system
+
+  states:
+    - arrival_acknowledged
+    - reservation_located
+    - room_assigned
+    - registration_complete
+    - payment_verified
+    - key_issued
+    - checked_in
+    - failed
+
+steps:
+  - id: STEP-01
+    name: Guest Arrival
+    name_vi: Khách đến
+    description: Greet guest and initiate check-in
+    state: arrival_acknowledged
+    actor: front_desk
+    actions:
+      - greet_guest:
+          standard: "Welcome to [Hotel Name]"
+          vip: personalized_greeting
+      - ask_for_reservation:
+          options:
+            - confirmation_number
+            - guest_name
+            - loyalty_number
+    inputs:
+      - identifier_type: enum [confirmation, name, loyalty]
+      - identifier_value: string
+    outputs:
+      - search_criteria
+    next: STEP-02
+
+  - id: STEP-02
+    name: Reservation Lookup
+    name_vi: Tra cứu đặt phòng
+    description: Find and verify reservation
+    state: reservation_located
+    actor: system
+    process:
+      - search_reservation:
+          by: confirmation_number OR guest_name
+      - verify_arrival_date:
+          expected: today OR early_check_in
+      - check_reservation_status:
+          must_be: [confirmed, guaranteed]
+      - load_guest_profile:
+          if_exists: true
+    display:
+      - reservation_summary
+      - guest_preferences
+      - vip_status
+      - special_requests
+      - rate_information
+      - pre_assigned_room (if_any)
+    outputs:
+      - reservation_id
+      - guest_profile
+      - room_type_requested
+      - special_requests
+    on_not_found: STEP-02B
+    next: STEP-03
+
+  - id: STEP-02B
+    name: Walk-in Handling
+    name_vi: Xử lý khách vãng lai
+    description: Process guest without reservation
+    state: reservation_located
+    actor: front_desk
+    condition: no_reservation_found
+    process:
+      - check_availability:
+          for: tonight
+      - IF available:
+          create_walk_in_reservation:
+            status: confirmed
+            rate: rack_rate OR best_available
+          proceed: to_room_assignment
+      - IF not_available:
+          apologize_and_assist:
+            offer: alternative_property
+            assist: with_transportation
+    next: STEP-03 (if_available) | END (if_not_available)
+
+  - id: STEP-03
+    name: Room Assignment
+    name_vi: Phân phòng
+    description: Assign specific room to guest
+    state: room_assigned
+    actor: system | front_desk
+    process:
+      - check_pre_assignment:
+          if_exists: use_assigned_room
+      - IF no_pre_assignment:
+          find_available_room:
+            room_type: as_booked
+            preferences:
+              - floor_preference
+              - view_preference
+              - bed_configuration
+              - smoking_preference
+              - accessibility
+              - connecting_rooms
+            priority:
+              - guest_history_room
+              - vip_best_available
+              - standard_selection
+      - verify_room_status:
+          must_be: [vacant_clean, vacant_inspected]
+          IF not_ready:
+            options:
+              - wait_with_amenity
+              - assign_alternative
+              - luggage_storage
+      - apply_upgrade:
+          IF: vip_status OR loyalty_benefit OR availability
+          complimentary: true
+          advise_guest: of_upgrade
+    outputs:
+      - assigned_room_number
+      - room_ready_status
+      - upgrade_applied
+    alternative_flows:
+      - id: AF-001
+        name: Room not ready
+        steps:
+          - inform_guest
+          - offer_restaurant_voucher
+          - store_luggage
+          - promise_notification
+          - partial_check_in
+    next: STEP-04
+
+  - id: STEP-04
+    name: Guest Registration
+    name_vi: Đăng ký khách
+    description: Collect/verify guest information and ID
+    state: registration_complete
+    actor: front_desk
+    process:
+      - verify_guest_identity:
+          document: passport OR national_id OR drivers_license
+          for: all_guests (regulatory_requirement)
+      - collect_registration_info:
+          - name (verify)
+          - address
+          - nationality
+          - date_of_birth
+          - id_document_details
+      - scan_id:
+          store: secure_reference
+          for: legal_compliance
+      - verify_guest_count:
+          adults: as_reserved
+          children: as_reserved
+      - update_guest_profile:
+          preferences_noted
+          contact_info_current
+      - present_registration_card:
+          electronic: preferred
+          paper: if_required
+      - obtain_signature:
+          digital: preferred
+          paper: acceptable
+    inputs:
+      - id_document: scanned
+      - registration_signature: required
+      - terms_accepted: required
+    outputs:
+      - registration_completed
+      - id_verified
+    next: STEP-05
+
+  - id: STEP-05
+    name: Payment Verification
+    name_vi: Xác minh thanh toán
+    description: Verify payment method and collect guarantee
+    state: payment_verified
+    actor: front_desk | system
+    process:
+      - check_existing_guarantee:
+          from_reservation: card_on_file
+      - verify_payment_method:
+          IF card_on_file:
+            verify: not_expired
+            option: use_same_card OR new_card
+          IF no_guarantee:
+            collect: credit_card OR deposit
+      - authorize_card:
+          amount: estimated_total + incidentals_margin
+          margin: typically_$50-100_per_night
+      - confirm_billing:
+          type: guest_pay OR company_pay OR split
+          routing: as_per_reservation
+      - IF direct_bill:
+          verify_company_guarantee:
+            account: active
+            credit: available
+    outputs:
+      - payment_method_verified
+      - authorization_code
+      - credit_limit_set
+    on_card_decline: request_alternative
+    next: STEP-06
+
+  - id: STEP-06
+    name: Folio Activation
+    name_vi: Kích hoạt hóa đơn
+    description: Set up guest folio for the stay
+    state: payment_verified
+    actor: system
+    process:
+      - activate_folio:
+          link: reservation
+          status: open
+      - apply_advance_deposits:
+          transfer_from: deposit_ledger
+      - set_credit_limit:
+          based_on: authorization_amount
+      - configure_charge_routing:
+          per: billing_instructions
+      - enable_posting_privileges:
+          outlets: F&B, spa, etc.
+      - record_payment_method:
+          for: incidental_charges
+    outputs:
+      - folio_id
+      - credit_limit
+      - posting_enabled
+    next: STEP-07
+
+  - id: STEP-07
+    name: Key Issuance
+    name_vi: Cấp chìa khóa
+    description: Encode and issue room keys
+    state: key_issued
+    actor: front_desk | system
+    process:
+      - encode_keys:
+          room: assigned_room
+          quantity: 2 (default) OR as_requested
+          validity:
+            start: now
+            end: checkout_date + grace_period
+      - assign_key_packet:
+          include:
+            - room_keys
+            - key_card_holder
+            - wifi_password
+            - breakfast_voucher (if_included)
+      - explain_key_usage:
+          elevator_access
+          room_entry
+          gym_access (if_applicable)
+    outputs:
+      - keys_issued: count
+      - key_validity_period
+    next: STEP-08
+
+  - id: STEP-08
+    name: Check-in Completion
+    name_vi: Hoàn tất nhận phòng
+    description: Finalize check-in and orient guest
+    state: checked_in
+    actor: front_desk
+    process:
+      - update_reservation_status:
+          new_status: checked_in
+          actual_arrival: timestamp
+      - update_room_status:
+          new_status: occupied
+      - provide_orientation:
+          - room_location
+          - restaurant_hours
+          - amenities_location
+          - checkout_time
+          - concierge_services
+      - acknowledge_special_requests:
+          confirm: noted_and_actioned
+      - offer_assistance:
+          luggage: bellman_escort
+          directions: to_room
+      - FOR vip_guests:
+          - personal_escort
+          - welcome_amenity_confirmed
+          - management_introduction
+    outputs:
+      - check_in_complete
+      - checked_in_at
+      - checked_in_by
+    next: END
+
+special_flows:
+  early_check_in:
+    trigger: arrival_before_standard_time
+    condition: room_status = ready
+    process:
+      - check_room_availability
+      - IF available_and_clean:
+          allow_early_check_in:
+            charge: waive OR early_fee
+      - IF not_ready:
+          offer_luggage_storage
+          provide_eta
+
+  mobile_check_in:
+    trigger: mobile_app_check_in
+    pre_arrival: true
+    process:
+      - verify_identity: via_app
+      - confirm_details: via_app
+      - assign_room: automatic
+      - verify_payment: via_app
+      - issue_digital_key: via_app
+      - arrival:
+          - express_key_pickup OR
+          - direct_to_room
+
+  kiosk_check_in:
+    trigger: kiosk_selection
+    process:
+      - scan_id_or_enter_confirmation
+      - verify_reservation
+      - accept_terms
+      - swipe_card_for_guarantee
+      - dispense_keys
+      - print_receipt
+
+  group_check_in:
+    trigger: group_arrival
+    process:
+      - prepare_rooming_list
+      - pre_assign_rooms
+      - pre-key_rooms
+      - arrange_group_desk
+      - expedited_processing
+      - group_coordinator_liaison
+
+  vip_check_in:
+    trigger: vip_status
+    enhancements:
+      - priority_handling
+      - manager_greeting
+      - room_pre_inspection
+      - welcome_amenity_placed
+      - personal_escort
+      - preference_recognition
+
+post_check_in:
+  housekeeping_notification:
+    - update_room_board
+    - remove_from_arrival_list
+
+  loyalty_tracking:
+    - record_stay_start
+    - update_night_count
+
+  guest_messaging:
+    - send_welcome_sms (optional)
+    - app_notification
+    - in_room_welcome_message
+
+error_handling:
+  - error: reservation_not_found
+    action: search_alternatives, offer_walk_in
+
+  - error: room_not_ready
+    action: assign_alternative_or_wait
+
+  - error: card_declined
+    action: request_alternative_payment
+
+  - error: overbooking
+    action: walk_procedure
+
+  - error: blacklisted_guest
+    action: manager_notification
+
+metrics:
+  - name: average_check_in_time
+    target: "< 5 minutes"
+    vip_target: "< 3 minutes"
+
+  - name: early_check_in_rate
+    target: monitoring
+
+  - name: mobile_check_in_adoption
+    target: "> 30%"
+
+  - name: guest_satisfaction_check_in
+    target: "> 4.5/5"

@@ -1,0 +1,539 @@
+name: housekeeping-rules
+display_name: Housekeeping Business Rules
+display_name_vi: Quy tắc nghiệp vụ buồng phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Business rules governing housekeeping operations including room assignment,
+  cleaning standards, inspection requirements, and service prioritization.
+
+description_vi: |
+  Quy tắc nghiệp vụ quản lý hoạt động buồng phòng bao gồm phân công phòng,
+  tiêu chuẩn dọn dẹp, yêu cầu kiểm tra và ưu tiên phục vụ.
+
+rule_categories:
+  - room_assignment
+  - cleaning_standards
+  - inspection
+  - service_timing
+  - special_handling
+
+rules:
+  # ===== ROOM ASSIGNMENT RULES =====
+  - id: BR-HK-A001
+    name: Daily Task Generation
+    name_vi: Tạo nhiệm vụ hàng ngày
+    category: room_assignment
+    priority: critical
+    description: |
+      Automatically generate housekeeping tasks each morning.
+    condition: |
+      time = shift_start (typically 8:00 AM)
+    action: |
+      GENERATE tasks for:
+        - All checkout rooms → checkout_clean
+        - All stayover rooms → stayover_service
+        - Rooms with arrivals → priority_flag
+        - VIP arrivals → vip_preparation
+
+      SET priority based on:
+        - Expected arrival time
+        - VIP status
+        - Room type
+    applies_to: [housekeeping, room]
+    enforcement: automatic
+
+  - id: BR-HK-A002
+    name: Workload Distribution
+    name_vi: Phân bổ khối lượng công việc
+    category: room_assignment
+    priority: high
+    description: |
+      Balance workload across housekeeping attendants.
+    condition: |
+      daily_task_assignment
+    action: |
+      CALCULATE attendant_capacity:
+        checkout_rooms: 14-16 per shift
+        stayover_rooms: 16-18 per shift
+        mixed_assignment: weighted_average
+
+      ASSIGN rooms considering:
+        - Section/floor assignment
+        - Experience level
+        - Special skills (VIP handling)
+        - Physical proximity of rooms
+
+      BALANCE:
+        - Total credit hours
+        - Mix of checkout vs stayover
+        - VIP distribution
+    applies_to: [housekeeping]
+    enforcement: automatic_with_adjustment
+
+  - id: BR-HK-A003
+    name: Section Assignment
+    name_vi: Phân công khu vực
+    category: room_assignment
+    priority: medium
+    description: |
+      Assign attendants to specific sections for efficiency.
+    condition: |
+      attendant has section_assignment
+    action: |
+      MAINTAIN consistent_sections:
+        - Same floors per attendant
+        - Familiarity improves quality
+        - Reduces travel time
+
+      EXCEPTIONS:
+        - High occupancy: cross_section_help
+        - Absences: redistribute
+        - VIP needs: specialist_assignment
+    applies_to: [housekeeping]
+    enforcement: guideline
+
+  # ===== CLEANING STANDARDS RULES =====
+  - id: BR-HK-S001
+    name: Checkout Cleaning Standard
+    name_vi: Tiêu chuẩn dọn phòng trả
+    category: cleaning_standards
+    priority: critical
+    description: |
+      Complete checkout cleaning checklist requirements.
+    condition: |
+      task_type = 'checkout_clean'
+    action: |
+      REQUIRE completion of:
+        bathroom:
+          - Sanitize all surfaces
+          - Replace all towels
+          - Restock amenities
+          - Clean mirrors
+          - Scrub toilet, tub, sink
+        bedroom:
+          - Strip and remake bed with fresh linen
+          - Dust all surfaces
+          - Vacuum/mop floors
+          - Clean windows inside
+          - Check under bed and furniture
+        common:
+          - Empty all trash
+          - Clean minibar area
+          - Check all lights/electronics
+          - Reset thermostat
+          - Replenish collateral
+
+      TIME_STANDARD: 45-60 minutes
+    applies_to: [housekeeping]
+    enforcement: checklist_mandatory
+
+  - id: BR-HK-S002
+    name: Stayover Service Standard
+    name_vi: Tiêu chuẩn phục vụ ở lại
+    category: cleaning_standards
+    priority: high
+    description: |
+      Stayover room service requirements.
+    condition: |
+      task_type = 'stayover_service'
+    action: |
+      PERFORM:
+        bathroom:
+          - Wipe down surfaces
+          - Replace used towels
+          - Restock supplies as needed
+          - Clean toilet
+        bedroom:
+          - Make bed (straighten or change if requested)
+          - Remove trash
+          - Dust surfaces
+          - Vacuum high-traffic areas
+          - Tidy guest belongings (don't move)
+        common:
+          - Empty trash
+          - Check minibar
+
+      RESPECT guest_belongings
+      TIME_STANDARD: 20-30 minutes
+    applies_to: [housekeeping]
+    enforcement: standard
+
+  - id: BR-HK-S003
+    name: Deep Cleaning Requirements
+    name_vi: Yêu cầu dọn dẹp sâu
+    category: cleaning_standards
+    priority: high
+    description: |
+      Periodic deep cleaning for all rooms.
+    condition: |
+      room.days_since_deep_clean >= 7 OR
+      room.consecutive_stayovers >= 7
+    action: |
+      SCHEDULE deep_clean including:
+        - Move furniture for cleaning
+        - Shampoo carpets
+        - Clean HVAC vents
+        - Wash walls and baseboards
+        - Flip/rotate mattress
+        - Deep clean refrigerator
+        - Clean behind appliances
+        - Window cleaning (inside)
+
+      TIME_STANDARD: 90-120 minutes
+      REQUIRE: room_vacant
+    applies_to: [housekeeping, room]
+    enforcement: scheduled
+
+  - id: BR-HK-S004
+    name: Linen Change Policy
+    name_vi: Chính sách thay đồ vải
+    category: cleaning_standards
+    priority: medium
+    description: |
+      Linen replacement frequency guidelines.
+    condition: |
+      guest_stay in progress
+    action: |
+      CHANGE bed_linen:
+        - Every checkout: mandatory
+        - Every 3 days stayover: standard
+        - Daily: upon_request
+        - Green program: guest_opt_out available
+
+      CHANGE towels:
+        - Every checkout: mandatory
+        - Stayover: replace_used (floor/request)
+        - Green program: hung_towels_reused
+
+      TRACK for inventory_management
+    applies_to: [housekeeping]
+    enforcement: standard
+
+  # ===== INSPECTION RULES =====
+  - id: BR-HK-I001
+    name: Inspection Requirements
+    name_vi: Yêu cầu kiểm tra
+    category: inspection
+    priority: critical
+    description: |
+      Define which rooms require supervisor inspection.
+    condition: |
+      room_cleaned = TRUE
+    action: |
+      MANDATORY inspection for:
+        - VIP arrivals (always)
+        - Suite categories (always)
+        - After deep clean (always)
+        - Random sampling (20% daily)
+        - New attendant work (100% first month)
+        - Previous deficiency (follow-up)
+
+      OPTIONAL inspection for:
+        - Regular stayovers
+        - Experienced attendant work
+    applies_to: [housekeeping]
+    enforcement: policy
+
+  - id: BR-HK-I002
+    name: Inspection Scoring
+    name_vi: Chấm điểm kiểm tra
+    category: inspection
+    priority: high
+    description: |
+      Score inspections for quality tracking.
+    condition: |
+      inspection_performed = TRUE
+    action: |
+      SCORE areas (1-10 scale):
+        - Bathroom cleanliness
+        - Bedroom cleanliness
+        - Bed making quality
+        - Amenity completeness
+        - Overall presentation
+
+      CALCULATE room_score as weighted_average
+
+      THRESHOLDS:
+        Pass: >= 8.0
+        Conditional: 6.0-7.9 (minor fixes)
+        Fail: < 6.0 (re-clean required)
+
+      TRACK attendant_averages
+    applies_to: [housekeeping]
+    enforcement: automatic
+
+  - id: BR-HK-I003
+    name: Deficiency Resolution
+    name_vi: Xử lý thiếu sót
+    category: inspection
+    priority: high
+    description: |
+      Handle inspection failures and deficiencies.
+    condition: |
+      inspection.status = 'failed' OR deficiencies_found
+    action: |
+      FOR minor deficiencies:
+        - Attendant corrects immediately
+        - Quick re-inspection
+        - Log for tracking
+
+      FOR major deficiencies:
+        - Full re-clean required
+        - Supervisor oversight
+        - Document in attendant file
+
+      PATTERN of deficiencies:
+        - Additional training required
+        - Performance discussion
+        - Possible reassignment
+    applies_to: [housekeeping]
+    enforcement: mandatory
+
+  # ===== SERVICE TIMING RULES =====
+  - id: BR-HK-T001
+    name: Priority Room Sequencing
+    name_vi: Thứ tự phòng ưu tiên
+    category: service_timing
+    priority: critical
+    description: |
+      Clean rooms in order of priority.
+    condition: |
+      multiple_rooms in assignment
+    action: |
+      CLEAN in order:
+        1. VIP arrivals (first)
+        2. Early check-in requests
+        3. Checkout rooms with same-day arrivals
+        4. Regular checkouts
+        5. Stayover with service request
+        6. Regular stayovers
+        7. Touch-ups and ad-hoc
+
+      ADJUST throughout day as arrivals confirmed
+    applies_to: [housekeeping]
+    enforcement: guideline
+
+  - id: BR-HK-T002
+    name: Room Ready Target Times
+    name_vi: Thời gian mục tiêu phòng sẵn sàng
+    category: service_timing
+    priority: high
+    description: |
+      Target times for room readiness.
+    condition: |
+      room = checkout with arrival
+    action: |
+      TARGET ready_times:
+        - VIP arrivals: 12:00 PM
+        - Regular arrivals: 2:00 PM (check-in time)
+        - Early check-in requests: per_agreed_time
+        - Walk-ins: within 30 minutes
+
+      ESCALATE if targets at risk:
+        - 11:00 AM: flag VIP rooms not started
+        - 12:00 PM: flag regular arrival rooms
+        - Alert supervisor for reallocation
+    applies_to: [housekeeping]
+    enforcement: monitoring
+
+  - id: BR-HK-T003
+    name: Do Not Disturb Handling
+    name_vi: Xử lý Không làm phiền
+    category: service_timing
+    priority: high
+    description: |
+      Handle DND rooms appropriately.
+    condition: |
+      room.dnd_status = TRUE
+    action: |
+      SKIP room on first pass
+      RETURN later in shift
+
+      IF DND extends past 2:00 PM:
+        - Security/welfare check consideration
+        - Contact guest if no response
+
+      IF checkout_day:
+        - Contact guest for departure time
+        - Escalate to front desk if needed
+
+      LOG all DND situations
+    applies_to: [housekeeping, room]
+    enforcement: standard
+
+  - id: BR-HK-T004
+    name: Turndown Service Timing
+    name_vi: Thời gian phục vụ gấp giường
+    category: service_timing
+    priority: medium
+    description: |
+      Schedule turndown service appropriately.
+    condition: |
+      property.turndown_service = enabled
+    action: |
+      SCHEDULE turndown:
+        - Standard: 6:00-8:00 PM
+        - Guest preference: per_request
+        - VIP: personalized timing
+
+      SERVICE includes:
+        - Turn down bed
+        - Close drapes
+        - Dim lights
+        - Fresh towels in bathroom
+        - Leave amenity (chocolate, water)
+        - Empty trash
+        - General tidy
+
+      TIME_STANDARD: 10-15 minutes
+    applies_to: [housekeeping]
+    enforcement: schedule
+
+  # ===== SPECIAL HANDLING RULES =====
+  - id: BR-HK-H001
+    name: VIP Room Preparation
+    name_vi: Chuẩn bị phòng VIP
+    category: special_handling
+    priority: critical
+    description: |
+      Enhanced preparation for VIP guests.
+    condition: |
+      reservation.vip_status >= 'gold' OR
+      room_type.category = 'suite'
+    action: |
+      APPLY enhanced_standards:
+        - Extended cleaning time
+        - Supervisor inspection required
+        - Premium amenities placement
+        - Welcome card from GM
+        - Fruit basket/flowers arrangement
+        - Check all tech working
+        - Temperature preset
+        - Minibar per preferences
+
+      PERSONALIZE based on:
+        - Guest history/preferences
+        - Special occasion
+        - Loyalty tier benefits
+    applies_to: [housekeeping, reservation]
+    enforcement: mandatory
+
+  - id: BR-HK-H002
+    name: Guest Request Handling
+    name_vi: Xử lý yêu cầu khách
+    category: special_handling
+    priority: high
+    description: |
+      Process special housekeeping requests.
+    condition: |
+      guest_request received
+    action: |
+      COMMON requests:
+        - Extra pillows/blankets
+        - Specific amenities
+        - Allergy accommodations
+        - Feather-free room
+        - Extra cleaning
+        - No service today
+
+      RESPONSE time:
+        - Urgent: within 15 minutes
+        - Standard: within 1 hour
+        - Future date: scheduled
+
+      DOCUMENT all requests in PMS
+      CONSIDER for guest_profile
+    applies_to: [housekeeping, guest]
+    enforcement: standard
+
+  - id: BR-HK-H003
+    name: Lost and Found Procedure
+    name_vi: Quy trình đồ thất lạc
+    category: special_handling
+    priority: high
+    description: |
+      Handle items found during cleaning.
+    condition: |
+      item_found during cleaning
+    action: |
+      IMMEDIATELY:
+        - Do not discard any items
+        - Report to supervisor
+        - Document item description
+        - Note exact location found
+        - Photo if valuable
+
+      PROCESS:
+        - Log in lost_and_found system
+        - Secure valuable items
+        - Attempt guest contact if identified
+        - Retain per retention policy (90 days)
+
+      VALUABLES:
+        - Cash > $20
+        - Electronics
+        - Jewelry
+        - Documents
+        → Security involvement required
+    applies_to: [housekeeping]
+    enforcement: mandatory
+
+  - id: BR-HK-H004
+    name: Maintenance Issue Reporting
+    name_vi: Báo cáo vấn đề bảo trì
+    category: special_handling
+    priority: high
+    description: |
+      Report maintenance issues discovered during cleaning.
+    condition: |
+      maintenance_issue discovered
+    action: |
+      REPORT immediately:
+        - Safety hazards (immediate)
+        - Water leaks (urgent)
+        - HVAC issues (urgent)
+        - Cosmetic damage (normal)
+        - Wear and tear (low)
+
+      CREATE maintenance_request with:
+        - Room number
+        - Issue description
+        - Priority level
+        - Photos if helpful
+        - Room status impact
+
+      COMMUNICATE to front_desk if:
+        - Room not sellable
+        - Guest safety concern
+    applies_to: [housekeeping, maintenance]
+    enforcement: mandatory
+
+quality_metrics:
+  attendant_performance:
+    - rooms_cleaned_per_shift
+    - inspection_pass_rate
+    - guest_complaint_rate
+    - on_time_completion
+    - deficiency_trends
+
+  department_performance:
+    - room_turnaround_time
+    - guest_satisfaction_scores
+    - linen_usage_efficiency
+    - supply_cost_per_room
+    - overtime_hours
+
+training_requirements:
+  new_hire:
+    - property_orientation
+    - cleaning_standards
+    - safety_procedures
+    - guest_interaction
+    - system_training
+  ongoing:
+    - quarterly_refresher
+    - new_product_training
+    - quality_improvement

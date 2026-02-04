@@ -1,0 +1,373 @@
+name: goal
+display_name: Goal
+description: |
+  Performance goal entity for tracking employee objectives, key results (OKRs),
+  and KPIs within performance management cycles.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Goal
+  table_name: goals
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: goal_id
+        type: string
+        required: true
+        unique: true
+        format: "GOAL-YYYYMMDD-XXXX"
+        description: "Goal reference number"
+
+      - name: employee_id
+        type: uuid
+        required: true
+        foreign_key: employees.id
+        description: "Goal owner"
+
+      - name: status
+        type: enum
+        required: true
+        default: "draft"
+        values:
+          - draft
+          - pending_approval
+          - active
+          - on_track
+          - at_risk
+          - behind
+          - completed
+          - cancelled
+        description: "Goal status"
+
+    # Goal Details
+    details:
+      - name: title
+        type: string
+        required: true
+        max_length: 200
+        description: "Goal title"
+
+      - name: description
+        type: text
+        description: "Detailed description"
+
+      - name: goal_type
+        type: enum
+        required: true
+        values:
+          - individual
+          - team
+          - department
+          - company
+        description: "Goal scope"
+
+      - name: category
+        type: enum
+        values:
+          - business
+          - development
+          - behavioral
+          - project
+          - operational
+        description: "Goal category"
+
+      - name: priority
+        type: enum
+        default: "medium"
+        values: [high, medium, low]
+        description: "Goal priority"
+
+    # Timeline
+    timeline:
+      - name: start_date
+        type: date
+        required: true
+        description: "Goal start date"
+
+      - name: due_date
+        type: date
+        required: true
+        description: "Goal due date"
+
+      - name: review_period_id
+        type: uuid
+        description: "Associated review period"
+
+      - name: year
+        type: integer
+        description: "Goal year"
+
+      - name: quarter
+        type: integer
+        description: "Goal quarter (1-4)"
+
+    # Measurement
+    measurement:
+      - name: metric_type
+        type: enum
+        required: true
+        values:
+          - quantitative
+          - qualitative
+          - milestone
+          - binary
+        description: "How goal is measured"
+
+      - name: target_value
+        type: decimal
+        description: "Target numeric value"
+
+      - name: target_unit
+        type: string
+        description: "Unit of measurement"
+
+      - name: current_value
+        type: decimal
+        description: "Current progress value"
+
+      - name: baseline_value
+        type: decimal
+        description: "Starting baseline"
+
+      - name: stretch_target
+        type: decimal
+        description: "Stretch target value"
+
+      - name: progress_percentage
+        type: decimal
+        computed: true
+        formula: "(current_value - baseline_value) / (target_value - baseline_value) * 100"
+        description: "Progress percentage"
+
+    # Key Results (OKR)
+    key_results:
+      - name: key_results
+        type: jsonb
+        description: "Key results for this objective"
+        schema:
+          type: array
+          items:
+            kr_id: string
+            title: string
+            target: decimal
+            current: decimal
+            unit: string
+            weight: decimal
+            status: string
+
+      - name: key_results_progress
+        type: decimal
+        computed: true
+        description: "Weighted average of KR progress"
+
+    # Weight
+    weighting:
+      - name: weight
+        type: decimal
+        default: 1.0
+        min: 0
+        max: 1
+        description: "Weight in performance review"
+
+    # Alignment
+    alignment:
+      - name: parent_goal_id
+        type: uuid
+        foreign_key: goals.id
+        description: "Parent goal (cascaded from)"
+
+      - name: aligned_to
+        type: jsonb
+        description: "Strategic alignment references"
+        schema:
+          company_goal_ids: array
+          department_goal_ids: array
+          team_goal_ids: array
+
+    # Updates
+    updates:
+      - name: updates
+        type: jsonb
+        description: "Progress updates history"
+        schema:
+          type: array
+          items:
+            date: date
+            progress: decimal
+            notes: string
+            updated_by: uuid
+
+      - name: last_update_date
+        type: date
+        description: "Last progress update date"
+
+    # Completion
+    completion:
+      - name: completion_date
+        type: date
+        description: "When goal was completed"
+
+      - name: achievement_score
+        type: integer
+        min: 1
+        max: 5
+        description: "Achievement rating"
+
+      - name: achievement_notes
+        type: text
+        description: "Notes on achievement"
+
+      - name: evidence
+        type: jsonb
+        description: "Evidence of completion"
+
+    # Approval
+    approval:
+      - name: approved_by
+        type: uuid
+        foreign_key: employees.id
+        description: "Manager who approved"
+
+      - name: approved_at
+        type: timestamp
+        description: "When approved"
+
+    # System
+    system:
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: created_by
+        type: uuid
+        foreign_key: users.id
+
+      - name: updated_by
+        type: uuid
+        foreign_key: users.id
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+      description: "Goal owner"
+
+    - name: parent_goal
+      type: belongs_to
+      entity: Goal
+      foreign_key: parent_goal_id
+      description: "Parent cascaded goal"
+
+    - name: child_goals
+      type: has_many
+      entity: Goal
+      foreign_key: parent_goal_id
+      description: "Cascaded child goals"
+
+    - name: performance_review
+      type: belongs_to
+      entity: PerformanceReview
+      foreign_key: review_period_id
+      description: "Associated review"
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending_approval
+        event: submit
+        actions:
+          - notify_manager
+
+      - from: pending_approval
+        to: active
+        event: approve
+        actions:
+          - set_as_active
+          - notify_employee
+
+      - from: active
+        to: on_track
+        event: update_progress
+        conditions:
+          - progress >= 80
+
+      - from: active
+        to: at_risk
+        event: update_progress
+        conditions:
+          - progress >= 50 AND progress < 80
+
+      - from: active
+        to: behind
+        event: update_progress
+        conditions:
+          - progress < 50
+
+      - from: [active, on_track, at_risk, behind]
+        to: completed
+        event: complete
+        conditions:
+          - achievement_documented
+        actions:
+          - calculate_score
+          - notify_stakeholders
+
+      - from: [draft, pending_approval, active]
+        to: cancelled
+        event: cancel
+        actions:
+          - log_cancellation
+
+  indexes:
+    - columns: [goal_id]
+      unique: true
+    - columns: [employee_id]
+    - columns: [status]
+    - columns: [due_date]
+    - columns: [year, quarter]
+    - columns: [parent_goal_id]
+
+  validations:
+    - field: due_date
+      rule: "must_be_after_start"
+      message: "Due date must be after start date"
+
+    - field: weight
+      rule: "total_weight_per_employee_not_exceed_1"
+      message: "Total goal weights cannot exceed 1"
+
+  hooks:
+    after_update:
+      - recalculate_progress
+      - check_status_change
+      - notify_if_at_risk
+
+    after_complete:
+      - update_review_scores
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - current_value
+      - achievement_score
+    retention: "5 years"

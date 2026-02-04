@@ -1,0 +1,465 @@
+name: tax-filing-workflow
+display_name: Tax Filing Workflow
+description: |
+  Workflow for personal income tax (PIT/TNCN) monthly declaration,
+  annual finalization, and employee tax certificate issuance.
+
+domain: hr-management
+subdomain: payroll
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-PAY-003
+  name: tax_filing
+  trigger: monthly_and_annual
+  frequency: monthly
+
+  actors:
+    - role: payroll_admin
+      responsibilities:
+        - prepare_declaration
+        - submit_to_portal
+        - handle_queries
+
+    - role: finance_manager
+      responsibilities:
+        - review_declaration
+        - approve_submission
+        - manage_payments
+
+    - role: employee
+      responsibilities:
+        - provide_dependent_info
+        - authorize_finalization
+        - self_finalize_if_needed
+
+  timeline:
+    monthly:
+      declaration_deadline: "20th of following month"
+      payment_deadline: "20th of following month"
+
+    annual:
+      finalization_deadline: "March 31 of following year"
+      employee_self_deadline: "April 30 of following year"
+      refund_processing: "45 days from request"
+
+  stages:
+    # Monthly Tax Declaration
+    - id: STAGE-1
+      name: monthly_preparation
+      description: Prepare monthly tax data
+      frequency: monthly
+
+      steps:
+        - id: STEP-1.1
+          name: extract_tax_data
+          actor: system
+          action: compile_tax_data
+          inputs:
+            - period_payslips
+            - tax_calculations
+          outputs:
+            - monthly_tax_summary
+          data_points:
+            - total_taxable_income
+            - total_tax_withheld
+            - employee_count
+            - non_resident_count
+
+        - id: STEP-1.2
+          name: validate_tax_ids
+          actor: system
+          action: verify_tax_ids
+          checks:
+            - all_employees_have_tax_id
+            - tax_id_format_valid
+          outputs:
+            - validation_report
+            - employees_without_tax_id
+
+        - id: STEP-1.3
+          name: handle_missing_tax_ids
+          actor: payroll_admin
+          condition: "if_employees_without_tax_id"
+          action: apply_default_withholding
+          rate: 10
+          note: "10% withholding for employees without MST"
+          outputs:
+            - adjusted_calculations
+
+        - id: STEP-1.4
+          name: prepare_declaration_form
+          actor: system
+          action: generate_form_02_KK_TNCN
+          outputs:
+            - declaration_xml
+            - summary_report
+
+    - id: STAGE-2
+      name: monthly_review_submission
+      description: Review and submit monthly declaration
+      frequency: monthly
+
+      steps:
+        - id: STEP-2.1
+          name: review_declaration
+          actor: payroll_admin
+          action: verify_data
+          checks:
+            - totals_match_payroll
+            - calculations_correct
+            - format_valid
+          outputs:
+            - review_status
+
+        - id: STEP-2.2
+          name: finance_approval
+          actor: finance_manager
+          action: approve_declaration
+          inputs:
+            - declaration_summary
+            - payment_amount
+          outputs:
+            - approval_status
+
+        - id: STEP-2.3
+          name: submit_declaration
+          actor: payroll_admin
+          action: upload_to_tax_portal
+          portal: "thuedientu.gdt.gov.vn"
+          method: [online_portal, api]
+          outputs:
+            - submission_receipt
+            - submission_timestamp
+
+        - id: STEP-2.4
+          name: pay_tax
+          actor: finance_manager
+          action: transfer_to_treasury
+          deadline: "Same as declaration deadline"
+          outputs:
+            - payment_receipt
+            - payment_reference
+
+        - id: STEP-2.5
+          name: archive_submission
+          actor: system
+          action: store_records
+          retention: 10_years
+          outputs:
+            - archived_declaration_id
+
+    # Annual Tax Finalization
+    - id: STAGE-3
+      name: annual_preparation
+      description: Prepare for annual tax finalization
+      frequency: annual
+      timing: "January-February"
+
+      steps:
+        - id: STEP-3.1
+          name: compile_annual_data
+          actor: system
+          action: aggregate_annual_data
+          inputs:
+            - all_monthly_declarations
+            - all_payslips_for_year
+          outputs:
+            - annual_income_summary_per_employee
+          data_points:
+            - total_gross_income
+            - total_taxable_income
+            - total_tax_withheld
+            - total_deductions
+
+        - id: STEP-3.2
+          name: collect_authorization
+          actor: hr_manager
+          action: request_employee_authorization
+          deadline: "End of January"
+          options:
+            - authorize_employer_finalization
+            - self_finalize
+          outputs:
+            - authorization_list
+
+        - id: STEP-3.3
+          name: verify_dependent_info
+          actor: payroll_admin
+          action: confirm_dependents
+          inputs:
+            - registered_dependents
+            - dependent_documentation
+          outputs:
+            - verified_dependent_list
+
+        - id: STEP-3.4
+          name: calculate_annual_liability
+          actor: system
+          action: compute_annual_tax
+          formula: |
+            annual_taxable = total_gross - total_non_taxable
+            annual_deductions = personal_ded * 12 + dependent_ded * months + insurance_ded
+            assessable_income = MAX(0, annual_taxable - annual_deductions)
+            annual_tax_due = apply_progressive_brackets(assessable_income)
+            difference = annual_tax_due - total_withheld
+          outputs:
+            - tax_due_additional
+            - tax_refund_due
+            - finalization_per_employee
+
+    - id: STAGE-4
+      name: annual_finalization
+      description: Submit annual finalization
+      frequency: annual
+      deadline: "March 31"
+
+      steps:
+        - id: STEP-4.1
+          name: prepare_finalization_forms
+          actor: system
+          action: generate_form_05_QTT_TNCN
+          outputs:
+            - employer_finalization_xml
+            - employee_detail_list
+
+        - id: STEP-4.2
+          name: review_finalization
+          actor: payroll_admin
+          action: verify_annual_data
+          checks:
+            - matches_monthly_submissions
+            - calculations_accurate
+            - authorizations_complete
+
+        - id: STEP-4.3
+          name: finance_approval
+          actor: finance_manager
+          action: approve_finalization
+          outputs:
+            - approval_status
+
+        - id: STEP-4.4
+          name: submit_finalization
+          actor: payroll_admin
+          action: upload_to_tax_portal
+          outputs:
+            - finalization_receipt
+
+        - id: STEP-4.5
+          name: process_additional_tax
+          actor: finance_manager
+          condition: "if_additional_tax_due"
+          action: pay_additional_tax
+          outputs:
+            - additional_payment_receipt
+
+        - id: STEP-4.6
+          name: process_refunds
+          actor: payroll_admin
+          condition: "if_refunds_due"
+          action: submit_refund_requests
+          options:
+            - credit_to_next_year
+            - request_refund
+          timeline: "45 days for refund"
+          outputs:
+            - refund_request_ids
+
+    # Employee Tax Certificates
+    - id: STAGE-5
+      name: certificate_issuance
+      description: Issue tax certificates to employees
+
+      steps:
+        - id: STEP-5.1
+          name: generate_certificates
+          actor: system
+          action: create_tax_certificates
+          form: "Form 03/TNCN"
+          outputs:
+            - certificate_per_employee
+
+        - id: STEP-5.2
+          name: distribute_certificates
+          actor: payroll_admin
+          action: send_to_employees
+          methods:
+            - email
+            - portal
+            - physical_copy
+          deadline: "Upon request or end of March"
+
+    # Employee Self-Finalization Support
+    - id: STAGE-6
+      name: employee_support
+      description: Support employees who self-finalize
+
+      steps:
+        - id: STEP-6.1
+          name: provide_information
+          actor: payroll_admin
+          action: issue_income_statement
+          includes:
+            - total_income
+            - tax_withheld
+            - employer_information
+          outputs:
+            - income_statement
+
+        - id: STEP-6.2
+          name: answer_queries
+          actor: payroll_admin
+          action: respond_to_questions
+          topics:
+            - calculation_explanation
+            - dependent_registration
+            - self_finalization_process
+
+  amended_declaration_process:
+    description: "Process for amending submitted declarations"
+
+    triggers:
+      - calculation_error_discovered
+      - employee_data_correction
+      - audit_finding
+
+    steps:
+      - id: AMD-1
+        name: identify_error
+        actor: payroll_admin
+        action: document_error
+        outputs:
+          - error_description
+          - affected_periods
+          - correction_amount
+
+      - id: AMD-2
+        name: prepare_amendment
+        actor: payroll_admin
+        action: create_amended_declaration
+        outputs:
+          - amended_form
+
+      - id: AMD-3
+        name: submit_amendment
+        actor: payroll_admin
+        action: upload_amendment
+        note: "Must reference original submission"
+        outputs:
+          - amendment_receipt
+
+      - id: AMD-4
+        name: pay_difference
+        actor: finance_manager
+        condition: "if_additional_tax_due"
+        action: pay_additional_with_interest
+        interest_rate: "0.03% per day"
+
+  dependent_registration_process:
+    description: "Register dependents with tax authority"
+
+    steps:
+      - id: DEP-1
+        name: collect_dependent_info
+        actor: employee
+        action: submit_form_02_ĐK_NPT_TNCN
+        documents:
+          children:
+            - birth_certificate
+            - household_registration
+          parents:
+            - id_card
+            - income_proof
+          spouse:
+            - marriage_certificate
+            - income_proof
+
+      - id: DEP-2
+        name: verify_eligibility
+        actor: payroll_admin
+        action: check_requirements
+        criteria:
+          children: "Under 18 or full-time student under 22"
+          parents: "Over working age or disabled or no income"
+          spouse: "Disabled or no income"
+
+      - id: DEP-3
+        name: submit_registration
+        actor: payroll_admin
+        action: register_with_tax_authority
+        deadline: "Within 3 months of starting employment or change"
+
+      - id: DEP-4
+        name: apply_deduction
+        actor: system
+        action: start_deducting
+        effective: "From registration month"
+
+  notifications:
+    - event: monthly_deadline_approaching
+      recipients: [payroll_admin, finance_manager]
+      timing: 5_days_before
+      template: "Monthly tax declaration due in 5 days"
+
+    - event: annual_authorization_request
+      recipients: [all_employees]
+      timing: January
+      template: "Please authorize tax finalization by {deadline}"
+
+    - event: certificate_available
+      recipients: [employee]
+      template: "Your tax certificate for {year} is available"
+
+    - event: refund_processed
+      recipients: [employee]
+      template: "Tax refund of {amount} has been processed"
+
+  exception_handling:
+    submission_rejected:
+      detection: "Tax portal rejects submission"
+      action:
+        - identify_rejection_reason
+        - correct_data
+        - resubmit
+      escalation: finance_manager
+
+    late_submission:
+      detection: "Past deadline"
+      action:
+        - submit_immediately
+        - calculate_penalty
+        - document_reason
+      penalty: "0.03% per day"
+
+    audit_query:
+      detection: "Tax authority requests information"
+      action:
+        - gather_supporting_documents
+        - prepare_response
+        - submit_within_deadline
+      escalation: finance_director
+
+  audit:
+    logged_events:
+      - all_submissions
+      - amendments
+      - refund_requests
+      - authority_correspondence
+
+    retention: 10_years
+
+    reports:
+      - monthly_submission_log
+      - annual_finalization_summary
+      - refund_tracking
+
+  compliance:
+    - standard: Vietnam_PIT_Law
+      requirement: Monthly declaration and annual finalization
+    - standard: Circular_111_2013
+      requirement: Declaration procedures
+    - standard: Tax_Administration_Law
+      requirement: Filing deadlines and penalties

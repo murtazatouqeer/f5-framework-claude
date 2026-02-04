@@ -1,0 +1,500 @@
+name: Tour Review Workflow
+display_name: Tour Review Workflow / Quy trình đánh giá tour
+description: |
+  End-to-end workflow for collecting, moderating, and publishing
+  customer reviews after tour completion.
+
+domain: travel-hospitality
+subdomain: tour
+version: "1.0"
+
+triggers:
+  - event: booking.completed
+    source: BookingService
+    delay: 2 hours
+  - event: customer.initiated_review
+    source: CustomerPortal
+  - event: reminder.review_request
+    source: NotificationService
+
+actors:
+  - name: Customer
+    role: reviewer
+    description: Person who completed the tour
+  - name: System
+    role: processor
+    description: Automated review handling
+  - name: Moderator
+    role: approver
+    description: Content moderation team
+  - name: Operator
+    role: responder
+    description: Tour operator responding to reviews
+  - name: Guide
+    role: subject
+    description: Guide being reviewed
+
+review_types:
+  - type: tour_review
+    description: Overall tour experience review
+    components: [rating, text, photos]
+
+  - type: guide_review
+    description: Specific guide performance review
+    components: [rating, text]
+
+  - type: operator_review
+    description: Tour operator service review
+    components: [rating, text]
+
+steps:
+  - id: TRIGGER_REVIEW_REQUEST
+    name: Trigger Review Request
+    actor: System
+    type: automated
+    actions:
+      - Check booking status is completed
+      - Verify tour date has passed
+      - Check customer hasn't already reviewed
+      - Queue review request notification
+    validations:
+      - rule: BR-REV-001
+    outputs:
+      - review_request_id
+      - eligible_for_review: boolean
+    branches:
+      - condition: eligible_for_review = true
+        next: SEND_REVIEW_REQUEST
+      - condition: already_reviewed
+        next: END_ALREADY_REVIEWED
+
+  - id: SEND_REVIEW_REQUEST
+    name: Send Review Request
+    actor: System
+    type: automated
+    actions:
+      - Send email with review link
+      - Send push notification
+      - Include tour details in request
+      - Set reminder schedule
+    events:
+      - review.requested
+    outputs:
+      - review_link
+      - expiry_date
+    on_success: AWAIT_REVIEW
+
+  - id: AWAIT_REVIEW
+    name: Await Customer Review
+    actor: Customer
+    type: interactive
+    timeout: 14 days
+    actions:
+      - Customer receives review request
+      - Customer clicks review link
+      - System displays review form
+    on_success: COLLECT_REVIEW
+    on_timeout: SEND_REMINDER
+
+  - id: SEND_REMINDER
+    name: Send Review Reminder
+    actor: System
+    type: automated
+    actions:
+      - Send reminder email (day 3)
+      - Send second reminder (day 7)
+      - Final reminder (day 12)
+    max_reminders: 3
+    reminder_intervals: [3, 7, 12]
+    on_success: AWAIT_REVIEW
+    on_max_reminders: END_NO_REVIEW
+
+  - id: COLLECT_REVIEW
+    name: Collect Review
+    actor: Customer
+    type: interactive
+    actions:
+      - Display tour summary
+      - Collect overall rating (1-5 stars)
+      - Collect category ratings
+      - Collect written review
+      - Allow photo/video upload
+      - Request guide rating (if applicable)
+    inputs:
+      - overall_rating: 1-5
+      - value_for_money_rating: 1-5
+      - organization_rating: 1-5
+      - guide_rating: 1-5 (optional)
+      - review_title: string
+      - review_text: string (min 50 chars)
+      - photos: array (max 10)
+      - would_recommend: boolean
+    validations:
+      - rule: BR-REV-010
+      - rule: BR-REV-011
+      - rule: BR-REV-012
+    outputs:
+      - review_draft
+    on_success: VALIDATE_CONTENT
+
+  - id: VALIDATE_CONTENT
+    name: Validate Review Content
+    actor: System
+    type: automated
+    actions:
+      - Check minimum text length
+      - Validate rating values
+      - Scan for prohibited content
+      - Check image formats and sizes
+      - Detect spam patterns
+    validations:
+      - rule: BR-REV-020
+      - rule: BR-REV-021
+      - rule: BR-REV-022
+      - rule: BR-REV-023
+    branches:
+      - condition: passes_auto_validation
+        next: AUTO_MODERATION
+      - condition: fails_validation
+        next: REQUEST_REVISION
+
+  - id: REQUEST_REVISION
+    name: Request Content Revision
+    actor: System
+    type: automated
+    actions:
+      - Notify customer of issues
+      - Highlight problematic content
+      - Request corrections
+    outputs:
+      - revision_reasons[]
+    on_success: COLLECT_REVIEW
+
+  - id: AUTO_MODERATION
+    name: Automated Moderation
+    actor: System
+    type: automated
+    actions:
+      - Run AI content moderation
+      - Check for profanity/inappropriate content
+      - Detect fake review patterns
+      - Identify competitor mentions
+      - Flag potential issues
+    outputs:
+      - moderation_score
+      - flagged_issues[]
+      - requires_human_review: boolean
+    branches:
+      - condition: moderation_score >= 0.8 AND no_flags
+        next: AUTO_APPROVE
+      - condition: moderation_score < 0.8 OR has_flags
+        next: HUMAN_MODERATION
+      - condition: severe_violation
+        next: AUTO_REJECT
+
+  - id: AUTO_APPROVE
+    name: Auto-Approve Review
+    actor: System
+    type: automated
+    actions:
+      - Set review status to approved
+      - Queue for publishing
+    validations:
+      - rule: BR-REV-030
+    events:
+      - review.approved
+    on_success: PUBLISH_REVIEW
+
+  - id: AUTO_REJECT
+    name: Auto-Reject Review
+    actor: System
+    type: automated
+    actions:
+      - Set review status to rejected
+      - Notify customer with reason
+      - Log rejection reason
+    events:
+      - review.rejected
+    on_success: END_REJECTED
+
+  - id: HUMAN_MODERATION
+    name: Human Moderation
+    actor: Moderator
+    type: interactive
+    actions:
+      - Review flagged content
+      - Check context of flagged phrases
+      - Verify photos are appropriate
+      - Make approval decision
+    inputs:
+      - moderator_decision: [approve, edit, reject]
+      - edit_suggestions: string (if edit)
+      - rejection_reason: string (if reject)
+    sla: 24 hours
+    on_approve: PUBLISH_REVIEW
+    on_edit: REQUEST_REVISION
+    on_reject: SEND_REJECTION
+
+  - id: SEND_REJECTION
+    name: Send Rejection Notice
+    actor: System
+    type: automated
+    actions:
+      - Notify customer of rejection
+      - Provide rejection reason
+      - Offer to submit new review
+    events:
+      - review.rejected
+    on_success: END_REJECTED
+
+  - id: PUBLISH_REVIEW
+    name: Publish Review
+    actor: System
+    type: automated
+    actions:
+      - Set review status to published
+      - Add to tour's review list
+      - Update tour rating averages
+      - Update guide rating (if included)
+      - Index for search
+    validations:
+      - rule: BR-REV-040
+    events:
+      - review.published
+    outputs:
+      - review_id
+      - published_at
+    on_success: NOTIFY_STAKEHOLDERS
+
+  - id: NOTIFY_STAKEHOLDERS
+    name: Notify Stakeholders
+    actor: System
+    type: automated
+    actions:
+      - Notify operator of new review
+      - Notify guide (if mentioned/rated)
+      - Alert if negative review (< 3 stars)
+      - Send thank you to customer
+    events:
+      - notification.review_published
+    on_success: AWAIT_RESPONSE
+
+  - id: AWAIT_RESPONSE
+    name: Await Operator Response
+    actor: Operator
+    type: interactive
+    timeout: 7 days
+    actions:
+      - Operator views review
+      - Operator drafts response
+      - Response reviewed by system
+    inputs:
+      - response_text: string
+    on_success: MODERATE_RESPONSE
+    on_timeout: END_NO_RESPONSE
+
+  - id: MODERATE_RESPONSE
+    name: Moderate Operator Response
+    actor: System
+    type: automated
+    actions:
+      - Check response for policy compliance
+      - Verify professional tone
+      - Check no personal attacks
+    validations:
+      - rule: BR-REV-050
+      - rule: BR-REV-051
+    branches:
+      - condition: response_approved
+        next: PUBLISH_RESPONSE
+      - condition: response_needs_edit
+        next: REQUEST_RESPONSE_EDIT
+
+  - id: REQUEST_RESPONSE_EDIT
+    name: Request Response Edit
+    actor: System
+    type: automated
+    actions:
+      - Notify operator of issues
+      - Suggest improvements
+    on_success: AWAIT_RESPONSE
+
+  - id: PUBLISH_RESPONSE
+    name: Publish Operator Response
+    actor: System
+    type: automated
+    actions:
+      - Attach response to review
+      - Notify customer of response
+      - Update review display
+    events:
+      - review.response_published
+    on_success: REVIEW_COMPLETE
+
+  - id: REVIEW_COMPLETE
+    name: Review Complete
+    actor: System
+    type: terminal
+    description: Review process completed successfully
+
+  - id: END_ALREADY_REVIEWED
+    name: Already Reviewed
+    actor: System
+    type: terminal
+    description: Customer already submitted a review
+
+  - id: END_NO_REVIEW
+    name: No Review Submitted
+    actor: System
+    type: terminal
+    description: Customer did not submit review within time limit
+
+  - id: END_REJECTED
+    name: Review Rejected
+    actor: System
+    type: terminal
+    description: Review was rejected
+
+  - id: END_NO_RESPONSE
+    name: No Operator Response
+    actor: System
+    type: terminal
+    description: Operator did not respond to review
+
+rating_categories:
+  - category: overall
+    label: Overall Experience
+    label_vi: Trải nghiệm tổng thể
+    required: true
+    weight: 0.4
+
+  - category: value_for_money
+    label: Value for Money
+    label_vi: Đáng giá tiền
+    required: true
+    weight: 0.2
+
+  - category: organization
+    label: Organization
+    label_vi: Tổ chức
+    required: true
+    weight: 0.2
+
+  - category: guide_knowledge
+    label: Guide Knowledge
+    label_vi: Kiến thức hướng dẫn viên
+    required: false
+    weight: 0.1
+
+  - category: safety
+    label: Safety
+    label_vi: An toàn
+    required: true
+    weight: 0.1
+
+moderation_rules:
+  prohibited_content:
+    - profanity
+    - hate_speech
+    - personal_information
+    - competitor_promotion
+    - spam_links
+    - threats
+    - discrimination
+
+  auto_flag_triggers:
+    - rating_mismatch: "5-star rating with negative text"
+    - suspicious_timing: "Review within 30 minutes of tour end"
+    - duplicate_text: "Text matches other reviews"
+    - promotional_content: "Contains URLs or promo codes"
+
+  fake_review_indicators:
+    - generic_text: "Very generic non-specific review"
+    - no_booking: "No matching booking found"
+    - rapid_submission: "Submitted unusually fast"
+    - ip_anomaly: "Multiple reviews from same IP"
+
+incentives:
+  - type: points_reward
+    amount: 50
+    condition: review_published
+    description: Earn loyalty points for reviews
+
+  - type: photo_bonus
+    amount: 20
+    condition: includes_photos >= 3
+    description: Bonus points for photo reviews
+
+  - type: detailed_bonus
+    amount: 30
+    condition: review_length >= 200 chars
+    description: Bonus for detailed reviews
+
+timeouts:
+  review_submission: 14 days
+  reminder_1: 3 days
+  reminder_2: 7 days
+  reminder_3: 12 days
+  moderation_sla: 24 hours
+  operator_response: 7 days
+
+notifications:
+  - event: review.requested
+    recipients: [customer]
+    channels: [email, push]
+    template: review_request
+
+  - event: review.reminder
+    recipients: [customer]
+    channels: [email, push]
+    template: review_reminder
+
+  - event: review.published
+    recipients: [customer, operator]
+    channels: [email]
+    template: review_published
+
+  - event: review.rejected
+    recipients: [customer]
+    channels: [email]
+    template: review_rejected
+
+  - event: review.response_published
+    recipients: [customer]
+    channels: [email, push]
+    template: operator_response_notification
+
+  - event: review.negative_alert
+    recipients: [operator]
+    channels: [email, sms]
+    template: negative_review_alert
+    condition: rating < 3
+
+metrics:
+  - metric: review_rate
+    description: Percentage of completed bookings that receive reviews
+    target: ">= 20%"
+
+  - metric: average_rating
+    description: Average star rating across all reviews
+    target: ">= 4.0"
+
+  - metric: response_rate
+    description: Percentage of reviews receiving operator response
+    target: ">= 80%"
+
+  - metric: moderation_time
+    description: Average time to moderate reviews
+    target: "< 24 hours"
+
+error_handling:
+  submission_failure:
+    action: save_draft_and_retry
+    max_retries: 3
+
+  moderation_backlog:
+    action: auto_approve_low_risk
+    threshold: 48 hours pending
+
+  notification_failure:
+    action: log_and_continue

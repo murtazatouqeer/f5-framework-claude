@@ -1,0 +1,376 @@
+name: search-rules
+display_name: Search & Availability Rules
+display_name_vi: Quy tắc tìm kiếm & Khả dụng
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Business rules governing search parameters, availability checks,
+  result ranking, and filtering for flights, hotels, and packages.
+
+categories:
+  - name: flight_search
+    display_name: Flight Search Rules
+    rules:
+      - id: BR-SRCH-F001
+        name: Search Date Range
+        description: |
+          Flight searches allowed from today up to 361 days in advance.
+          One-way, round-trip, and multi-city supported.
+        conditions:
+          - departure_date >= today
+          - departure_date <= today + 361 days
+          - return_date >= departure_date (if round-trip)
+        actions:
+          - validate_date_range
+          - reject_past_dates
+        priority: critical
+
+      - id: BR-SRCH-F002
+        name: Passenger Limits
+        description: |
+          Maximum passengers per booking based on regulations and system limits.
+        conditions:
+          - total_passengers <= 9
+          - adults >= 1
+          - infants <= adults
+          - children + infants <= 8
+        actions:
+          - validate_passenger_mix
+          - calculate_fare_per_type
+        priority: critical
+
+      - id: BR-SRCH-F003
+        name: Connection Time Validation
+        description: |
+          Minimum connection times for flight combinations.
+        conditions:
+          - domestic_connection >= 60 minutes
+          - international_connection >= 90 minutes
+          - terminal_change_connection >= 120 minutes
+        actions:
+          - filter_invalid_connections
+          - warn_tight_connections
+        priority: high
+
+      - id: BR-SRCH-F004
+        name: Result Freshness
+        description: |
+          Search results cache validity and refresh rules.
+        conditions:
+          - cache_age <= 15 minutes
+          - price_age <= 30 minutes
+        actions:
+          - refresh_stale_results
+          - mark_price_change_indicator
+        priority: medium
+
+      - id: BR-SRCH-F005
+        name: Cabin Class Filtering
+        description: |
+          Filter and display cabin class options correctly.
+        conditions:
+          - requested_cabin IN [economy, premium_economy, business, first]
+          - mixed_cabin_allowed = config.mixed_cabin
+        actions:
+          - filter_by_cabin
+          - show_upgrade_options
+        priority: medium
+
+  - name: hotel_search
+    display_name: Hotel Search Rules
+    rules:
+      - id: BR-SRCH-H001
+        name: Hotel Search Date Range
+        description: |
+          Hotel searches allowed up to 500 days in advance.
+          Check-out must be after check-in.
+        conditions:
+          - check_in_date >= today
+          - check_in_date <= today + 500 days
+          - check_out_date > check_in_date
+          - stay_duration <= 30 nights (standard)
+        actions:
+          - validate_stay_dates
+          - flag_extended_stay
+        priority: critical
+
+      - id: BR-SRCH-H002
+        name: Room & Guest Configuration
+        description: |
+          Room allocation and occupancy validation.
+        conditions:
+          - rooms <= 9
+          - adults_per_room >= 1
+          - total_guests_per_room <= max_occupancy
+          - children_ages_required = true
+        actions:
+          - validate_occupancy
+          - suggest_room_allocation
+        priority: high
+
+      - id: BR-SRCH-H003
+        name: Location Search Radius
+        description: |
+          Search radius and location precision rules.
+        conditions:
+          - city_search = all_properties_in_city
+          - point_search_radius = 25km default
+          - airport_search = properties_with_shuttle
+        actions:
+          - expand_search_if_few_results
+          - show_distance_from_point
+        priority: medium
+
+      - id: BR-SRCH-H004
+        name: Rate Plan Display
+        description: |
+          Which rate plans to show and how to rank them.
+        conditions:
+          - show_member_rates = user.is_member
+          - show_package_rates = search.includes_flight
+          - show_prepaid_and_pay_later = true
+        actions:
+          - filter_rate_plans
+          - highlight_best_value
+        priority: medium
+
+  - name: package_search
+    display_name: Package Search Rules
+    rules:
+      - id: BR-SRCH-P001
+        name: Package Availability
+        description: |
+          Package search combines flight and hotel availability.
+        conditions:
+          - flight_available = true
+          - hotel_available = true
+          - dates_align = true
+        actions:
+          - search_components_parallel
+          - combine_valid_packages
+        priority: critical
+
+      - id: BR-SRCH-P002
+        name: Package Pricing Display
+        description: |
+          Show package savings vs booking separately.
+        conditions:
+          - package_price < flight_price + hotel_price
+          - savings_percentage > 0
+        actions:
+          - calculate_savings
+          - display_comparison
+        priority: high
+
+  - name: result_ranking
+    display_name: Result Ranking Rules
+    rules:
+      - id: BR-SRCH-R001
+        name: Default Flight Ranking
+        description: |
+          Default sort order for flight results.
+        ranking_factors:
+          - factor: best_value
+            weight: 0.35
+            calculation: price / quality_score
+          - factor: price
+            weight: 0.25
+          - factor: duration
+            weight: 0.20
+          - factor: departure_time_preference
+            weight: 0.10
+          - factor: airline_preference
+            weight: 0.10
+        actions:
+          - calculate_composite_score
+          - apply_personalization
+        priority: high
+
+      - id: BR-SRCH-R002
+        name: Default Hotel Ranking
+        description: |
+          Default sort order for hotel results.
+        ranking_factors:
+          - factor: popularity
+            weight: 0.25
+          - factor: guest_rating
+            weight: 0.25
+          - factor: price_value
+            weight: 0.20
+          - factor: location_score
+            weight: 0.15
+          - factor: amenity_match
+            weight: 0.15
+        actions:
+          - calculate_hotel_score
+          - boost_partner_properties
+        priority: high
+
+      - id: BR-SRCH-R003
+        name: Sponsored Results
+        description: |
+          Placement rules for sponsored/promoted results.
+        conditions:
+          - max_sponsored_top = 2
+          - max_sponsored_total = 10%
+          - label_required = "Ad" or "Sponsored"
+        actions:
+          - insert_sponsored_results
+          - mark_as_sponsored
+        priority: medium
+
+  - name: filtering
+    display_name: Filter Rules
+    rules:
+      - id: BR-SRCH-FLT001
+        name: Flight Filters
+        description: |
+          Available flight filter options.
+        filters:
+          - name: stops
+            options: [non_stop, 1_stop, 2_plus_stops]
+          - name: departure_time
+            options: [morning, afternoon, evening, red_eye]
+          - name: airlines
+            type: multi_select
+          - name: alliance
+            options: [star_alliance, oneworld, skyteam]
+          - name: price_range
+            type: slider
+          - name: duration
+            type: slider
+          - name: airports
+            type: multi_select
+          - name: baggage_included
+            type: boolean
+        actions:
+          - apply_filters_client_side
+          - update_result_count
+        priority: medium
+
+      - id: BR-SRCH-FLT002
+        name: Hotel Filters
+        description: |
+          Available hotel filter options.
+        filters:
+          - name: star_rating
+            options: [1, 2, 3, 4, 5]
+          - name: guest_rating
+            options: [good_7, very_good_8, excellent_9]
+          - name: price_range
+            type: slider
+          - name: amenities
+            type: multi_select
+            popular: [wifi, pool, parking, breakfast, gym]
+          - name: property_type
+            options: [hotel, resort, apartment, villa, hostel]
+          - name: meal_plan
+            options: [room_only, breakfast, half_board, all_inclusive]
+          - name: cancellation
+            options: [free_cancellation, non_refundable]
+          - name: distance_from_center
+            type: slider
+        actions:
+          - apply_hotel_filters
+          - show_filter_counts
+        priority: medium
+
+  - name: availability_rules
+    display_name: Availability Rules
+    rules:
+      - id: BR-SRCH-AV001
+        name: Real-time vs Cached
+        description: |
+          When to use cached vs real-time availability.
+        conditions:
+          cached_allowed:
+            - initial_search = true
+            - results_count_check = true
+          real_time_required:
+            - price_verification = true
+            - booking_initiation = true
+            - seat_selection = true
+        actions:
+          - route_to_appropriate_source
+          - update_cache_on_realtime
+        priority: critical
+
+      - id: BR-SRCH-AV002
+        name: Fare Bucket Depletion
+        description: |
+          Handle depleted fare classes gracefully.
+        conditions:
+          - fare_class_sold_out = true
+          - alternative_classes_available = check
+        actions:
+          - show_next_available_class
+          - indicate_price_increase
+          - offer_flexible_date_alternatives
+        priority: high
+
+      - id: BR-SRCH-AV003
+        name: Hotel Allotment
+        description: |
+          Handle hotel room availability and last room logic.
+        conditions:
+          - rooms_available >= rooms_requested
+          - last_room_markup = 10%
+          - low_availability_threshold = 3
+        actions:
+          - show_urgency_message
+          - apply_last_room_pricing
+        priority: high
+
+validation_rules:
+  - id: VAL-SRCH-001
+    name: Input Sanitization
+    description: Sanitize all search inputs
+    checks:
+      - no_sql_injection
+      - no_xss
+      - valid_iata_codes
+      - valid_date_format
+
+  - id: VAL-SRCH-002
+    name: Business Logic Validation
+    description: Validate business constraints
+    checks:
+      - passenger_count_valid
+      - date_range_valid
+      - location_valid
+
+error_handling:
+  - error: no_results
+    action: suggest_alternatives
+    message: "No results found. Try flexible dates or nearby airports."
+
+  - error: search_timeout
+    action: retry_with_cache
+    message: "Search taking longer than expected. Showing cached results."
+
+  - error: invalid_route
+    action: suggest_connections
+    message: "No direct flights. Here are connection options."
+
+performance_targets:
+  - metric: search_response_time
+    target: "< 3 seconds"
+    p95: "< 5 seconds"
+
+  - metric: cache_hit_rate
+    target: "> 70%"
+
+  - metric: availability_accuracy
+    target: "> 95%"
+
+integration_notes:
+  gds_systems:
+    - Amadeus: Primary for flights
+    - Sabre: Secondary for flights
+    - Travelport: Backup
+  hotel_sources:
+    - direct_contracts
+    - aggregators (Hotelbeds, WebBeds)
+    - channel_managers

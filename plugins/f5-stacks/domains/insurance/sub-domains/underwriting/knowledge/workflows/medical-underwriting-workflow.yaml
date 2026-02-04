@@ -1,0 +1,556 @@
+name: medical_underwriting_workflow
+display_name: Medical Underwriting Workflow
+description: |
+  Comprehensive workflow for medical underwriting including
+  requirement determination, evidence collection, and medical assessment.
+
+domain: insurance
+subdomain: underwriting
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-UW-002
+trigger:
+  event: medical_requirements_triggered
+  source: underwriting_case
+  conditions:
+    - medical_evidence_required: true
+    - case_status: in_progress
+
+participants:
+  roles:
+    - underwriter
+    - medical_officer
+    - panel_doctor
+    - laboratory
+    - applicant
+
+  systems:
+    - underwriting_system
+    - medical_requirement_engine
+    - provider_portal
+    - document_management
+
+stages:
+  - id: MU-001
+    name: Determine Medical Requirements
+    description: Calculate required medical evidence
+    actor: system
+
+    inputs:
+      - applicant_age
+      - sum_insured
+      - product_type
+      - disclosed_conditions
+      - existing_evidence
+
+    activities:
+      - id: MU-001-A
+        name: Calculate Age-Based Requirements
+        type: automated
+        action: Determine requirements by age tier
+        lookup: age_requirement_matrix
+        output: age_requirements
+
+      - id: MU-001-B
+        name: Calculate Sum-Based Requirements
+        type: automated
+        action: Determine requirements by sum tier
+        lookup: sum_requirement_matrix
+        output: sum_requirements
+
+      - id: MU-001-C
+        name: Calculate Disclosure-Based Requirements
+        type: automated
+        action: Add requirements for disclosures
+        rules:
+          cardiovascular_disclosure:
+            add:
+              - ecg
+              - lipid_profile
+              - stress_test_if_significant
+          diabetes_disclosure:
+            add:
+              - hba1c
+              - fasting_glucose
+              - kidney_function
+          cancer_history:
+            add:
+              - tumor_markers
+              - specialist_report
+              - imaging_if_relevant
+
+      - id: MU-001-D
+        name: Merge Requirements
+        type: automated
+        action: Combine and deduplicate requirements
+        rule: take_maximum_of_each_category
+        output: final_requirements
+
+      - id: MU-001-E
+        name: Check Existing Evidence
+        type: automated
+        action: Identify reusable evidence
+        criteria:
+          - within_validity_period
+          - same_applicant
+          - acceptable_source
+        output: requirements_after_reuse
+
+    outputs:
+      - required_exams
+      - required_tests
+      - required_reports
+      - reusable_evidence
+
+    sla: 15_minutes
+    next_stage: MU-002
+
+  - id: MU-002
+    name: Schedule Medical Examinations
+    description: Arrange required medical exams with providers
+    actor: system
+
+    inputs:
+      - requirements_list
+      - applicant_location
+      - applicant_preferences
+      - panel_providers
+
+    activities:
+      - id: MU-002-A
+        name: Identify Suitable Providers
+        type: automated
+        action: Find panel providers near applicant
+        criteria:
+          - within_distance_limit
+          - required_services_available
+          - capacity_available
+        output: suitable_providers
+
+      - id: MU-002-B
+        name: Generate Appointment Options
+        type: automated
+        action: Create scheduling options
+        parameters:
+          - number_of_options: 3
+          - time_range: next_14_days
+          - consider_fasting_requirements
+        output: appointment_options
+
+      - id: MU-002-C
+        name: Send Scheduling Request
+        type: automated
+        action: Notify applicant of options
+        channels:
+          - sms
+          - email
+          - agent_notification
+        content:
+          - appointment_options
+          - preparation_instructions
+          - required_documents
+
+      - id: MU-002-D
+        name: Confirm Appointment
+        type: manual
+        actor: applicant
+        action: Select and confirm appointment
+        sla: 7_days
+        reminder_at: 3_days
+
+      - id: MU-002-E
+        name: Notify Provider
+        type: automated
+        action: Send confirmation to provider
+        includes:
+          - applicant_details
+          - required_tests
+          - authorization_code
+          - payment_guarantee
+
+    outputs:
+      - scheduled_appointments
+      - provider_authorizations
+      - applicant_instructions
+
+    sla: 7_days
+    next_stage: MU-003
+
+  - id: MU-003
+    name: Conduct Medical Examinations
+    description: Perform required medical exams
+    actor: panel_doctor
+
+    inputs:
+      - appointment_details
+      - exam_requirements
+      - authorization
+
+    activities:
+      - id: MU-003-A
+        name: Verify Identity
+        type: manual
+        action: Confirm applicant identity
+        verification:
+          - photo_id_check
+          - biometric_if_available
+        documentation: identity_verification_form
+
+      - id: MU-003-B
+        name: Conduct Physical Exam
+        type: manual
+        action: Perform physical examination
+        components:
+          - height_weight
+          - blood_pressure_multiple
+          - pulse_rate
+          - general_physical
+          - systems_examination
+        documentation: physical_exam_form
+
+      - id: MU-003-C
+        name: Collect Samples
+        type: manual
+        action: Collect blood and urine samples
+        requirements:
+          - fasting_status_confirmed
+          - proper_labeling
+          - chain_of_custody
+        output: sample_collection_record
+
+      - id: MU-003-D
+        name: Perform On-Site Tests
+        type: manual
+        action: Conduct immediate tests
+        tests:
+          - ecg
+          - urinalysis_dipstick
+          - vision_test
+        output: on_site_results
+
+      - id: MU-003-E
+        name: Submit for Lab Analysis
+        type: manual
+        action: Send samples to laboratory
+        tracking: sample_tracking_number
+        expected_turnaround: 3_days
+
+      - id: MU-003-F
+        name: Complete Examiner Report
+        type: manual
+        action: Document findings and opinion
+        includes:
+          - objective_findings
+          - examiner_impression
+          - recommendations
+          - signature_stamp
+
+    outputs:
+      - exam_report
+      - sample_tracking
+      - on_site_results
+      - examiner_opinion
+
+    sla: 1_day_per_exam
+    next_stage: MU-004
+
+  - id: MU-004
+    name: Collect and Validate Results
+    description: Gather all results and validate completeness
+    actor: system
+
+    inputs:
+      - exam_reports
+      - lab_results
+      - specialist_reports
+
+    activities:
+      - id: MU-004-A
+        name: Track Results Status
+        type: automated
+        action: Monitor for result submission
+        tracking:
+          - expected_results_list
+          - received_results
+          - outstanding_items
+        alerts:
+          - 80_percent_sla: reminder_to_provider
+          - sla_breach: escalation
+
+      - id: MU-004-B
+        name: Receive Lab Results
+        type: automated
+        action: Receive electronic lab results
+        format: hl7_or_structured
+        validation:
+          - applicant_match
+          - date_within_range
+          - completeness_check
+
+      - id: MU-004-C
+        name: Receive Exam Reports
+        type: automated
+        action: Receive and scan exam reports
+        processing:
+          - ocr_extraction
+          - data_validation
+          - quality_check
+
+      - id: MU-004-D
+        name: Validate Completeness
+        type: automated
+        action: Verify all requirements met
+        checks:
+          - all_required_tests_present
+          - results_within_validity
+          - no_critical_missing
+        output: completeness_status
+
+      - id: MU-004-E
+        name: Flag Abnormalities
+        type: automated
+        action: Highlight abnormal results
+        criteria:
+          - outside_reference_range
+          - clinically_significant
+          - requires_attention
+        output: abnormality_flags
+
+    outputs:
+      - consolidated_results
+      - completeness_status
+      - abnormality_flags
+
+    sla: 5_days_from_exam
+    next_stage: MU-005
+
+  - id: MU-005
+    name: Medical Assessment
+    description: Assess medical evidence and determine impact
+    actor: underwriter
+
+    inputs:
+      - consolidated_results
+      - abnormality_flags
+      - disclosed_conditions
+
+    activities:
+      - id: MU-005-A
+        name: Review Normal Results
+        type: manual
+        action: Confirm normal results support standard terms
+        documentation: normal_results_noted
+
+      - id: MU-005-B
+        name: Assess Abnormal Results
+        type: manual
+        action: Evaluate significance of abnormalities
+        considerations:
+          - clinical_significance
+          - consistency_with_disclosures
+          - impact_on_mortality_morbidity
+        output: abnormality_assessment
+
+      - id: MU-005-C
+        name: Identify Undisclosed Conditions
+        type: manual
+        action: Flag new conditions from evidence
+        actions:
+          - document_discrepancy
+          - request_explanation
+          - escalate_if_material
+
+      - id: MU-005-D
+        name: Determine Medical Action
+        type: decision
+        options:
+          standard:
+            condition: all_normal
+            action: proceed_standard
+          loading:
+            condition: minor_abnormalities
+            action: calculate_loading
+          exclusion:
+            condition: specific_condition
+            action: propose_exclusion
+          refer:
+            condition: complex_findings
+            action: refer_to_medical_officer
+          decline:
+            condition: severe_findings
+            action: recommend_decline
+
+    outputs:
+      - medical_assessment
+      - proposed_action
+      - referral_if_needed
+
+    sla: 2_hours
+    conditions:
+      refer_to_medical_officer:
+        - cancer_history
+        - cardiovascular_disease
+        - complex_psychiatric
+        - multiple_abnormalities
+    next_stage: MU-006
+
+  - id: MU-006
+    name: Medical Officer Review
+    description: Specialist review of complex medical cases
+    actor: medical_officer
+
+    inputs:
+      - case_file
+      - medical_evidence
+      - underwriter_assessment
+
+    activities:
+      - id: MU-006-A
+        name: Review Case History
+        type: manual
+        action: Comprehensive review of medical history
+        focus:
+          - disclosed_conditions
+          - treatment_history
+          - current_status
+
+      - id: MU-006-B
+        name: Analyze Evidence
+        type: manual
+        action: Clinical analysis of evidence
+        expertise:
+          - interpret_lab_results
+          - assess_imaging
+          - evaluate_prognosis
+
+      - id: MU-006-C
+        name: Request Additional Evidence
+        type: decision
+        conditions:
+          - information_gaps
+          - unclear_findings
+          - need_specialist_opinion
+        action: specify_additional_requirements
+
+      - id: MU-006-D
+        name: Provide Medical Opinion
+        type: manual
+        action: Document medical assessment
+        includes:
+          - diagnosis_summary
+          - risk_assessment
+          - mortality_morbidity_opinion
+          - recommendations
+          - loading_suggestion
+          - exclusion_suggestion
+
+    outputs:
+      - medical_opinion
+      - risk_recommendations
+      - additional_requirements
+
+    sla: 48_hours
+    conditions:
+      required_for:
+        - loading_above_50_percent
+        - complex_conditions
+        - decline_recommendations
+    next_stage: MU-007
+
+  - id: MU-007
+    name: Finalize Medical Underwriting
+    description: Complete medical underwriting and document
+    actor: underwriter
+
+    inputs:
+      - medical_assessment
+      - medical_officer_opinion
+      - case_details
+
+    activities:
+      - id: MU-007-A
+        name: Consolidate Assessments
+        type: manual
+        action: Combine all medical assessments
+        includes:
+          - underwriter_assessment
+          - medical_officer_opinion
+          - any_specialist_inputs
+
+      - id: MU-007-B
+        name: Determine Final Medical Terms
+        type: manual
+        action: Finalize medical underwriting terms
+        outputs:
+          - medical_loading_percent
+          - medical_exclusions
+          - medical_postponement
+
+      - id: MU-007-C
+        name: Document Medical Decision
+        type: manual
+        action: Record medical underwriting decision
+        includes:
+          - rationale
+          - evidence_relied_upon
+          - loading_breakdown
+          - exclusion_wording
+
+      - id: MU-007-D
+        name: Update Case
+        type: automated
+        action: Update underwriting case
+        sets:
+          - medical_underwriting_complete: true
+          - medical_terms: determined_values
+          - ready_for_integration: true
+
+    outputs:
+      - medical_underwriting_decision
+      - medical_terms
+      - documentation
+
+    sla: 2_hours
+    next_stage: complete
+
+completion_criteria:
+  - all_requirements_received: true
+  - assessment_complete: true
+  - terms_determined: true
+  - documentation_complete: true
+
+exception_handling:
+  applicant_no_show:
+    action: reschedule_once
+    if_repeated: case_pending_applicant
+
+  provider_delay:
+    action: escalate_to_provider
+    alternative: reassign_provider
+
+  incomplete_results:
+    action: request_completion
+    sla: 7_days
+
+  abnormal_requiring_further:
+    action: order_additional_tests
+    approval: senior_underwriter
+
+metrics:
+  - average_turnaround_time
+  - requirement_fulfillment_rate
+  - medical_referral_rate
+  - loading_distribution
+  - abnormality_detection_rate
+
+integration_points:
+  - risk_assessment_workflow
+  - decision_workflow
+  - reinsurance_workflow
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

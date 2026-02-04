@@ -1,0 +1,358 @@
+name: inspection-rules
+display_name: Inspection Business Rules
+display_name_vi: Quy tắc kinh doanh kiểm tra
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: business-rules
+
+description: |
+  Business rules governing quality inspection processes including
+  inspection planning, execution, and result determination.
+
+description_vi: |
+  Quy tắc kinh doanh quản lý quy trình kiểm tra chất lượng bao gồm
+  lập kế hoạch kiểm tra, thực hiện và xác định kết quả.
+
+rule_categories:
+  - inspection_planning
+  - inspection_execution
+  - result_determination
+  - inspector_qualification
+  - documentation
+
+rules:
+  # Inspection Planning Rules
+  - id: INS-RULE-001
+    name: inspection_plan_required
+    name_vi: Yêu cầu kế hoạch kiểm tra
+    category: inspection_planning
+    priority: critical
+    description: Every inspection must reference an approved inspection plan
+    description_vi: Mỗi lần kiểm tra phải tham chiếu kế hoạch kiểm tra đã phê duyệt
+    condition: |
+      WHEN inspection is created
+      THEN inspection_plan_id IS NOT NULL
+      AND inspection_plan.status = 'approved'
+    action: |
+      BLOCK inspection creation if no approved plan exists
+      NOTIFY quality_engineer for plan creation
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-002
+    name: characteristic_coverage
+    name_vi: Bao phủ đặc tính
+    category: inspection_planning
+    priority: high
+    description: All critical characteristics must be included in inspection
+    description_vi: Tất cả đặc tính quan trọng phải được bao gồm trong kiểm tra
+    condition: |
+      FOR each inspection
+      ALL characteristics WHERE criticality = 'critical'
+      MUST be included in inspection_plan.characteristics
+    action: |
+      VALIDATE characteristic coverage before inspection start
+      ALERT if critical characteristic missing
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-003
+    name: inspection_frequency_compliance
+    name_vi: Tuân thủ tần suất kiểm tra
+    category: inspection_planning
+    priority: high
+    description: Inspections must follow defined frequency requirements
+    description_vi: Kiểm tra phải tuân theo yêu cầu tần suất đã định
+    condition: |
+      WHEN lot received or operation completed
+      IF inspection_plan.inspection_frequency = 'every_lot'
+      THEN inspection MUST be scheduled
+    action: |
+      AUTO-CREATE inspection record
+      NOTIFY inspector of pending inspection
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  # Inspection Execution Rules
+  - id: INS-RULE-010
+    name: inspector_qualification
+    name_vi: Đủ điều kiện kiểm tra viên
+    category: inspector_qualification
+    priority: critical
+    description: Inspector must be qualified for inspection type and characteristics
+    description_vi: Kiểm tra viên phải đủ điều kiện cho loại kiểm tra và đặc tính
+    condition: |
+      FOR inspection assignment
+      inspector.certifications MUST INCLUDE inspection_plan.training_requirements
+      AND inspector.qualification_status = 'active'
+    action: |
+      BLOCK assignment if qualification missing
+      SUGGEST qualified inspectors
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-011
+    name: calibrated_equipment_required
+    name_vi: Yêu cầu thiết bị đã hiệu chuẩn
+    category: inspection_execution
+    priority: critical
+    description: All measurement equipment must be calibrated and current
+    description_vi: Tất cả thiết bị đo phải được hiệu chuẩn và còn hiệu lực
+    condition: |
+      FOR each measurement
+      equipment.calibration_status = 'current'
+      AND equipment.next_calibration_date > TODAY
+    action: |
+      BLOCK measurement entry with non-calibrated equipment
+      ALERT calibration_technician
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-012
+    name: sample_size_compliance
+    name_vi: Tuân thủ kích thước mẫu
+    category: inspection_execution
+    priority: high
+    description: Sample size must meet or exceed sampling plan requirements
+    description_vi: Kích thước mẫu phải đáp ứng hoặc vượt yêu cầu kế hoạch lấy mẫu
+    condition: |
+      FOR inspection completion
+      actual_sample_size >= inspection_plan.required_sample_size
+    action: |
+      WARN if sample size insufficient
+      BLOCK completion until minimum met
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  - id: INS-RULE-013
+    name: environmental_conditions
+    name_vi: Điều kiện môi trường
+    category: inspection_execution
+    priority: medium
+    description: Inspection environment must meet specified conditions
+    description_vi: Môi trường kiểm tra phải đáp ứng điều kiện quy định
+    condition: |
+      WHEN inspection_plan.environmental_requirements EXISTS
+      THEN inspection.environmental_conditions MUST be recorded
+      AND VALUES within specification
+    action: |
+      REQUIRE environmental condition entry
+      WARN if outside specification
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_engineer
+
+  # Result Determination Rules
+  - id: INS-RULE-020
+    name: pass_fail_determination
+    name_vi: Xác định đạt/không đạt
+    category: result_determination
+    priority: critical
+    description: Inspection result determined by acceptance criteria
+    description_vi: Kết quả kiểm tra được xác định bởi tiêu chí chấp nhận
+    condition: |
+      FOR variable data:
+        IF ALL measurements within (LSL, USL) THEN result = 'pass'
+        ELSE result = 'fail'
+      FOR attribute data:
+        IF defects <= acceptance_number THEN result = 'pass'
+        ELSE result = 'fail'
+    action: |
+      AUTO-CALCULATE result based on criteria
+      PREVENT manual override without authorization
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-021
+    name: critical_defect_fail
+    name_vi: Lỗi nghiêm trọng không đạt
+    category: result_determination
+    priority: critical
+    description: Any critical defect causes immediate inspection failure
+    description_vi: Bất kỳ lỗi nghiêm trọng nào đều gây ra không đạt ngay lập tức
+    condition: |
+      IF any measurement WHERE characteristic.criticality = 'critical'
+      AND result = 'fail'
+      THEN inspection.result = 'fail'
+    action: |
+      IMMEDIATE inspection failure
+      STOP production if in-process
+      CREATE NCR automatically
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-022
+    name: ncr_on_failure
+    name_vi: NCR khi không đạt
+    category: result_determination
+    priority: high
+    description: Non-conformance report required for failed inspections
+    description_vi: Yêu cầu báo cáo không phù hợp cho kiểm tra không đạt
+    condition: |
+      WHEN inspection.result = 'fail'
+      THEN ncr_required = true
+    action: |
+      PROMPT for NCR creation
+      LINK NCR to inspection
+      NOTIFY quality_engineer
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-023
+    name: disposition_authority
+    name_vi: Thẩm quyền xử lý
+    category: result_determination
+    priority: high
+    description: Disposition decisions require appropriate authority level
+    description_vi: Quyết định xử lý yêu cầu cấp thẩm quyền phù hợp
+    condition: |
+      FOR disposition decision
+      disposition_by.authority_level >= required_level
+      WHERE required_level based on:
+        - scrap: quality_engineer
+        - return_to_vendor: quality_engineer
+        - use_as_is: quality_manager (critical), quality_engineer (major/minor)
+        - rework: supervisor
+    action: |
+      VALIDATE authority before accepting disposition
+      ESCALATE if insufficient authority
+    enforcement: automatic
+    exception_allowed: false
+
+  # Documentation Rules
+  - id: INS-RULE-030
+    name: complete_documentation
+    name_vi: Tài liệu đầy đủ
+    category: documentation
+    priority: high
+    description: All inspection records must be complete before closure
+    description_vi: Tất cả bản ghi kiểm tra phải hoàn chỉnh trước khi đóng
+    condition: |
+      FOR inspection completion
+      ALL required_fields MUST be populated:
+        - inspector_id
+        - started_at
+        - completed_at
+        - result
+        - disposition (if fail)
+        - all measurements recorded
+    action: |
+      VALIDATE completeness
+      BLOCK closure if incomplete
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-031
+    name: electronic_signature_required
+    name_vi: Yêu cầu chữ ký điện tử
+    category: documentation
+    priority: critical
+    description: FDA regulated products require 21 CFR Part 11 compliant signatures
+    description_vi: Sản phẩm được FDA quản lý yêu cầu chữ ký tuân thủ 21 CFR Part 11
+    condition: |
+      WHEN product.regulatory_requirement = 'FDA'
+      THEN electronic_signature MUST include:
+        - user_id
+        - timestamp
+        - signature_meaning
+        - authentication_method
+    action: |
+      REQUIRE electronic signature for completion
+      VALIDATE signature components
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-032
+    name: record_retention
+    name_vi: Lưu giữ hồ sơ
+    category: documentation
+    priority: high
+    description: Inspection records retained per policy requirements
+    description_vi: Hồ sơ kiểm tra được lưu giữ theo yêu cầu chính sách
+    condition: |
+      ALL inspection records
+      retention_period >= 7 years
+      OR as specified by product/customer requirements
+    action: |
+      PREVENT deletion before retention expiry
+      ARCHIVE after retention period
+    enforcement: automatic
+    exception_allowed: false
+
+  # Special Inspection Rules
+  - id: INS-RULE-040
+    name: first_article_inspection
+    name_vi: Kiểm tra sản phẩm đầu tiên
+    category: inspection_execution
+    priority: critical
+    description: FAI required before production authorization
+    description_vi: FAI được yêu cầu trước khi ủy quyền sản xuất
+    condition: |
+      AFTER setup_complete AND BEFORE production_start
+      first_article_inspection MUST pass
+      WITH all characteristics measured
+    action: |
+      BLOCK production without FAI approval
+      NOTIFY supervisor and quality
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: INS-RULE-041
+    name: receiving_inspection_timing
+    name_vi: Thời gian kiểm tra nhận hàng
+    category: inspection_execution
+    priority: high
+    description: Incoming materials must be inspected before use
+    description_vi: Vật liệu đến phải được kiểm tra trước khi sử dụng
+    condition: |
+      FOR incoming material
+      inspection.status = 'approved' BEFORE material release
+      OR material.hold_status = 'quarantine'
+    action: |
+      HOLD material until inspection complete
+      PREVENT warehouse release
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  - id: INS-RULE-042
+    name: skip_lot_eligibility
+    name_vi: Đủ điều kiện bỏ qua lô
+    category: inspection_execution
+    priority: medium
+    description: Skip-lot inspection only for qualified suppliers/products
+    description_vi: Kiểm tra bỏ qua lô chỉ cho nhà cung cấp/sản phẩm đủ điều kiện
+    condition: |
+      FOR skip_lot inspection level
+      supplier.qualification_status = 'preferred'
+      AND last_10_lots.accept_rate = 100%
+      AND no_quality_issues in last 6 months
+    action: |
+      VALIDATE skip-lot eligibility
+      REVERT to normal inspection if criteria not met
+    enforcement: automatic
+    exception_allowed: false
+
+validation_triggers:
+  - event: inspection_create
+    rules: [INS-RULE-001, INS-RULE-002, INS-RULE-010]
+
+  - event: inspection_start
+    rules: [INS-RULE-011, INS-RULE-013]
+
+  - event: measurement_record
+    rules: [INS-RULE-011, INS-RULE-012]
+
+  - event: inspection_complete
+    rules: [INS-RULE-020, INS-RULE-021, INS-RULE-022, INS-RULE-030, INS-RULE-031]
+
+  - event: disposition_decision
+    rules: [INS-RULE-023]
+
+audit_requirements:
+  log_all_violations: true
+  notify_on_override: true
+  retention_period_years: 7

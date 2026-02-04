@@ -1,0 +1,311 @@
+name: TollRecord
+display_name: Toll Record
+description: |
+  Record of toll charges incurred by fleet vehicles.
+  Tracks toll transactions, costs, and reconciliation.
+
+domain: logistics
+subdomain: fleet
+category: operations
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: toll_record_number
+    type: string
+    required: true
+    validation:
+      pattern: "^TL-[0-9]{10}$"
+    example: "TL-0000000001"
+
+  - name: vehicle_id
+    type: uuid
+    required: true
+
+  - name: driver_id
+    type: uuid
+    required: false
+
+  - name: trip_id
+    type: uuid
+    required: false
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, verified, disputed, paid, written_off]
+    default: pending
+
+  # Transaction Details
+  - name: transaction_id
+    type: string
+    required: false
+    description: External toll system transaction ID
+
+  - name: transaction_date
+    type: timestamp
+    required: true
+
+  - name: posted_date
+    type: date
+    required: false
+    description: Date toll was posted to account
+
+  # Toll Details
+  - name: toll_agency
+    type: string
+    required: true
+    example: "E-ZPass"
+
+  - name: toll_facility
+    type: string
+    required: true
+    example: "Golden Gate Bridge"
+
+  - name: toll_plaza
+    type: string
+    required: false
+
+  - name: entry_plaza
+    type: string
+    required: false
+
+  - name: exit_plaza
+    type: string
+    required: false
+
+  - name: toll_type
+    type: enum
+    required: true
+    validation:
+      values: [bridge, tunnel, highway, express_lane, congestion]
+
+  # Location
+  - name: entry_lat
+    type: decimal
+    required: false
+
+  - name: entry_lng
+    type: decimal
+    required: false
+
+  - name: exit_lat
+    type: decimal
+    required: false
+
+  - name: exit_lng
+    type: decimal
+    required: false
+
+  - name: state
+    type: string
+    required: false
+
+  - name: country
+    type: string
+    required: true
+    default: "US"
+
+  # Vehicle Class
+  - name: toll_vehicle_class
+    type: string
+    required: false
+    description: Class as determined by toll system
+
+  - name: axle_count
+    type: integer
+    required: false
+
+  # Amounts
+  - name: base_amount
+    type: decimal
+    required: true
+
+  - name: discount_amount
+    type: decimal
+    required: false
+    default: 0
+
+  - name: surcharge_amount
+    type: decimal
+    required: false
+    default: 0
+
+  - name: total_amount
+    type: decimal
+    required: true
+
+  - name: currency
+    type: string
+    required: true
+    default: "USD"
+
+  # Payment
+  - name: payment_method
+    type: enum
+    required: true
+    validation:
+      values: [transponder, license_plate, cash, invoice]
+    default: transponder
+
+  - name: transponder_id
+    type: string
+    required: false
+
+  - name: transponder_account
+    type: string
+    required: false
+
+  - name: license_plate
+    type: string
+    required: false
+
+  # Violations
+  - name: is_violation
+    type: boolean
+    required: true
+    default: false
+
+  - name: violation_type
+    type: enum
+    required: false
+    validation:
+      values: [no_transponder, insufficient_funds, plate_read, lane_violation]
+
+  - name: violation_fee
+    type: decimal
+    required: false
+
+  - name: violation_notice_number
+    type: string
+    required: false
+
+  # Dispute
+  - name: disputed
+    type: boolean
+    required: true
+    default: false
+
+  - name: dispute_reason
+    type: text
+    required: false
+
+  - name: dispute_status
+    type: enum
+    required: false
+    validation:
+      values: [pending, approved, denied]
+
+  - name: dispute_resolution
+    type: text
+    required: false
+
+  # Reconciliation
+  - name: reconciled
+    type: boolean
+    required: true
+    default: false
+
+  - name: reconciled_at
+    type: timestamp
+    required: false
+
+  - name: reconciled_by
+    type: uuid
+    required: false
+
+  - name: invoice_number
+    type: string
+    required: false
+
+  - name: invoice_date
+    type: date
+    required: false
+
+  # Evidence
+  - name: receipt_url
+    type: string
+    required: false
+
+  - name: photo_url
+    type: string
+    required: false
+    description: Toll booth image if available
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: vehicle
+    type: belongs_to
+    entity: Vehicle
+    required: true
+
+  - name: driver
+    type: belongs_to
+    entity: Driver
+    required: false
+
+  - name: trip
+    type: belongs_to
+    entity: Trip
+    required: false
+
+  - name: reconciled_by_user
+    type: belongs_to
+    entity: User
+    required: false
+
+indexes:
+  - [toll_record_number]
+  - [vehicle_id, transaction_date]
+  - [driver_id, transaction_date]
+  - [trip_id]
+  - [transponder_id]
+  - [status]
+  - [transaction_date]
+  - [toll_agency]
+  - [is_violation]
+  - [reconciled]
+
+aggregations:
+  - name: vehicle_monthly_tolls
+    group_by: [vehicle_id, month]
+    fields: [transaction_count, total_amount, violation_count]
+  - name: agency_summary
+    group_by: [toll_agency, month]
+    fields: [transaction_count, total_amount]
+  - name: route_toll_costs
+    group_by: [trip_id]
+    fields: [toll_count, total_amount]
+
+business_rules:
+  - BR-TL-001: Transponder charges auto-reconcile with agency feed
+  - BR-TL-002: Violations escalate to fleet manager
+  - BR-TL-003: Disputes must be filed within 30 days
+  - BR-TL-004: Toll costs allocated to trip if trip_id provided
+  - BR-TL-005: Monthly toll summaries sent to accounting
+
+events:
+  - name: toll.recorded
+    payload: [id, vehicle_id, toll_facility, total_amount]
+  - name: toll.violation
+    payload: [id, vehicle_id, violation_type, violation_fee]
+  - name: toll.disputed
+    payload: [id, vehicle_id, dispute_reason]
+  - name: toll.reconciled
+    payload: [id, vehicle_id, invoice_number]

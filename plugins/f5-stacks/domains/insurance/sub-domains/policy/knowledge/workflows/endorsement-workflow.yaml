@@ -1,0 +1,533 @@
+name: Endorsement Workflow
+display_name: Policy Endorsement Workflow
+description: |
+  Workflow for processing policy endorsements and amendments.
+  Handles coverage changes, beneficiary updates, and policy modifications.
+
+domain: insurance
+subdomain: policy
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-ENDORSE-001
+trigger:
+  - type: user_action
+    action: request_endorsement
+  - type: api_call
+    endpoint: POST /endorsements
+  - type: event
+    name: endorsement.requested
+
+actors:
+  - id: policyholder
+    name: Policyholder
+    type: external
+  - id: agent
+    name: Insurance Agent
+    type: internal
+  - id: operations
+    name: Operations Team
+    type: internal
+  - id: underwriter
+    name: Underwriter
+    type: internal
+  - id: system
+    name: Policy System
+    type: system
+  - id: approver
+    name: Approver
+    type: internal
+
+states:
+  - id: requested
+    name: Request Received
+    description: Endorsement request submitted
+    initial: true
+  - id: validating
+    name: Validating Request
+    description: Validating endorsement details
+  - id: documents_pending
+    name: Documents Pending
+    description: Awaiting supporting documents
+  - id: underwriting_review
+    name: Underwriting Review
+    description: Underwriter assessment required
+  - id: pending_approval
+    name: Pending Approval
+    description: Awaiting manager approval
+  - id: approved
+    name: Approved
+    description: Endorsement approved
+  - id: pending_payment
+    name: Pending Payment
+    description: Awaiting additional premium
+  - id: processing
+    name: Processing
+    description: Applying changes to policy
+  - id: completed
+    name: Completed
+    description: Endorsement applied
+    final: true
+  - id: rejected
+    name: Rejected
+    description: Endorsement rejected
+    final: true
+  - id: cancelled
+    name: Cancelled
+    description: Endorsement cancelled
+    final: true
+
+endorsement_types:
+  - type: coverage_increase
+    requires_underwriting: conditional
+    requires_payment: true
+    requires_documents: conditional
+  - type: coverage_decrease
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: false
+  - type: add_coverage
+    requires_underwriting: true
+    requires_payment: true
+    requires_documents: true
+  - type: remove_coverage
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: false
+  - type: add_rider
+    requires_underwriting: conditional
+    requires_payment: true
+    requires_documents: conditional
+  - type: remove_rider
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: false
+  - type: add_insured
+    requires_underwriting: true
+    requires_payment: true
+    requires_documents: true
+  - type: remove_insured
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: true
+  - type: change_beneficiary
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: true
+  - type: address_change
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: false
+  - type: name_change
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: true
+  - type: payment_method_change
+    requires_underwriting: false
+    requires_payment: false
+    requires_documents: conditional
+
+steps:
+  - id: step_1
+    name: Submit Endorsement Request
+    actor: policyholder
+    from_state: null
+    to_state: requested
+    inputs:
+      required:
+        - endorsement_type
+        - effective_date
+        - change_details
+      optional:
+        - reason
+        - supporting_documents
+    actions:
+      - action: create_endorsement_record
+        params:
+          endorsement_number: generate_endorsement_number()
+          status: requested
+      - action: validate_policy_active
+      - action: log_event
+        event: endorsement.requested
+    validations:
+      - rule: policy_is_active
+        condition: "policy.status = 'active'"
+      - rule: effective_date_valid
+        condition: "effective_date >= TODAY"
+    outputs:
+      - endorsement_id
+      - endorsement_number
+
+  - id: step_2
+    name: Validate Request
+    actor: system
+    from_state: requested
+    to_state: validating
+    actions:
+      - action: validate_endorsement_type
+      - action: check_eligibility
+        based_on:
+          - policy_status
+          - policy_age
+          - endorsement_restrictions
+      - action: determine_requirements
+        outputs:
+          - requires_underwriting
+          - requires_documents
+          - requires_payment
+          - requires_approval
+      - action: calculate_premium_impact
+    outputs:
+      - validation_result
+      - requirements_list
+      - premium_impact
+
+  - id: step_2a
+    name: Request Documents
+    actor: operations
+    from_state: validating
+    to_state: documents_pending
+    condition:
+      expression: "requires_documents = true AND documents_complete = false"
+    actions:
+      - action: identify_required_documents
+        based_on: endorsement_type
+      - action: notify_policyholder
+        template: documents_required
+      - action: notify_agent
+      - action: set_deadline
+        days: 14
+    outputs:
+      - required_documents_list
+
+  - id: step_2b
+    name: Receive Documents
+    actor: policyholder
+    from_state: documents_pending
+    to_state: validating
+    inputs:
+      - uploaded_documents
+    actions:
+      - action: verify_documents
+      - action: update_document_status
+
+  - id: step_3
+    name: Underwriting Review
+    actor: underwriter
+    from_state: validating
+    to_state: underwriting_review
+    condition:
+      expression: "requires_underwriting = true"
+    actions:
+      - action: assess_change_impact
+      - action: evaluate_risk
+        for:
+          - coverage_increase
+          - add_insured
+          - add_coverage
+      - action: determine_loading
+        condition: "risk_increased"
+      - action: determine_exclusions
+        condition: "new_coverage"
+    inputs:
+      - underwriting_decision
+      - additional_loading
+      - exclusions
+    outputs:
+      - underwriting_result
+      - premium_adjustment
+    sla:
+      duration: 24_hours
+
+  - id: step_4
+    name: Manager Approval
+    actor: approver
+    from_state: [validating, underwriting_review]
+    to_state: pending_approval
+    condition:
+      expression: |
+        requires_approval = true OR
+        premium_change > approval_threshold OR
+        sum_insured_change > approval_threshold
+    actions:
+      - action: route_for_approval
+        based_on: approval_matrix
+      - action: notify_approver
+      - action: create_approval_task
+    inputs:
+      - approval_decision
+      - approval_notes
+    sla:
+      duration: 24_hours
+
+  - id: step_5a
+    name: Approve Endorsement
+    actor: approver
+    from_state: [validating, underwriting_review, pending_approval]
+    to_state: approved
+    condition:
+      expression: "approval_decision = 'approved'"
+    actions:
+      - action: approve_endorsement
+      - action: finalize_terms
+      - action: log_event
+        event: endorsement.approved
+
+  - id: step_5b
+    name: Reject Endorsement
+    actor: approver
+    from_state: [validating, underwriting_review, pending_approval]
+    to_state: rejected
+    condition:
+      expression: "approval_decision = 'rejected'"
+    actions:
+      - action: reject_endorsement
+      - action: notify_policyholder
+        template: endorsement_rejected
+        include: rejection_reason
+      - action: notify_agent
+      - action: log_event
+        event: endorsement.rejected
+    outputs:
+      - rejection_reason
+
+  - id: step_6
+    name: Request Additional Premium
+    actor: system
+    from_state: approved
+    to_state: pending_payment
+    condition:
+      expression: "additional_premium > 0"
+    actions:
+      - action: generate_premium_notice
+        amount: additional_premium
+      - action: send_payment_request
+        to: policyholder
+      - action: set_payment_deadline
+        days: 14
+    outputs:
+      - payment_amount
+      - payment_due_date
+
+  - id: step_6a
+    name: Receive Payment
+    actor: policyholder
+    from_state: pending_payment
+    to_state: processing
+    actions:
+      - action: verify_payment
+      - action: allocate_payment
+      - action: issue_receipt
+
+  - id: step_6b
+    name: Process Refund
+    actor: system
+    from_state: approved
+    to_state: processing
+    condition:
+      expression: "refund_amount > 0"
+    actions:
+      - action: calculate_refund
+        method: pro_rata
+      - action: process_refund
+      - action: notify_policyholder
+
+  - id: step_7
+    name: Apply Changes
+    actor: system
+    from_state: [approved, processing]
+    to_state: processing
+    actions:
+      - action: create_policy_snapshot
+        before_changes: true
+      - action: apply_endorsement_changes
+        changes: endorsement.change_details
+      - action: update_policy_version
+      - action: recalculate_premium
+        condition: "premium_impact != 0"
+      - action: update_coverage_details
+      - action: create_policy_snapshot
+        after_changes: true
+
+  - id: step_8
+    name: Generate Documents
+    actor: system
+    from_state: processing
+    to_state: processing
+    actions:
+      - action: generate_endorsement_document
+        template: endorsement_template
+      - action: generate_revised_schedule
+      - action: generate_premium_notice
+        condition: "ongoing_premium_changed"
+
+  - id: step_9
+    name: Complete Endorsement
+    actor: system
+    from_state: processing
+    to_state: completed
+    actions:
+      - action: mark_endorsement_complete
+      - action: send_documents
+        to: policyholder
+        documents:
+          - endorsement_document
+          - revised_schedule
+      - action: notify_agent
+      - action: update_commission
+        condition: "premium_increased"
+      - action: log_event
+        event: endorsement.completed
+    outputs:
+      - endorsement_document_url
+      - revised_schedule_url
+
+  - id: step_cancel
+    name: Cancel Endorsement
+    actor: policyholder
+    from_state: [requested, validating, documents_pending, pending_approval, approved, pending_payment]
+    to_state: cancelled
+    actions:
+      - action: cancel_endorsement
+      - action: process_refund
+        condition: "payment_received"
+      - action: notify_agent
+      - action: log_event
+        event: endorsement.cancelled
+
+transitions:
+  - from: requested
+    to: validating
+    event: start_validation
+
+  - from: validating
+    to: documents_pending
+    event: documents_required
+
+  - from: documents_pending
+    to: validating
+    event: documents_received
+
+  - from: validating
+    to: underwriting_review
+    event: refer_underwriting
+
+  - from: validating
+    to: pending_approval
+    event: require_approval
+
+  - from: validating
+    to: approved
+    event: auto_approve
+
+  - from: underwriting_review
+    to: pending_approval
+    event: uw_complete_needs_approval
+
+  - from: underwriting_review
+    to: approved
+    event: uw_approved
+
+  - from: underwriting_review
+    to: rejected
+    event: uw_rejected
+
+  - from: pending_approval
+    to: approved
+    event: approve
+
+  - from: pending_approval
+    to: rejected
+    event: reject
+
+  - from: approved
+    to: pending_payment
+    event: payment_required
+
+  - from: approved
+    to: processing
+    event: no_payment_required
+
+  - from: pending_payment
+    to: processing
+    event: payment_received
+
+  - from: processing
+    to: completed
+    event: complete
+
+approval_matrix:
+  coverage_increase:
+    threshold_percentage: 25
+    approver: supervisor
+    above_threshold: manager
+
+  sum_insured_change:
+    threshold_amount: 500000000
+    approver: supervisor
+    above_threshold: manager
+
+  beneficiary_change:
+    irrevocable: executive
+    standard: auto
+
+  add_insured:
+    always: supervisor
+
+notifications:
+  - trigger: endorsement.requested
+    recipient: operations
+    template: new_endorsement
+    channel: [email, portal]
+
+  - trigger: documents_pending
+    recipient: policyholder
+    template: documents_required
+    channel: [email, sms]
+
+  - trigger: pending_approval
+    recipient: approver
+    template: endorsement_approval_needed
+    channel: [email, portal]
+
+  - trigger: endorsement.approved
+    recipient: [policyholder, agent]
+    template: endorsement_approved
+    channel: [email, sms]
+
+  - trigger: payment_required
+    recipient: policyholder
+    template: endorsement_payment
+    channel: [email, sms]
+
+  - trigger: endorsement.completed
+    recipient: [policyholder, agent]
+    template: endorsement_complete
+    channel: [email, portal]
+
+sla:
+  simple_endorsement:
+    types: [address_change, payment_method_change, name_change]
+    target: 24_hours
+    max: 48_hours
+
+  standard_endorsement:
+    types: [beneficiary_change, coverage_decrease, remove_rider]
+    target: 48_hours
+    max: 72_hours
+
+  complex_endorsement:
+    types: [coverage_increase, add_insured, add_coverage]
+    target: 5_days
+    max: 10_days
+
+metrics:
+  - name: endorsement_completion_rate
+    formula: "completed_endorsements / requested_endorsements * 100"
+  - name: average_processing_time
+    formula: "AVG(completed_at - requested_at)"
+  - name: sla_compliance
+    formula: "within_sla / total_endorsements * 100"
+  - name: endorsement_rejection_rate
+    formula: "rejected / total_requests * 100"

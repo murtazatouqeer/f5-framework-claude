@@ -1,0 +1,368 @@
+# Security Deposit Entity
+# F5 Framework v2.0 - Real Estate/Property Management
+# Tiền đặt cọc / 敷金
+
+entity:
+  name: SecurityDeposit
+  name_vi: Tiền đặt cọc
+  name_ja: 敷金
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Represents a security deposit held for a lease. Tracks collection,
+    holding, deductions for damages or unpaid rent, and refund processing
+    according to legal requirements.
+
+  # Primary Key
+  identifier:
+    field: id
+    type: uuid
+    generated: true
+
+  # Business Keys
+  business_keys:
+    deposit_id:
+      pattern: "DEP-{YYYYMMDD}-{XXXX}"
+      example: "DEP-20240115-0001"
+      unique: true
+
+  # Attributes
+  attributes:
+    # References
+    lease_id:
+      type: uuid
+      required: true
+    tenant_id:
+      type: uuid
+      required: true
+    unit_id:
+      type: uuid
+      required: true
+
+    # Status
+    status:
+      type: enum
+      values:
+        - pending
+        - received
+        - held
+        - partially_refunded
+        - fully_refunded
+        - forfeited
+      default: pending
+      name_vi:
+        pending: Chờ nhận
+        received: Đã nhận
+        held: Đang giữ
+        partially_refunded: Hoàn một phần
+        fully_refunded: Hoàn toàn bộ
+        forfeited: Tịch thu
+
+    # Amount
+    amount:
+      type: object
+      properties:
+        deposit_amount:
+          type: money
+          required: true
+        currency:
+          type: string
+          default: "VND"
+        months_equivalent:
+          type: decimal
+          description: "Equivalent months of rent"
+        pet_deposit:
+          type: money
+          default: 0
+        other_deposits:
+          type: array
+          items:
+            type: object
+            properties:
+              deposit_type:
+                type: string
+              amount:
+                type: money
+        total_deposit:
+          type: money
+          computed: true
+          formula: "deposit_amount + pet_deposit + other_deposits.sum(:amount)"
+
+    # Collection
+    collection:
+      type: object
+      properties:
+        received_date:
+          type: date
+        payment_method:
+          type: enum
+          values: [bank_transfer, cash, check, credit_card]
+        payment_reference:
+          type: string
+        receipt_number:
+          type: string
+        receipt_url:
+          type: string
+          format: url
+
+    # Holding
+    holding:
+      type: object
+      properties:
+        held_in_account:
+          type: string
+          description: "Escrow or trust account number"
+        bank_name:
+          type: string
+        interest_bearing:
+          type: boolean
+          default: false
+        interest_rate:
+          type: decimal
+          precision: 4
+        interest_accrued:
+          type: money
+          default: 0
+        last_interest_calculation:
+          type: date
+
+    # Move-Out Assessment
+    assessment:
+      type: object
+      applicable_when: "lease.status in ['expired', 'terminated']"
+      properties:
+        inspection_date:
+          type: date
+        inspection_id:
+          type: uuid
+        condition_report_url:
+          type: string
+          format: url
+        assessed_by:
+          type: uuid
+        assessed_at:
+          type: timestamp
+
+    # Deductions
+    deductions:
+      type: object
+      properties:
+        deduction_items:
+          type: array
+          items:
+            type: object
+            properties:
+              deduction_type:
+                type: enum
+                values:
+                  - unpaid_rent
+                  - unpaid_utilities
+                  - cleaning
+                  - damage_repair
+                  - painting
+                  - carpet_replacement
+                  - appliance_repair
+                  - key_replacement
+                  - other
+              description:
+                type: string
+              amount:
+                type: money
+              documentation_url:
+                type: string
+              invoice_number:
+                type: string
+        total_deductions:
+          type: money
+          computed: true
+          formula: "deduction_items.sum(:amount)"
+        deduction_statement_url:
+          type: string
+          format: url
+        tenant_disputed:
+          type: boolean
+          default: false
+        dispute_notes:
+          type: text
+
+    # Refund
+    refund:
+      type: object
+      properties:
+        refund_amount:
+          type: money
+          computed: true
+          formula: "total_deposit + interest_accrued - total_deductions"
+        refund_due_date:
+          type: date
+          description: "Legal deadline for refund"
+        refund_date:
+          type: date
+        refund_method:
+          type: enum
+          values: [bank_transfer, check, cash]
+        refund_reference:
+          type: string
+        refund_sent_to:
+          type: string
+          description: "Address or account for refund"
+        refund_receipt_url:
+          type: string
+        forwarding_address:
+          type: string
+          description: "Tenant's forwarding address"
+
+    # Statement
+    statement:
+      type: object
+      properties:
+        statement_generated:
+          type: boolean
+          default: false
+        statement_date:
+          type: date
+        statement_url:
+          type: string
+        statement_sent:
+          type: boolean
+          default: false
+        statement_sent_at:
+          type: timestamp
+
+    # Legal Compliance
+    compliance:
+      type: object
+      properties:
+        max_deposit_amount:
+          type: money
+          description: "Legal maximum"
+        deposit_deadline_days:
+          type: integer
+          description: "Days to return after move-out"
+        itemized_statement_required:
+          type: boolean
+          default: true
+        interest_payment_required:
+          type: boolean
+          default: false
+        compliant:
+          type: boolean
+          computed: true
+
+    # Metadata
+    notes:
+      type: text
+    created_at:
+      type: timestamp
+      auto: create
+    updated_at:
+      type: timestamp
+      auto: update
+
+  # Relationships
+  relationships:
+    lease:
+      type: belongs_to
+      entity: Lease
+      foreign_key: lease_id
+    tenant:
+      type: belongs_to
+      entity: Tenant
+      foreign_key: tenant_id
+    unit:
+      type: belongs_to
+      entity: Unit
+      foreign_key: unit_id
+    move_out_inspection:
+      type: belongs_to
+      entity: Inspection
+      foreign_key: inspection_id
+
+  # State Machine
+  state_machine:
+    field: status
+    states:
+      - pending
+      - received
+      - held
+      - partially_refunded
+      - fully_refunded
+      - forfeited
+    transitions:
+      - from: pending
+        to: received
+        event: receive
+        action: record_receipt
+      - from: received
+        to: held
+        event: hold
+        action: transfer_to_escrow
+      - from: held
+        to: partially_refunded
+        event: partial_refund
+        guard: has_deductions
+        action: [calculate_refund, process_refund]
+      - from: held
+        to: fully_refunded
+        event: full_refund
+        guard: no_deductions
+        action: [calculate_refund, process_refund]
+      - from: partially_refunded
+        to: fully_refunded
+        event: complete_refund
+      - from: held
+        to: forfeited
+        event: forfeit
+        guard: lease_breach
+        action: record_forfeiture
+
+  # Indexes
+  indexes:
+    - fields: [deposit_id]
+      unique: true
+    - fields: [lease_id]
+      unique: true
+    - fields: [tenant_id]
+    - fields: [status]
+    - fields: [refund_due_date]
+
+  # Validation Rules
+  validations:
+    - rule: "deposit_amount must be positive"
+      condition: "deposit_amount > 0"
+    - rule: "total_deductions cannot exceed total_deposit plus interest"
+      condition: "total_deductions <= total_deposit + interest_accrued"
+    - rule: "refund_date must be before or on due date for compliance"
+      condition: "refund_date.nil? || refund_date <= refund_due_date"
+
+  # Business Rules
+  business_rules:
+    - rule_id: BR-DEP-001
+      description: "Security deposit typically 2 months rent"
+      condition: "months_equivalent between 1 and 3"
+    - rule_id: BR-DEP-002
+      description: "Refund within 30 days of move-out in Vietnam"
+      deadline_days: 30
+
+  # Events
+  events:
+    - deposit_received
+    - deposit_transferred_to_escrow
+    - interest_calculated
+    - move_out_inspection_completed
+    - deductions_calculated
+    - statement_generated
+    - refund_processed
+    - deposit_forfeited
+    - tenant_disputed_deductions
+
+  # Audit
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - amount
+      - deductions
+      - refund

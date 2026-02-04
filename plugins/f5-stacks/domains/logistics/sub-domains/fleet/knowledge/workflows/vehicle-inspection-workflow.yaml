@@ -1,0 +1,396 @@
+name: VehicleInspectionWorkflow
+display_name: Vehicle Inspection Workflow
+description: |
+  Workflow for conducting vehicle inspections.
+  Covers pre-trip, post-trip, and regulatory inspections.
+
+domain: logistics
+subdomain: fleet
+category: workflows
+version: "1.0.0"
+
+trigger:
+  events:
+    - trip.status_changed_to_dispatched  # Pre-trip
+    - trip.status_changed_to_completed   # Post-trip
+    - schedule.inspection_due            # Scheduled
+    - manual.create_inspection
+  schedule:
+    # DOT Annual - triggered by schedule entity
+    cron: null
+
+actors:
+  - name: Driver
+    role: primary
+    responsibilities:
+      - Conduct pre-trip and post-trip inspections
+      - Document defects
+      - Sign off on inspection
+  - name: Mechanic
+    role: secondary
+    responsibilities:
+      - Conduct detailed inspections
+      - Verify repairs
+      - Certify DOT inspections
+  - name: Fleet Manager
+    role: approver
+    responsibilities:
+      - Review inspection results
+      - Approve out-of-service decisions
+  - name: System
+    role: automated
+    responsibilities:
+      - Track inspection schedules
+      - Alert for due inspections
+      - Archive records
+
+inputs:
+  - name: vehicle
+    type: entity
+    entity: Vehicle
+    required: true
+  - name: driver
+    type: entity
+    entity: Driver
+    required: false
+  - name: inspection_type
+    type: enum
+    values: [pre_trip, post_trip, dot_annual, quarterly, monthly, roadside]
+    required: true
+  - name: trip
+    type: entity
+    entity: Trip
+    required: false
+
+outputs:
+  - name: inspection
+    type: entity
+    entity: VehicleInspection
+  - name: defects
+    type: array
+    entity: Defect
+  - name: maintenance_requests
+    type: array
+    entity: MaintenanceRecord
+
+steps:
+  - id: initialize_inspection
+    name: Initialize Inspection
+    type: automated
+    description: Create inspection record and load checklist
+    actions:
+      - create VehicleInspection entity
+      - set inspection_type
+      - load appropriate checklist_template
+      - set status = 'in_progress'
+      - record started_at
+    outputs:
+      - inspection_record
+      - checklist
+    next: conduct_inspection
+
+  - id: conduct_inspection
+    name: Conduct Inspection
+    type: manual
+    actor: Driver  # or Mechanic for DOT
+    description: Perform physical inspection
+    ui_screen: mobile_inspection_checklist
+    actions:
+      - display checklist items by category
+      - FOR EACH category:
+        - FOR EACH item:
+          - check condition (pass/fail/N/A)
+          - capture notes if needed
+          - capture photo if defect found
+      - capture odometer reading
+      - capture fuel level
+    checklist_categories:
+      - exterior:
+        - Headlights
+        - Taillights
+        - Turn signals
+        - Brake lights
+        - Mirrors
+        - Windshield
+        - Wipers
+        - Body damage
+      - tires:
+        - Front left condition
+        - Front left pressure
+        - Front right condition
+        - Front right pressure
+        - Rear tires condition
+        - Spare tire
+      - brakes:
+        - Service brakes
+        - Parking brake
+        - Air lines/connections
+        - Brake fluid level
+      - engine:
+        - Oil level
+        - Coolant level
+        - Power steering fluid
+        - Belt condition
+        - Visible leaks
+      - safety_equipment:
+        - Fire extinguisher
+        - First aid kit
+        - Warning triangles
+        - Reflective vest
+      - cargo_area:
+        - Floor condition
+        - Tie-down points
+        - Door seals
+        - Lift gate (if equipped)
+      - cab:
+        - Seat belts
+        - Horn
+        - Dashboard indicators
+        - HVAC
+    timeout:
+      pre_trip: 30m
+      post_trip: 20m
+      dot_annual: 2h
+    next:
+      all_passed: review_results
+      defects_found: categorize_defects
+
+  - id: categorize_defects
+    name: Categorize Defects
+    type: automated
+    description: Categorize found defects by severity
+    actions:
+      - FOR EACH defect:
+        - determine severity (minor/major/critical)
+        - classify category
+        - set requires_immediate_attention
+    severity_rules:
+      critical:
+        - Brake failure
+        - Steering problem
+        - Tire blowout
+        - Fuel/oil leak
+        - No lights
+      major:
+        - Brake adjustment needed
+        - Low tire tread
+        - Cracked windshield
+        - Inoperative turn signal
+        - Low fluid levels
+      minor:
+        - Cosmetic damage
+        - Minor scratches
+        - Dirty vehicle
+        - Worn wiper blades
+    outputs:
+      - categorized_defects
+    next: determine_vehicle_status
+
+  - id: determine_vehicle_status
+    name: Determine Vehicle Status
+    type: automated
+    description: Decide if vehicle is safe to operate
+    conditions:
+      - IF any defect.severity == 'critical' THEN out_of_service
+      - IF count(major_defects) > 2 THEN out_of_service
+      - IF sum(defects) > 5 THEN needs_review
+      - ELSE safe_with_defects
+    business_rules:
+      - BR-SF-014  # Critical Defect Response
+      - BR-MN-012  # Failed Inspection Follow-up
+    next:
+      out_of_service: mark_out_of_service
+      needs_review: supervisor_review
+      safe_with_defects: create_maintenance_requests
+
+  - id: mark_out_of_service
+    name: Mark Vehicle Out of Service
+    type: automated
+    description: Take vehicle out of service for critical defects
+    actions:
+      - set vehicle.status = 'out_of_service'
+      - set inspection.out_of_service = true
+      - set inspection.out_of_service_reason
+      - notify fleet_manager immediately
+    notifications:
+      - to: fleet_manager
+        template: vehicle_out_of_service
+        channel: [sms, email, dashboard]
+        priority: high
+    next: create_emergency_maintenance
+
+  - id: create_emergency_maintenance
+    name: Create Emergency Maintenance
+    type: automated
+    description: Create urgent maintenance work order
+    actions:
+      - create MaintenanceRecord
+      - set maintenance_type = 'emergency'
+      - set priority = 'critical'
+      - attach defect details
+      - assign to on-call mechanic
+    outputs:
+      - maintenance_request
+    notifications:
+      - to: maintenance_team
+        template: emergency_repair_needed
+        channel: [sms, dashboard]
+    next: notify_stakeholders
+
+  - id: supervisor_review
+    name: Supervisor Review
+    type: manual
+    actor: Fleet Manager
+    description: Review borderline inspection results
+    ui_screen: inspection_review
+    actions:
+      - display inspection results
+      - display defect photos
+      - review defect severities
+    decision_points:
+      - approve_operation: Allow operation with conditions
+      - require_repair: Require repair before operation
+      - out_of_service: Mark out of service
+    timeout: 1h
+    next:
+      approve_operation: create_maintenance_requests
+      require_repair: create_maintenance_requests
+      out_of_service: mark_out_of_service
+
+  - id: create_maintenance_requests
+    name: Create Maintenance Requests
+    type: automated
+    description: Create maintenance requests for defects
+    actions:
+      - FOR EACH defect WHERE severity IN ['major', 'minor']:
+        - create MaintenanceRecord
+        - set priority based on severity
+        - set scheduled date based on severity
+    outputs:
+      - maintenance_requests
+    next: review_results
+
+  - id: review_results
+    name: Review Results
+    type: manual
+    actor: Driver
+    description: Driver reviews and signs inspection
+    ui_screen: mobile_inspection_summary
+    actions:
+      - display inspection summary
+      - show any defects found
+      - show maintenance scheduled
+      - require digital signature
+    validations:
+      - all items checked
+      - signature provided
+    next: finalize_inspection
+
+  - id: finalize_inspection
+    name: Finalize Inspection
+    type: automated
+    description: Complete and archive inspection
+    actions:
+      - set inspection.status based on results
+      - set inspection.completed_at
+      - record driver signature
+      - calculate pass_rate
+      - update vehicle.last_inspection_date
+      - IF pre_trip: clear vehicle for dispatch
+    outputs:
+      - completed_inspection
+    events:
+      emit: inspection.completed
+    next: notify_stakeholders
+
+  - id: notify_stakeholders
+    name: Notify Stakeholders
+    type: automated
+    description: Send notifications based on results
+    actions:
+      - IF passed: notify dispatcher of availability
+      - IF failed: notify fleet_manager
+      - IF dot_annual: update compliance calendar
+    notifications:
+      - condition: inspection.status == 'passed'
+        to: dispatcher
+        template: vehicle_cleared
+      - condition: inspection.status == 'failed'
+        to: fleet_manager
+        template: inspection_failed
+    next: archive_inspection
+
+  - id: archive_inspection
+    name: Archive Inspection
+    type: automated
+    description: Archive inspection for compliance
+    actions:
+      - store inspection record
+      - store photos
+      - link to maintenance records
+      - set retention period (90 days minimum per FMCSA)
+    compliance:
+      - regulation: "FMCSA 396.11"
+        requirement: "Retain DVIR for 90 days"
+    next: complete
+
+  - id: complete
+    name: Complete Workflow
+    type: automated
+    description: Finalize workflow
+    actions:
+      - log workflow completion
+      - update metrics
+
+inspection_templates:
+  pre_trip:
+    categories: [exterior, tires, brakes, engine, safety_equipment, cab]
+    estimated_duration: 15-20min
+    required_before: trip_departure
+
+  post_trip:
+    categories: [exterior, tires, brakes, cargo_area]
+    estimated_duration: 10-15min
+    required_after: trip_completion
+
+  dot_annual:
+    categories: all
+    certified_inspector: required
+    estimated_duration: 1-2h
+    frequency: annual
+    documentation: federal_form
+
+  quarterly:
+    categories: [brakes, tires, engine, safety_equipment]
+    estimated_duration: 30-45min
+
+  monthly:
+    categories: [safety_equipment, lights, fluids]
+    estimated_duration: 15-20min
+
+compliance:
+  regulations:
+    - code: "FMCSA 396.11"
+      description: "Driver Vehicle Inspection Report (DVIR)"
+      requirements:
+        - Pre-trip inspection required
+        - Written report of defects
+        - Driver signature required
+    - code: "FMCSA 396.13"
+      description: "Driver inspection"
+      requirements:
+        - Review last DVIR before driving
+        - Sign acknowledgment
+    - code: "FMCSA 396.17"
+      description: "Annual inspection"
+      requirements:
+        - Annual inspection by qualified inspector
+        - Vehicle must pass to operate
+        - Inspection sticker displayed
+
+metrics:
+  - inspection_completion_rate
+  - average_inspection_duration
+  - defect_detection_rate
+  - out_of_service_rate
+  - compliance_rate

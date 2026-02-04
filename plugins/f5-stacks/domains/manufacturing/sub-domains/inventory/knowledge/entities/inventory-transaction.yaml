@@ -1,0 +1,413 @@
+name: InventoryTransaction
+display_name: Inventory Transaction / Giao dịch kho
+description: |
+  Immutable record of all inventory movements including receipts,
+  issues, transfers, adjustments, and scrap. Provides full audit
+  trail and supports inventory valuation.
+
+domain: manufacturing
+subdomain: inventory
+category: transaction
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: transaction_number
+    type: string
+    required: true
+    description: System-generated transaction number
+    validation:
+      pattern: "^TXN-[0-9]{14}-[A-Z0-9]{4}$"
+    example: "TXN-20240115120000-A1B2"
+
+  - name: transaction_type
+    type: enum
+    required: true
+    description: Type of inventory movement
+    validation:
+      values:
+        - goods_receipt_po        # Receipt from purchase order
+        - goods_receipt_prod      # Receipt from production
+        - goods_receipt_return    # Customer return receipt
+        - goods_receipt_transfer  # Transfer receipt
+        - goods_receipt_other     # Other receipt
+        - goods_issue_prod        # Issue to production
+        - goods_issue_sales       # Issue for sales order
+        - goods_issue_transfer    # Transfer issue
+        - goods_issue_scrap       # Scrap/write-off
+        - goods_issue_sample      # Sample issue
+        - goods_issue_other       # Other issue
+        - transfer_in             # Stock transfer in
+        - transfer_out            # Stock transfer out
+        - adjustment_positive     # Inventory adjustment (+)
+        - adjustment_negative     # Inventory adjustment (-)
+        - revaluation             # Value adjustment
+        - cycle_count_adjustment  # From cycle count
+        - block                   # Block stock
+        - unblock                 # Unblock stock
+        - batch_split             # Batch split
+        - batch_merge             # Batch merge
+
+  - name: movement_type
+    type: string
+    required: true
+    description: SAP-style movement type code
+    validation:
+      max_length: 4
+    example: "101"  # GR for PO
+
+  - name: posting_date
+    type: date
+    required: true
+    description: Date for financial posting
+
+  - name: document_date
+    type: date
+    required: true
+    description: Date on source document
+
+  - name: transaction_date
+    type: timestamp
+    required: true
+    description: Actual transaction timestamp
+
+  # Material and Location
+  - name: material_id
+    type: uuid
+    required: true
+    description: Material being moved
+
+  - name: plant_id
+    type: uuid
+    required: true
+    description: Plant where movement occurs
+
+  - name: from_location_id
+    type: uuid
+    required: false
+    description: Source location (for issues/transfers)
+
+  - name: to_location_id
+    type: uuid
+    required: false
+    description: Destination location (for receipts/transfers)
+
+  # Quantities
+  - name: quantity
+    type: decimal
+    required: true
+    description: Movement quantity (positive)
+    validation:
+      min: 0.001
+      precision: 3
+
+  - name: unit_of_measure
+    type: string
+    required: true
+    description: Unit of measure for quantity
+    validation:
+      max_length: 10
+
+  - name: base_quantity
+    type: decimal
+    required: true
+    description: Quantity in base UoM
+    validation:
+      precision: 3
+
+  - name: base_uom
+    type: string
+    required: true
+    description: Base unit of measure
+    validation:
+      max_length: 10
+
+  # Stock balances (before/after)
+  - name: stock_before
+    type: decimal
+    required: true
+    description: Stock quantity before transaction
+    validation:
+      precision: 3
+
+  - name: stock_after
+    type: decimal
+    required: true
+    description: Stock quantity after transaction
+    validation:
+      precision: 3
+
+  # Batch/Serial
+  - name: batch_number
+    type: string
+    required: false
+    description: Batch/lot number
+    validation:
+      max_length: 20
+
+  - name: serial_numbers
+    type: array
+    required: false
+    description: Array of serial numbers
+    items:
+      type: string
+      max_length: 40
+
+  - name: vendor_batch
+    type: string
+    required: false
+    description: Supplier batch number
+    validation:
+      max_length: 30
+
+  - name: production_date
+    type: date
+    required: false
+    description: Batch production date
+
+  - name: expiry_date
+    type: date
+    required: false
+    description: Batch expiry date
+
+  # Valuation
+  - name: unit_cost
+    type: decimal
+    required: true
+    description: Cost per unit at transaction
+    validation:
+      min: 0
+      precision: 4
+
+  - name: total_value
+    type: decimal
+    required: true
+    description: Total value of movement
+    validation:
+      precision: 2
+
+  - name: currency
+    type: string
+    required: true
+    description: Transaction currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: value_before
+    type: decimal
+    required: false
+    description: Inventory value before
+    validation:
+      precision: 2
+
+  - name: value_after
+    type: decimal
+    required: false
+    description: Inventory value after
+    validation:
+      precision: 2
+
+  # Reference documents
+  - name: reference_type
+    type: enum
+    required: true
+    description: Type of reference document
+    validation:
+      values: [purchase_order, production_order, sales_order, transfer_order,
+               goods_receipt, delivery, return_order, adjustment, count, manual]
+
+  - name: reference_id
+    type: uuid
+    required: false
+    description: Reference document ID
+
+  - name: reference_number
+    type: string
+    required: false
+    description: Reference document number
+    validation:
+      max_length: 30
+
+  - name: reference_line
+    type: integer
+    required: false
+    description: Reference document line number
+
+  - name: external_reference
+    type: string
+    required: false
+    description: External reference (delivery note, etc.)
+    validation:
+      max_length: 50
+
+  # Reason and notes
+  - name: reason_code
+    type: string
+    required: false
+    description: Reason code for movement
+    validation:
+      max_length: 10
+
+  - name: reason_description
+    type: string
+    required: false
+    description: Reason description
+    validation:
+      max_length: 200
+
+  - name: notes
+    type: string
+    required: false
+    description: Additional notes
+    validation:
+      max_length: 500
+
+  # Financial posting
+  - name: gl_posted
+    type: boolean
+    required: true
+    description: Posted to general ledger
+    default: false
+
+  - name: gl_document_number
+    type: string
+    required: false
+    description: GL document number
+    validation:
+      max_length: 20
+
+  - name: cost_center
+    type: string
+    required: false
+    description: Cost center for expense
+    validation:
+      max_length: 10
+
+  # Reversal
+  - name: reversed
+    type: boolean
+    required: true
+    description: Has been reversed
+    default: false
+
+  - name: reversal_of
+    type: uuid
+    required: false
+    description: ID of reversed transaction
+
+  - name: reversed_by
+    type: uuid
+    required: false
+    description: ID of reversing transaction
+
+  - name: reversal_reason
+    type: string
+    required: false
+    description: Reason for reversal
+    validation:
+      max_length: 200
+
+  # Audit
+  - name: created_by
+    type: uuid
+    required: true
+    description: User who created
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation timestamp
+
+  - name: approved_by
+    type: uuid
+    required: false
+    description: Approver (if required)
+
+  - name: approved_at
+    type: timestamp
+    required: false
+    description: Approval timestamp
+
+relationships:
+  - name: material
+    type: belongs_to
+    entity: Material
+    required: true
+    description: Material being moved
+
+  - name: from_location
+    type: belongs_to
+    entity: StockLocation
+    required: false
+    description: Source location
+
+  - name: to_location
+    type: belongs_to
+    entity: StockLocation
+    required: false
+    description: Destination location
+
+  - name: purchase_order
+    type: belongs_to
+    entity: PurchaseOrder
+    required: false
+    description: Related PO (for GR)
+
+  - name: goods_receipt
+    type: belongs_to
+    entity: GoodsReceipt
+    required: false
+    description: Related GR document
+
+  - name: reversal_transaction
+    type: belongs_to
+    entity: InventoryTransaction
+    required: false
+    description: Reversing transaction
+
+  - name: reversed_transaction
+    type: belongs_to
+    entity: InventoryTransaction
+    required: false
+    description: Transaction being reversed
+
+indexes:
+  - [transaction_number]
+  - [material_id, posting_date]
+  - [material_id, from_location_id]
+  - [material_id, to_location_id]
+  - [transaction_type, posting_date]
+  - [reference_type, reference_id]
+  - [batch_number]
+  - [posting_date]
+  - [created_by, created_at]
+
+business_rules:
+  - BR-TXN-001: Transactions are immutable (corrections via reversal)
+  - BR-TXN-002: Stock cannot go negative
+  - BR-TXN-003: Batch required for batch-managed materials
+  - BR-TXN-004: Posting date cannot be in closed period
+  - BR-TXN-005: Reversal creates opposite transaction
+  - BR-TXN-006: Unit cost required for all transactions
+  - BR-TXN-007: From/to location based on transaction type
+  - BR-TXN-008: Reference document required for most types
+  - BR-TXN-009: Approval required for adjustments > threshold
+  - BR-TXN-010: Serial numbers array count must match quantity
+
+events:
+  - name: transaction.posted
+    payload: [id, transaction_type, material_id, quantity]
+    description: Transaction posted
+
+  - name: transaction.reversed
+    payload: [id, reversal_id, reason]
+    description: Transaction reversed
+
+  - name: transaction.gl_posted
+    payload: [id, gl_document_number]
+    description: Posted to general ledger

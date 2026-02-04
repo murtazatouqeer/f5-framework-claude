@@ -1,0 +1,562 @@
+name: Return and Refund Workflow
+display_name: Return & Refund Workflow / Quy trình đổi trả và hoàn tiền
+description: |
+  Complete return and refund workflow from customer request to resolution.
+  Handles return authorization, shipping, inspection, and refund processing.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: return.requested
+    source: Customer
+    condition: order.status IN ('delivered', 'completed')
+
+actors:
+  - name: Customer
+    role: primary
+    description: Customer requesting return
+  - name: Customer Service
+    role: operator
+    description: CS team handling requests
+  - name: Warehouse
+    role: fulfillment
+    description: Receives and inspects returns
+  - name: Finance
+    role: approver
+    description: Approves refunds
+  - name: System
+    role: automated
+    description: Automated processing
+
+steps:
+  # Return Request
+  - id: SUBMIT_REQUEST
+    name: Submit Return Request
+    description: Customer submits return request
+    actor: Customer
+    type: interactive
+    actions:
+      - Select order and items to return
+      - Choose return reason
+      - Upload photos (if required)
+      - Select return method
+    inputs:
+      - order_id
+      - items_to_return
+      - return_reason
+      - evidence_photos
+    outputs:
+      - return_request_id
+    ui_elements:
+      - order_selector
+      - item_quantity_selector
+      - reason_dropdown
+      - photo_upload
+      - notes_textarea
+    validations:
+      - rule: BR-RET-001
+        description: Within return window
+      - rule: BR-RET-003
+        description: Product is returnable
+      - rule: BR-RET-010
+        description: Reason required
+    on_success: VALIDATE_REQUEST
+    on_failure: SHOW_INELIGIBILITY
+
+  - id: VALIDATE_REQUEST
+    name: Validate Return Request
+    description: System validates return eligibility
+    actor: System
+    type: automated
+    actions:
+      - Check return window
+      - Verify product returnability
+      - Check customer return history
+      - Validate quantities
+    inputs:
+      - return_request
+      - order_details
+    outputs:
+      - validation_result
+      - requires_approval
+    validations:
+      - rule: BR-RET-001
+        description: Return window validation
+      - rule: BR-RET-002
+        description: Order status check
+      - rule: BR-RET-013
+        description: Quantity validation
+    routing:
+      - condition: auto_approve_eligible
+        next: AUTO_APPROVE
+      - condition: requires_review
+        next: MANUAL_REVIEW
+      - condition: ineligible
+        next: REJECT_REQUEST
+    on_success: ROUTE_APPROVAL
+
+  - id: AUTO_APPROVE
+    name: Auto Approve Return
+    description: Automatically approve eligible returns
+    actor: System
+    type: automated
+    conditions:
+      - reason IN ('defective', 'wrong_item', 'damaged_in_shipping')
+      - OR customer.trust_score > threshold
+      - AND amount < auto_approve_limit
+    actions:
+      - Set return status to 'approved'
+      - Generate RMA number
+      - Calculate refund amount
+    outputs:
+      - return.status = 'approved'
+      - rma_number
+      - refund_amount
+    on_success: GENERATE_RETURN_LABEL
+
+  - id: MANUAL_REVIEW
+    name: Manual Review
+    description: CS reviews return request
+    actor: Customer Service
+    type: interactive
+    actions:
+      - Review request details
+      - Check photos/evidence
+      - Verify order history
+      - Make approval decision
+    inputs:
+      - return_request
+      - order_details
+      - customer_history
+    outputs:
+      - review_decision
+      - review_notes
+    ui_elements:
+      - request_details_panel
+      - photo_viewer
+      - order_history_panel
+      - approve_reject_buttons
+      - notes_field
+    sla:
+      target: 24 hours
+      escalation: Notify supervisor
+    routing:
+      - condition: approved
+        next: GENERATE_RETURN_LABEL
+      - condition: rejected
+        next: REJECT_REQUEST
+      - condition: need_more_info
+        next: REQUEST_MORE_INFO
+
+  - id: REQUEST_MORE_INFO
+    name: Request More Information
+    description: Request additional info from customer
+    actor: Customer Service
+    type: interactive
+    actions:
+      - Specify required information
+      - Send request to customer
+      - Set response deadline
+    outputs:
+      - info_request
+    notifications:
+      - recipient: customer
+        template: return_info_request
+    on_response: MANUAL_REVIEW
+    on_timeout: ESCALATE_OR_REJECT
+
+  - id: REJECT_REQUEST
+    name: Reject Return Request
+    description: Reject ineligible return
+    actor: System
+    type: automated
+    actions:
+      - Set return status to 'rejected'
+      - Record rejection reason
+      - Notify customer
+    inputs:
+      - rejection_reason
+    outputs:
+      - return.status = 'rejected'
+    notifications:
+      - recipient: customer
+        template: return_rejected
+
+  # Return Shipping
+  - id: GENERATE_RETURN_LABEL
+    name: Generate Return Label
+    description: Generate prepaid return shipping label
+    actor: System
+    type: automated
+    conditions:
+      - return.shipping_paid_by = 'seller'
+    actions:
+      - Generate return shipping label
+      - Set return deadline
+      - Update return status
+    outputs:
+      - return_label_url
+      - return_by_date
+    validations:
+      - rule: BR-RET-020
+        description: Generate RMA number
+      - rule: BR-RET-021
+        description: Generate return label
+    on_success: NOTIFY_CUSTOMER_APPROVED
+
+  - id: NOTIFY_CUSTOMER_APPROVED
+    name: Notify Customer Approved
+    description: Send approval notification with instructions
+    actor: System
+    type: automated
+    actions:
+      - Send approval email
+      - Include RMA number
+      - Attach return label (if prepaid)
+      - Provide drop-off instructions
+    notifications:
+      - recipient: customer
+        channels: [email, sms]
+        template: return_approved
+        variables:
+          - rma_number
+          - return_label_url
+          - return_by_date
+          - instructions
+    on_success: AWAIT_RETURN_SHIPMENT
+
+  - id: AWAIT_RETURN_SHIPMENT
+    name: Await Return Shipment
+    description: Wait for customer to ship return
+    actor: Customer
+    type: wait
+    timeout: 14 days
+    actions:
+      - Track return shipment
+      - Monitor for tracking updates
+    triggers:
+      - return_tracking_scanned
+      - return_received
+    on_shipped: TRACK_RETURN
+    on_timeout: RETURN_NOT_RECEIVED
+
+  - id: TRACK_RETURN
+    name: Track Return Shipment
+    description: Track return in transit
+    actor: System
+    type: automated
+    actions:
+      - Monitor carrier tracking
+      - Update return status
+      - Estimate arrival
+    on_delivered: RECEIVE_RETURN
+    on_lost: HANDLE_LOST_RETURN
+
+  # Return Receipt and Inspection
+  - id: RECEIVE_RETURN
+    name: Receive Return
+    description: Warehouse receives return package
+    actor: Warehouse
+    type: interactive
+    actions:
+      - Scan return package
+      - Verify RMA number
+      - Log receipt
+      - Move to inspection queue
+    inputs:
+      - return_package
+      - rma_number
+    outputs:
+      - receipt_timestamp
+      - condition_on_arrival
+    ui_elements:
+      - package_scanner
+      - rma_verification
+      - receipt_confirmation
+    on_success: INSPECT_RETURN
+    on_mismatch: HANDLE_RECEIPT_ISSUE
+
+  - id: INSPECT_RETURN
+    name: Inspect Returned Items
+    description: Inspect condition of returned items
+    actor: Warehouse
+    type: interactive
+    actions:
+      - Verify items match request
+      - Inspect condition
+      - Document findings
+      - Categorize condition
+      - Take photos
+    inputs:
+      - returned_items
+      - original_request
+    outputs:
+      - inspection_result
+      - item_conditions
+      - inspection_photos
+    ui_elements:
+      - item_checklist
+      - condition_selector
+      - photo_capture
+      - notes_field
+    condition_categories:
+      - new: "Unopened, resellable"
+      - like_new: "Opened but perfect condition"
+      - good: "Minor signs of use, resellable"
+      - damaged: "Damage not caused by customer"
+      - customer_damaged: "Damage caused by customer"
+      - defective: "Manufacturing defect"
+    validations:
+      - rule: BR-RET-023
+        description: Inspection required
+    on_complete: PROCESS_INSPECTION_RESULT
+
+  - id: PROCESS_INSPECTION_RESULT
+    name: Process Inspection Result
+    description: Determine action based on inspection
+    actor: System
+    type: decision
+    routing:
+      - condition: condition IN ('new', 'like_new', 'good')
+        next: APPROVE_FULL_REFUND
+      - condition: condition = 'damaged' AND reason = 'defective'
+        next: APPROVE_FULL_REFUND
+      - condition: condition = 'customer_damaged'
+        next: REJECT_RETURN_PARTIAL
+      - condition: opened AND product.opened_return_allowed
+        next: APPROVE_PARTIAL_REFUND
+      - condition: opened AND NOT product.opened_return_allowed
+        next: REJECT_RETURN_CONDITION
+
+  - id: APPROVE_FULL_REFUND
+    name: Approve Full Refund
+    description: Approve full refund amount
+    actor: System
+    type: automated
+    actions:
+      - Calculate full refund
+      - Include shipping if applicable
+      - Queue for refund processing
+    outputs:
+      - refund_amount
+      - refund_type: 'full'
+    validations:
+      - rule: BR-RET-030
+        description: Full refund calculation
+      - rule: BR-RET-033
+        description: Shipping refund
+    on_success: PROCESS_REFUND
+
+  - id: APPROVE_PARTIAL_REFUND
+    name: Approve Partial Refund
+    description: Approve partial refund with deductions
+    actor: System
+    type: automated
+    actions:
+      - Calculate base refund
+      - Apply restocking fee
+      - Apply packaging fee if needed
+      - Queue for refund processing
+    outputs:
+      - refund_amount
+      - refund_type: 'partial'
+      - deductions
+    validations:
+      - rule: BR-RET-031
+        description: Partial refund calculation
+    on_success: PROCESS_REFUND
+
+  - id: REJECT_RETURN_CONDITION
+    name: Reject - Condition
+    description: Reject return due to item condition
+    actor: System
+    type: automated
+    actions:
+      - Set return status to 'rejected'
+      - Notify customer
+      - Offer to ship back or donate
+    outputs:
+      - return.status = 'rejected'
+      - rejection_reason: 'condition'
+    notifications:
+      - recipient: customer
+        template: return_rejected_condition
+    on_next: HANDLE_REJECTED_ITEMS
+
+  # Refund Processing
+  - id: PROCESS_REFUND
+    name: Process Refund
+    description: Process refund payment
+    actor: Finance
+    type: automated
+    actions:
+      - Create refund record
+      - Initiate refund to original payment
+      - Update payment records
+    inputs:
+      - return_id
+      - refund_amount
+      - original_payment
+    outputs:
+      - refund_id
+      - refund_status
+    validations:
+      - rule: BR-RET-040
+        description: Refund to original method
+    on_success: REFUND_INITIATED
+    on_failure: REFUND_FAILED
+
+  - id: REFUND_INITIATED
+    name: Refund Initiated
+    description: Refund has been initiated
+    actor: System
+    type: automated
+    actions:
+      - Update return status
+      - Notify customer
+      - Set expected completion date
+    outputs:
+      - return.status = 'refund_processing'
+      - expected_refund_date
+    notifications:
+      - recipient: customer
+        template: refund_initiated
+    on_success: AWAIT_REFUND_COMPLETION
+
+  - id: AWAIT_REFUND_COMPLETION
+    name: Await Refund Completion
+    description: Wait for refund to complete
+    actor: System
+    type: wait
+    timeout: 7 days
+    actions:
+      - Monitor refund status
+      - Check payment gateway
+    on_complete: REFUND_COMPLETED
+    on_timeout: ESCALATE_REFUND
+
+  - id: REFUND_COMPLETED
+    name: Refund Completed
+    description: Refund successfully processed
+    actor: System
+    type: automated
+    actions:
+      - Update return status to 'completed'
+      - Update customer refund total
+      - Close return case
+    outputs:
+      - return.status = 'completed'
+      - refund.status = 'completed'
+    events:
+      - return.completed
+      - refund.completed
+    notifications:
+      - recipient: customer
+        template: refund_completed
+
+  # Inventory Handling
+  - id: PROCESS_RETURNED_INVENTORY
+    name: Process Returned Inventory
+    description: Handle returned inventory
+    actor: Warehouse
+    type: automated
+    actions:
+      - Determine inventory action
+      - Update stock levels
+      - Move to appropriate location
+    routing:
+      - condition: condition IN ('new', 'like_new')
+        action: return_to_sellable_stock
+      - condition: condition = 'good'
+        action: return_to_sellable_or_secondary
+      - condition: condition IN ('damaged', 'defective')
+        action: move_to_damaged_stock
+    validations:
+      - rule: BR-RET-060
+        description: Resellable inventory return
+      - rule: BR-RET-061
+        description: Damaged inventory handling
+
+  # Exchange Flow
+  - id: PROCESS_EXCHANGE
+    name: Process Exchange
+    description: Handle exchange requests
+    actor: System
+    type: subprocess
+    conditions:
+      - return.type = 'exchange'
+    steps:
+      - id: VERIFY_EXCHANGE_STOCK
+        name: Verify Exchange Stock
+        actions:
+          - Check exchange item availability
+          - Reserve if available
+        validations:
+          - rule: BR-RET-052
+
+      - id: CALCULATE_PRICE_DIFFERENCE
+        name: Calculate Price Difference
+        actions:
+          - Compare prices
+          - Determine charge or refund
+        validations:
+          - rule: BR-RET-051
+
+      - id: CREATE_EXCHANGE_ORDER
+        name: Create Exchange Order
+        actions:
+          - Create new order
+          - Link to return
+          - Process payment diff if needed
+
+notifications:
+  - event: return.approved
+    recipient: customer
+    channels: [email, sms]
+    template: return_approved
+
+  - event: return.received
+    recipient: customer
+    channels: [email]
+    template: return_received
+
+  - event: refund.completed
+    recipient: customer
+    channels: [email, sms]
+    template: refund_completed
+
+  - event: return.rejected
+    recipient: customer
+    channels: [email]
+    template: return_rejected
+
+metrics:
+  - name: return_rate
+    description: Percentage of orders returned
+    calculation: returns / delivered_orders * 100
+
+  - name: return_processing_time
+    description: Time from request to completion
+    calculation: completed_at - requested_at
+
+  - name: refund_processing_time
+    description: Time from approval to refund
+    calculation: refund_completed_at - approved_at
+
+  - name: inspection_pass_rate
+    description: Returns passing inspection
+    calculation: passed_inspections / total_inspections * 100
+
+sla:
+  - stage: approval
+    target: 24 hours
+    escalation: Notify CS manager
+
+  - stage: inspection
+    target: 48 hours after receipt
+    escalation: Notify warehouse manager
+
+  - stage: refund
+    target: 7 business days
+    escalation: Notify finance manager

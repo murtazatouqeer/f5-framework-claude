@@ -1,0 +1,254 @@
+name: Pricing Rules
+display_name: Tour Pricing Rules / Quy tắc định giá tour
+description: |
+  Rules governing tour pricing, discounts, dynamic pricing,
+  and promotional offers.
+
+domain: travel-hospitality
+subdomain: tour
+category: pricing
+
+rules:
+  # Base Pricing
+  - id: BR-PRC-001
+    name: Child Pricing
+    description: Child price cannot exceed adult price
+    priority: high
+    condition: |
+      tour.base_price_child <= tour.base_price_adult
+    action: enforce
+    message: "Child price must be less than or equal to adult price"
+    applies_to: [Tour]
+
+  - id: BR-PRC-002
+    name: Child Age Validation
+    description: Apply child pricing based on age range
+    priority: high
+    condition: |
+      participant.age >= tour.child_age_range.min AND
+      participant.age <= tour.child_age_range.max
+    action: |
+      apply_child_price()
+    applies_to: [TourBooking, Participant, Tour]
+
+  - id: BR-PRC-003
+    name: Infant Pricing
+    description: Infants (under specified age) are usually free
+    priority: medium
+    condition: |
+      participant.age <= tour.infant_age_max
+    action: |
+      participant.price = tour.base_price_infant OR 0
+    applies_to: [TourBooking, Participant, Tour]
+
+  # Group Pricing
+  - id: BR-PRC-010
+    name: Group Discount Tiers
+    description: Apply tiered discounts for larger groups
+    priority: high
+    condition: |
+      booking.total_participants >= group_pricing.min_pax
+    action: |
+      apply_group_discount()
+      recalculate_total()
+    applies_to: [TourBooking, Tour]
+    config:
+      tiers:
+        - min: 4
+          max: 6
+          discount_percent: 5
+        - min: 7
+          max: 10
+          discount_percent: 10
+        - min: 11
+          max: 20
+          discount_percent: 15
+        - min: 21
+          max: 50
+          discount_percent: 20
+
+  - id: BR-PRC-011
+    name: Private Tour Premium
+    description: Private tours have premium pricing
+    priority: high
+    condition: |
+      booking.booking_type = 'private'
+    action: |
+      IF tour.private_tour_price IS NOT NULL:
+        booking.total_amount = tour.private_tour_price
+      ELSE:
+        booking.total_amount = tour.base_price_adult * tour.max_participants * 0.8
+    applies_to: [TourBooking, Tour]
+
+  # Dynamic Pricing
+  - id: BR-PRC-020
+    name: Peak Season Pricing
+    description: Higher prices during peak travel season
+    priority: medium
+    condition: |
+      tour_date IN peak_season_dates
+    action: |
+      apply_seasonal_multiplier(1.15 to 1.30)
+    applies_to: [TourSchedule, TourAvailability]
+    config:
+      peak_seasons:
+        - name: "Tet Holiday"
+          dates: "lunar_new_year_week"
+          multiplier: 1.30
+        - name: "Summer"
+          dates: "june_to_august"
+          multiplier: 1.15
+        - name: "Christmas/New Year"
+          dates: "dec_20_to_jan_5"
+          multiplier: 1.25
+
+  - id: BR-PRC-021
+    name: Demand-Based Pricing
+    description: Adjust price based on booking rate
+    priority: medium
+    condition: |
+      availability.booked_count > availability.total_capacity * 0.7
+    action: |
+      apply_surge_pricing()
+      max_increase = 1.20
+    applies_to: [TourAvailability]
+
+  - id: BR-PRC-022
+    name: Last-Minute Discount
+    description: Offer discounts for tours departing soon
+    priority: low
+    condition: |
+      schedule.tour_date - NOW() <= INTERVAL '24 hours' AND
+      schedule.available_spots > schedule.total_capacity * 0.5
+    action: |
+      apply_last_minute_discount(10-20%)
+      mark_as_promotional()
+    applies_to: [TourSchedule, TourAvailability]
+
+  - id: BR-PRC-023
+    name: Early Bird Discount
+    description: Discount for advance bookings
+    priority: medium
+    condition: |
+      schedule.tour_date - NOW() >= INTERVAL '30 days'
+    action: |
+      apply_early_bird_discount(5-10%)
+    applies_to: [TourBooking, TourSchedule]
+
+  # Promotional Pricing
+  - id: BR-PRC-030
+    name: Promo Code Validation
+    description: Validate and apply promotional codes
+    priority: high
+    condition: |
+      promo_code.is_active = true AND
+      promo_code.valid_from <= NOW() <= promo_code.valid_until AND
+      promo_code.usage_count < promo_code.max_uses
+    action: |
+      validate_eligibility()
+      apply_discount()
+      increment_usage()
+    applies_to: [TourBooking]
+
+  - id: BR-PRC-031
+    name: Promo Code Stacking
+    description: Only one promo code per booking
+    priority: high
+    condition: |
+      booking.discount_code IS NOT NULL
+    action: reject_additional_codes
+    message: "Only one promotional code allowed per booking"
+    applies_to: [TourBooking]
+
+  - id: BR-PRC-032
+    name: Minimum Purchase Requirement
+    description: Promo code requires minimum spend
+    priority: medium
+    condition: |
+      booking.subtotal >= promo_code.min_purchase_amount
+    action: allow_promo
+    message: "Minimum purchase of {min_amount} required"
+    applies_to: [TourBooking]
+
+  # Add-on Pricing
+  - id: BR-PRC-040
+    name: Pickup Fee
+    description: Additional fee for hotel pickup
+    priority: medium
+    condition: |
+      booking.pickup_required = true
+    action: |
+      booking.pickup_fee = pickup_point.additional_fee
+      add_to_total()
+    applies_to: [TourBooking, PickupPoint]
+
+  - id: BR-PRC-041
+    name: Equipment Rental
+    description: Add equipment rental to total
+    priority: medium
+    condition: |
+      booking.equipment_rental = true
+    action: |
+      booking.addons_total += activity.equipment_rental_price
+    applies_to: [TourBooking, Activity]
+
+  - id: BR-PRC-042
+    name: Photo Package
+    description: Add photo package to total
+    priority: low
+    condition: |
+      booking.photo_package = true
+    action: |
+      booking.addons_total += activity.photo_package_price
+    applies_to: [TourBooking, Activity]
+
+  # Package Pricing
+  - id: BR-PRC-050
+    name: Package Discount Validation
+    description: Package must provide savings
+    priority: high
+    condition: |
+      package.package_price < package.retail_total
+    action: enforce
+    message: "Package price must be less than sum of individual items"
+    applies_to: [TourPackage]
+
+  - id: BR-PRC-051
+    name: Package Savings Display
+    description: Show savings on package
+    priority: low
+    condition: |
+      package.status = 'active'
+    action: |
+      package.savings_amount = package.retail_total - package.package_price
+      package.savings_percent = (savings_amount / retail_total) * 100
+    applies_to: [TourPackage]
+
+  # Currency & Tax
+  - id: BR-PRC-060
+    name: Tax Calculation
+    description: Apply applicable taxes based on location
+    priority: high
+    condition: |
+      tour.destination_country = 'VN'
+    action: |
+      booking.taxes = booking.subtotal * 0.10
+    applies_to: [TourBooking]
+
+  - id: BR-PRC-061
+    name: Currency Conversion
+    description: Display prices in user's preferred currency
+    priority: medium
+    condition: |
+      user.currency != tour.currency
+    action: |
+      convert_display_price()
+      show_original_currency()
+    applies_to: [Tour, TourBooking]
+
+validation_order:
+  - BR-PRC-001
+  - BR-PRC-002
+  - BR-PRC-010
+  - BR-PRC-030
+  - BR-PRC-060

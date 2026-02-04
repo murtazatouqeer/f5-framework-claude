@@ -1,0 +1,562 @@
+# Async Consultation Workflow
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Workflow for asynchronous (store-and-forward) consultations
+
+workflow:
+  id: async-consultation-workflow
+  name: Asynchronous Consultation
+  name_ja: 非同期相談
+  description: Workflow for store-and-forward style telehealth consultations
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - patient_initiates_async_consultation
+      - provider_offers_async_option
+      - system_triages_to_async
+
+  actors:
+    - id: patient
+      role: Patient
+      
+    - id: triage_staff
+      role: Triage Staff
+      description: Clinical staff who review and route consultations
+      
+    - id: provider
+      role: Healthcare Provider
+      
+    - id: system
+      role: Async Platform
+
+  preconditions:
+    - Patient has active account
+    - Async consultation enabled for patient's plan
+    - Condition appropriate for async care
+
+  overview:
+    description: |
+      Asynchronous consultations allow patients to submit health concerns
+      with supporting information (photos, questionnaire responses) and
+      receive provider responses within a defined timeframe. This workflow
+      is ideal for non-urgent conditions that don't require real-time
+      interaction.
+      
+  eligible_conditions:
+    well_suited:
+      - Skin rashes and conditions (with photos)
+      - Minor cold/flu symptoms
+      - UTI symptoms (established pattern)
+      - Pink eye
+      - Minor injuries (with photos)
+      - Medication refill requests
+      - General health questions
+      - Follow-up for stable conditions
+      
+    not_suited:
+      - Emergency conditions
+      - Chest pain, difficulty breathing
+      - Suicidal ideation
+      - Conditions requiring physical exam
+      - Complex or unclear symptoms
+      - New severe symptoms
+
+  steps:
+    - step: 1
+      id: patient_initiates
+      name: Patient Initiates Consultation
+      actor: patient
+      description: Patient starts an async consultation request
+      
+      entry_points:
+        - Patient portal "Ask a doctor" button
+        - Mobile app async option
+        - After-hours redirected from scheduling
+        
+      actions:
+        - Select "Async Consultation" option
+        - Acknowledge async nature and response time
+        - Confirm not an emergency
+        
+      emergency_screening:
+        display: |
+          This is for non-urgent concerns only.
+          If you are experiencing an emergency, please:
+          - Call 911
+          - Go to nearest emergency room
+          
+          Are you sure this is not an emergency?
+          
+        require: Confirmation before proceeding
+        
+      database_operations:
+        - CREATE tele_visit with modality = 'asynchronous'
+        - SET status = 'pending_patient_submission'
+        
+      next_step: 2
+
+    - step: 2
+      id: collect_information
+      name: Collect Patient Information
+      actor: patient
+      description: Patient submits detailed health information
+      
+      questionnaire_components:
+        chief_complaint:
+          - What is your main concern?
+          - How long have you had this?
+          - Is it getting better, worse, or same?
+          
+        symptom_details:
+          - Dynamic questions based on complaint
+          - Severity rating
+          - Location (body map)
+          - Associated symptoms
+          
+        medical_context:
+          - Relevant medical history
+          - Current medications
+          - Allergies
+          - Previous treatment tried
+          
+        lifestyle_factors:
+          - If relevant to condition
+          
+      photo_upload:
+        when: Applicable to condition (skin, eye, etc.)
+        instructions: |
+          Please upload clear photos:
+          - Good lighting
+          - In focus
+          - Include size reference if helpful
+          - Multiple angles if needed
+          
+        requirements:
+          - Min resolution: 1080p
+          - Max files: 5
+          - Formats: jpg, png
+          - HIPAA compliant storage
+          
+      additional_files:
+        allowed:
+          - PDF documents
+          - Prior test results
+          - Screenshots from other apps
+          
+      review_submission:
+        display: Summary of all submitted information
+        allow: Edit before final submit
+        
+      database_operations:
+        - STORE questionnaire_responses
+        - STORE uploaded_images (encrypted)
+        - UPDATE tele_visit.status = 'submitted'
+        
+      next_step: 3
+
+    - step: 3
+      id: submit_consultation
+      name: Submit Consultation
+      actor: patient
+      description: Patient confirms and submits consultation
+      
+      actions:
+        - Review all submitted information
+        - Accept terms and response timeline
+        - Submit consultation
+        
+      response_time_display:
+        typical: "Responses typically within 2-4 hours"
+        guarantee: "Maximum 24 hours for response"
+        business_hours: "During business hours M-F 8am-8pm"
+        
+      confirmation:
+        display: |
+          Your consultation has been submitted!
+          
+          Reference #: {consultation_id}
+          Submitted: {timestamp}
+          Expected response: Within {response_window}
+          
+          We'll notify you when a provider responds.
+          
+      notification:
+        email: Submission confirmation
+        sms: If opted in
+        
+      database_operations:
+        - SET submitted_at = now()
+        - CALCULATE expected_response_by
+        - CREATE notification_schedule
+        
+      next_step: 4
+
+    - step: 4
+      id: triage_review
+      name: Triage Review
+      actor: triage_staff
+      description: Clinical staff reviews and routes consultation
+      
+      triage_actions:
+        review:
+          - Read chief complaint
+          - Review symptom details
+          - Check photos/attachments
+          - Review patient history
+          
+        assess_urgency:
+          levels:
+            - routine: Standard response queue
+            - elevated: Priority routing
+            - urgent: Escalate to video visit
+            - emergent: Contact patient immediately
+            
+        route_to_provider:
+          - Auto-assign based on specialty
+          - Manual assignment if needed
+          - Consider provider workload
+          
+      triage_decisions:
+        appropriate_for_async:
+          action: Route to provider queue
+          
+        needs_video_visit:
+          action: |
+            Notify patient
+            Offer to schedule video visit
+            Explain why async insufficient
+            
+        emergency_detected:
+          action: |
+            Immediately call patient
+            Provide emergency resources
+            Document intervention
+            
+        incomplete_information:
+          action: Send request for more information
+          
+      database_operations:
+        - SET triage_completed_at
+        - SET urgency_level
+        - SET assigned_provider_id
+        - UPDATE status = 'pending_provider_review'
+        
+      sla_tracking:
+        triage_target: Within 1 hour of submission
+        
+      next_step: 5
+
+    - step: 5
+      id: provider_review
+      name: Provider Review
+      actor: provider
+      description: Provider reviews consultation asynchronously
+      
+      provider_interface:
+        display:
+          - Patient information
+          - Chief complaint
+          - Questionnaire responses
+          - Photos/attachments
+          - Medical history
+          - Current medications
+          - Prior visits
+          
+        tools:
+          - Zoom/pan for images
+          - Medical reference
+          - Note templates
+          - Prescription module
+          
+      review_process:
+        assess:
+          - Review all submitted information
+          - Review patient history in EHR
+          - Evaluate photos carefully
+          - Consider differential diagnoses
+          
+        determine_response:
+          options:
+            - Provide diagnosis and treatment
+            - Request more information
+            - Recommend video visit
+            - Recommend in-person visit
+            - Refer to specialist
+            
+      documentation:
+        required:
+          - Assessment documentation
+          - Reasoning for recommendation
+          - Treatment plan
+          
+      next_step: Based on determination
+
+    - step: 6
+      id: request_more_info
+      name: Request More Information
+      actor: provider
+      optional: true
+      description: Provider needs additional details
+      
+      actions:
+        - Compose specific questions
+        - Request additional photos if needed
+        - Send to patient
+        
+      patient_notification:
+        subject: "Additional Information Needed"
+        content: |
+          Your provider has reviewed your consultation
+          and needs some additional information:
+          
+          {provider_questions}
+          
+          Please respond within 24 hours.
+          
+      timeout:
+        duration: 48 hours
+        action: Provider completes with available info
+        
+      database_operations:
+        - LOG information_request
+        - AWAIT patient_response
+        - EXTEND response_deadline
+        
+      next_step: Return to step 5 after patient responds
+
+    - step: 7
+      id: provide_response
+      name: Provide Response
+      actor: provider
+      description: Provider submits clinical response
+      
+      response_components:
+        assessment:
+          - Summary of findings
+          - Diagnosis (patient-friendly)
+          - Explanation
+          
+        treatment_plan:
+          - Recommended treatment
+          - Medications (if any)
+          - Self-care instructions
+          - Expected recovery timeline
+          
+        prescriptions:
+          - E-prescribe if indicated
+          - Select pharmacy
+          
+        follow_up_guidance:
+          - When to follow up
+          - Warning signs
+          - When to seek emergency care
+          
+        educational_resources:
+          - Relevant health information links
+          
+      documentation:
+        clinical_note: Same standard as video visit
+        attestation: Async consultation attestation
+        
+      database_operations:
+        - UPDATE tele_visit with assessment
+        - CREATE prescriptions if any
+        - SET status = 'completed'
+        
+      next_step: 8
+
+    - step: 8
+      id: escalate_to_video
+      name: Escalate to Video Visit
+      actor: provider
+      optional: true
+      description: Provider recommends synchronous visit
+      
+      escalation_reasons:
+        - Condition more complex than anticipated
+        - Physical exam needed
+        - Patient clarification needed
+        - Concern about severity
+        
+      actions:
+        - Document reason for escalation
+        - Offer available video visit times
+        - Provide interim guidance if needed
+        
+      patient_notification:
+        subject: "Video Visit Recommended"
+        content: |
+          After reviewing your consultation, your provider
+          recommends a video visit to better address your concern.
+          
+          Reason: {escalation_reason}
+          
+          Please schedule a video visit at your earliest convenience.
+          [Schedule Now] button
+          
+      database_operations:
+        - UPDATE status = 'escalated_to_video'
+        - LOG escalation_reason
+        
+      next_step: Schedule video visit (exit async flow)
+
+    - step: 9
+      id: deliver_response
+      name: Deliver Response to Patient
+      actor: system
+      description: Send provider response to patient
+      
+      delivery_methods:
+        portal:
+          - Publish response in patient portal
+          - Mark as unread
+          
+        email:
+          - Send notification email
+          - Include summary (not full PHI in email)
+          - Link to portal for full response
+          
+        sms:
+          - Send text notification
+          - "Your provider has responded to your consultation"
+          
+        push:
+          - Mobile app notification
+          
+      response_content_for_patient:
+        structured_display:
+          - Assessment section
+          - Treatment plan section
+          - Prescriptions section
+          - Follow-up section
+          - Warning signs section
+          
+        actions_available:
+          - "I understand" acknowledgment
+          - "I have questions" → follow-up option
+          - Schedule follow-up
+          - Rate consultation
+          
+      database_operations:
+        - UPDATE visit_summary with response
+        - SET delivered_at
+        - CREATE read_receipt_tracking
+        
+      next_step: 10
+
+    - step: 10
+      id: patient_acknowledgment
+      name: Patient Acknowledgment
+      actor: patient
+      description: Patient reviews and acknowledges response
+      
+      patient_actions:
+        read_response:
+          - View complete response
+          - Review treatment plan
+          - See prescriptions (if any)
+          
+        acknowledge:
+          options:
+            - "I understand the recommendations"
+            - "I have additional questions"
+            
+        additional_questions:
+          if_selected:
+            - Allow brief follow-up questions
+            - Route back to provider
+            - One round of Q&A included
+            
+      pharmacy_notification:
+        if_prescriptions:
+          display: |
+            Your prescription has been sent to:
+            {pharmacy_name}
+            {pharmacy_address}
+            Ready for pickup: {estimated_time}
+            
+      database_operations:
+        - LOG patient_acknowledgment
+        - IF questions: CREATE follow_up_thread
+        
+      next_step: 11 or follow-up loop
+
+    - step: 11
+      id: billing_and_completion
+      name: Billing and Completion
+      actor: system
+      description: Process billing and complete consultation
+      
+      billing_codes:
+        async_consultation:
+          - G2010: Remote evaluation of patient images
+          - G2012: Virtual check-in (if applicable)
+          
+        documentation:
+          - Time spent by provider
+          - Complexity of case
+          - Medical necessity
+          
+      business_rules:
+        - BR-BIL-002: Asynchronous codes
+        
+      database_operations:
+        - CREATE billing_record
+        - SUBMIT claim
+        - UPDATE tele_visit.status = 'billing_complete'
+        
+      patient_satisfaction:
+        send: Survey after 24 hours
+        
+      next_step: complete
+
+  completion:
+    status: async_consultation_complete
+    outputs:
+      - consultation_id
+      - response_time_actual
+      - outcome (treated, escalated, referred)
+      - prescriptions_if_any
+      - satisfaction_score
+      
+  sla_management:
+    response_times:
+      target: 4 hours
+      maximum: 24 hours
+      escalation: If approaching SLA breach
+      
+    tracking:
+      - Time from submission to triage
+      - Time from triage to provider assignment
+      - Time from assignment to response
+      - Total turnaround time
+      
+    alerts:
+      - 75% of SLA: Warning to assigned provider
+      - 90% of SLA: Escalate to supervisor
+      - 100% of SLA: Critical alert
+
+  error_handling:
+    provider_unavailable:
+      action: Reassign to available provider
+      
+    patient_non_responsive:
+      action: Close after 72 hours with documentation
+      
+    incomplete_submission:
+      action: Request completion or close
+
+  metrics:
+    track:
+      - submission_to_response_time
+      - escalation_rate
+      - prescription_rate
+      - patient_satisfaction
+      - response_time_compliance
+      - follow_up_question_rate
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555

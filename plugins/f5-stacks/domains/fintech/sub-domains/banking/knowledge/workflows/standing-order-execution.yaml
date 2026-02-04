@@ -1,0 +1,668 @@
+name: Standing Order Execution Workflow
+display_name: Standing Order Execution / Quy trình thực hiện lệnh chuyển định kỳ
+description: |
+  Batch workflow for executing scheduled standing orders including
+  validation, processing, failure handling, and customer notifications.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-SO-EXEC
+  name: Standing Order Execution
+  name_vi: Thực hiện lệnh chuyển định kỳ
+  category: batch_processing
+
+  trigger:
+    type: scheduled
+    schedule:
+      daily: "06:00"
+      timezone: "Asia/Ho_Chi_Minh"
+
+  scope:
+    frequencies:
+      - daily
+      - weekly
+      - bi_weekly
+      - monthly
+      - quarterly
+      - semi_annually
+      - annually
+
+    transfer_types:
+      - internal
+      - domestic
+      - bill_payment
+
+  actors:
+    - batch_scheduler
+    - system
+    - operations_team
+
+# =============================================================================
+# BATCH EXECUTION FLOW
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Initialize Batch
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: initialize_batch
+    name: Initialize Batch
+    name_vi: Khởi tạo batch
+    actor: batch_scheduler
+
+    description: |
+      Initialize daily standing order execution batch.
+
+    actions:
+      create_batch:
+        batch_id: "SO-YYYYMMDD-XXXXXX"
+        execution_date: today
+        status: initialized
+
+      lock_processing:
+        purpose: prevent_duplicate_execution
+        timeout: 4_hours
+
+      log_batch_start:
+        timestamp: now
+        operator: system
+
+    outputs:
+      - batch_id
+      - batch_status: initialized
+      - lock_acquired: boolean
+
+    next_step: select_orders
+
+    error_handling:
+      lock_failed:
+        action: abort_batch
+        alert: operations_team
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Select Eligible Orders
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: select_orders
+    name: Select Eligible Orders
+    name_vi: Chọn lệnh đủ điều kiện
+    actor: system
+
+    description: |
+      Select standing orders due for execution today.
+
+    selection_criteria:
+      status: active
+
+      frequency_matching:
+        daily:
+          condition: "always"
+
+        weekly:
+          condition: "execution_day_of_week = today.day_of_week"
+
+        bi_weekly:
+          condition: "(today - start_date).days % 14 = 0"
+
+        monthly:
+          condition: |
+            IF execution_day <= days_in_month
+              execution_day = today.day
+            ELSE
+              execution_day = last_day_of_month
+
+        quarterly:
+          condition: "execution_month IN [3,6,9,12] AND day matches"
+
+        semi_annually:
+          condition: "execution_month IN [6,12] AND day matches"
+
+        annually:
+          condition: "execution_month = today.month AND day matches"
+
+      date_range:
+        start_date: "<= today"
+        end_date: ">= today OR null"
+
+      remaining_executions:
+        condition: "remaining > 0 OR unlimited"
+
+    business_day_handling:
+      if_weekend_or_holiday:
+        options:
+          - execute_previous_business_day
+          - execute_next_business_day
+          - skip_this_occurrence
+        default: execute_next_business_day
+
+    ordering:
+      by: priority
+      then_by: created_at
+
+    outputs:
+      - eligible_orders: []
+      - total_count
+      - total_amount
+
+    next_step: validate_orders
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Validate Orders
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: validate_orders
+    name: Validate Orders
+    name_vi: Xác thực lệnh
+    actor: system
+
+    description: |
+      Validate each standing order before execution.
+
+    validations:
+      source_account:
+        checks:
+          - account_exists
+          - account_status: active
+          - debit_allowed: true
+        failure_action: mark_order_failed
+
+      beneficiary_account:
+        checks:
+          - account_format_valid
+          - bank_code_valid
+        failure_action: mark_order_failed
+
+      balance_check:
+        formula: |
+          available = balance - holds - minimum_balance + overdraft
+          required = order.amount
+
+        if_insufficient:
+          action: mark_for_retry_or_fail
+          retry_later_today: if_configured
+
+      limit_check:
+        checks:
+          - per_transaction_limit
+          - daily_limit
+          - monthly_limit
+
+        if_exceeded:
+          action: mark_order_skipped
+          reason: "LIMIT_EXCEEDED"
+
+      order_validity:
+        checks:
+          - not_suspended
+          - within_date_range
+          - executions_remaining
+
+    categorization:
+      valid_orders:
+        criteria: all_validations_passed
+        action: proceed_to_execution
+
+      invalid_orders:
+        criteria: validation_failed
+        action: mark_failed_and_notify
+
+      pending_retry:
+        criteria: insufficient_balance_with_retry
+        action: schedule_retry
+
+    outputs:
+      - valid_orders: []
+      - invalid_orders: []
+      - pending_retry: []
+      - validation_summary
+
+    next_step: execute_orders
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Execute Orders
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: execute_orders
+    name: Execute Orders
+    name_vi: Thực hiện lệnh
+    actor: system
+
+    description: |
+      Execute validated standing orders.
+
+    execution_strategy:
+      batching:
+        internal_transfers: immediate
+        domestic_transfers: via_napas_batch
+        bill_payments: via_bill_payment_gateway
+
+      concurrency:
+        max_parallel: 50
+        rate_limit: 100_per_second
+
+      ordering:
+        priority: [priority, amount_desc]
+        rationale: "Execute high-priority and large amounts first"
+
+    execution_process:
+      internal_transfer:
+        steps:
+          - debit_source_account
+          - credit_destination_account
+          - update_balances
+          - generate_reference
+
+        completion: immediate
+
+      domestic_transfer:
+        steps:
+          - debit_source_account
+          - place_hold
+          - create_napas_request
+          - submit_to_napas_batch
+
+        completion: async_with_response
+
+      bill_payment:
+        steps:
+          - debit_source_account
+          - submit_to_biller
+          - receive_confirmation
+
+        completion: async_with_response
+
+    transaction_reference:
+      format: "SO-{order_id}-{YYYYMMDD}-{seq}"
+
+    outputs:
+      - executed_orders: []
+      - execution_summary
+
+    next_step: handle_responses
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Handle Responses
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: handle_responses
+    name: Handle Responses
+    name_vi: Xử lý phản hồi
+    actor: system
+
+    description: |
+      Process responses from external systems.
+
+    response_handling:
+      napas_responses:
+        success:
+          action: mark_order_completed
+          update: execution_history
+
+        failure:
+          reversible_errors:
+            - account_closed
+            - invalid_account
+          action: reverse_debit_and_mark_failed
+
+          non_reversible_errors:
+            - timeout
+            - system_error
+          action: mark_pending_investigation
+
+      bill_payment_responses:
+        success:
+          action: mark_order_completed
+          update: payment_reference
+
+        failure:
+          action: reverse_and_notify
+
+    reversal_process:
+      steps:
+        - release_hold
+        - credit_source_account
+        - update_order_status
+        - log_reversal
+
+    outputs:
+      - successful_orders: []
+      - failed_orders: []
+      - pending_investigation: []
+
+    next_step: update_order_status
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Update Order Status
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: update_order_status
+    name: Update Order Status
+    name_vi: Cập nhật trạng thái lệnh
+    actor: system
+
+    description: |
+      Update standing order records after execution.
+
+    updates:
+      successful_execution:
+        last_execution_date: today
+        next_execution_date: calculate_next()
+        total_executions: increment
+        remaining_executions: decrement_if_limited
+        last_status: success
+        cumulative_amount: add_amount
+
+      failed_execution:
+        last_execution_date: today
+        last_status: failed
+        consecutive_failures: increment
+        failure_reason: from_response
+
+      order_completion:
+        if: remaining_executions = 0 OR end_date reached
+        action: set_status: completed
+
+    failure_handling:
+      consecutive_failure_threshold: 3
+
+      actions:
+        notify_customer: true
+        suspend_order: after_threshold
+        require_manual_review: true
+
+    outputs:
+      - orders_updated: count
+      - orders_completed: count
+      - orders_suspended: count
+
+    next_step: notify_customers
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Notify Customers
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: notify_customers
+    name: Notify Customers
+    name_vi: Thông báo khách hàng
+    actor: system
+
+    description: |
+      Send notifications for executed standing orders.
+
+    notification_types:
+      successful_execution:
+        channels: [push, sms]
+        content: |
+          Standing order executed
+          Amount: {amount}
+          To: {beneficiary_masked}
+          Ref: {reference}
+          Balance: {new_balance}
+
+      failed_execution:
+        channels: [push, sms, email]
+        content: |
+          Standing order failed
+          Amount: {amount}
+          To: {beneficiary_masked}
+          Reason: {failure_reason}
+          Action: {recommended_action}
+
+      order_suspended:
+        channels: [push, email]
+        content: |
+          Standing order suspended
+          Reason: Multiple consecutive failures
+          Action: Please review and reactivate
+
+      order_completed:
+        channels: [push, email]
+        content: |
+          Standing order completed
+          Total executions: {count}
+          Total amount: {cumulative}
+
+      upcoming_execution:
+        timing: 1_day_before
+        condition: if_notification_preference_enabled
+        content: |
+          Reminder: Standing order tomorrow
+          Amount: {amount}
+          Please ensure sufficient balance
+
+    batching:
+      consolidate: per_customer
+      max_delay: 5_minutes
+
+    outputs:
+      - notifications_sent: count
+      - notification_summary
+
+    next_step: generate_reports
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Generate Reports
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: generate_reports
+    name: Generate Reports
+    name_vi: Tạo báo cáo
+    actor: system
+
+    description: |
+      Generate batch execution reports.
+
+    reports:
+      execution_summary:
+        content:
+          - total_orders_processed
+          - successful_count_and_amount
+          - failed_count_and_amount
+          - pending_count
+          - by_frequency_breakdown
+          - by_transfer_type_breakdown
+
+        distribution:
+          - operations_dashboard
+          - daily_report_email
+
+      failure_report:
+        content:
+          - failed_orders_detail
+          - failure_reasons
+          - affected_customers
+          - recommended_actions
+
+        distribution:
+          - operations_team
+          - customer_service
+
+      financial_summary:
+        content:
+          - total_debits
+          - total_credits
+          - fees_collected
+          - pending_settlements
+
+        distribution:
+          - finance_team
+          - reconciliation
+
+    outputs:
+      - reports_generated: []
+      - report_locations
+
+    next_step: complete_batch
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Complete Batch
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: complete_batch
+    name: Complete Batch
+    name_vi: Hoàn thành batch
+    actor: system
+
+    description: |
+      Finalize batch processing.
+
+    actions:
+      update_batch_status:
+        status: completed
+        end_time: now
+        duration: calculated
+
+      release_lock:
+        action: release_processing_lock
+
+      archive_logs:
+        retention: 7_years
+        location: archive_storage
+
+      trigger_reconciliation:
+        timing: end_of_day
+        scope: today_transactions
+
+    metrics:
+      record:
+        - total_processing_time
+        - orders_per_second
+        - success_rate
+        - failure_categories
+
+    outputs:
+      - batch_status: completed
+      - batch_summary
+      - processing_metrics
+
+# =============================================================================
+# RETRY MECHANISM
+# =============================================================================
+retry_mechanism:
+  intraday_retry:
+    enabled: true
+    times: ["10:00", "14:00", "18:00"]
+
+    eligible_for_retry:
+      - insufficient_balance
+      - temporary_system_error
+
+    not_eligible:
+      - account_closed
+      - account_frozen
+      - invalid_beneficiary
+
+    max_retries_per_day: 3
+
+  next_day_retry:
+    enabled: false
+    rationale: "Standing orders retry on next scheduled date"
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  batch_level:
+    batch_initialization_failed:
+      action: alert_and_retry
+      retry_after: 15_minutes
+      max_retries: 3
+      escalation: operations_team
+
+    database_unavailable:
+      action: abort_batch
+      alert: critical
+      recovery: manual_restart
+
+  order_level:
+    validation_error:
+      action: skip_order
+      notification: customer
+      logging: detailed
+
+    execution_error:
+      action: mark_failed
+      reversal: if_debited
+      notification: customer
+
+    timeout:
+      action: mark_pending
+      investigation: required
+
+# =============================================================================
+# MONITORING
+# =============================================================================
+monitoring:
+  real_time:
+    dashboards:
+      - batch_progress
+      - success_rate
+      - failure_rate
+      - processing_speed
+
+    alerts:
+      - batch_not_started: after_scheduled_time + 15min
+      - high_failure_rate: > 5%
+      - slow_processing: < 50_orders/minute
+      - batch_stuck: no_progress_for_30min
+
+  post_batch:
+    reconciliation:
+      - compare_expected_vs_actual
+      - identify_discrepancies
+      - flag_for_investigation
+
+    trend_analysis:
+      - daily_comparison
+      - failure_trend
+      - volume_trend
+
+# =============================================================================
+# SLA AND METRICS
+# =============================================================================
+sla:
+  batch_completion:
+    target: before_08:00
+    critical: before_09:00
+
+  order_processing:
+    average: 100ms_per_order
+    p99: 500ms_per_order
+
+  notification:
+    delivery: within_5_minutes_of_execution
+
+metrics:
+  targets:
+    success_rate: "> 99%"
+    on_time_completion: "> 99.9%"
+    customer_notification_rate: "100%"
+
+# =============================================================================
+# IMPLEMENTATION NOTES
+# =============================================================================
+implementation_notes:
+  scheduling:
+    - Use enterprise job scheduler
+    - Implement idempotency
+    - Handle timezone correctly
+    - Consider DST transitions
+
+  performance:
+    - Batch database operations
+    - Use connection pooling
+    - Implement circuit breakers
+    - Monitor memory usage
+
+  reliability:
+    - Implement checkpointing
+    - Support partial restart
+    - Maintain audit trail
+    - Test failure scenarios

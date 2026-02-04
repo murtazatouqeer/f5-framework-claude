@@ -1,0 +1,273 @@
+# ChatMessage Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# In-session messaging for telehealth visits
+
+entity:
+  id: chat-message
+  name: ChatMessage
+  name_ja: チャットメッセージ
+  description: In-session text messaging during telehealth video visits
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: session_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: video_session.id
+      description: Video session this message belongs to
+
+    - name: visit_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: tele_visit.id
+      description: Associated telehealth visit
+
+    # Sender
+    - name: sender_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: user.id
+      description: User who sent the message
+
+    - name: sender_role
+      type: enum
+      values:
+        - patient
+        - provider
+        - interpreter
+        - caregiver
+        - system
+      required: true
+      description: Role of sender in the visit
+
+    - name: sender_name
+      type: string
+      required: true
+      description: Display name of sender
+
+    # Message Content
+    - name: message_type
+      type: enum
+      values:
+        - text
+        - image
+        - file
+        - link
+        - system
+        - canned_response
+      required: true
+      default: text
+      description: Type of message
+
+    - name: content
+      type: text
+      nullable: true
+      max_length: 5000
+      encrypted: true
+      description: Text content (encrypted for PHI)
+
+    - name: content_url
+      type: string
+      nullable: true
+      encrypted: true
+      description: URL for image/file content
+
+    - name: content_metadata
+      type: jsonb
+      nullable: true
+      description: |
+        Metadata for attachments:
+        {
+          file_name: string,
+          file_size: int,
+          mime_type: string,
+          dimensions: {width: int, height: int}
+        }
+
+    - name: preview_url
+      type: string
+      nullable: true
+      description: Thumbnail preview URL
+
+    # Clinical Flag
+    - name: is_clinical
+      type: boolean
+      default: false
+      description: Include in medical record
+
+    - name: clinical_category
+      type: enum
+      values:
+        - symptom
+        - medication
+        - instruction
+        - question
+        - clarification
+        - other
+      nullable: true
+      description: Clinical category if is_clinical
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - sending
+        - sent
+        - delivered
+        - read
+        - failed
+      required: true
+      default: sending
+      description: Message delivery status
+
+    # Timestamps
+    - name: sent_at
+      type: datetime
+      required: true
+      default: now()
+      indexed: true
+      description: When message was sent
+
+    - name: delivered_at
+      type: datetime
+      nullable: true
+      description: When delivered to recipient
+
+    - name: read_at
+      type: datetime
+      nullable: true
+      description: When recipient read message
+
+    # System Messages
+    - name: system_event_type
+      type: enum
+      values:
+        - participant_joined
+        - participant_left
+        - recording_started
+        - recording_stopped
+        - screen_share_started
+        - screen_share_stopped
+        - visit_started
+        - visit_ended
+        - connection_issue
+      nullable: true
+      description: System event type (if system message)
+
+    # Reply/Thread
+    - name: reply_to_id
+      type: uuid
+      nullable: true
+      foreign_key: chat_message.id
+      description: Message being replied to
+
+    - name: thread_id
+      type: uuid
+      nullable: true
+      description: Thread identifier for grouping
+
+    # Moderation
+    - name: is_deleted
+      type: boolean
+      default: false
+      description: Soft delete flag
+
+    - name: deleted_at
+      type: datetime
+      nullable: true
+      description: When message was deleted
+
+    - name: deleted_by
+      type: uuid
+      nullable: true
+      foreign_key: user.id
+      description: Who deleted the message
+
+    - name: edited_at
+      type: datetime
+      nullable: true
+      description: When message was edited
+
+    - name: original_content
+      type: text
+      nullable: true
+      encrypted: true
+      description: Original content before edit
+
+  relationships:
+    - name: session
+      type: belongs_to
+      entity: video_session
+      foreign_key: session_id
+
+    - name: visit
+      type: belongs_to
+      entity: tele_visit
+      foreign_key: visit_id
+
+    - name: sender
+      type: belongs_to
+      entity: user
+      foreign_key: sender_id
+
+    - name: reply_to
+      type: belongs_to
+      entity: chat_message
+      foreign_key: reply_to_id
+
+    - name: replies
+      type: has_many
+      entity: chat_message
+      foreign_key: reply_to_id
+
+  computed_fields:
+    - name: is_attachment
+      expression: message_type IN ('image', 'file')
+      type: boolean
+
+    - name: time_since_sent
+      expression: now() - sent_at
+      type: interval
+
+  indexes:
+    - name: idx_chatmessage_session
+      columns: [session_id, sent_at]
+      
+    - name: idx_chatmessage_visit
+      columns: [visit_id]
+      
+    - name: idx_chatmessage_sender
+      columns: [sender_id]
+      
+    - name: idx_chatmessage_clinical
+      columns: [is_clinical, visit_id]
+
+  validations:
+    - name: content_required
+      rule: |
+        message_type == 'system' OR
+        content IS NOT NULL OR
+        content_url IS NOT NULL
+      message: Message must have content or URL
+
+    - name: clinical_category_if_clinical
+      rule: is_clinical == false OR clinical_category IS NOT NULL
+      message: Clinical messages must have a category
+
+  audit:
+    enabled: true
+    fields:
+      - content
+      - is_deleted
+      - status
+    retention_days: 2555

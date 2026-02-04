@@ -1,0 +1,335 @@
+name: assessment
+display_name: Assessment
+description: |
+  Pre-employment assessment or test administered to candidates.
+  Includes skills tests, coding challenges, personality assessments, and cognitive tests.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Assessment
+  table_name: assessments
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: assessment_id
+      type: string
+      length: 20
+      unique: true
+      format: "ASM-{YYYYMMDD}-{NNNN}"
+
+    - name: application_id
+      type: uuid
+      required: true
+
+    - name: candidate_id
+      type: uuid
+      required: true
+
+    # Type & Status
+    - name: assessment_type
+      type: enum
+      values: [skills_test, coding_test, personality, cognitive, situational, case_study, work_sample, language, typing]
+      required: true
+
+    - name: status
+      type: enum
+      values: [pending, sent, started, in_progress, completed, expired, cancelled]
+      default: pending
+
+    # Test Details
+    - name: test_id
+      type: string
+      length: 100
+      description: External test identifier
+
+    - name: test_name
+      type: string
+      length: 200
+      required: true
+
+    - name: test_description
+      type: text
+
+    - name: test_provider
+      type: enum
+      values: [internal, hackerrank, codility, leetcode, criteria_corp, pymetrics,
+               predictive_index, disc, wonderlic, custom]
+      required: true
+
+    - name: test_url
+      type: string
+      length: 1000
+      description: Link to take the test
+
+    - name: test_access_code
+      type: string
+      length: 100
+
+    # Configuration
+    - name: time_limit_minutes
+      type: integer
+      description: Time limit for completion
+
+    - name: allow_pause
+      type: boolean
+      default: false
+      description: Can candidate pause and resume
+
+    - name: randomize_questions
+      type: boolean
+      default: true
+
+    - name: passing_score
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Minimum score to pass
+
+    - name: passing_percentile
+      type: integer
+      description: Minimum percentile to pass
+
+    # Timeline
+    - name: sent_at
+      type: timestamp
+      description: When invitation was sent
+
+    - name: deadline
+      type: timestamp
+      description: Deadline to complete
+
+    - name: started_at
+      type: timestamp
+
+    - name: completed_at
+      type: timestamp
+
+    - name: expired_at
+      type: timestamp
+
+    - name: time_taken_minutes
+      type: integer
+      description: Actual time taken
+
+    # Reminders
+    - name: reminder_count
+      type: integer
+      default: 0
+
+    - name: last_reminder_at
+      type: timestamp
+
+    # Results
+    - name: raw_score
+      type: decimal
+      precision: 10
+      scale: 2
+
+    - name: max_score
+      type: decimal
+      precision: 10
+      scale: 2
+
+    - name: score_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+
+    - name: percentile
+      type: integer
+      description: Percentile rank vs other candidates
+
+    - name: pass_fail
+      type: enum
+      values: [pass, fail, borderline, pending_review]
+
+    - name: grade
+      type: string
+      length: 10
+      description: Letter grade if applicable
+
+    # Detailed Results
+    - name: detailed_results
+      type: jsonb
+      description: Breakdown by section/skill
+      example: |
+        {
+          "sections": [
+            {"name": "Problem Solving", "score": 85, "max": 100},
+            {"name": "Coding", "score": 78, "max": 100},
+            {"name": "System Design", "score": 72, "max": 100}
+          ],
+          "skills_assessed": [
+            {"skill": "Python", "score": 90},
+            {"skill": "SQL", "score": 75}
+          ]
+        }
+
+    - name: question_responses
+      type: jsonb
+      description: Individual question responses (if available)
+
+    - name: report_url
+      type: string
+      length: 1000
+      description: Link to detailed report
+
+    # Proctoring
+    - name: proctored
+      type: boolean
+      default: false
+
+    - name: proctoring_provider
+      type: string
+      length: 100
+
+    - name: proctoring_violations
+      type: jsonb
+      description: Any flagged violations
+      example: |
+        [
+          {"type": "browser_tab_switch", "count": 2, "timestamp": "..."},
+          {"type": "face_not_detected", "duration_seconds": 15, "timestamp": "..."}
+        ]
+
+    - name: proctoring_passed
+      type: boolean
+
+    # Review
+    - name: reviewed_by_id
+      type: uuid
+      description: Who reviewed the results
+
+    - name: reviewed_at
+      type: timestamp
+
+    - name: review_notes
+      type: text
+
+    # Metadata
+    - name: ip_address
+      type: string
+      length: 50
+
+    - name: browser_info
+      type: string
+      length: 500
+
+    - name: attempts
+      type: integer
+      default: 1
+      description: Attempt number if retakes allowed
+
+    - name: max_attempts
+      type: integer
+      default: 1
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: application
+      type: belongs_to
+      entity: Application
+      foreign_key: application_id
+
+    - name: candidate
+      type: belongs_to
+      entity: Candidate
+      foreign_key: candidate_id
+
+    - name: reviewed_by
+      type: belongs_to
+      entity: User
+      foreign_key: reviewed_by_id
+
+  indexes:
+    - columns: [assessment_id]
+      unique: true
+    - columns: [application_id]
+    - columns: [candidate_id]
+    - columns: [status]
+    - columns: [assessment_type]
+    - columns: [deadline]
+    - columns: [test_provider]
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: sent
+        action: send_invitation
+        triggers: [send_email, schedule_reminders]
+
+      - from: sent
+        to: started
+        action: start_assessment
+        triggers: [log_start_time]
+
+      - from: started
+        to: in_progress
+        action: resume
+        guards: [allow_pause_enabled]
+
+      - from: [started, in_progress]
+        to: completed
+        action: complete
+        triggers: [fetch_results, calculate_pass_fail, notify_recruiter]
+
+      - from: [sent, started, in_progress]
+        to: expired
+        action: expire
+        guards: [past_deadline]
+        triggers: [notify_recruiter]
+
+      - from: [pending, sent]
+        to: cancelled
+        action: cancel
+        triggers: [cancel_invitation]
+
+  validations:
+    - field: deadline
+      rule: future_date
+      when: status_is_pending
+      message: "Deadline must be in the future"
+
+    - field: passing_score
+      rule: range
+      min: 0
+      max_field: max_score
+      message: "Passing score must be within valid range"
+
+  hooks:
+    after_completed:
+      - calculate_percentile
+      - update_application_stage
+      - notify_stakeholders
+
+    after_expired:
+      - update_application_status
+      - notify_recruiter
+
+compliance:
+  - standard: test_validity
+    requirement: Use validated assessments appropriate for role
+  - standard: accommodation
+    requirement: Provide reasonable accommodations when requested

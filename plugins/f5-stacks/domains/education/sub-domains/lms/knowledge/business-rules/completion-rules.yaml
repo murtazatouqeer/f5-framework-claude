@@ -1,0 +1,522 @@
+# Completion Business Rules
+# F5 Framework v2.0 - Education/LMS
+# Rules governing course completion and certification
+
+business_rules:
+  id: completion-rules
+  name: Completion Rules
+  name_ja: 完了ルール
+  description: Business rules for course completion, grading, and certification
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  rules:
+    # Course Completion Criteria
+    - id: BR-CMP-001
+      name: Course Completion Criteria
+      name_ja: コース完了基準
+      description: Define requirements for course completion
+      category: completion
+      priority: critical
+      
+      trigger:
+        event: completion_check_requested
+        entity: enrollment
+        
+      conditions:
+        course_completion_criteria:
+          all_modules_complete:
+            type: boolean
+            check: all_required_modules.completed == true
+            
+          minimum_progress:
+            type: percentage
+            check: enrollment.progress_percentage >= course.completion_threshold
+            default_threshold: 100
+            
+          passing_grade:
+            type: conditional
+            check: enrollment.grade >= course.passing_grade
+            applies_when: course.has_graded_assessments == true
+            
+          required_assignments:
+            type: boolean
+            check: all_required_assignments.submitted == true
+            
+          final_exam:
+            type: conditional
+            check: final_exam.passed == true
+            applies_when: course.has_final_exam == true
+            
+      actions:
+        on_completion:
+          - mark_enrollment_completed
+          - calculate_final_grade
+          - record_completion_date
+          - trigger_certificate_generation
+          - award_completion_xp
+          - notify_learner
+          - update_learner_stats
+          
+    # Grade Calculation
+    - id: BR-CMP-010
+      name: Grade Calculation
+      name_ja: 成績計算
+      description: Calculate final course grade
+      category: grading
+      priority: high
+      
+      trigger:
+        event: grade_calculation_requested
+        entity: enrollment
+        
+      calculation:
+        weighted_average:
+          enabled: true
+          components:
+            - category: quizzes
+              weight: course.quiz_weight
+              calculation: average
+            - category: assignments
+              weight: course.assignment_weight
+              calculation: average
+            - category: final_exam
+              weight: course.final_exam_weight
+              calculation: single
+            - category: participation
+              weight: course.participation_weight
+              calculation: aggregate
+              
+        rounding:
+          method: half_up
+          decimals: 2
+          
+        letter_grade_mapping:
+          A+: { min: 97, max: 100 }
+          A: { min: 93, max: 96.99 }
+          A-: { min: 90, max: 92.99 }
+          B+: { min: 87, max: 89.99 }
+          B: { min: 83, max: 86.99 }
+          B-: { min: 80, max: 82.99 }
+          C+: { min: 77, max: 79.99 }
+          C: { min: 73, max: 76.99 }
+          C-: { min: 70, max: 72.99 }
+          D: { min: 60, max: 69.99 }
+          F: { min: 0, max: 59.99 }
+          
+      actions:
+        - calculate_numeric_grade
+        - determine_letter_grade
+        - check_passing_status
+        - update_enrollment:
+            numeric_grade: "{{calculated_grade}}"
+            letter_grade: "{{letter_grade}}"
+            grade_status: "{{pass_fail}}"
+            
+    # Certificate Generation
+    - id: BR-CMP-020
+      name: Certificate Generation
+      name_ja: 証明書生成
+      description: Generate completion certificate upon course completion
+      category: certification
+      priority: high
+      
+      trigger:
+        event: course_completed
+        entity: completion
+        conditions:
+          - course.certificate_enabled == true
+          - enrollment.grade_status == 'passed'
+          
+      conditions:
+        - field: course.certificate_template
+          operator: is_not_null
+        - field: learner.profile_complete
+          operator: equals
+          value: true
+          
+      actions:
+        - generate_certificate:
+            template: course.certificate_template
+            data:
+              learner_name: learner.full_name
+              course_name: course.title
+              completion_date: completion.completed_at
+              grade: enrollment.letter_grade
+              instructor_name: course.primary_instructor.name
+              credential_id: "{{generate_credential_id}}"
+        - store_certificate:
+            format: [pdf, png]
+            storage: secure_documents
+        - update_completion:
+            certificate_url: "{{generated_certificate_url}}"
+            certificate_id: "{{credential_id}}"
+        - notify_learner:
+            template: certificate_ready
+            attachments: [certificate_pdf]
+            
+      certificate_options:
+        include_grade: course.show_grade_on_certificate
+        include_hours: course.show_hours_on_certificate
+        include_skills: course.show_skills_on_certificate
+        digital_signature: true
+        verification_qr: true
+        
+    # Continuing Education Credits
+    - id: BR-CMP-030
+      name: CEU/CPD Credit Award
+      name_ja: 継続教育単位付与
+      description: Award continuing education credits upon completion
+      category: accreditation
+      priority: high
+      
+      trigger:
+        event: course_completed
+        entity: completion
+        conditions:
+          - course.ceu_credits > 0 OR course.cpd_points > 0
+          
+      conditions:
+        - field: enrollment.grade_status
+          operator: equals
+          value: passed
+        - field: enrollment.time_spent_minutes
+          operator: greater_than_or_equal
+          value: course.minimum_seat_time
+          
+      actions:
+        - award_credits:
+            ceu_credits: course.ceu_credits
+            cpd_points: course.cpd_points
+            accreditation_body: course.accreditation_body
+        - generate_transcript_entry
+        - update_learner_credits:
+            total_ceu: "+{{course.ceu_credits}}"
+            total_cpd: "+{{course.cpd_points}}"
+        - submit_to_accreditation_body:
+            if: course.auto_report_credits == true
+            
+      compliance:
+        - standard: accreditation
+          requirement: seat_time_verification
+        - standard: CE_reporting
+          requirement: completion_records
+          
+    # Badge and Achievement Award
+    - id: BR-CMP-040
+      name: Achievement Award
+      name_ja: 実績付与
+      description: Award badges and achievements on completion
+      category: gamification
+      priority: medium
+      
+      trigger:
+        event: course_completed
+        entity: completion
+        
+      actions:
+        - award_completion_badge:
+            badge: course.completion_badge
+            if: course.completion_badge != null
+        - award_skill_badges:
+            badges: course.skill_badges
+            condition: skill_criteria_met
+        - award_xp:
+            base_xp: course.completion_xp
+            bonus_xp: calculate_bonus_xp()
+        - check_level_up
+        - update_leaderboard
+        - notify_achievements
+        
+      bonus_xp_calculation:
+        high_grade_bonus:
+          condition: grade >= 90
+          bonus: 20%
+        speed_bonus:
+          condition: completed_before_deadline
+          bonus: 10%
+        streak_bonus:
+          condition: completed_with_streak
+          bonus: streak_days * 5
+        first_try_quiz_bonus:
+          condition: all_quizzes_passed_first_try
+          bonus: 15%
+          
+    # Learning Path Progress
+    - id: BR-CMP-050
+      name: Learning Path Progress
+      name_ja: ラーニングパス進捗
+      description: Update learning path progress on course completion
+      category: progress
+      priority: high
+      
+      trigger:
+        event: course_completed
+        entity: completion
+        conditions:
+          - course.is_part_of_learning_path == true
+          
+      actions:
+        - update_path_progress:
+            path_id: enrollment.learning_path_id
+            course_id: course.id
+            status: completed
+        - check_path_completion
+        - unlock_next_course:
+            if: path.unlock_type == 'sequential'
+        - notify_path_progress
+        
+      path_completion_check:
+        all_required_complete:
+          check: all_required_courses.completed == true
+        minimum_courses:
+          check: completed_count >= path.minimum_courses
+        path_grade:
+          calculate: average of course grades
+          
+    # Completion Notification
+    - id: BR-CMP-060
+      name: Completion Notifications
+      name_ja: 完了通知
+      description: Send notifications upon course completion
+      category: communication
+      priority: medium
+      
+      trigger:
+        event: course_completed
+        entity: completion
+        
+      actions:
+        notify_learner:
+          channels: [email, push, in_app]
+          template: course_completion
+          include:
+            - certificate_link
+            - grade_summary
+            - next_steps
+            - social_share_links
+            
+        notify_instructor:
+          condition: instructor.completion_notifications == true
+          template: student_completed
+          
+        notify_manager:
+          condition: enrollment.is_corporate == true
+          template: team_member_completed
+          include:
+            - completion_date
+            - grade
+            - time_spent
+            
+        social_sharing:
+          enabled: learner.allow_social_sharing
+          platforms: [linkedin, twitter, facebook]
+          content: certificate_image
+          
+    # Failed Completion Handling
+    - id: BR-CMP-070
+      name: Failed Completion Handling
+      name_ja: 不合格処理
+      description: Handle cases where learner fails to complete or pass
+      category: remediation
+      priority: high
+      
+      trigger:
+        event: completion_check_failed
+        entity: enrollment
+        
+      conditions:
+        failure_types:
+          grade_below_passing:
+            check: enrollment.grade < course.passing_grade
+          incomplete_requirements:
+            check: completion_criteria.not_all_met
+          time_limit_exceeded:
+            check: current_date > enrollment.expires_at
+            
+      actions:
+        on_grade_failure:
+          - mark_status: failed
+          - offer_retry_options:
+              retake_assessments: course.allows_assessment_retake
+              retake_course: course.allows_course_retake
+          - notify_learner:
+              template: course_failed
+              include_remediation: true
+              
+        on_incomplete:
+          - identify_missing_requirements
+          - extend_deadline:
+              if: extension_available
+              duration: course.extension_days
+          - notify_learner:
+              template: incomplete_course
+              
+        on_expiration:
+          - mark_status: expired
+          - archive_progress
+          - offer_re_enrollment:
+              discount: course.re_enrollment_discount
+              
+    # Completion Verification
+    - id: BR-CMP-080
+      name: Completion Verification
+      name_ja: 完了検証
+      description: Verify and validate completion for third parties
+      category: verification
+      priority: high
+      
+      trigger:
+        event: verification_requested
+        entity: completion
+        
+      conditions:
+        - field: completion.status
+          operator: equals
+          value: completed
+        - field: completion.certificate_id
+          operator: is_not_null
+          
+      actions:
+        - validate_certificate:
+            check_tampering: true
+            verify_signature: true
+        - return_verification:
+            status: valid | invalid | revoked
+            details:
+              learner_name: completion.learner_name
+              course_name: completion.course_name
+              completion_date: completion.completed_at
+              grade: completion.grade
+              credential_id: completion.certificate_id
+              
+      verification_api:
+        public_endpoint: true
+        rate_limited: true
+        requires_certificate_id: true
+        
+    # Completion Analytics
+    - id: BR-CMP-090
+      name: Completion Analytics
+      name_ja: 完了分析
+      description: Generate completion statistics and analytics
+      category: analytics
+      priority: medium
+      
+      trigger:
+        event: completion_recorded
+        entity: completion
+        
+      actions:
+        - update_course_stats:
+            completion_rate: recalculate
+            average_grade: recalculate
+            average_time_to_complete: recalculate
+        - update_instructor_stats:
+            students_completed: increment
+            average_student_grade: recalculate
+        - update_organization_stats:
+            if: enrollment.is_corporate
+            team_completions: increment
+            
+      analytics_metrics:
+        completion_rate:
+          formula: "completed / enrolled * 100"
+          exclude: [dropped, refunded]
+        average_completion_time:
+          formula: "AVG(completed_at - enrolled_at)"
+          unit: days
+        grade_distribution:
+          buckets: [A, B, C, D, F]
+          
+    # Completion Expiration
+    - id: BR-CMP-100
+      name: Completion Expiration
+      name_ja: 完了有効期限
+      description: Handle completion and certificate expiration
+      category: validity
+      priority: medium
+      
+      trigger:
+        event: scheduled
+        schedule: daily
+        
+      conditions:
+        - field: completion.expires_at
+          operator: is_past
+        - field: completion.status
+          operator: equals
+          value: completed
+          
+      actions:
+        - mark_completion_expired
+        - revoke_certificate:
+            reason: expiration
+        - notify_learner:
+            template: completion_expired
+            days_before: [30, 7, 1]
+        - offer_recertification:
+            if: course.allows_recertification
+            discount: course.recertification_discount
+            
+      expiration_rules:
+        applies_to:
+          - certifications_with_validity_period
+          - compliance_training
+          - professional_licenses
+        grace_period: 30 days
+        renewal_available: true
+
+  completion_types:
+    standard:
+      requirements:
+        - all_modules_complete
+        - passing_grade
+      certificate: true
+      
+    audit:
+      requirements:
+        - minimum_progress
+      certificate: false
+      grade_recorded: false
+      
+    verified:
+      requirements:
+        - all_modules_complete
+        - passing_grade
+        - proctored_exam
+        - identity_verification
+      certificate: true
+      premium_certificate: true
+
+  grade_scales:
+    percentage:
+      type: numeric
+      min: 0
+      max: 100
+      passing: 60
+      
+    letter:
+      type: categorical
+      values: [A+, A, A-, B+, B, B-, C+, C, C-, D, F]
+      passing: D
+      
+    pass_fail:
+      type: binary
+      values: [Pass, Fail]
+      
+    competency:
+      type: categorical
+      values: [Exceeds, Meets, Approaching, Beginning]
+      passing: Meets
+
+  audit:
+    enabled: true
+    log_events:
+      - completion_recorded
+      - grade_calculated
+      - certificate_generated
+      - credits_awarded
+      - completion_verified
+      - completion_expired

@@ -1,0 +1,227 @@
+# Saved Search Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# User saved searches with alert configuration
+
+entity:
+  id: saved_search
+  name: Saved Search
+  name_ja: 保存済み検索
+  name_vi: Tìm kiếm đã lưu
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    User-saved property search criteria with alert notifications
+    when new matching listings become available.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: search_id
+      type: string
+      format: "SCH-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    # User
+    - name: user_id
+      type: uuid
+      foreign_key: user.id
+      required: true
+      indexed: true
+
+    # Search Details
+    - name: name
+      type: string
+      max_length: 100
+      required: true
+      description: User-defined name for the search
+
+    - name: description
+      type: text
+      description: User notes about this search
+
+    # Search Criteria
+    - name: criteria
+      type: jsonb
+      required: true
+      description: Search parameters
+      schema:
+        # Location
+        location:
+          cities: array
+          districts: array
+          wards: array
+          center_lat: number
+          center_lng: number
+          radius_km: number
+        # Property
+        property_category: array  # [residential, commercial, ...]
+        property_types: array     # [apartment, villa, ...]
+        listing_types: array      # [sale, rent]
+        # Price
+        price_min: number
+        price_max: number
+        price_currency: string
+        price_per_sqm_min: number
+        price_per_sqm_max: number
+        # Specs
+        area_min: number
+        area_max: number
+        bedrooms_min: number
+        bedrooms_max: number
+        bathrooms_min: number
+        bathrooms_max: number
+        floors_min: number
+        floors_max: number
+        floor_number_min: number
+        floor_number_max: number
+        # Features
+        direction: array
+        interior_status: array
+        amenities: array
+        view: array
+        # Legal
+        ownership_types: array
+        legal_status: array
+        # Other
+        year_built_min: number
+        year_built_max: number
+        has_photos: boolean
+        has_virtual_tour: boolean
+        is_verified: boolean
+        is_new_construction: boolean
+        keywords: string
+
+    # Sort Preference
+    - name: sort_by
+      type: string
+      max_length: 50
+      default: "published_at"
+
+    - name: sort_direction
+      type: enum
+      values: [asc, desc]
+      default: desc
+
+    # Alert Configuration
+    - name: alerts_enabled
+      type: boolean
+      default: true
+
+    - name: alert_frequency
+      type: enum
+      values: [immediate, daily, weekly]
+      default: daily
+      indexed: true
+
+    - name: alert_channels
+      type: jsonb
+      schema:
+        email: boolean
+        push: boolean
+        sms: boolean
+
+    - name: max_alerts_per_day
+      type: integer
+      default: 10
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, paused, deleted]
+      default: active
+      indexed: true
+
+    # Statistics
+    - name: matching_count
+      type: integer
+      default: 0
+      description: Current matching listings count
+
+    - name: total_alerts_sent
+      type: integer
+      default: 0
+
+    - name: last_alert_sent_at
+      type: timestamp
+
+    - name: last_viewed_at
+      type: timestamp
+
+    - name: view_count
+      type: integer
+      default: 0
+
+    # Usage
+    - name: search_count
+      type: integer
+      default: 0
+      description: Times user ran this search
+
+    - name: last_searched_at
+      type: timestamp
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: has_location_filter
+      formula: "criteria->'location' IS NOT NULL"
+
+    - name: has_price_filter
+      formula: "criteria->>'price_min' IS NOT NULL OR criteria->>'price_max' IS NOT NULL"
+
+    - name: is_due_for_alert
+      formula: |
+        alerts_enabled = true AND status = 'active' AND (
+          (alert_frequency = 'immediate') OR
+          (alert_frequency = 'daily' AND (last_alert_sent_at IS NULL OR last_alert_sent_at < NOW() - INTERVAL '1 day')) OR
+          (alert_frequency = 'weekly' AND (last_alert_sent_at IS NULL OR last_alert_sent_at < NOW() - INTERVAL '1 week'))
+        )
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: user
+      foreign_key: user_id
+
+    - name: alert_history
+      type: has_many
+      entity: search_alert
+      foreign_key: saved_search_id
+
+  indexes:
+    - fields: [user_id, status]
+      name: idx_user_searches
+
+    - fields: [alert_frequency, status]
+      name: idx_alert_queue
+
+    - fields: [status, alerts_enabled]
+      name: idx_active_alerts
+
+  validations:
+    - field: name
+      rule: min_length
+      value: 1
+      message: Search name is required
+
+    - field: max_alerts_per_day
+      rule: between
+      min: 1
+      max: 50
+
+  audit:
+    enabled: true
+    track_changes: true

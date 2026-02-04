@@ -1,0 +1,468 @@
+name: DispatchWorkflow
+display_name: Dispatch Workflow
+description: |
+  Workflow for dispatching planned trips to drivers.
+  Covers pre-trip checks, dispatch, and trip monitoring.
+
+domain: logistics
+subdomain: fleet
+category: workflows
+version: "1.0.0"
+
+trigger:
+  events:
+    - trip.status_changed_to_planned
+    - manual.dispatch_trip
+    - schedule.dispatch_window
+  conditions:
+    - trip.scheduled_departure <= now() + 2h
+    - trip.status == 'planned'
+
+actors:
+  - name: Dispatcher
+    role: primary
+    responsibilities:
+      - Review pre-trip requirements
+      - Authorize dispatch
+      - Monitor active trips
+  - name: Driver
+    role: executor
+    responsibilities:
+      - Complete pre-trip inspection
+      - Acknowledge trip assignment
+      - Execute trip
+  - name: System
+    role: automated
+    responsibilities:
+      - Compliance checks
+      - Real-time monitoring
+      - Exception alerts
+
+inputs:
+  - name: trip
+    type: entity
+    entity: Trip
+    required: true
+  - name: vehicle
+    type: entity
+    entity: Vehicle
+    required: true
+  - name: driver
+    type: entity
+    entity: Driver
+    required: true
+
+outputs:
+  - name: dispatched_trip
+    type: entity
+    entity: Trip
+  - name: dispatch_log
+    type: document
+
+steps:
+  - id: verify_assignments
+    name: Verify Resource Assignments
+    type: automated
+    description: Confirm vehicle and driver are still available
+    actions:
+      - check vehicle.status == 'available'
+      - check driver.is_available == true
+      - check driver.current_trip_id IS NULL
+      - verify no schedule conflicts
+    business_rules:
+      - BR-VA-001  # Vehicle Availability
+      - BR-VA-002  # No Double Assignment
+      - BR-DC-020  # Driver Available
+    next:
+      pass: verify_compliance
+      fail: reassign_resources
+
+  - id: verify_compliance
+    name: Verify Compliance Requirements
+    type: automated
+    description: Check all compliance requirements are met
+    actions:
+      - verify vehicle registration valid
+      - verify vehicle insurance valid
+      - verify driver license valid
+      - verify driver medical certificate valid
+      - verify driver HOS hours available
+      - check for hazmat endorsements if needed
+    business_rules:
+      - BR-VA-004  # Registration Validity
+      - BR-VA-005  # Insurance Validity
+      - BR-DC-001  # License Validity
+      - BR-DC-007  # Medical Certificate
+      - BR-DC-010  # HOS Driving Limit
+    outputs:
+      - compliance_checklist
+    next:
+      pass: notify_driver
+      fail: compliance_hold
+
+  - id: notify_driver
+    name: Notify Driver of Assignment
+    type: automated
+    description: Send trip details to driver
+    actions:
+      - send trip details to driver mobile app
+      - include stop list and time windows
+      - include special instructions
+      - request acknowledgment
+    notifications:
+      - to: driver
+        template: trip_ready_for_dispatch
+        channel: [mobile_app, sms]
+    timeout: 30m
+    next:
+      acknowledged: request_pre_trip_inspection
+      timeout: escalate_no_response
+
+  - id: request_pre_trip_inspection
+    name: Request Pre-Trip Inspection
+    type: manual
+    actor: Driver
+    description: Driver performs and records pre-trip inspection
+    ui_screen: mobile_pre_trip_inspection
+    actions:
+      - display vehicle inspection checklist
+      - capture inspection results
+      - capture photos of defects if any
+      - submit inspection report
+    validations:
+      - all required items checked
+      - defects documented if failed
+    business_rules:
+      - BR-MN-011  # Pre-Trip Inspection Required
+    timeout: 45m
+    next:
+      passed: authorize_dispatch
+      failed: handle_inspection_failure
+      timeout: escalate_inspection_delay
+
+  - id: handle_inspection_failure
+    name: Handle Inspection Failure
+    type: decision
+    actor: Dispatcher
+    description: Decide how to handle failed inspection
+    ui_screen: dispatch_inspection_failure
+    inputs:
+      - inspection_report
+      - defect_list
+    decision_points:
+      - minor_defects: Proceed with notes
+      - major_defects: Replace vehicle
+      - critical_defects: Cancel/postpone trip
+    actions:
+      - IF minor_defects: log_and_proceed
+      - IF major_defects: assign_alternate_vehicle
+      - IF critical_defects: create_maintenance_work_order
+    next:
+      proceed: authorize_dispatch
+      replace_vehicle: reassign_resources
+      cancel: cancel_trip
+
+  - id: authorize_dispatch
+    name: Authorize Dispatch
+    type: automated
+    description: Final authorization before dispatch
+    actions:
+      - verify all checks passed
+      - set trip.status = 'dispatched'
+      - set vehicle.status = 'in_use'
+      - update driver.current_trip_id
+      - record dispatch time
+    outputs:
+      - dispatch_authorization
+    notifications:
+      - to: dispatcher
+        template: trip_dispatched
+        channel: [dashboard]
+    next: wait_for_departure
+
+  - id: wait_for_departure
+    name: Wait for Departure
+    type: wait
+    description: Monitor for trip start
+    conditions:
+      wait_for:
+        - gps.ignition_on AND gps.within_depot_geofence
+        - OR timeout 30min after scheduled_departure
+    next:
+      departure_detected: start_trip_monitoring
+      timeout: check_departure_delay
+
+  - id: check_departure_delay
+    name: Check Departure Delay
+    type: decision
+    actor: Dispatcher
+    description: Handle late departure
+    ui_screen: dispatch_delay_handling
+    actions:
+      - calculate delay_minutes
+      - assess impact on delivery windows
+    decision_points:
+      - minor_delay: Update ETAs and proceed
+      - significant_delay: Contact driver
+      - critical_delay: Consider cancellation
+    next:
+      proceed: wait_for_departure
+      contact: contact_driver
+      cancel: cancel_trip
+
+  - id: contact_driver
+    name: Contact Driver
+    type: manual
+    actor: Dispatcher
+    description: Dispatcher contacts driver about delay
+    actions:
+      - call driver
+      - document reason for delay
+      - update ETAs if proceeding
+    next:
+      proceeding: start_trip_monitoring
+      cannot_proceed: cancel_trip
+
+  - id: start_trip_monitoring
+    name: Start Trip Monitoring
+    type: automated
+    description: Begin real-time trip monitoring
+    actions:
+      - set trip.status = 'in_progress'
+      - record actual_departure time
+      - start GPS tracking
+      - enable behavior monitoring
+      - calculate live ETAs
+    events:
+      emit: trip.started
+    next: monitor_trip
+
+  - id: monitor_trip
+    name: Monitor Trip Progress
+    type: automated
+    description: Continuous monitoring during trip
+    actions:
+      - track vehicle location
+      - monitor driver behavior
+      - update ETAs based on traffic
+      - detect geofence entries/exits
+      - monitor HOS status
+    alerts:
+      - trigger: speeding
+        action: alert_dispatcher
+      - trigger: route_deviation
+        action: alert_dispatcher
+      - trigger: extended_stop
+        action: alert_dispatcher
+      - trigger: hos_warning
+        action: alert_driver_and_dispatcher
+    next:
+      stop_arrived: handle_stop_arrival
+      trip_complete: complete_trip
+      exception: handle_trip_exception
+
+  - id: handle_stop_arrival
+    name: Handle Stop Arrival
+    type: automated
+    description: Process arrival at each stop
+    actions:
+      - detect arrival via geofence
+      - record arrival_time
+      - update stop.status = 'arrived'
+      - notify customer if configured
+    next: wait_for_stop_completion
+
+  - id: wait_for_stop_completion
+    name: Wait for Stop Completion
+    type: wait
+    description: Wait for driver to complete stop
+    conditions:
+      wait_for:
+        - stop.status == 'completed'
+        - OR stop.status == 'failed'
+        - OR timeout based on service_time
+    next:
+      completed: update_stop_metrics
+      failed: record_stop_failure
+      timeout: check_stop_status
+
+  - id: update_stop_metrics
+    name: Update Stop Metrics
+    type: automated
+    description: Record stop completion metrics
+    actions:
+      - calculate service_time
+      - calculate on_time_status
+      - update trip.completed_stops
+      - send customer delivery notification
+    next: monitor_trip
+
+  - id: record_stop_failure
+    name: Record Stop Failure
+    type: automated
+    description: Record failed stop and reason
+    actions:
+      - update stop.status = 'failed'
+      - record failure_reason
+      - update trip.failed_stops
+      - notify dispatcher
+    notifications:
+      - to: dispatcher
+        template: stop_failed
+        channel: [dashboard, sms]
+    next: monitor_trip
+
+  - id: handle_trip_exception
+    name: Handle Trip Exception
+    type: manual
+    actor: Dispatcher
+    description: Handle exceptions during trip
+    ui_screen: trip_exception_handling
+    exception_types:
+      - breakdown
+      - accident
+      - driver_illness
+      - weather
+      - road_closure
+    actions:
+      - assess severity
+      - coordinate response
+      - arrange assistance if needed
+      - update customer notifications
+    next:
+      resolved: monitor_trip
+      trip_cannot_continue: abort_trip
+
+  - id: complete_trip
+    name: Complete Trip
+    type: automated
+    description: Finalize completed trip
+    actions:
+      - set trip.status = 'completed'
+      - record actual_arrival time
+      - calculate final metrics
+      - set vehicle.status = 'available'
+      - clear driver.current_trip_id
+    outputs:
+      - completed_trip
+    events:
+      emit: trip.completed
+    next: post_trip_processing
+
+  - id: post_trip_processing
+    name: Post-Trip Processing
+    type: automated
+    description: Post-trip documentation and metrics
+    actions:
+      - request post-trip inspection from driver
+      - calculate trip costs
+      - update driver performance metrics
+      - update vehicle odometer
+      - archive trip data
+    next: complete
+
+  - id: reassign_resources
+    name: Reassign Resources
+    type: manual
+    actor: Dispatcher
+    description: Reassign vehicle or driver
+    ui_screen: resource_reassignment
+    actions:
+      - find alternate resources
+      - verify compatibility
+      - update trip assignments
+    next:
+      success: verify_assignments
+      no_alternatives: cancel_trip
+
+  - id: compliance_hold
+    name: Compliance Hold
+    type: manual
+    actor: Dispatcher
+    description: Handle compliance failures
+    ui_screen: compliance_hold
+    actions:
+      - display compliance issues
+      - suggest remediation
+      - allow override with reason
+    next:
+      resolved: verify_compliance
+      override: authorize_dispatch
+      cannot_resolve: cancel_trip
+
+  - id: cancel_trip
+    name: Cancel Trip
+    type: automated
+    description: Cancel trip and release resources
+    actions:
+      - set trip.status = 'cancelled'
+      - release vehicle reservation
+      - release driver assignment
+      - notify stakeholders
+      - return orders to planning queue
+    notifications:
+      - to: [dispatcher, driver]
+        template: trip_cancelled
+        channel: [dashboard, mobile_app]
+    next: complete
+
+  - id: abort_trip
+    name: Abort Trip
+    type: automated
+    description: Abort in-progress trip
+    actions:
+      - set trip.status = 'failed'
+      - mark remaining stops as skipped
+      - record abort_reason
+      - arrange vehicle recovery if needed
+    next: complete
+
+  - id: escalate_no_response
+    name: Escalate No Response
+    type: automated
+    description: Escalate when driver doesn't respond
+    actions:
+      - notify dispatcher
+      - attempt phone call
+      - if no response, consider reassignment
+    notifications:
+      - to: dispatcher
+        template: driver_no_response
+        channel: [dashboard, sms]
+    next: reassign_resources
+
+  - id: escalate_inspection_delay
+    name: Escalate Inspection Delay
+    type: automated
+    description: Escalate when inspection is delayed
+    actions:
+      - notify dispatcher
+      - update departure estimates
+    next: handle_inspection_failure
+
+  - id: complete
+    name: Complete Workflow
+    type: automated
+    description: Finalize workflow
+    actions:
+      - log workflow completion
+      - archive workflow instance
+
+monitoring:
+  real_time_metrics:
+    - active_trips
+    - on_time_percentage
+    - average_stop_time
+    - driver_efficiency
+
+  alerts:
+    - significant_delay: >15min behind schedule
+    - route_deviation: >2km from planned route
+    - extended_idle: >15min at non-stop location
+    - hos_violation_imminent: <1hr remaining
+
+sla:
+  pre_trip_inspection: "45 minutes before departure"
+  dispatch_to_departure: "30 minutes"
+  delay_notification: "immediate"
+  customer_notification: "within 15 minutes of arrival"

@@ -1,0 +1,479 @@
+# Post-Visit Workflow
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Workflow for activities after telehealth visit completion
+
+workflow:
+  id: post-visit-workflow
+  name: Post-Visit Processing
+  name_ja: 診療後処理
+  description: Workflow for post-visit documentation, communication, and billing
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - video_consultation_completed
+      - tele_visit.status = 'completed'
+
+  actors:
+    - id: provider
+      role: Healthcare Provider
+      
+    - id: system
+      role: Post-Visit System
+      
+    - id: billing_staff
+      role: Billing Department
+      
+    - id: patient
+      role: Patient
+
+  preconditions:
+    - Video consultation completed
+    - tele_visit.actual_end is set
+    - Provider has basic documentation
+
+  steps:
+    - step: 1
+      id: generate_visit_summary
+      name: Generate Visit Summary
+      actor: system
+      description: Auto-generate after-visit summary (AVS)
+      
+      actions:
+        - Pull visit data from tele_visit
+        - Pull diagnoses and assessment
+        - Pull prescriptions
+        - Pull orders
+        - Generate patient-friendly summary
+        
+      summary_content:
+        visit_info:
+          - Date and time
+          - Provider name
+          - Visit type
+          
+        diagnoses:
+          - Patient-friendly descriptions
+          - ICD-10 codes (for reference)
+          
+        treatment_plan:
+          - Medications prescribed
+          - Instructions
+          - Self-care recommendations
+          
+        prescriptions:
+          - Medication list with details
+          - Pharmacy information
+          - Pickup/delivery instructions
+          
+        orders:
+          - Lab orders with locations
+          - Imaging orders with prep instructions
+          - Referrals with contact info
+          
+        follow_up:
+          - Recommendations
+          - Scheduled appointment (if any)
+          - How to schedule if needed
+          
+        warning_signs:
+          - When to seek emergency care
+          - When to call the office
+          
+        educational_materials:
+          - Links to relevant resources
+          
+      database_operations:
+        - CREATE visit_summary record
+        - ASSOCIATE with tele_visit
+        
+      next_step: 2
+
+    - step: 2
+      id: provider_review_summary
+      name: Provider Review Summary
+      actor: provider
+      description: Provider reviews and approves AVS
+      
+      actions:
+        - Review auto-generated summary
+        - Edit/customize as needed
+        - Add personal notes
+        - Approve for distribution
+        
+      editing_options:
+        - Adjust patient-friendly language
+        - Add specific instructions
+        - Remove irrelevant sections
+        - Attach additional resources
+        
+      validations:
+        - All required sections present
+        - Diagnoses match documentation
+        - Prescriptions accurate
+        
+      database_operations:
+        - UPDATE visit_summary.status = 'approved'
+        - SET approved_by, approved_at
+        
+      next_step: 3
+
+    - step: 3
+      id: send_summary_to_patient
+      name: Send Summary to Patient
+      actor: system
+      description: Deliver AVS to patient
+      
+      delivery_methods:
+        patient_portal:
+          action: Publish to patient portal
+          notification: Email about new document
+          
+        email:
+          action: Send secure email with summary
+          fallback: If portal not used
+          
+        print_mail:
+          action: Queue for print and mail
+          when: Patient preference or no electronic access
+          
+      notification_content:
+        subject: "Your After-Visit Summary from {provider_name}"
+        body: |
+          Thank you for your telehealth visit today.
+          Your visit summary is now available.
+          
+          Quick Summary:
+          - Diagnosis: {diagnoses}
+          - Prescriptions: {prescription_count} sent to {pharmacy}
+          - Follow-up: {follow_up_instructions}
+          
+          View your complete summary in the patient portal.
+          
+      database_operations:
+        - UPDATE visit_summary.sent_at
+        - UPDATE visit_summary.status = 'sent'
+        - LOG delivery_method
+        
+      next_step: 4
+
+    - step: 4
+      id: complete_documentation
+      name: Complete Clinical Documentation
+      actor: provider
+      description: Provider completes clinical note
+      
+      documentation_components:
+        clinical_note:
+          sections:
+            - Chief Complaint
+            - History of Present Illness
+            - Review of Systems
+            - Physical Exam (as applicable)
+            - Assessment
+            - Plan
+            
+        telehealth_attestation:
+          required: true
+          content:
+            - Telehealth modality used
+            - Consent confirmed
+            - Patient location state
+            - Any technical issues
+            
+        time_documentation:
+          if_time_based_billing:
+            - Total time
+            - Time breakdown (counseling, coordination)
+            
+      templates:
+        available: Visit-type specific templates
+        smart_phrases: Pre-built documentation snippets
+        
+      ehr_integration:
+        action: Push documentation to EHR
+        
+      deadline:
+        standard: Within 24 hours
+        urgent: Same day
+        
+      database_operations:
+        - UPDATE tele_visit.clinical_notes
+        - SET documentation_completed = true
+        
+      next_step: 5
+
+    - step: 5
+      id: transmit_prescriptions
+      name: Transmit Prescriptions
+      actor: system
+      description: Send e-prescriptions to pharmacy
+      
+      conditions:
+        if: prescriptions exist and not yet transmitted
+        
+      actions:
+        - Connect to Surescripts/pharmacy network
+        - Transmit each prescription
+        - Track transmission status
+        - Handle failures/retries
+        
+      transmission_details:
+        standard_rx:
+          - Send to selected pharmacy
+          - Await acknowledgment
+          
+        controlled_substances:
+          - EPCS compliant transmission
+          - Additional verification
+          
+      error_handling:
+        transmission_failure:
+          - Retry up to 3 times
+          - Alert staff if persistent
+          - Fax as backup
+          
+      database_operations:
+        - UPDATE e_prescription.transmission_status
+        - SET transmitted_at
+        
+      patient_notification:
+        send: "Your prescriptions have been sent to {pharmacy}"
+        
+      next_step: 6
+
+    - step: 6
+      id: submit_orders
+      name: Submit Lab and Imaging Orders
+      actor: system
+      description: Transmit orders to labs and imaging centers
+      
+      conditions:
+        if: orders exist
+        
+      order_processing:
+        lab_orders:
+          - Send to selected lab
+          - Generate requisition
+          - Include patient instructions
+          
+        imaging_orders:
+          - Send to selected facility
+          - Include clinical indication
+          - Schedule if integrated
+          
+        referrals:
+          - Send to specialist office
+          - Include relevant records
+          - Await acknowledgment
+          
+      integrations:
+        - Quest Diagnostics
+        - LabCorp
+        - Local imaging centers
+        - Specialist offices
+        
+      database_operations:
+        - UPDATE order records with transmission status
+        
+      patient_communication:
+        send: Order confirmation with instructions
+        
+      next_step: 7
+
+    - step: 7
+      id: schedule_follow_up
+      name: Process Follow-Up Scheduling
+      actor: system
+      description: Handle follow-up appointment scheduling
+      
+      scenarios:
+        scheduled_during_visit:
+          action: Confirm appointment, send reminders
+          
+        needs_scheduling:
+          action: Send scheduling prompt to patient
+          
+        conditional_follow_up:
+          action: Create reminder for patient to call if symptoms persist
+          
+      automated_scheduling:
+        when: Chronic disease management
+        action: Auto-schedule per care protocol
+        
+      patient_communication:
+        if_scheduled:
+          send: Appointment confirmation
+        if_not_scheduled:
+          send: |
+            Please schedule a follow-up appointment.
+            Your provider recommended: {follow_up_timeframe}
+            Schedule at: {scheduling_link}
+            
+      database_operations:
+        - CREATE follow_up appointment if scheduled
+        - CREATE reminder task if not
+        
+      next_step: 8
+
+    - step: 8
+      id: submit_billing
+      name: Submit Billing
+      actor: system
+      description: Generate and submit billing claim
+      
+      billing_generation:
+        charge_capture:
+          - Visit CPT code
+          - Modifiers (95 for telehealth)
+          - Place of service (02 or 10)
+          - Diagnoses (ICD-10)
+          - Additional services
+          
+        documentation_validation:
+          - Check documentation supports billing level
+          - Verify medical necessity
+          - Check telehealth eligibility
+          
+        claim_creation:
+          - Generate claim
+          - Attach required documentation
+          - Submit to payer
+          
+      business_rules:
+        - BR-BIL-001 through BR-BIL-041
+        
+      database_operations:
+        - CREATE billing record
+        - SUBMIT claim
+        - TRACK claim status
+        
+      audit_trail:
+        document:
+          - CPT codes used
+          - Modifiers applied
+          - Medical necessity documentation
+          
+      next_step: 9
+
+    - step: 9
+      id: patient_satisfaction
+      name: Collect Patient Satisfaction
+      actor: patient
+      description: Send satisfaction survey
+      
+      timing:
+        send: 1-2 hours after visit
+        reminder: 24 hours if not completed
+        
+      survey_content:
+        questions:
+          - Overall satisfaction (1-5 stars)
+          - Ease of technology use
+          - Provider communication
+          - Would recommend telehealth
+          - Open feedback
+          
+      delivery:
+        method: Email with survey link
+        fallback: SMS link
+        
+      incentive:
+        optional: Entry into prize drawing
+        
+      database_operations:
+        - UPDATE tele_visit.patient_satisfaction_score
+        - STORE survey_responses
+        
+      next_step: 10
+
+    - step: 10
+      id: update_care_gaps
+      name: Update Care Gap Tracking
+      actor: system
+      description: Update preventive care and care gap status
+      
+      care_gap_review:
+        addressed_during_visit:
+          - Mark as completed
+          - Update due dates
+          
+        identified_during_visit:
+          - Create new care gap records
+          - Schedule outreach
+          
+        outstanding_gaps:
+          - Update tracking
+          - Generate patient outreach if needed
+          
+      quality_measures:
+        update:
+          - HEDIS measures
+          - Quality reporting
+          - Population health tracking
+          
+      database_operations:
+        - UPDATE care_gap records
+        - UPDATE quality_measures
+        
+      next_step: complete
+
+  completion:
+    status: post_visit_processing_complete
+    outputs:
+      - visit_summary_sent: boolean
+      - documentation_completed: boolean
+      - prescriptions_transmitted: boolean
+      - orders_submitted: boolean
+      - claim_submitted: boolean
+      - satisfaction_sent: boolean
+      
+  async_processes:
+    claim_tracking:
+      monitor: Claim adjudication
+      action: Alert on denial
+      
+    pharmacy_fill:
+      monitor: Prescription fill status
+      action: Alert if not filled in 48 hours
+      
+    lab_results:
+      monitor: Incoming results
+      action: Route to provider for review
+      
+    referral_scheduling:
+      monitor: Specialist appointment
+      action: Follow up if not scheduled
+
+  error_handling:
+    documentation_incomplete:
+      action: |
+        Send reminder to provider
+        Escalate after 24 hours
+        
+    transmission_failures:
+      action: |
+        Retry
+        Alert staff
+        Manual intervention queue
+        
+    billing_rejection:
+      action: |
+        Route to billing staff
+        Document reason
+        Correct and resubmit
+
+  metrics:
+    track:
+      - time_to_documentation
+      - prescription_transmission_success
+      - claim_acceptance_rate
+      - patient_satisfaction_response_rate
+      - average_satisfaction_score
+
+  audit:
+    log_all_steps: true
+    billing_audit: true
+    retention_days: 2555

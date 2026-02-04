@@ -1,0 +1,776 @@
+name: Card Issuance Workflow
+display_name: Card Issuance Workflow / Quy trình phát hành thẻ
+description: |
+  End-to-end workflow for issuing debit, credit, and prepaid cards
+  including application, production, delivery, and activation.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-CARD-ISSUE
+  name: Card Issuance
+  name_vi: Phát hành thẻ
+  category: card_management
+
+  trigger:
+    type: customer_request | system_auto
+    channels:
+      - mobile_app
+      - web_banking
+      - branch
+      - account_opening  # bundled with new account
+      - renewal  # auto-triggered
+
+  card_types:
+    debit:
+      linked_to: checking_or_savings
+      credit_check: not_required
+
+    credit:
+      linked_to: credit_facility
+      credit_check: required
+
+    prepaid:
+      linked_to: prepaid_wallet
+      credit_check: not_required
+
+  issuance_modes:
+    instant:
+      location: branch
+      time: 15_minutes
+      card_type: temporary | permanent
+
+    standard:
+      production: 5-7_business_days
+      delivery: branch_pickup | home_delivery
+
+    virtual:
+      availability: immediate
+      usage: online_only
+
+  actors:
+    - customer
+    - system
+    - branch_staff
+    - credit_officer
+    - card_operations
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Submit Card Request
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: submit_request
+    name: Submit Card Request
+    name_vi: Nộp yêu cầu thẻ
+    actor: customer | system
+
+    description: |
+      Customer requests new card or system initiates for renewal/replacement.
+
+    request_types:
+      new_card:
+        trigger: customer_request
+        requirements:
+          - active_account
+          - valid_kyc
+          - no_existing_card_of_type  # optional
+
+      replacement:
+        triggers:
+          - lost_stolen
+          - damaged
+          - expired
+          - upgrade
+        requirements:
+          - existing_card
+          - active_account
+
+      renewal:
+        trigger: system_auto
+        timing: 30_days_before_expiry
+        requirements:
+          - active_account
+          - auto_renewal_enabled
+
+    inputs:
+      card_preferences:
+        - card_type: debit | credit | prepaid
+        - card_brand: visa | mastercard | jcb
+        - card_tier: classic | gold | platinum
+        - name_on_card
+        - issuance_mode: instant | standard
+        - delivery_option: branch | home  # if standard
+
+      for_credit_cards:
+        - requested_limit
+        - income_declaration
+        - employment_status
+
+      for_replacement:
+        - old_card_number
+        - replacement_reason
+        - block_old_card: boolean
+
+    validations:
+      - rule: account_active
+        condition: "linked_account.status = 'active'"
+        error: "ACCOUNT_NOT_ACTIVE"
+
+      - rule: kyc_valid
+        condition: "customer.kyc_status = 'valid'"
+        error: "KYC_EXPIRED"
+
+      - rule: eligible_for_tier
+        condition: "customer.segment >= card_tier.minimum_segment"
+        error: "NOT_ELIGIBLE_FOR_TIER"
+
+    outputs:
+      - card_request_id
+      - request_status: submitted
+
+    next_step:
+      if_credit_card: credit_assessment
+      if_debit_prepaid: eligibility_check
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Credit Assessment (Credit Cards Only)
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: credit_assessment
+    name: Credit Assessment
+    name_vi: Đánh giá tín dụng
+    actor: system | credit_officer
+    conditional: true
+
+    description: |
+      Assess creditworthiness for credit card applications.
+
+    condition: card_type = 'credit'
+
+    assessment_components:
+      credit_bureau_check:
+        providers: [pcb, cic]
+        data_retrieved:
+          - credit_score
+          - existing_credit_facilities
+          - payment_history
+          - outstanding_debt
+
+      income_verification:
+        methods:
+          - salary_slip
+          - bank_statement
+          - tax_return
+        minimum_income_by_tier:
+          classic: 5000000
+          gold: 15000000
+          platinum: 50000000
+
+      debt_service_ratio:
+        formula: "total_monthly_debt / monthly_income"
+        maximum: 0.60
+
+      internal_scoring:
+        factors:
+          - relationship_tenure
+          - account_behavior
+          - product_holdings
+          - average_balance
+
+    decision_matrix:
+      auto_approve:
+        conditions:
+          - credit_score >= 700
+          - dsr <= 0.40
+          - no_delinquency
+        limit: min(requested, calculated_limit)
+
+      manual_review:
+        conditions:
+          - credit_score 600-699
+          - dsr 0.40-0.60
+          - minor_delinquency
+        reviewer: credit_officer
+
+      auto_decline:
+        conditions:
+          - credit_score < 600
+          - dsr > 0.60
+          - severe_delinquency
+
+    outputs:
+      - credit_decision: approved | declined | pending_review
+      - approved_limit
+      - interest_rate
+      - conditions: []
+
+    next_step:
+      if_approved: create_card_record
+      if_declined: reject_request
+      if_pending: manual_credit_review
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Eligibility Check (Debit/Prepaid)
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: eligibility_check
+    name: Eligibility Check
+    name_vi: Kiểm tra đủ điều kiện
+    actor: system
+    conditional: true
+
+    description: |
+      Verify eligibility for debit and prepaid cards.
+
+    condition: card_type IN ['debit', 'prepaid']
+
+    checks:
+      account_check:
+        - account_status: active
+        - account_age: >= 0 days  # immediate for new accounts
+        - minimum_balance: per_product_rules
+
+      card_limit_check:
+        - max_cards_per_account: 3
+        - max_cards_per_type: 2
+
+      customer_check:
+        - kyc_level: >= basic
+        - no_fraud_flags
+        - age: >= 18  # or >= 15 for supplementary
+
+    tier_eligibility:
+      classic:
+        segment: [mass, mass_affluent, affluent, hnw]
+        minimum_balance: 0
+
+      gold:
+        segment: [mass_affluent, affluent, hnw]
+        minimum_balance: 20000000
+
+      platinum:
+        segment: [affluent, hnw]
+        minimum_balance: 100000000
+
+    outputs:
+      - eligibility_status: eligible | not_eligible
+      - eligible_tiers: []
+      - ineligibility_reason  # if not eligible
+
+    next_step:
+      if_eligible: create_card_record
+      if_not_eligible: reject_request
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Create Card Record
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: create_card_record
+    name: Create Card Record
+    name_vi: Tạo hồ sơ thẻ
+    actor: system
+
+    description: |
+      Generate card number and create card record in system.
+
+    actions:
+      generate_pan:
+        algorithm: luhn_compliant
+        format:
+          bin: from_card_type_and_brand
+          account_identifier: 9_digits
+          check_digit: luhn
+
+        bin_mapping:
+          visa_debit: "4xxxxx"
+          visa_credit: "4xxxxx"
+          mastercard_debit: "5xxxxx"
+          mastercard_credit: "5xxxxx"
+          jcb: "3528xx"
+
+      generate_expiry:
+        validity_years: 4
+        format: "MM/YY"
+
+      generate_cvv:
+        algorithm: secure_hash
+        length: 3
+        storage: encrypted_or_hsm
+
+      create_record:
+        data:
+          - card_id
+          - pan_encrypted
+          - pan_masked
+          - expiry_date
+          - cardholder_name
+          - card_type
+          - card_status: pending_production
+          - linked_account
+          - limits: default_by_type
+
+    set_default_limits:
+      debit:
+        daily_atm: 30000000
+        daily_pos: 100000000
+        daily_online: 50000000
+        contactless_per_tx: 1000000
+
+      credit:
+        credit_limit: from_assessment
+        cash_advance: 30%_of_limit
+
+      prepaid:
+        based_on: prepaid_wallet_limits
+
+    outputs:
+      - card_id
+      - pan_masked
+      - expiry_date
+      - card_status: pending_production
+
+    next_step:
+      if_instant: instant_production
+      if_standard: standard_production
+      if_virtual: activate_virtual
+
+  # ---------------------------------------------------------------------------
+  # Step 5A: Instant Production
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: instant_production
+    name: Instant Production
+    name_vi: Sản xuất thẻ tức thì
+    actor: branch_staff | system
+    conditional: true
+
+    description: |
+      Produce card instantly at branch with on-site printing.
+
+    condition: issuance_mode = 'instant'
+
+    process:
+      verify_customer:
+        methods: [id_document, biometric]
+        requirement: in_person
+
+      print_card:
+        equipment: instant_card_printer
+        duration: 5_minutes
+        includes:
+          - embossing: name, card_number
+          - encoding: magnetic_stripe, chip
+          - printing: design, name
+
+      generate_pin:
+        method: customer_select | system_generate
+        if_system_generate:
+          delivery: pin_mailer | sms_encrypted
+
+      activate_immediately:
+        status: active
+        usable: immediately
+
+    outputs:
+      - physical_card: issued
+      - card_status: active
+      - pin_status: set | pending
+
+    next_step: notify_customer
+
+  # ---------------------------------------------------------------------------
+  # Step 5B: Standard Production
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: standard_production
+    name: Standard Production
+    name_vi: Sản xuất thẻ tiêu chuẩn
+    actor: card_operations
+    conditional: true
+
+    description: |
+      Produce card through standard production facility.
+
+    condition: issuance_mode = 'standard'
+
+    process:
+      create_production_request:
+        data:
+          - card_id
+          - pan
+          - cardholder_name
+          - card_design
+          - embossing_data
+
+        send_to: card_production_vendor
+
+      production_steps:
+        - card_blank_selection
+        - chip_encoding
+        - magnetic_stripe_encoding
+        - embossing
+        - printing
+        - quality_check
+        - packaging
+
+      production_timeline:
+        production: 2-3_business_days
+        quality_check: 1_day
+        dispatch: 1_day
+
+    outputs:
+      - production_status: completed
+      - tracking_number
+      - expected_delivery_date
+
+    next_step: deliver_card
+
+  # ---------------------------------------------------------------------------
+  # Step 5C: Activate Virtual Card
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: activate_virtual
+    name: Activate Virtual Card
+    name_vi: Kích hoạt thẻ ảo
+    actor: system
+    conditional: true
+
+    description: |
+      Activate virtual card for immediate online use.
+
+    condition: issuance_mode = 'virtual'
+
+    process:
+      generate_virtual_card:
+        includes:
+          - virtual_pan
+          - virtual_cvv
+          - expiry_date
+
+        display: in_app_only
+        security: tokenized
+
+      set_capabilities:
+        enabled:
+          - online_transactions
+          - digital_wallet_provisioning
+        disabled:
+          - atm_withdrawal
+          - physical_pos
+
+      tokenization:
+        supported_wallets:
+          - apple_pay
+          - google_pay
+          - samsung_pay
+
+    outputs:
+      - virtual_card_status: active
+      - tokenization_ready: true
+
+    next_step: notify_customer
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Deliver Card
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: deliver_card
+    name: Deliver Card
+    name_vi: Giao thẻ
+    actor: system | courier
+    conditional: true
+
+    description: |
+      Deliver physical card to customer.
+
+    condition: issuance_mode = 'standard'
+
+    delivery_options:
+      branch_pickup:
+        notification: ready_for_collection
+        collection_requirements:
+          - id_document
+          - collection_code
+        holding_period: 30_days
+        uncollected_action: destroy_and_notify
+
+      home_delivery:
+        courier: registered_courier
+        tracking: enabled
+        delivery_attempts: 3
+        signature: required
+        failed_delivery: return_to_branch
+
+    pin_delivery:
+      separate_from_card: true
+      methods:
+        - pin_mailer: 2_days_after_card
+        - sms_encrypted: on_card_delivery
+        - app_reveal: post_activation
+
+    tracking:
+      statuses:
+        - dispatched
+        - in_transit
+        - out_for_delivery
+        - delivered
+        - returned
+
+      customer_tracking: enabled
+
+    outputs:
+      - delivery_status
+      - delivery_date
+      - recipient_confirmation
+
+    next_step:
+      if_delivered: customer_activation
+      if_failed: handle_delivery_failure
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Customer Activation
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: customer_activation
+    name: Customer Activation
+    name_vi: Kích hoạt thẻ
+    actor: customer
+
+    description: |
+      Customer activates card and sets PIN.
+
+    activation_methods:
+      mobile_app:
+        steps:
+          - scan_card_or_enter_last_4
+          - verify_otp
+          - set_pin
+          - confirm_activation
+
+      atm:
+        steps:
+          - insert_card
+          - enter_temporary_pin
+          - set_new_pin
+          - confirm_activation
+
+      ivr:
+        steps:
+          - call_activation_number
+          - verify_identity
+          - enter_card_details
+          - set_pin_via_keypad
+
+      branch:
+        steps:
+          - present_id
+          - verify_identity
+          - set_pin_on_pinpad
+          - receive_confirmation
+
+    pin_requirements:
+      length: [4, 6]
+      cannot_be:
+        - sequential: "1234, 4321"
+        - repeated: "1111, 0000"
+        - birth_date_derived
+        - phone_last_4
+
+    post_activation:
+      - enable_transactions
+      - remove_temporary_restrictions
+      - start_welcome_benefits
+
+    outputs:
+      - card_status: active
+      - pin_status: set
+      - activation_timestamp
+
+    next_step: notify_customer
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Notify Customer
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: notify_customer
+    name: Notify Customer
+    name_vi: Thông báo khách hàng
+    actor: system
+
+    description: |
+      Send confirmation and card details to customer.
+
+    notifications:
+      card_ready:
+        trigger: production_complete
+        channels: [push, sms]
+        content: |
+          Your new card is ready
+          Collection: {branch} or Delivery: {date}
+
+      card_dispatched:
+        trigger: dispatched
+        channels: [push]
+        content: |
+          Your card has been dispatched
+          Tracking: {tracking_number}
+
+      card_activated:
+        trigger: activation_complete
+        channels: [push, sms, email]
+        content: |
+          Card activated successfully
+          Card: **** **** **** {last_4}
+          Now ready to use
+
+      welcome_kit:
+        trigger: activation_complete
+        channel: email
+        includes:
+          - card_features
+          - usage_guide
+          - fee_schedule
+          - security_tips
+          - support_contacts
+
+    outputs:
+      - notifications_sent: []
+
+    next_step: complete_workflow
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Complete Workflow
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: complete_workflow
+    name: Complete Workflow
+    name_vi: Hoàn thành quy trình
+    actor: system
+
+    description: |
+      Finalize card issuance workflow.
+
+    actions:
+      update_records:
+        - card_status: active
+        - workflow_status: completed
+        - issuance_date: now
+
+      charge_fees:
+        issuance_fee:
+          debit_classic: 0
+          debit_gold: 200000
+          credit: per_product
+        annual_fee:
+          waiver_period: first_year
+
+      analytics:
+        events:
+          - card_issued
+          - customer_segment_update
+
+      enable_features:
+        - transaction_notifications
+        - spending_analytics
+        - card_controls
+
+    outputs:
+      - workflow_status: completed
+      - card_status: active
+      - completion_timestamp
+
+# =============================================================================
+# REJECTION FLOW
+# =============================================================================
+rejection_flow:
+  - step: reject_request
+    name: Reject Request
+    name_vi: Từ chối yêu cầu
+
+    actions:
+      update_status:
+        request_status: rejected
+        rejection_reason: from_assessment
+
+      notify_customer:
+        channels: [push, email]
+        content:
+          credit_declined: |
+            We couldn't approve your credit card request at this time.
+            Reason: {reason_if_disclosable}
+            You may reapply after {waiting_period}
+
+          eligibility_failed: |
+            Your card request couldn't be processed.
+            Reason: {reason}
+            Please contact support for assistance.
+
+    reapplication:
+      credit_cards:
+        waiting_period: 90_days
+        improved_chances:
+          - increase_income
+          - reduce_debt
+          - improve_credit_score
+
+      debit_cards:
+        waiting_period: none
+        resolution: fix_eligibility_issue
+
+# =============================================================================
+# SLA AND METRICS
+# =============================================================================
+sla:
+  processing_time:
+    instant_issuance: 15_minutes
+    standard_production: 5-7_business_days
+    virtual_card: 2_minutes
+    credit_assessment: 1_business_day
+
+  delivery:
+    branch_pickup: same_day_after_production
+    home_delivery: 2-3_business_days_after_production
+
+metrics:
+  tracked:
+    - issuance_volume
+    - approval_rate
+    - production_time
+    - activation_rate
+    - time_to_first_use
+    - delivery_success_rate
+
+  targets:
+    approval_rate: "> 70% (credit)"
+    activation_rate: "> 95%"
+    delivery_success: "> 98%"
+
+# =============================================================================
+# IMPLEMENTATION NOTES
+# =============================================================================
+implementation_notes:
+  integrations:
+    - Core Banking System
+    - Card Management System
+    - Credit Bureau (PCB/CIC)
+    - Card Production Vendor
+    - Courier Service
+    - HSM for cryptographic operations
+    - Digital Wallet Platforms
+
+  security_considerations:
+    - PAN encryption at rest and in transit
+    - PIN block encryption
+    - CVV never stored
+    - Secure key management
+    - Audit trail for all operations

@@ -1,0 +1,518 @@
+name: Premium Rules
+display_name: Premium Calculation Rules
+description: |
+  Business rules for premium calculation, loadings, discounts, and taxes.
+  Covers rate lookup, adjustments, and payment terms.
+
+domain: insurance
+subdomain: policy
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - base_premium
+  - loadings
+  - discounts
+  - taxes
+  - payment_terms
+  - premium_validation
+
+rules:
+  # Base Premium Calculation Rules
+  - id: PRM-BASE-001
+    name: Rate Table Lookup
+    category: base_premium
+    priority: critical
+    description: |
+      Base premium calculated from age/gender rate table.
+    calculation:
+      method: rate_table
+      inputs:
+        - rate_table_id: product.base_rate_table_id
+        - age: insured.age_at_inception
+        - gender: insured.gender
+        - term: policy.term_years
+        - payment_frequency: policy.payment_frequency
+      output: base_premium
+    formula: "rate_per_mille * sum_insured / 1000"
+
+  - id: PRM-BASE-002
+    name: Rider Premium Calculation
+    category: base_premium
+    priority: high
+    description: |
+      Calculate premium for each attached rider.
+    calculation:
+      method: per_rider
+      for_each: selected_riders
+      formula: "rider.rate_per_mille * rider.sum_insured / 1000"
+      output: rider_premium_total
+
+  - id: PRM-BASE-003
+    name: Multi-Insured Premium
+    category: base_premium
+    priority: high
+    description: |
+      Calculate separate premium for each insured person.
+    calculation:
+      method: per_insured
+      for_each: insureds
+      aggregate: sum
+      output: total_lives_premium
+
+  - id: PRM-BASE-004
+    name: Modal Premium Factor
+    category: base_premium
+    priority: high
+    description: |
+      Apply modal factor for payment frequency.
+    factors:
+      annual: 1.00
+      semi_annual: 0.52
+      quarterly: 0.26
+      monthly: 0.09
+    formula: "annual_premium * modal_factor"
+    note: "Monthly factor includes loading for admin cost"
+
+  # Loading Rules
+  - id: PRM-LOAD-001
+    name: Smoker Loading
+    category: loadings
+    priority: high
+    description: |
+      Apply premium loading for smokers.
+    condition:
+      field: insured.smoker_status
+      operator: eq
+      value: "smoker"
+    loading:
+      type: smoker
+      percentage: 50
+      applies_to: base_premium
+    message: "Smoker loading of 50% applied to base premium"
+
+  - id: PRM-LOAD-002
+    name: Occupation Loading
+    category: loadings
+    priority: high
+    description: |
+      Apply loading based on occupation class.
+    conditions:
+      - condition:
+          field: insured.occupation_class
+          operator: eq
+          value: 3
+        loading:
+          type: occupation
+          percentage: 25
+      - condition:
+          field: insured.occupation_class
+          operator: eq
+          value: 4
+        loading:
+          type: occupation
+          percentage: 50
+    applies_to: base_premium
+    message: "Occupation loading of {percentage}% applied"
+
+  - id: PRM-LOAD-003
+    name: BMI Loading
+    category: loadings
+    priority: medium
+    description: |
+      Apply loading for abnormal BMI.
+    conditions:
+      - condition:
+          expression: "insured.bmi >= 30 AND insured.bmi < 35"
+        loading:
+          type: bmi
+          percentage: 25
+      - condition:
+          expression: "insured.bmi >= 35"
+        loading:
+          type: bmi
+          percentage: 50
+    applies_to: base_premium
+
+  - id: PRM-LOAD-004
+    name: Substandard Rating Loading
+    category: loadings
+    priority: high
+    description: |
+      Apply underwriter-assigned loading.
+    condition:
+      field: underwriting_decision.rating
+      operator: eq
+      value: "substandard"
+    loading:
+      type: substandard
+      percentage: underwriting_decision.loading_percentage
+      duration: underwriting_decision.loading_duration
+    applies_to: base_premium
+    message: "Substandard loading of {percentage}% applied per underwriting"
+
+  - id: PRM-LOAD-005
+    name: Hazardous Activity Loading
+    category: loadings
+    priority: medium
+    description: |
+      Apply loading for hazardous activities.
+    condition:
+      expression: "COUNT(lifestyle_declaration.hazardous_activities) > 0"
+    loading:
+      type: hazardous_activity
+      percentage_per_activity: 15
+      max_percentage: 50
+    applies_to: base_premium
+
+  - id: PRM-LOAD-006
+    name: Family History Loading
+    category: loadings
+    priority: low
+    description: |
+      Apply loading for adverse family medical history.
+    condition:
+      expression: |
+        health_declaration.family_history.heart_disease_before_60 = true OR
+        health_declaration.family_history.cancer_before_60 = true
+    loading:
+      type: family_history
+      percentage: 15
+    applies_to: base_premium
+
+  # Discount Rules
+  - id: PRM-DISC-001
+    name: Annual Payment Discount
+    category: discounts
+    priority: medium
+    description: |
+      Discount for annual payment frequency.
+    condition:
+      field: policy.payment_frequency
+      operator: eq
+      value: "annual"
+    discount:
+      type: payment_frequency
+      percentage: 3
+    applies_to: gross_premium
+    message: "3% discount for annual payment"
+
+  - id: PRM-DISC-002
+    name: Large Sum Insured Discount
+    category: discounts
+    priority: medium
+    description: |
+      Volume discount for high sum insured.
+    conditions:
+      - condition:
+          expression: "sum_insured >= 500000000 AND sum_insured < 1000000000"
+        discount:
+          type: volume
+          percentage: 2
+      - condition:
+          expression: "sum_insured >= 1000000000 AND sum_insured < 2000000000"
+        discount:
+          type: volume
+          percentage: 3
+      - condition:
+          expression: "sum_insured >= 2000000000"
+        discount:
+          type: volume
+          percentage: 5
+    applies_to: net_premium
+
+  - id: PRM-DISC-003
+    name: Multi-Life Discount
+    category: discounts
+    priority: medium
+    description: |
+      Discount for multiple lives on same policy.
+    condition:
+      expression: "COUNT(insureds) >= 3"
+    discount:
+      type: multi_life
+      percentage: 5
+    applies_to: net_premium
+    message: "Multi-life discount of 5% applied"
+
+  - id: PRM-DISC-004
+    name: Staff Discount
+    category: discounts
+    priority: medium
+    description: |
+      Discount for company staff.
+    condition:
+      field: policyholder.is_staff
+      operator: eq
+      value: true
+    discount:
+      type: staff
+      percentage: 10
+    applies_to: gross_premium
+    max_discount: 20
+
+  - id: PRM-DISC-005
+    name: Loyalty Discount
+    category: discounts
+    priority: low
+    description: |
+      Discount for existing customers.
+    condition:
+      expression: "policyholder.existing_policies_count >= 2"
+    discount:
+      type: loyalty
+      percentage: 3
+    applies_to: net_premium
+
+  - id: PRM-DISC-006
+    name: No Claims Bonus
+    category: discounts
+    priority: medium
+    description: |
+      Discount for claim-free years on renewal.
+    condition:
+      expression: "policy.renewal_sequence > 0 AND policy.no_claims_years > 0"
+    discount:
+      type: no_claims
+      percentage_table:
+        years_1: 5
+        years_2: 10
+        years_3: 15
+        years_4: 20
+        years_5_plus: 25
+    applies_to: base_premium
+    message: "No claims bonus of {percentage}% for {years} claim-free years"
+
+  - id: PRM-DISC-007
+    name: Campaign Discount
+    category: discounts
+    priority: low
+    description: |
+      Apply promotional campaign discount.
+    condition:
+      expression: "quote.campaign_code IS NOT NULL AND campaign.is_active = true"
+    discount:
+      type: campaign
+      value: campaign.discount_value
+      is_percentage: campaign.is_percentage
+    applies_to: gross_premium
+    valid_until: campaign.end_date
+
+  # Tax Rules
+  - id: PRM-TAX-001
+    name: VAT Application
+    category: taxes
+    priority: critical
+    description: |
+      Apply VAT to premium.
+    condition:
+      expression: "product.vat_applicable = true"
+    tax:
+      type: vat
+      rate: 10
+    applies_to: net_premium
+    formula: "net_premium * vat_rate / 100"
+    note: "VAT rate per Vietnam tax law"
+
+  - id: PRM-TAX-002
+    name: Stamp Duty
+    category: taxes
+    priority: high
+    description: |
+      Apply stamp duty based on sum insured.
+    calculation:
+      method: tiered
+      tiers:
+        - max_sum_insured: 100000000
+          stamp_duty: 5000
+        - max_sum_insured: 500000000
+          stamp_duty: 10000
+        - max_sum_insured: 1000000000
+          stamp_duty: 20000
+        - max_sum_insured: null
+          stamp_duty: 50000
+
+  - id: PRM-TAX-003
+    name: Withholding Tax
+    category: taxes
+    priority: medium
+    description: |
+      Calculate withholding tax on maturity benefits.
+    condition:
+      expression: "product.type IN ['endowment', 'unit_linked']"
+    tax:
+      type: withholding
+      rate: 5
+    applies_to: investment_gain
+    note: "Applicable on policy maturity/surrender"
+
+  # Payment Terms Rules
+  - id: PRM-PAY-001
+    name: Minimum Premium
+    category: payment_terms
+    priority: high
+    description: |
+      Premium must meet minimum threshold.
+    condition:
+      field: modal_premium
+      operator: gte
+      value: product.minimum_premium
+    failure_action: adjust
+    adjustment:
+      field: modal_premium
+      value: product.minimum_premium
+    message: "Premium adjusted to meet minimum of {product.minimum_premium}"
+
+  - id: PRM-PAY-002
+    name: Premium Rounding
+    category: payment_terms
+    priority: low
+    description: |
+      Round premium to nearest 1000.
+    calculation:
+      method: round
+      precision: 1000
+      direction: up
+    applies_to: modal_premium
+
+  - id: PRM-PAY-003
+    name: Grace Period
+    category: payment_terms
+    priority: high
+    description: |
+      Set grace period for premium payment.
+    default_value: 30
+    conditions:
+      - condition:
+          field: policy.payment_frequency
+          operator: eq
+          value: "monthly"
+        value: 30
+      - condition:
+          field: policy.payment_frequency
+          operator: eq
+          value: "quarterly"
+        value: 30
+      - condition:
+          field: policy.payment_frequency
+          operator: eq
+          value: "annual"
+        value: 30
+    unit: days
+
+  - id: PRM-PAY-004
+    name: Late Payment Interest
+    category: payment_terms
+    priority: medium
+    description: |
+      Apply interest for late premium payment.
+    condition:
+      expression: "premium.days_overdue > 0"
+    calculation:
+      rate: 12
+      rate_type: per_annum
+      formula: "premium_amount * rate * days_overdue / 365"
+
+  # Premium Validation Rules
+  - id: PRM-VAL-001
+    name: Premium Sum Validation
+    category: premium_validation
+    priority: critical
+    description: |
+      Validate total premium calculation.
+    validation:
+      expression: |
+        gross_premium =
+          (base_premium + rider_premium)
+          * (1 + total_loading_percentage/100)
+          * (1 - total_discount_percentage/100)
+          + tax_amount
+          + stamp_duty
+    tolerance: 1
+    failure_action: error
+    message: "Premium calculation validation failed"
+
+  - id: PRM-VAL-002
+    name: Maximum Loading Limit
+    category: premium_validation
+    priority: high
+    description: |
+      Total loadings cannot exceed maximum.
+    validation:
+      expression: "total_loading_percentage <= 200"
+    failure_action: cap
+    cap_value: 200
+    message: "Total loading capped at 200%"
+
+  - id: PRM-VAL-003
+    name: Maximum Discount Limit
+    category: premium_validation
+    priority: high
+    description: |
+      Total discounts cannot exceed maximum.
+    validation:
+      expression: "total_discount_percentage <= 30"
+    failure_action: cap
+    cap_value: 30
+    message: "Total discount capped at 30%"
+
+  - id: PRM-VAL-004
+    name: Premium Affordability Check
+    category: premium_validation
+    priority: medium
+    description: |
+      Premium should not exceed percentage of income.
+    validation:
+      expression: "annual_premium <= policyholder.annual_income * 0.15"
+    failure_action: warn
+    message: "Premium exceeds 15% of annual income - confirm affordability"
+
+calculation_sequence:
+  1: base_premium_calculation
+  2: rider_premium_calculation
+  3: apply_loadings
+  4: apply_discounts
+  5: calculate_taxes
+  6: add_stamp_duty
+  7: apply_modal_factor
+  8: round_premium
+  9: validate_result
+
+output_fields:
+  - name: base_premium
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: rider_premium
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: loading_amount
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: discount_amount
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: net_premium
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: tax_amount
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: stamp_duty
+    type: decimal
+    precision: 10
+    scale: 2
+  - name: gross_premium
+    type: decimal
+    precision: 12
+    scale: 2
+  - name: modal_premium
+    type: decimal
+    precision: 12
+    scale: 2

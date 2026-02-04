@@ -1,0 +1,255 @@
+# Favorite Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# User favorite/saved properties and listings
+
+entity:
+  id: favorite
+  name: Favorite
+  name_ja: お気に入り
+  name_vi: Yêu thích
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    User-saved favorite properties and listings for later review.
+    Supports collections/folders for organization.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    # User
+    - name: user_id
+      type: uuid
+      foreign_key: user.id
+      required: true
+      indexed: true
+
+    # Target
+    - name: listing_id
+      type: uuid
+      foreign_key: listing.id
+      indexed: true
+
+    - name: property_id
+      type: uuid
+      foreign_key: property.id
+      indexed: true
+      description: For saving properties directly
+
+    # Organization
+    - name: collection_id
+      type: uuid
+      foreign_key: favorite_collection.id
+      indexed: true
+      description: Optional folder/collection
+
+    - name: tags
+      type: array
+      items: string
+      description: User-defined tags
+
+    # User Notes
+    - name: notes
+      type: text
+      description: User's personal notes
+
+    - name: priority
+      type: enum
+      values: [low, medium, high]
+      default: medium
+
+    - name: comparison_status
+      type: enum
+      values: [considering, shortlisted, top_choice, rejected]
+      indexed: true
+
+    # Snapshot (for when listing changes/expires)
+    - name: snapshot
+      type: jsonb
+      description: Snapshot of listing at time of save
+      schema:
+        title: string
+        price: number
+        currency: string
+        address: string
+        bedrooms: integer
+        bathrooms: integer
+        area_sqm: number
+        primary_photo_url: string
+        status: string
+
+    # Notifications
+    - name: notify_price_change
+      type: boolean
+      default: true
+
+    - name: notify_status_change
+      type: boolean
+      default: true
+
+    # Price Tracking
+    - name: saved_price
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Price when saved
+
+    - name: price_change_notified
+      type: boolean
+      default: false
+
+    # Engagement
+    - name: viewed_count
+      type: integer
+      default: 0
+      description: Times user viewed from favorites
+
+    - name: last_viewed_at
+      type: timestamp
+
+    - name: shared_count
+      type: integer
+      default: 0
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: price_changed
+      formula: "saved_price IS NOT NULL AND saved_price <> (SELECT asking_price FROM listing WHERE id = listing_id)"
+
+    - name: is_active
+      formula: "(SELECT status FROM listing WHERE id = listing_id) = 'active'"
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: user
+      foreign_key: user_id
+
+    - name: listing
+      type: belongs_to
+      entity: listing
+      foreign_key: listing_id
+
+    - name: property
+      type: belongs_to
+      entity: property
+      foreign_key: property_id
+
+    - name: collection
+      type: belongs_to
+      entity: favorite_collection
+      foreign_key: collection_id
+
+  indexes:
+    - fields: [user_id, listing_id]
+      name: idx_user_listing
+      unique: true
+
+    - fields: [user_id, property_id]
+      name: idx_user_property
+
+    - fields: [user_id, collection_id]
+      name: idx_user_collection
+
+    - fields: [user_id, comparison_status]
+      name: idx_user_comparison
+
+    - fields: [user_id, created_at]
+      name: idx_user_favorites_date
+
+  constraints:
+    - type: check
+      name: chk_target
+      condition: "(listing_id IS NOT NULL) OR (property_id IS NOT NULL)"
+      message: Must have either listing_id or property_id
+
+  audit:
+    enabled: true
+    track_changes: true
+
+---
+# Favorite Collection Entity (embedded)
+entity:
+  id: favorite_collection
+  name: Favorite Collection
+  name_ja: お気に入りコレクション
+  name_vi: Bộ sưu tập yêu thích
+
+  description: |
+    User-created folders/collections to organize favorites.
+
+  attributes:
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: user_id
+      type: uuid
+      foreign_key: user.id
+      required: true
+      indexed: true
+
+    - name: name
+      type: string
+      max_length: 100
+      required: true
+
+    - name: description
+      type: text
+
+    - name: color
+      type: string
+      max_length: 7
+      description: Hex color code
+
+    - name: icon
+      type: string
+      max_length: 50
+
+    - name: is_default
+      type: boolean
+      default: false
+
+    - name: favorites_count
+      type: integer
+      default: 0
+
+    - name: sort_order
+      type: integer
+      default: 0
+
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: user
+      foreign_key: user_id
+
+    - name: favorites
+      type: has_many
+      entity: favorite
+      foreign_key: collection_id
+
+  indexes:
+    - fields: [user_id, name]
+      name: idx_user_collection_name
+      unique: true

@@ -1,0 +1,447 @@
+name: booking
+display_name: Booking
+display_name_vi: Đặt chỗ
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Master booking entity representing a travel reservation.
+  Contains flight, hotel, package, and other travel components
+  with traveler information and payment details.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+    description: System identifier
+
+  - name: booking_reference
+    type: string
+    length: 6
+    unique: true
+    format: "^[A-Z0-9]{6}$"
+    description: PNR-style reference (e.g., ABC123)
+
+  - name: external_reference
+    type: string
+    nullable: true
+    description: GDS or supplier reference
+
+  # Status
+  - name: status
+    type: enum
+    values: [pending, confirmed, ticketed, cancelled, completed, no_show]
+    default: pending
+
+  - name: booking_type
+    type: enum
+    values: [flight, hotel, package, car, activity, transfer, multi]
+
+  # Traveler Information
+  - name: lead_traveler_id
+    type: uuid
+    foreign_key: traveler.id
+    description: Primary contact traveler
+
+  - name: travelers
+    type: array
+    items:
+      type: uuid
+      foreign_key: traveler.id
+    description: All travelers on booking
+
+  - name: contact_email
+    type: email
+    required: true
+    description: Booking contact email
+
+  - name: contact_phone
+    type: string
+    required: true
+    description: Booking contact phone
+
+  # Trip Details
+  - name: trip_start_date
+    type: date
+    required: true
+
+  - name: trip_end_date
+    type: date
+    required: true
+
+  - name: origin_city
+    type: string
+    description: Trip origin city
+
+  - name: destination_city
+    type: string
+    description: Primary destination
+
+  # Booking Components
+  - name: flights
+    type: array
+    items:
+      type: uuid
+      foreign_key: flight.id
+    default: []
+
+  - name: hotel_reservations
+    type: array
+    items:
+      type: uuid
+      foreign_key: hotel_reservation.id
+    default: []
+
+  - name: car_rentals
+    type: array
+    items:
+      type: object
+    default: []
+
+  - name: activities
+    type: array
+    items:
+      type: object
+    default: []
+
+  - name: transfers
+    type: array
+    items:
+      type: object
+    default: []
+
+  # Pricing
+  - name: base_price
+    type: decimal
+    precision: 12
+    scale: 2
+
+  - name: taxes_and_fees
+    type: decimal
+    precision: 12
+    scale: 2
+
+  - name: service_fee
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: discount_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: total_amount
+    type: decimal
+    precision: 12
+    scale: 2
+    required: true
+
+  - name: currency
+    type: string
+    length: 3
+    default: "USD"
+
+  # Payment
+  - name: payment_status
+    type: enum
+    values: [pending, partial, paid, refunded, failed]
+    default: pending
+
+  - name: payment_method
+    type: string
+    nullable: true
+
+  - name: payment_reference
+    type: string
+    nullable: true
+
+  - name: paid_amount
+    type: decimal
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: balance_due
+    type: decimal
+    precision: 12
+    scale: 2
+
+  # Source & Attribution
+  - name: booking_source
+    type: enum
+    values: [website, mobile_app, agent, api, gds, affiliate]
+    default: website
+
+  - name: agent_id
+    type: uuid
+    nullable: true
+    description: Booking agent (if agent-assisted)
+
+  - name: affiliate_id
+    type: string
+    nullable: true
+    description: Affiliate tracking code
+
+  - name: promo_code
+    type: string
+    nullable: true
+
+  # Documents
+  - name: e_tickets
+    type: array
+    items:
+      type: uuid
+      foreign_key: ticket.id
+    default: []
+
+  - name: vouchers
+    type: array
+    items:
+      type: uuid
+      foreign_key: voucher.id
+    default: []
+
+  - name: itinerary_url
+    type: string
+    nullable: true
+    description: Link to itinerary document
+
+  # Metadata
+  - name: special_requests
+    type: text
+    nullable: true
+
+  - name: internal_notes
+    type: text
+    nullable: true
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    auto_set: true
+
+  - name: confirmed_at
+    type: timestamp
+    nullable: true
+
+  - name: ticketed_at
+    type: timestamp
+    nullable: true
+
+  - name: cancelled_at
+    type: timestamp
+    nullable: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: trip_end_date >= trip_start_date
+    message: End date must be on or after start date
+
+  - rule: trip_start_date >= current_date
+    message: Trip start must be in future
+    context: creation_only
+
+  - rule: total_amount > 0
+    message: Total amount must be positive
+
+  - rule: travelers.length > 0
+    message: At least one traveler required
+
+  - rule: contact_email matches email_pattern
+    message: Valid email required
+
+relationships:
+  - name: lead_traveler
+    type: belongs_to
+    entity: traveler
+    foreign_key: lead_traveler_id
+
+  - name: travelers
+    type: has_many_through
+    entity: traveler
+    through: booking_travelers
+
+  - name: flights
+    type: has_many
+    entity: flight
+    foreign_key: booking_id
+
+  - name: hotel_reservations
+    type: has_many
+    entity: hotel_reservation
+    foreign_key: booking_id
+
+  - name: payments
+    type: has_many
+    entity: payment
+    foreign_key: booking_id
+
+  - name: tickets
+    type: has_many
+    entity: ticket
+    foreign_key: booking_id
+
+  - name: vouchers
+    type: has_many
+    entity: voucher
+    foreign_key: booking_id
+
+  - name: cancellation
+    type: has_one
+    entity: cancellation
+    foreign_key: booking_id
+
+  - name: pricing
+    type: has_one
+    entity: pricing
+    foreign_key: booking_id
+
+indexes:
+  - name: idx_booking_reference
+    columns: [booking_reference]
+    unique: true
+
+  - name: idx_booking_status
+    columns: [status]
+
+  - name: idx_booking_dates
+    columns: [trip_start_date, trip_end_date]
+
+  - name: idx_booking_lead_traveler
+    columns: [lead_traveler_id]
+
+  - name: idx_booking_source
+    columns: [booking_source, created_at]
+
+  - name: idx_booking_payment_status
+    columns: [payment_status]
+
+state_machine:
+  initial: pending
+  states:
+    pending:
+      description: Booking initiated, awaiting payment
+      transitions:
+        - to: confirmed
+          event: payment_received
+          conditions:
+            - payment_status in [paid, partial]
+        - to: cancelled
+          event: timeout_expired
+          conditions:
+            - created_at + timeout < now
+
+    confirmed:
+      description: Payment received, awaiting ticketing
+      transitions:
+        - to: ticketed
+          event: documents_issued
+          conditions:
+            - e_tickets.length > 0 OR vouchers.length > 0
+        - to: cancelled
+          event: cancellation_requested
+          actions:
+            - process_refund
+
+    ticketed:
+      description: All documents issued
+      transitions:
+        - to: completed
+          event: trip_completed
+          conditions:
+            - trip_end_date < current_date
+        - to: cancelled
+          event: cancellation_requested
+          actions:
+            - void_tickets
+            - process_refund
+        - to: no_show
+          event: no_show_reported
+
+    completed:
+      description: Trip completed successfully
+      final: true
+
+    cancelled:
+      description: Booking cancelled
+      final: true
+
+    no_show:
+      description: Traveler did not show
+      final: true
+
+business_rules:
+  - id: BR-BKG-001
+    name: Booking Timeout
+    rule: |
+      Pending bookings must be paid within timeout period.
+      Flight: 24-72 hours (per fare rules)
+      Hotel: 24 hours
+    action: Auto-cancel if timeout exceeded
+
+  - id: BR-BKG-002
+    name: Traveler Name Matching
+    rule: Traveler names must match travel documents exactly
+    enforcement: warning
+
+  - id: BR-BKG-003
+    name: Minimum Lead Time
+    rule: |
+      Flight: Minimum 2 hours before departure
+      Hotel: Same-day booking until 6PM local
+    enforcement: strict
+
+events:
+  - name: booking.created
+    trigger: After insert
+    payload:
+      - id
+      - booking_reference
+      - booking_type
+      - total_amount
+
+  - name: booking.confirmed
+    trigger: Status change to confirmed
+    payload:
+      - id
+      - booking_reference
+      - payment_reference
+
+  - name: booking.ticketed
+    trigger: Status change to ticketed
+    payload:
+      - id
+      - booking_reference
+      - ticket_numbers
+
+  - name: booking.cancelled
+    trigger: Status change to cancelled
+    payload:
+      - id
+      - booking_reference
+      - cancellation_reason
+      - refund_amount
+
+computed_fields:
+  - name: balance_due
+    formula: total_amount - paid_amount
+
+  - name: trip_duration_days
+    formula: DATEDIFF(trip_end_date, trip_start_date) + 1
+
+  - name: days_until_departure
+    formula: DATEDIFF(trip_start_date, CURRENT_DATE)
+
+  - name: is_fully_paid
+    formula: paid_amount >= total_amount
+
+  - name: traveler_count
+    formula: LENGTH(travelers)

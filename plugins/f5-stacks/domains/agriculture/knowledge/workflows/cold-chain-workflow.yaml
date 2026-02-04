@@ -1,0 +1,442 @@
+name: Cold Chain Workflow
+display_name: Cold Chain Workflow / Quy trình vận chuyển lạnh
+description: |
+  Quy trình vận chuyển có kiểm soát nhiệt độ cho thịt đã giết mổ.
+  Đảm bảo chất lượng an toàn thực phẩm từ lò mổ đến người mua.
+
+domain: agriculture
+version: "1.0"
+
+triggers:
+  - event: order.confirmed
+    source: Order
+    condition: |
+      order.fulfillmentType = 'platform_delivery' AND
+      shipment.shipmentType = 'processed_meat'
+
+actors:
+  - name: Seller
+    role: primary
+    description: Trang trại / Lò mổ
+  - name: Driver
+    role: executor
+    description: Tài xế xe lạnh
+  - name: Hub
+    role: checkpoint
+    description: Hub trung chuyển
+  - name: Buyer
+    role: recipient
+    description: Người mua
+  - name: System
+    role: automated
+    description: Hệ thống giám sát
+  - name: QC
+    role: inspector
+    description: Kiểm soát chất lượng
+
+prerequisites:
+  - Shipment đã được tạo với requiresColdChain = true
+  - Driver có xe lạnh đã được xác minh
+  - Sensor nhiệt độ đã được cài đặt
+
+temperature_requirements:
+  processed_meat:
+    min: 0
+    max: 4
+    unit: celsius
+    tolerance: 0.5
+    alert_threshold: 2  # Alert khi chênh lệch > 2°C
+
+  frozen_meat:
+    min: -18
+    max: -15
+    unit: celsius
+    tolerance: 1
+    alert_threshold: 3
+
+steps:
+  - id: INIT_COLD_CHAIN
+    name: Initialize Cold Chain Monitoring
+    actor: System
+    type: automated
+    description: Khởi tạo giám sát nhiệt độ
+    actions:
+      - Verify xe lạnh đã đạt nhiệt độ yêu cầu
+      - Kích hoạt sensor IoT
+      - Set up real-time monitoring
+      - Create monitoring session
+    inputs:
+      - shipment_id
+      - vehicle_id
+      - target_temp_range
+    outputs:
+      - monitoring_session_id
+      - sensor_ids
+    validations:
+      - Vehicle temperature within range
+      - Sensors operational
+      - GPS tracking active
+    on_success: PICKUP_COLD
+
+  - id: PICKUP_COLD
+    name: Cold Pickup
+    actor: Driver
+    type: interactive
+    description: Nhận hàng từ lò mổ với kiểm soát nhiệt độ
+    actions:
+      - Arrive at slaughterhouse/farm
+      - Record pre-loading temperature
+      - Verify product temperature
+      - Load products quickly (< 15 minutes)
+      - Record post-loading temperature
+      - Seal cold compartment
+      - Take photos with timestamp
+    inputs:
+      - pre_loading_temp
+      - product_temp
+      - post_loading_temp
+      - loading_duration
+      - photos
+    validations:
+      - rule: product_temp <= 4
+        message: "Sản phẩm phải <= 4°C trước khi load"
+      - rule: loading_duration <= 15
+        message: "Thời gian xếp hàng không quá 15 phút"
+      - rule: post_loading_temp <= pre_loading_temp + 2
+        message: "Nhiệt độ tăng quá nhiều khi xếp hàng"
+    on_success: TRANSIT_MONITORING
+    on_failure: REJECT_PICKUP
+
+  - id: REJECT_PICKUP
+    name: Reject Pickup Due to Temperature
+    actor: Driver
+    type: decision
+    description: Từ chối nhận hàng do vi phạm nhiệt độ
+    actions:
+      - Document temperature readings
+      - Take photos as evidence
+      - Report to system
+      - Notify seller and buyer
+    outputs:
+      - rejection_report
+    on_complete: ESCALATE_QC
+
+  - id: TRANSIT_MONITORING
+    name: Transit Temperature Monitoring
+    actor: System
+    type: automated
+    description: Giám sát liên tục trong quá trình vận chuyển
+    actions:
+      - Record temperature every 5 minutes
+      - Record GPS every 1 minute
+      - Check for temperature breaches
+      - Alert on threshold violations
+    monitoring:
+      temperature_interval: 5 minutes
+      gps_interval: 1 minute
+      alert_conditions:
+        - temp > target_max
+        - temp < target_min
+        - door_open_duration > 5 minutes
+        - vehicle_stopped > 30 minutes (in heat)
+    events:
+      - shipment.temperature_recorded
+      - shipment.temperature_breach
+      - shipment.door_opened
+    on_breach: HANDLE_BREACH
+    on_complete: HUB_CHECKPOINT | DELIVERY_COLD
+
+  - id: HANDLE_BREACH
+    name: Handle Temperature Breach
+    actor: System
+    type: automated
+    description: Xử lý vi phạm nhiệt độ
+    actions:
+      - Log breach details
+      - Alert driver immediately
+      - Alert QC team
+      - Calculate breach duration
+      - Assess product safety
+    inputs:
+      - breach_temp
+      - breach_duration
+      - product_type
+    outputs:
+      - breach_severity: low | medium | high | critical
+      - safety_assessment
+    branches:
+      - condition: breach_severity = 'low'
+        next: CONTINUE_WITH_ALERT
+      - condition: breach_severity = 'medium'
+        next: QC_ASSESSMENT_REQUIRED
+      - condition: breach_severity IN ('high', 'critical')
+        next: ABORT_DELIVERY
+
+  - id: CONTINUE_WITH_ALERT
+    name: Continue with Temperature Alert
+    actor: Driver
+    type: interactive
+    actions:
+      - Acknowledge alert
+      - Take corrective action (adjust AC, close doors)
+      - Report status
+    on_success: TRANSIT_MONITORING
+
+  - id: QC_ASSESSMENT_REQUIRED
+    name: QC Assessment Required
+    actor: QC
+    type: interactive
+    timeout: 30 minutes
+    actions:
+      - Review temperature data
+      - Assess product safety
+      - Make decision: continue or abort
+    branches:
+      - condition: qc_decision = 'continue'
+        next: TRANSIT_MONITORING
+      - condition: qc_decision = 'abort'
+        next: ABORT_DELIVERY
+
+  - id: ABORT_DELIVERY
+    name: Abort Delivery
+    actor: System
+    type: automated
+    description: Hủy giao hàng do vi phạm nghiêm trọng
+    actions:
+      - Stop delivery
+      - Create incident report
+      - Notify all parties
+      - Calculate liability
+      - Process refund to buyer
+    outputs:
+      - incident_report_id
+      - refund_amount
+    on_complete: INCIDENT_RESOLUTION
+
+  - id: HUB_CHECKPOINT
+    name: Hub Temperature Checkpoint
+    actor: Hub
+    type: interactive
+    condition: shipment.hub_id IS NOT NULL
+    description: Kiểm tra tại Hub trung chuyển
+    actions:
+      - Record arrival temperature
+      - Transfer to hub cold storage
+      - Verify product condition
+      - Record storage temperature
+      - Prepare for next leg
+    inputs:
+      - arrival_temp
+      - product_condition
+      - storage_temp
+    validations:
+      - rule: arrival_temp <= 4
+        message: "Hàng đến phải <= 4°C"
+      - rule: product_condition = 'good'
+        message: "Sản phẩm phải trong tình trạng tốt"
+    on_success: HUB_DEPARTURE
+    on_failure: HUB_REJECTION
+
+  - id: HUB_DEPARTURE
+    name: Hub Departure
+    actor: Driver
+    type: interactive
+    description: Xuất phát từ Hub
+    actions:
+      - Load from hub cold storage
+      - Record departure temperature
+      - Verify next destination
+      - Resume cold chain monitoring
+    on_success: TRANSIT_MONITORING
+
+  - id: DELIVERY_COLD
+    name: Cold Delivery
+    actor: Driver
+    type: interactive
+    description: Giao hàng với kiểm soát nhiệt độ
+    actions:
+      - Arrive at delivery location
+      - Record pre-unloading temperature
+      - Verify buyer identity
+      - Unload quickly (< 10 minutes)
+      - Buyer verifies temperature
+      - Buyer inspects product
+      - Get signature and photos
+    inputs:
+      - pre_unload_temp
+      - unload_duration
+      - buyer_temp_reading
+      - buyer_inspection_result
+      - signature
+      - photos
+    validations:
+      - rule: pre_unload_temp <= 4
+        message: "Nhiệt độ giao phải <= 4°C"
+      - rule: unload_duration <= 10
+        message: "Thời gian dỡ hàng không quá 10 phút"
+    on_success: COMPLETE_COLD_CHAIN
+    on_failure: DELIVERY_DISPUTE
+
+  - id: DELIVERY_DISPUTE
+    name: Delivery Dispute
+    actor: Buyer
+    type: interactive
+    description: Buyer khiếu nại tại điểm giao
+    triggers:
+      - Temperature too high
+      - Product condition poor
+      - Quantity mismatch
+    actions:
+      - Document issues
+      - Take photos/videos
+      - Record temperature readings
+      - Create dispute record
+    outputs:
+      - dispute_id
+    on_complete: ESCALATE_QC
+
+  - id: ESCALATE_QC
+    name: Escalate to QC
+    actor: QC
+    type: interactive
+    description: Chuyển QC xử lý
+    actions:
+      - Review all temperature data
+      - Review photos and evidence
+      - Determine liability
+      - Propose resolution
+    outputs:
+      - investigation_report
+      - liability_assessment
+      - resolution_proposal
+    on_complete: RESOLUTION
+
+  - id: RESOLUTION
+    name: Cold Chain Resolution
+    actor: System
+    type: automated
+    description: Xử lý kết quả
+    branches:
+      - condition: liability = 'seller'
+        actions: [refund_buyer, penalize_seller]
+      - condition: liability = 'driver'
+        actions: [refund_buyer, penalize_driver, claim_insurance]
+      - condition: liability = 'hub'
+        actions: [refund_buyer, penalize_hub]
+      - condition: liability = 'none'
+        actions: [complete_normally]
+
+  - id: COMPLETE_COLD_CHAIN
+    name: Complete Cold Chain
+    actor: System
+    type: automated
+    description: Hoàn thành vận chuyển lạnh
+    actions:
+      - Generate cold chain report
+      - Calculate compliance score
+      - Store temperature log permanently
+      - Release payment if compliant
+    outputs:
+      - cold_chain_report_id
+      - compliance_score
+      - temperature_log_archive
+    events:
+      - shipment.cold_chain_completed
+
+cold_chain_report:
+  sections:
+    - summary:
+        total_duration: hours
+        total_distance: km
+        avg_temperature: celsius
+        min_temperature: celsius
+        max_temperature: celsius
+        breach_count: count
+        breach_total_duration: minutes
+    - temperature_chart:
+        type: time_series
+        interval: 5 minutes
+        show_thresholds: true
+    - breach_details:
+        list_all_breaches: true
+        include_location: true
+        include_duration: true
+    - checkpoint_summary:
+        pickup: temp, time, photos
+        hub: temp, time, condition
+        delivery: temp, time, signature
+    - compliance_assessment:
+        haccp_compliant: boolean
+        score: 0-100
+        recommendations: list
+
+iot_integration:
+  sensors:
+    - type: temperature
+      brand: "TempTrack Pro"
+      accuracy: "±0.3°C"
+      interval: 5 minutes
+    - type: door
+      brand: "DoorSense"
+      event_based: true
+    - type: gps
+      brand: "Fleet GPS"
+      interval: 1 minute
+
+  data_format:
+    temperature:
+      - timestamp
+      - sensor_id
+      - temperature
+      - humidity
+      - battery_level
+    door:
+      - timestamp
+      - door_id
+      - status (open/closed)
+      - duration
+    gps:
+      - timestamp
+      - latitude
+      - longitude
+      - speed
+      - heading
+
+notifications:
+  - event: temperature_breach
+    recipients: [driver, qc, admin]
+    channels: [push, sms]
+    priority: urgent
+
+  - event: door_open_too_long
+    recipients: [driver, qc]
+    channels: [push]
+    priority: high
+
+  - event: vehicle_stopped_too_long
+    recipients: [driver, ops]
+    channels: [push]
+    priority: high
+
+  - event: cold_chain_completed
+    recipients: [seller, buyer]
+    channels: [email, push]
+    priority: normal
+
+compliance:
+  standards:
+    - HACCP
+    - ISO 22000
+    - Vietnam Food Safety Law
+
+  documentation:
+    - Temperature logs (stored 2 years)
+    - Breach reports
+    - QC assessments
+    - Driver certifications
+
+sla:
+  pickup_temperature: "<= 4°C"
+  delivery_temperature: "<= 4°C"
+  max_breach_duration: "< 30 minutes"
+  compliance_score_target: ">= 95%"

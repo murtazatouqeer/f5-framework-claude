@@ -1,0 +1,596 @@
+name: Investment
+display_name: Investment / Khoản đầu tư
+description: |
+  Investment entity tracking individual investor positions in loans,
+  including funding contributions, returns, and profit/loss tracking.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: Investment
+  name_vi: Khoản đầu tư
+  table_name: investments
+
+  primary_key: id
+  natural_key: investment_number
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique investment identifier
+
+    - name: investment_number
+      type: string
+      format: "INV-YYYYMM-XXXXXX"
+      unique: true
+      indexed: true
+      description: Human-readable investment number
+      example: "INV-202501-000001"
+
+    # References
+    - name: investor_id
+      type: uuid
+      required: true
+      references: investors.id
+      indexed: true
+      description: The investor making this investment
+
+    - name: loan_id
+      type: uuid
+      required: true
+      references: loans.id
+      indexed: true
+      description: The loan being invested in
+
+    - name: listing_id
+      type: uuid
+      references: loan_listings.id
+      description: Original marketplace listing
+
+    # Investment Details
+    - name: investment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      min: 100000
+      description: Amount invested in VND
+
+    - name: share_percentage
+      type: decimal
+      precision: 7
+      scale: 4
+      computed: "(investment_amount / loan.principal_amount) * 100"
+      description: Percentage share of the loan
+
+    - name: interest_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      required: true
+      description: Interest rate for this investment
+
+    - name: expected_return
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Expected total return (principal + interest)
+
+    - name: expected_interest
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Expected interest earnings
+
+    # Loan Details (denormalized for performance)
+    - name: loan_grade
+      type: enum
+      values: [A, B, C, D, E, F]
+      indexed: true
+      description: Loan grade at time of investment
+
+    - name: loan_term_months
+      type: integer
+      description: Loan term at time of investment
+
+    - name: loan_purpose
+      type: string
+      max_length: 100
+      description: Loan purpose at time of investment
+
+    # Investment Status
+    - name: status
+      type: enum
+      values: [pending, funding, active, completed, defaulted, written_off, cancelled, refunded]
+      default: pending
+      indexed: true
+      description: Current investment status
+
+    - name: funding_status
+      type: enum
+      values: [pending, confirmed, failed]
+      default: pending
+      description: Status of funding transaction
+
+    # Investment Source
+    - name: investment_type
+      type: enum
+      values: [manual, auto_invest, secondary_market]
+      default: manual
+      indexed: true
+      description: How this investment was made
+
+    - name: auto_invest_rule_id
+      type: uuid
+      description: Auto-invest rule that triggered this investment
+
+    # Returns Tracking
+    - name: principal_remaining
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Outstanding principal portion
+
+    - name: principal_received
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Principal returned so far
+
+    - name: interest_received
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Interest received so far
+
+    - name: fees_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Platform fees paid on returns
+
+    - name: net_received
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "principal_received + interest_received - fees_paid"
+      description: Net amount received
+
+    - name: total_received
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "principal_received + interest_received"
+      description: Total amount received
+
+    # Performance Metrics
+    - name: actual_yield
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(interest_received / investment_amount) * 100"
+      description: Actual yield percentage
+
+    - name: completion_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(principal_received / investment_amount) * 100"
+      description: Percentage of principal returned
+
+    # Payment Tracking
+    - name: payments_expected
+      type: integer
+      description: Total number of payments expected
+
+    - name: payments_received
+      type: integer
+      default: 0
+      description: Number of payments received
+
+    - name: next_payment_date
+      type: date
+      indexed: true
+      description: Date of next expected payment
+
+    - name: next_payment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Expected amount of next payment
+
+    - name: last_payment_date
+      type: date
+      description: Date of most recent payment
+
+    - name: last_payment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount of most recent payment
+
+    # Late Payment Tracking
+    - name: late_payments_count
+      type: integer
+      default: 0
+      description: Number of late payments on this investment
+
+    - name: current_days_past_due
+      type: integer
+      default: 0
+      description: Current days past due
+
+    - name: max_days_past_due
+      type: integer
+      default: 0
+      description: Maximum DPD recorded
+
+    # Loss Tracking
+    - name: is_impaired
+      type: boolean
+      default: false
+      indexed: true
+      description: Whether investment is impaired
+
+    - name: impairment_date
+      type: date
+      description: When investment was marked impaired
+
+    - name: expected_loss
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Expected loss amount
+
+    - name: actual_loss
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual loss realized
+
+    - name: recovery_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount recovered after default
+
+    # Provision Fund
+    - name: provision_claimed
+      type: boolean
+      default: false
+      description: Whether provision fund claim made
+
+    - name: provision_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount received from provision fund
+
+    # Secondary Market
+    - name: is_tradable
+      type: boolean
+      default: true
+      description: Whether can be sold on secondary market
+
+    - name: listed_for_sale
+      type: boolean
+      default: false
+      indexed: true
+      description: Currently listed for sale
+
+    - name: sale_price
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Asking price if listed
+
+    - name: sale_discount
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Discount/premium percentage
+
+    - name: acquired_from_secondary
+      type: boolean
+      default: false
+      description: Whether acquired from secondary market
+
+    - name: acquisition_price
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Price paid if acquired secondarily
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      description: When investment was created
+
+    - name: funded_at
+      type: timestamp
+      description: When funds were committed
+
+    - name: activated_at
+      type: timestamp
+      description: When loan became active
+
+    - name: completed_at
+      type: timestamp
+      description: When investment completed
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: investor
+      type: belongs_to
+      entity: Investor
+      foreign_key: investor_id
+
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: loan_id
+
+    - name: listing
+      type: belongs_to
+      entity: LoanListing
+      foreign_key: listing_id
+
+    - name: repayments
+      type: has_many
+      entity: InvestmentRepayment
+      foreign_key: investment_id
+      order_by: payment_date desc
+
+    - name: transactions
+      type: has_many
+      entity: Transaction
+      foreign_key: investment_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_investments_investor
+      columns: [investor_id]
+
+    - name: idx_investments_loan
+      columns: [loan_id]
+
+    - name: idx_investments_status
+      columns: [status]
+
+    - name: idx_investments_grade
+      columns: [loan_grade]
+
+    - name: idx_investments_type
+      columns: [investment_type]
+
+    - name: idx_investments_next_payment
+      columns: [next_payment_date]
+      where: "status = 'active'"
+
+    - name: idx_investments_for_sale
+      columns: [listed_for_sale]
+      where: "listed_for_sale = true"
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  initial_state: pending
+
+  states:
+    pending:
+      description: Investment created, awaiting confirmation
+      name_vi: Đang chờ
+      allowed_actions: [confirm, cancel]
+
+    funding:
+      description: Funds committed, loan still funding
+      name_vi: Đang gọi vốn
+      allowed_actions: [activate, refund]
+
+    active:
+      description: Loan active, receiving payments
+      name_vi: Đang hoạt động
+      allowed_actions: [receive_payment, list_for_sale, mark_impaired]
+
+    completed:
+      description: Fully repaid
+      name_vi: Hoàn thành
+      terminal: true
+
+    defaulted:
+      description: Loan has defaulted
+      name_vi: Nợ xấu
+      allowed_actions: [recover, write_off, claim_provision]
+
+    written_off:
+      description: Investment written off as loss
+      name_vi: Đã xóa nợ
+      terminal: true
+
+    cancelled:
+      description: Investment cancelled before funding
+      name_vi: Đã hủy
+      terminal: true
+
+    refunded:
+      description: Funds refunded due to failed funding
+      name_vi: Đã hoàn tiền
+      terminal: true
+
+  transitions:
+    - from: pending
+      to: funding
+      event: confirm_funding
+      actions:
+        - debit_investor_balance
+        - update_loan_funded_amount
+        - record_transaction
+
+    - from: pending
+      to: cancelled
+      event: cancel
+      actions:
+        - log_cancellation
+
+    - from: funding
+      to: active
+      event: loan_disbursed
+      actions:
+        - set_payment_schedule
+        - notify_investor
+
+    - from: funding
+      to: refunded
+      event: funding_failed
+      actions:
+        - credit_investor_balance
+        - record_refund_transaction
+        - notify_investor
+
+    - from: active
+      to: completed
+      event: final_payment
+      condition: "principal_remaining <= 0"
+      actions:
+        - close_investment
+        - update_investor_stats
+        - notify_investor
+
+    - from: active
+      to: defaulted
+      event: loan_defaulted
+      actions:
+        - calculate_loss
+        - notify_investor
+        - initiate_recovery
+
+    - from: defaulted
+      to: completed
+      event: recovery_complete
+      condition: "recovery_amount >= principal_remaining"
+      actions:
+        - close_investment
+        - update_investor_stats
+
+    - from: defaulted
+      to: written_off
+      event: write_off
+      actions:
+        - finalize_loss
+        - update_investor_stats
+        - notify_investor
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  investment:
+    - rule: "Minimum investment 100,000 VND"
+      enforcement: system
+
+    - rule: "Investment must be multiple of 100,000 VND"
+      enforcement: system
+
+    - rule: "Maximum 10% of loan per individual investor"
+      enforcement: system
+
+    - rule: "Cannot invest in own loans"
+      enforcement: system
+
+  fees:
+    - rule: "Service fee 0.5-1% of interest received"
+      enforcement: system
+      applies_to: returns
+
+    - rule: "Early exit fee 1% if sold on secondary market"
+      enforcement: system
+      applies_to: secondary_sale
+
+  secondary_market:
+    - rule: "Minimum 30 days before listing for sale"
+      enforcement: system
+
+    - rule: "Maximum discount 20% of remaining value"
+      enforcement: system
+
+    - rule: "Cannot sell if loan in default"
+      enforcement: system
+
+# =============================================================================
+# COMPUTED FIELDS
+# =============================================================================
+computed_fields:
+  - name: outstanding_balance
+    formula: "investment_amount - principal_received"
+
+  - name: net_yield
+    formula: "((interest_received - fees_paid) / investment_amount) * 100"
+
+  - name: annualized_return
+    formula: |
+      IF activated_at IS NOT NULL THEN
+        (net_received - investment_amount) / investment_amount *
+        (365 / DATEDIFF(COALESCE(completed_at, NOW()), activated_at)) * 100
+      ELSE NULL
+
+  - name: time_to_completion
+    formula: "loan_term_months - (payments_received * (loan_term_months / payments_expected))"
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: investment_amount
+    rules:
+      - min: 100000
+        message: "Minimum investment is 100,000 VND"
+      - divisible_by: 100000
+        message: "Investment must be multiple of 100,000 VND"
+
+  - field: sale_discount
+    rules:
+      - min: -20
+        message: "Maximum discount is 20%"
+      - max: 10
+        message: "Maximum premium is 10%"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - investor_id
+    - investment_amount
+  retention_years: 10

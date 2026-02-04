@@ -1,0 +1,691 @@
+name: Loan
+display_name: Loan / Khoản vay
+description: |
+  Core loan entity representing a funded peer-to-peer loan with
+  full lifecycle management from funding to completion or default.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: Loan
+  name_vi: Khoản vay
+  table_name: loans
+
+  primary_key: id
+  natural_key: loan_number
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique loan identifier
+
+    - name: loan_number
+      type: string
+      format: "LOAN-YYYYMM-XXXXXX"
+      unique: true
+      indexed: true
+      description: Human-readable loan number
+      example: "LOAN-202501-000001"
+
+    - name: loan_application_id
+      type: uuid
+      required: true
+      references: loan_applications.id
+      description: Originating loan application
+
+    # Loan Details
+    - name: loan_type
+      type: enum
+      values: [personal, business, education, medical, home_improvement, debt_consolidation, auto]
+      required: true
+      description: Purpose category of the loan
+
+    - name: principal_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      min: 1000000
+      max: 2000000000
+      description: Original loan amount in VND
+
+    - name: currency
+      type: string
+      default: "VND"
+      description: Loan currency
+
+    - name: interest_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      required: true
+      min: 6.0
+      max: 36.0
+      description: Annual interest rate percentage
+
+    - name: term_months
+      type: integer
+      required: true
+      min: 1
+      max: 60
+      description: Loan term in months
+
+    - name: repayment_method
+      type: enum
+      values: [emi, equal_principal, bullet]
+      default: emi
+      description: |
+        EMI: Equal Monthly Installment
+        equal_principal: Fixed principal, declining interest
+        bullet: Interest-only, principal at end
+
+    # Risk & Grading
+    - name: grade
+      type: enum
+      values: [A, B, C, D, E, F]
+      required: true
+      indexed: true
+      description: Risk grade based on credit scoring
+
+    - name: sub_grade
+      type: string
+      pattern: "^[A-F][1-5]$"
+      description: Sub-grade for finer risk classification
+      example: "A1"
+
+    - name: risk_score
+      type: integer
+      min: 300
+      max: 850
+      description: Numeric risk score from credit model
+
+    - name: risk_premium
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Additional interest rate for risk
+
+    # Status & Lifecycle
+    - name: status
+      type: enum
+      values: [funding, funded, disbursing, active, paid_off, defaulted, written_off, cancelled]
+      default: funding
+      indexed: true
+      description: Current loan status
+
+    - name: delinquency_status
+      type: enum
+      values: [current, grace, 30_dpd, 60_dpd, 90_dpd, 120_dpd, default]
+      default: current
+      indexed: true
+      description: Days past due status
+
+    - name: days_past_due
+      type: integer
+      default: 0
+      description: Number of days past due
+
+    # Funding Details
+    - name: funding_target
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Target funding amount (usually equals principal)
+
+    - name: funded_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount currently funded by investors
+
+    - name: funding_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      computed: "(funded_amount / funding_target) * 100"
+      description: Funding progress percentage
+
+    - name: investor_count
+      type: integer
+      default: 0
+      description: Number of investors in this loan
+
+    - name: funding_start_date
+      type: timestamp
+      description: When funding period started
+
+    - name: funding_end_date
+      type: timestamp
+      description: Funding deadline
+
+    - name: funding_duration_days
+      type: integer
+      default: 14
+      description: Maximum days for funding period
+
+    # Disbursement
+    - name: disbursement_date
+      type: date
+      description: When loan was disbursed to borrower
+
+    - name: disbursement_reference
+      type: string
+      description: Bank transfer reference
+
+    - name: disbursement_bank_account
+      type: string
+      description: Borrower's bank account for disbursement
+
+    # Repayment Tracking
+    - name: first_due_date
+      type: date
+      description: First repayment due date
+
+    - name: next_due_date
+      type: date
+      indexed: true
+      description: Next payment due date
+
+    - name: final_due_date
+      type: date
+      description: Last scheduled payment date
+
+    - name: total_repayment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Total amount to be repaid
+
+    - name: total_interest_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Total interest over loan term
+
+    - name: outstanding_principal
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Remaining principal balance
+
+    - name: outstanding_interest
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Accrued but unpaid interest
+
+    - name: outstanding_fees
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Outstanding late fees and penalties
+
+    - name: total_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "outstanding_principal + outstanding_interest + outstanding_fees"
+      description: Total amount owed
+
+    # Payment History
+    - name: total_principal_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Cumulative principal paid
+
+    - name: total_interest_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Cumulative interest paid
+
+    - name: total_fees_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Cumulative fees paid
+
+    - name: payments_made
+      type: integer
+      default: 0
+      description: Number of payments completed
+
+    - name: payments_on_time
+      type: integer
+      default: 0
+      description: Payments made on or before due date
+
+    - name: payments_late
+      type: integer
+      default: 0
+      description: Payments made after due date
+
+    - name: last_payment_date
+      type: date
+      description: Date of most recent payment
+
+    - name: last_payment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount of most recent payment
+
+    # Early Payoff
+    - name: allows_early_payoff
+      type: boolean
+      default: true
+      description: Whether early payoff is allowed
+
+    - name: early_payoff_penalty_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 0
+      description: Penalty rate for early payoff
+
+    - name: early_payoff_date
+      type: date
+      description: Date of early payoff if applicable
+
+    # Default & Recovery
+    - name: default_date
+      type: date
+      description: Date loan was marked as default
+
+    - name: default_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Outstanding amount at default
+
+    - name: recovery_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount recovered after default
+
+    - name: write_off_date
+      type: date
+      description: Date loan was written off
+
+    - name: write_off_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount written off
+
+    # Platform Fees
+    - name: origination_fee
+      type: decimal
+      precision: 15
+      scale: 2
+      description: One-time origination fee
+
+    - name: origination_fee_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Origination fee as percentage of principal
+
+    - name: service_fee_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Ongoing service fee rate
+
+    # References
+    - name: borrower_id
+      type: uuid
+      required: true
+      references: borrowers.id
+      indexed: true
+      description: The borrower receiving the loan
+
+    - name: listing_id
+      type: uuid
+      references: loan_listings.id
+      description: Associated marketplace listing
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      description: Record creation time
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+    - name: closed_at
+      type: timestamp
+      description: When loan was closed (paid off, defaulted, etc.)
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: loan_application
+      type: belongs_to
+      entity: LoanApplication
+      foreign_key: loan_application_id
+
+    - name: borrower
+      type: belongs_to
+      entity: Borrower
+      foreign_key: borrower_id
+
+    - name: listing
+      type: belongs_to
+      entity: LoanListing
+      foreign_key: listing_id
+
+    - name: investments
+      type: has_many
+      entity: Investment
+      foreign_key: loan_id
+
+    - name: repayment_schedule
+      type: has_many
+      entity: RepaymentSchedule
+      foreign_key: loan_id
+      order_by: installment_number
+
+    - name: repayments
+      type: has_many
+      entity: Repayment
+      foreign_key: loan_id
+      order_by: payment_date desc
+
+    - name: collections
+      type: has_many
+      entity: Collection
+      foreign_key: loan_id
+
+    - name: platform_fees
+      type: has_many
+      entity: PlatformFee
+      foreign_key: loan_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_loans_status
+      columns: [status]
+
+    - name: idx_loans_borrower
+      columns: [borrower_id]
+
+    - name: idx_loans_grade
+      columns: [grade]
+
+    - name: idx_loans_delinquency
+      columns: [delinquency_status]
+
+    - name: idx_loans_next_due
+      columns: [next_due_date]
+      where: "status = 'active'"
+
+    - name: idx_loans_funding
+      columns: [status, funding_end_date]
+      where: "status = 'funding'"
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  initial_state: funding
+
+  states:
+    funding:
+      description: Loan is open for investor funding
+      name_vi: Đang gọi vốn
+      allowed_actions: [invest, cancel_funding]
+
+    funded:
+      description: Loan has reached funding target
+      name_vi: Đã đủ vốn
+      allowed_actions: [disburse, cancel_funding]
+
+    disbursing:
+      description: Funds being transferred to borrower
+      name_vi: Đang giải ngân
+      allowed_actions: [confirm_disbursement]
+
+    active:
+      description: Loan is active with ongoing repayments
+      name_vi: Đang hoạt động
+      allowed_actions: [make_payment, early_payoff, mark_delinquent]
+
+    paid_off:
+      description: Loan fully repaid
+      name_vi: Đã thanh toán
+      terminal: true
+
+    defaulted:
+      description: Loan in default status
+      name_vi: Nợ xấu
+      allowed_actions: [recover, write_off]
+
+    written_off:
+      description: Loan written off as loss
+      name_vi: Đã xóa nợ
+      terminal: true
+
+    cancelled:
+      description: Loan cancelled before disbursement
+      name_vi: Đã hủy
+      terminal: true
+
+  transitions:
+    - from: funding
+      to: funded
+      event: funding_complete
+      condition: "funding_percentage >= 100"
+      actions:
+        - notify_borrower
+        - notify_investors
+        - schedule_disbursement
+
+    - from: funding
+      to: cancelled
+      event: funding_failed
+      condition: "current_date > funding_end_date AND funding_percentage < 100"
+      actions:
+        - refund_investors
+        - notify_borrower
+        - close_listing
+
+    - from: funding
+      to: cancelled
+      event: cancel_by_borrower
+      actions:
+        - refund_investors
+        - update_borrower_status
+
+    - from: funded
+      to: disbursing
+      event: initiate_disbursement
+      actions:
+        - create_disbursement_request
+        - deduct_origination_fee
+
+    - from: funded
+      to: cancelled
+      event: borrower_withdrawal
+      actions:
+        - refund_investors
+        - update_borrower_status
+
+    - from: disbursing
+      to: active
+      event: disbursement_confirmed
+      actions:
+        - generate_repayment_schedule
+        - notify_borrower
+        - activate_investor_positions
+
+    - from: active
+      to: paid_off
+      event: final_payment
+      condition: "outstanding_principal <= 0"
+      actions:
+        - close_loan
+        - distribute_to_investors
+        - update_borrower_credit
+
+    - from: active
+      to: defaulted
+      event: mark_default
+      condition: "days_past_due >= 90"
+      actions:
+        - notify_investors
+        - initiate_collection
+        - update_borrower_credit
+        - provision_fund_claim
+
+    - from: defaulted
+      to: paid_off
+      event: recovery_complete
+      condition: "recovery_amount >= default_amount"
+      actions:
+        - close_loan
+        - distribute_recovery
+
+    - from: defaulted
+      to: written_off
+      event: write_off
+      actions:
+        - record_loss
+        - close_collection
+        - update_investor_positions
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  funding:
+    - rule: "Minimum funding 70% required for disbursement"
+      enforcement: system
+
+    - rule: "Funding period maximum 14 days"
+      enforcement: system
+
+    - rule: "Single investor maximum 10% of loan"
+      enforcement: system
+
+  disbursement:
+    - rule: "Disbursement within 3 business days of full funding"
+      enforcement: sla
+
+    - rule: "Origination fee deducted before disbursement"
+      enforcement: system
+
+  repayment:
+    - rule: "Grace period of 3 days after due date"
+      enforcement: system
+
+    - rule: "Late fee applied after grace period"
+      enforcement: system
+
+    - rule: "Minimum payment covers interest first"
+      enforcement: system
+
+  default:
+    - rule: "Default triggered at 90 DPD"
+      enforcement: system
+
+    - rule: "Collection process starts at 30 DPD"
+      enforcement: system
+
+    - rule: "Write-off after 180 DPD with no recovery"
+      enforcement: policy
+
+# =============================================================================
+# COMPUTED FIELDS
+# =============================================================================
+computed_fields:
+  - name: monthly_payment
+    formula: |
+      IF repayment_method = 'emi' THEN
+        principal_amount * (monthly_rate * (1 + monthly_rate)^term_months) /
+        ((1 + monthly_rate)^term_months - 1)
+      ELSE IF repayment_method = 'equal_principal' THEN
+        (principal_amount / term_months) + (outstanding_principal * monthly_rate)
+      ELSE
+        principal_amount * monthly_rate
+    where: "monthly_rate = interest_rate / 12 / 100"
+
+  - name: apr
+    formula: |
+      (total_interest_amount + origination_fee) / principal_amount /
+      (term_months / 12) * 100
+    description: Annual Percentage Rate including fees
+
+  - name: completion_percentage
+    formula: "(payments_made / term_months) * 100"
+
+  - name: on_time_percentage
+    formula: "(payments_on_time / GREATEST(payments_made, 1)) * 100"
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: principal_amount
+    rules:
+      - min: 1000000
+        message: "Minimum loan amount is 1,000,000 VND"
+      - max: 2000000000
+        message: "Maximum loan amount is 2,000,000,000 VND"
+
+  - field: term_months
+    rules:
+      - min: 1
+        message: "Minimum term is 1 month"
+      - max: 60
+        message: "Maximum term is 60 months"
+
+  - field: interest_rate
+    rules:
+      - min: 6.0
+        message: "Minimum interest rate is 6% per annum"
+      - max: 36.0
+        message: "Maximum interest rate is 36% per annum"
+
+  - field: funded_amount
+    rules:
+      - custom: "funded_amount <= funding_target"
+        message: "Funded amount cannot exceed funding target"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - borrower_id
+    - disbursement_bank_account
+  retention_years: 10

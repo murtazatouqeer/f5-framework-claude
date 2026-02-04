@@ -1,0 +1,305 @@
+# Refill Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Prescription refill request and management entity
+
+entity:
+  id: refill
+  name: Refill
+  name_ja: リフィル
+  description: Prescription refill request and processing
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: refill_id
+      type: uuid
+      primary_key: true
+      description: Unique refill request ID
+      
+    - name: rx_number
+      type: string
+      required: true
+      references: prescription
+      description: Prescription to refill
+      
+    - name: patient_id
+      type: uuid
+      required: true
+      references: patient_profile
+
+    # Request Details
+    - name: request_source
+      type: enum
+      values: [
+        patient_portal, ivr, mobile_app, in_store,
+        auto_refill, provider_request, pharmacy_staff
+      ]
+      required: true
+      description: How refill was requested
+      
+    - name: request_datetime
+      type: timestamp
+      required: true
+      auto: create
+      description: When refill was requested
+      
+    - name: requested_pickup_date
+      type: date
+      description: Patient requested pickup date
+      
+    - name: requested_delivery_method
+      type: enum
+      values: [pickup, delivery, mail]
+      default: pickup
+
+    # Auto-Refill
+    - name: auto_refill
+      type: boolean
+      default: false
+      description: Part of auto-refill program
+      
+    - name: auto_refill_due_date
+      type: date
+      description: Calculated due date for auto-refill
+
+    # Processing
+    - name: status
+      type: enum
+      values: [
+        requested, queued, processing, too_soon,
+        no_refills, expired, filled, cancelled,
+        transferred, on_hold, pending_auth
+      ]
+      default: requested
+      
+    - name: queue_position
+      type: integer
+      description: Position in fill queue
+      
+    - name: estimated_ready_time
+      type: timestamp
+      description: Estimated completion time
+
+    # Refill Eligibility
+    - name: refills_remaining_at_request
+      type: integer
+      description: Refills remaining when requested
+      
+    - name: last_fill_date
+      type: date
+      description: Date of last fill
+      
+    - name: days_supply_last_fill
+      type: integer
+      description: Days supply on last fill
+      
+    - name: refill_due_date
+      type: date
+      description: Calculated refill due date
+      
+    - name: days_early
+      type: integer
+      description: Days early if too soon
+
+    # Too Soon Handling
+    - name: too_soon_override
+      type: boolean
+      default: false
+      description: Override too soon rejection
+      
+    - name: too_soon_override_reason
+      type: string
+      description: Reason for override
+      
+    - name: too_soon_override_by
+      type: uuid
+      description: Staff who approved override
+
+    # Resulting Dispense
+    - name: dispense_id
+      type: uuid
+      references: dispense
+      description: Resulting dispense record if filled
+
+    # Communication
+    - name: notification_sent
+      type: boolean
+      default: false
+      
+    - name: notification_method
+      type: enum
+      values: [sms, email, phone, app_push]
+      
+    - name: notification_datetime
+      type: timestamp
+      description: When ready notification sent
+
+    # Staff
+    - name: processed_by
+      type: uuid
+      description: Staff who processed refill
+      
+    - name: cancelled_by
+      type: uuid
+      description: Staff who cancelled if applicable
+      
+    - name: cancel_reason
+      type: string
+      description: Reason for cancellation
+
+    # Patient Contact
+    - name: patient_contacted
+      type: boolean
+      default: false
+      description: Patient contacted about issue
+      
+    - name: contact_notes
+      type: text
+      description: Notes from patient contact
+      
+    - name: patient_response
+      type: string
+      description: Patient response/decision
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  state_machine:
+    initial: requested
+    states:
+      requested:
+        description: Refill request received
+        transitions:
+          - to: queued
+            event: queue
+          - to: too_soon
+            event: too_soon_check_failed
+          - to: no_refills
+            event: no_refills_remaining
+          - to: expired
+            event: rx_expired
+          - to: cancelled
+            event: cancel
+            
+      queued:
+        description: In queue for processing
+        transitions:
+          - to: processing
+            event: start_processing
+          - to: cancelled
+            event: cancel
+            
+      processing:
+        description: Being filled
+        transitions:
+          - to: filled
+            event: complete
+          - to: on_hold
+            event: hold
+          - to: pending_auth
+            event: needs_pa
+          - to: cancelled
+            event: cancel
+            
+      too_soon:
+        description: Too early to refill
+        transitions:
+          - to: queued
+            event: override
+            guard: pharmacist_approval
+          - to: cancelled
+            event: cancel
+            
+      no_refills:
+        description: No refills remaining
+        transitions:
+          - to: cancelled
+            event: cancel
+          - to: queued
+            event: refill_authorized
+            
+      expired:
+        description: Prescription expired
+        terminal: true
+        
+      pending_auth:
+        description: Awaiting prior authorization
+        transitions:
+          - to: processing
+            event: pa_approved
+          - to: cancelled
+            event: pa_denied
+            
+      on_hold:
+        description: On hold for issue
+        transitions:
+          - to: processing
+            event: release
+          - to: cancelled
+            event: cancel
+            
+      filled:
+        description: Successfully filled
+        terminal: true
+        
+      transferred:
+        description: Transferred to another pharmacy
+        terminal: true
+        
+      cancelled:
+        description: Refill cancelled
+        terminal: true
+
+  relationships:
+    - name: prescription
+      type: many_to_one
+      target: prescription
+      foreign_key: rx_number
+      
+    - name: patient
+      type: many_to_one
+      target: patient_profile
+      foreign_key: patient_id
+      
+    - name: dispense
+      type: one_to_one
+      target: dispense
+      foreign_key: dispense_id
+
+  indexes:
+    - fields: [rx_number]
+      name: idx_refill_rx
+      
+    - fields: [patient_id]
+      name: idx_refill_patient
+      
+    - fields: [status]
+      name: idx_refill_status
+      
+    - fields: [request_datetime]
+      name: idx_refill_request_date
+      
+    - fields: [auto_refill, auto_refill_due_date]
+      name: idx_refill_auto
+      
+    - fields: [requested_pickup_date]
+      name: idx_refill_pickup_date
+
+  validations:
+    - field: too_soon_override_reason
+      rule: required_if
+      condition: "too_soon_override == true"
+      message: "Override reason required"
+
+  audit:
+    enabled: true
+    events: [create, update, status_change, override]
+    retention_days: 2555

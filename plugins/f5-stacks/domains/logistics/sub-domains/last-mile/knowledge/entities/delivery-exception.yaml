@@ -1,0 +1,330 @@
+name: DeliveryException
+display_name: Delivery Exception
+description: |
+  Issues and exceptions that occur during delivery.
+  Tracks problems, resolution, and impact on SLAs.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: delivery_exceptions
+  primary_key: id
+  indexes:
+    - columns: [delivery_id]
+    - columns: [exception_type]
+    - columns: [status]
+    - columns: [severity]
+    - columns: [occurred_at]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: exception_number
+    type: string
+    description: Human-readable exception number
+    pattern: "EXC-[A-Z0-9]{8}"
+    unique: true
+
+  - name: delivery_id
+    type: uuid
+    description: Related delivery
+    required: true
+
+  # Classification
+  - name: exception_type
+    type: enum
+    description: Type of exception
+    values:
+      - address_issue
+      - access_issue
+      - recipient_issue
+      - package_issue
+      - agent_issue
+      - vehicle_issue
+      - weather
+      - traffic
+      - system
+      - other
+    required: true
+
+  - name: exception_subtype
+    type: string
+    description: Specific subtype
+    max_length: 50
+
+  - name: severity
+    type: enum
+    description: Exception severity
+    values:
+      - low
+      - medium
+      - high
+      - critical
+    required: true
+
+  - name: status
+    type: enum
+    description: Resolution status
+    values:
+      - open
+      - investigating
+      - pending_action
+      - resolved
+      - escalated
+      - closed
+    default: open
+
+  # Details
+  - name: description
+    type: text
+    description: Exception description
+    max_length: 1000
+    required: true
+
+  - name: occurred_at
+    type: timestamp
+    description: When exception occurred
+    required: true
+
+  - name: detected_at
+    type: timestamp
+    description: When exception was detected
+
+  - name: detection_method
+    type: enum
+    description: How exception was detected
+    values:
+      - agent_reported
+      - recipient_reported
+      - system_detected
+      - customer_service
+      - automatic_monitoring
+
+  # Reporting
+  - name: reported_by
+    type: enum
+    description: Who reported the exception
+    values:
+      - agent
+      - recipient
+      - system
+      - operations
+      - customer_service
+
+  - name: reported_by_id
+    type: uuid
+    description: ID of reporter
+
+  - name: agent_id
+    type: uuid
+    description: Agent involved (if any)
+
+  # Evidence
+  - name: photos
+    type: array
+    description: Photo evidence
+    items:
+      type: string
+      format: uri
+
+  - name: notes
+    type: text
+    description: Additional notes
+    max_length: 1000
+
+  # Impact
+  - name: delivery_delayed
+    type: boolean
+    description: Caused delivery delay
+    default: false
+
+  - name: delay_minutes
+    type: integer
+    description: Delay duration in minutes
+
+  - name: sla_breached
+    type: boolean
+    description: Resulted in SLA breach
+    default: false
+
+  - name: sla_breach_minutes
+    type: integer
+    description: Minutes beyond SLA
+
+  - name: compensation_required
+    type: boolean
+    description: Compensation needed
+    default: false
+
+  - name: compensation_amount
+    type: decimal
+    description: Compensation amount
+    precision: 10
+    scale: 2
+
+  # Resolution
+  - name: resolution_action
+    type: enum
+    description: Action taken to resolve
+    values:
+      - rescheduled
+      - reassigned
+      - address_corrected
+      - recipient_contacted
+      - package_replaced
+      - refunded
+      - no_action_needed
+      - escalated
+
+  - name: resolution_notes
+    type: text
+    description: Resolution details
+    max_length: 1000
+
+  - name: resolved_at
+    type: timestamp
+    description: When resolved
+
+  - name: resolved_by
+    type: uuid
+    description: Who resolved it
+
+  - name: resolution_time_minutes
+    type: integer
+    description: Time to resolve
+    computed: "(resolved_at - occurred_at) in minutes"
+
+  # Escalation
+  - name: escalated
+    type: boolean
+    description: Was escalated
+    default: false
+
+  - name: escalated_at
+    type: timestamp
+    description: When escalated
+
+  - name: escalated_to
+    type: uuid
+    description: Escalated to whom
+
+  - name: escalation_level
+    type: integer
+    description: Escalation level (1, 2, 3)
+
+  # Root cause
+  - name: root_cause
+    type: text
+    description: Identified root cause
+    max_length: 500
+
+  - name: preventable
+    type: boolean
+    description: Could have been prevented
+
+  - name: recurring
+    type: boolean
+    description: Recurring issue
+    default: false
+
+  - name: related_exception_ids
+    type: array
+    description: Related exceptions
+    items:
+      type: uuid
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: delivery
+    type: belongs_to
+    entity: Delivery
+    foreign_key: delivery_id
+
+  - name: agent
+    type: belongs_to
+    entity: DeliveryAgent
+    foreign_key: agent_id
+
+  - name: resolver
+    type: belongs_to
+    entity: User
+    foreign_key: resolved_by
+
+state_machine:
+  initial: open
+  states:
+    - name: open
+      description: Exception reported, needs attention
+    - name: investigating
+      description: Under investigation
+    - name: pending_action
+      description: Waiting for action
+    - name: resolved
+      description: Issue resolved
+    - name: escalated
+      description: Escalated to higher level
+    - name: closed
+      description: Closed without resolution
+
+  transitions:
+    - from: open
+      to: investigating
+      event: investigate
+
+    - from: open
+      to: resolved
+      event: quick_resolve
+
+    - from: investigating
+      to: pending_action
+      event: identify_action
+
+    - from: investigating
+      to: resolved
+      event: resolve
+
+    - from: investigating
+      to: escalated
+      event: escalate
+
+    - from: pending_action
+      to: resolved
+      event: complete_action
+
+    - from: escalated
+      to: resolved
+      event: resolve
+
+    - from: [open, investigating]
+      to: closed
+      event: close_no_action
+
+events:
+  - name: exception.created
+    description: Exception reported
+    payload: [exception_id, delivery_id, severity]
+
+  - name: exception.escalated
+    description: Exception escalated
+    payload: [exception_id, escalation_level]
+
+  - name: exception.resolved
+    description: Exception resolved
+    payload: [exception_id, resolution_action]

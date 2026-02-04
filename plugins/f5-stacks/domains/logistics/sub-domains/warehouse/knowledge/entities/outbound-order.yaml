@@ -1,0 +1,304 @@
+name: OutboundOrder
+display_name: Outbound Order / Sales Order
+description: |
+  Sales orders, transfers, and replenishment orders going out of the warehouse.
+  Tracks order lifecycle from release to shipment.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: order_number
+    type: string
+    required: true
+    validation:
+      pattern: "^(SO|TRN|REP)-[0-9]{8}$"
+    example: "SO-20241201"
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: customer_id
+    type: uuid
+    required: false
+
+  - name: destination_warehouse_id
+    type: uuid
+    required: false
+    description: For transfers
+
+  - name: order_type
+    type: enum
+    required: true
+    validation:
+      values: [sales_order, transfer, replenishment, sample, return_to_vendor]
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, released, allocated, picking, picked, packing, packed, staged, shipped, cancelled]
+    default: pending
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [standard, expedited, rush, same_day]
+    default: standard
+
+  # Customer
+  - name: customer_name
+    type: string
+    required: false
+
+  - name: ship_to_address
+    type: object
+    required: true
+    example:
+      line1: "123 Main St"
+      city: "New York"
+      state: "NY"
+      country: "US"
+      postal_code: "10001"
+
+  - name: contact_name
+    type: string
+    required: false
+
+  - name: contact_phone
+    type: string
+    required: false
+
+  - name: contact_email
+    type: string
+    required: false
+
+  # Line Items
+  - name: line_items
+    type: array
+    required: true
+    description: Order line details
+    example:
+      - item_id: "uuid"
+        sku: "SKU-001"
+        quantity_ordered: 10
+        quantity_allocated: 10
+        quantity_picked: 10
+        quantity_shipped: 10
+        unit_of_measure: "each"
+        lot_number: "LOT-001"
+
+  - name: total_lines
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_units
+    type: integer
+    required: true
+    default: 0
+
+  # Shipping
+  - name: requested_ship_date
+    type: date
+    required: false
+
+  - name: ship_by_date
+    type: date
+    required: true
+
+  - name: carrier_id
+    type: uuid
+    required: false
+
+  - name: service_level
+    type: string
+    required: false
+    example: "Ground"
+
+  - name: shipping_method
+    type: enum
+    required: true
+    validation:
+      values: [ground, express, overnight, freight_ltl, freight_ftl, customer_pickup, will_call]
+    default: ground
+
+  # Fulfillment
+  - name: wave_id
+    type: uuid
+    required: false
+
+  - name: allocated_at
+    type: timestamp
+    required: false
+
+  - name: picking_started_at
+    type: timestamp
+    required: false
+
+  - name: picked_at
+    type: timestamp
+    required: false
+
+  - name: packed_at
+    type: timestamp
+    required: false
+
+  - name: shipped_at
+    type: timestamp
+    required: false
+
+  # Special Instructions
+  - name: gift_message
+    type: text
+    required: false
+
+  - name: special_instructions
+    type: text
+    required: false
+
+  - name: requires_signature
+    type: boolean
+    required: true
+    default: false
+
+  - name: insurance_required
+    type: boolean
+    required: true
+    default: false
+
+  # Value
+  - name: order_value
+    type: decimal
+    required: false
+
+  - name: shipping_cost
+    type: decimal
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: false
+
+  - name: destination_warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: false
+
+  - name: wave
+    type: belongs_to
+    entity: Wave
+    required: false
+
+  - name: pick_tasks
+    type: has_many
+    entity: PickTask
+
+  - name: pack_tasks
+    type: has_many
+    entity: PackTask
+
+  - name: shipment
+    type: has_one
+    entity: Shipment
+
+indexes:
+  - [order_number]
+  - [warehouse_id, status]
+  - [ship_by_date]
+  - [customer_id]
+  - [wave_id]
+  - [priority]
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Order received, not yet released
+    - name: released
+      description: Released for fulfillment
+    - name: allocated
+      description: Inventory allocated
+    - name: picking
+      description: Currently being picked
+    - name: picked
+      description: All items picked
+    - name: packing
+      description: Currently being packed
+    - name: packed
+      description: Packed and labeled
+    - name: staged
+      description: Ready at shipping dock
+    - name: shipped
+      description: Loaded and shipped
+    - name: cancelled
+      description: Order cancelled
+  transitions:
+    - from: pending
+      to: released
+      trigger: release
+    - from: released
+      to: allocated
+      trigger: allocate
+      conditions: [inventory_available]
+    - from: allocated
+      to: picking
+      trigger: start_picking
+    - from: picking
+      to: picked
+      trigger: complete_picking
+    - from: picked
+      to: packing
+      trigger: start_packing
+    - from: packing
+      to: packed
+      trigger: complete_packing
+    - from: packed
+      to: staged
+      trigger: stage
+    - from: staged
+      to: shipped
+      trigger: ship
+    - from: [pending, released, allocated]
+      to: cancelled
+      trigger: cancel
+      actions: [deallocate_inventory]
+
+business_rules:
+  - BR-OBO-001: Cannot allocate more than available inventory
+  - BR-OBO-002: Same-day orders prioritized in wave planning
+  - BR-OBO-003: High-value orders require signature
+  - BR-OBO-004: FEFO must be followed for food/pharma
+
+events:
+  - name: outbound.released
+    payload: [id, order_number, total_lines]
+  - name: outbound.allocated
+    payload: [id, total_units]
+  - name: outbound.picked
+    payload: [id, picked_at]
+  - name: outbound.shipped
+    payload: [id, shipment_id, tracking_number]

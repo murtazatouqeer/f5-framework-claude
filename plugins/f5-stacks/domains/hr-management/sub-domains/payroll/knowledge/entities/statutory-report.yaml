@@ -1,0 +1,491 @@
+name: statutory-report
+display_name: Statutory Report
+description: |
+  Government statutory reports for payroll compliance including
+  BHXH, tax, and labor authority submissions per Vietnam regulations.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: StatutoryReport
+  table_name: statutory_reports
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: report_number
+      type: string
+      length: 30
+      unique: true
+      format: "RPT-{TYPE}-{YYYYMM}-{NNN}"
+
+    # Report Type
+    - name: report_type
+      type: enum
+      values: [bhxh_monthly, bhxh_adjustment, pit_monthly, pit_annual, pit_finalization, labor_report, wage_report]
+      required: true
+
+    - name: report_name
+      type: string
+      length: 200
+      required: true
+
+    - name: report_code
+      type: string
+      length: 20
+      description: Official form code (e.g., 02/BK-BHXH, 05/QT-TNCN)
+
+    # Period
+    - name: report_year
+      type: integer
+      required: true
+
+    - name: report_month
+      type: integer
+      description: For monthly reports
+
+    - name: report_quarter
+      type: integer
+      description: For quarterly reports
+
+    - name: period_start
+      type: date
+
+    - name: period_end
+      type: date
+
+    # Submission Details
+    - name: authority
+      type: enum
+      values: [bhxh, tax_authority, labor_department, statistics_office]
+      required: true
+
+    - name: authority_name
+      type: string
+      length: 200
+
+    - name: submission_deadline
+      type: date
+      required: true
+
+    - name: submission_date
+      type: date
+
+    - name: submission_method
+      type: enum
+      values: [online, hardcopy, email, api]
+
+    # File Details
+    - name: file_format
+      type: enum
+      values: [xml, excel, pdf, csv]
+
+    - name: file_name
+      type: string
+      length: 200
+
+    - name: file_path
+      type: string
+      length: 500
+
+    - name: file_size_bytes
+      type: integer
+
+    # Data Summary
+    - name: total_employees
+      type: integer
+      default: 0
+
+    - name: total_amount
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+
+    - name: summary_data
+      type: jsonb
+      description: Report summary data
+      example: |
+        {
+          "bhxh_employee_total": 50000000,
+          "bhxh_employer_total": 87500000,
+          "bhyt_employee_total": 7500000,
+          "bhyt_employer_total": 15000000,
+          "bhtn_employee_total": 5000000,
+          "bhtn_employer_total": 5000000,
+          "grand_total": 170000000
+        }
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, generated, validated, submitted, accepted, rejected, amended]
+      default: draft
+
+    # Validation
+    - name: validation_status
+      type: enum
+      values: [pending, passed, failed, warnings]
+      default: pending
+
+    - name: validation_errors
+      type: jsonb
+      example: |
+        [
+          {
+            "employee_id": "xxx",
+            "error_code": "INVALID_SI_NUMBER",
+            "message": "Social insurance number not valid"
+          }
+        ]
+
+    - name: validation_warnings
+      type: jsonb
+
+    # Authority Response
+    - name: receipt_number
+      type: string
+      length: 50
+      description: Authority's receipt number
+
+    - name: response_code
+      type: string
+      length: 20
+
+    - name: response_message
+      type: text
+
+    - name: response_date
+      type: date
+
+    # Amendment
+    - name: is_amendment
+      type: boolean
+      default: false
+
+    - name: original_report_id
+      type: uuid
+
+    - name: amendment_reason
+      type: text
+
+    - name: amendment_number
+      type: integer
+      default: 0
+
+    # Generation Info
+    - name: generated_at
+      type: timestamp
+
+    - name: generated_by
+      type: uuid
+
+    # Submission Info
+    - name: submitted_by
+      type: uuid
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: original_report
+      type: belongs_to
+      entity: StatutoryReport
+      foreign_key: original_report_id
+
+    - name: amendments
+      type: has_many
+      entity: StatutoryReport
+      foreign_key: original_report_id
+
+    - name: generator
+      type: belongs_to
+      entity: User
+      foreign_key: generated_by
+
+    - name: submitter
+      type: belongs_to
+      entity: User
+      foreign_key: submitted_by
+
+  indexes:
+    - columns: [report_number]
+      unique: true
+    - columns: [report_type, report_year, report_month]
+    - columns: [authority]
+    - columns: [status]
+    - columns: [submission_deadline]
+    - columns: [receipt_number]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: generated
+        action: generate
+        guards: [data_complete]
+        triggers: [create_report_file, validate_data]
+
+      - from: generated
+        to: validated
+        action: validate
+        guards: [no_critical_errors]
+        triggers: [log_validation]
+
+      - from: validated
+        to: submitted
+        action: submit
+        guards: [authorized_submitter, before_deadline]
+        triggers: [record_submission, notify_stakeholders]
+
+      - from: submitted
+        to: accepted
+        action: accept
+        guards: [authority_accepted]
+        triggers: [archive_report, update_records]
+
+      - from: submitted
+        to: rejected
+        action: reject
+        guards: [authority_rejected]
+        triggers: [log_rejection, notify_payroll]
+
+      - from: [accepted, rejected]
+        to: amended
+        action: amend
+        guards: [amendment_allowed]
+        triggers: [create_amendment, link_to_original]
+
+      - from: [draft, generated, validated]
+        to: draft
+        action: revise
+        triggers: [log_revision]
+
+  report_types:
+    bhxh_monthly:
+      name: Báo cáo BHXH hàng tháng
+      code: "D02-TS"
+      authority: bhxh
+      frequency: monthly
+      deadline: "20th of following month"
+      format: xml
+      contents:
+        - employee_list
+        - contribution_amounts
+        - changes_in_month
+
+    bhxh_adjustment:
+      name: Điều chỉnh BHXH
+      code: "D03-TS"
+      authority: bhxh
+      frequency: as_needed
+      format: xml
+      contents:
+        - adjustment_details
+        - affected_employees
+        - period_affected
+
+    pit_monthly:
+      name: Tờ khai thuế TNCN tháng
+      code: "02/KK-TNCN"
+      authority: tax_authority
+      frequency: monthly
+      deadline: "20th of following month"
+      format: xml
+      contents:
+        - taxable_income_summary
+        - tax_withheld
+        - employee_count
+
+    pit_annual:
+      name: Tờ khai quyết toán thuế TNCN năm
+      code: "05/QTT-TNCN"
+      authority: tax_authority
+      frequency: annual
+      deadline: "March 31 of following year"
+      format: xml
+      contents:
+        - annual_income_summary
+        - total_tax_withheld
+        - dependent_information
+
+    pit_finalization:
+      name: Quyết toán thuế TNCN
+      code: "05/QT-TNCN"
+      authority: tax_authority
+      frequency: annual
+      deadline: "March 31 of following year"
+      format: xml
+      contents:
+        - employee_annual_summary
+        - tax_calculation_detail
+        - refund_or_additional
+
+    labor_report:
+      name: Báo cáo lao động
+      code: "Labor-01"
+      authority: labor_department
+      frequency: semi_annual
+      deadline: varies
+      format: excel
+      contents:
+        - headcount
+        - salary_statistics
+        - labor_contract_types
+
+    wage_report:
+      name: Báo cáo tiền lương
+      code: "Wage-01"
+      authority: statistics_office
+      frequency: quarterly
+      format: excel
+      contents:
+        - wage_statistics
+        - average_salary
+        - by_department
+
+  submission_requirements:
+    bhxh:
+      registration: "BHXH online portal account"
+      certificate: "Digital signature required"
+      portal: "https://dichvucong.bhxh.gov.vn"
+
+    tax_authority:
+      registration: "Tax portal account"
+      certificate: "Digital signature required"
+      portal: "https://thuedientu.gdt.gov.vn"
+
+    labor_department:
+      registration: varies_by_province
+      certificate: optional
+      submission: "Provincial labor department"
+
+  validation_rules:
+    bhxh_monthly:
+      - rule: employee_si_number_valid
+        severity: error
+        message: "Invalid social insurance number"
+
+      - rule: contribution_base_within_limits
+        severity: error
+        message: "Contribution base outside valid range"
+
+      - rule: employee_info_matches_bhxh
+        severity: warning
+        message: "Employee info differs from BHXH records"
+
+    pit_monthly:
+      - rule: tax_id_valid
+        severity: error
+        message: "Invalid tax identification number"
+
+      - rule: tax_calculation_correct
+        severity: error
+        message: "Tax calculation mismatch"
+
+      - rule: dependent_registered
+        severity: warning
+        message: "Dependent not registered with tax authority"
+
+  file_formats:
+    xml:
+      encoding: UTF-8
+      schema_validation: required
+      digital_signature: embedded
+
+    excel:
+      template: official_template
+      sheets: as_per_template
+      validation: template_formulas
+
+    pdf:
+      generation: from_template
+      signature: digital_or_wet
+
+  validations:
+    - field: submission_deadline
+      rule: not_past
+      when: status = draft
+      message: "Deadline has passed"
+
+    - field: total_employees
+      rule: positive
+      message: "Must have at least one employee"
+
+  computed_fields:
+    - name: is_overdue
+      formula: "current_date > submission_deadline AND status NOT IN ('submitted', 'accepted')"
+
+    - name: days_until_deadline
+      formula: "submission_deadline - current_date"
+
+  hooks:
+    on_generate:
+      - collect_period_data
+      - calculate_totals
+      - validate_data
+      - generate_file
+
+    on_submit:
+      - verify_digital_signature
+      - upload_to_authority
+      - record_submission
+      - archive_file
+
+    on_response:
+      - parse_authority_response
+      - update_status
+      - notify_stakeholders
+
+  audit:
+    track:
+      - status
+      - submission_date
+      - receipt_number
+      - submitted_by
+
+    retention: 10_years
+
+  alerts:
+    - trigger: deadline_approaching
+      days_before: 5
+      recipients: [payroll_admin, finance_manager]
+      message: "Statutory report {report_name} due in {days} days"
+
+    - trigger: deadline_approaching
+      days_before: 1
+      recipients: [payroll_admin, finance_manager, hr_director]
+      message: "URGENT: Statutory report {report_name} due tomorrow"
+
+    - trigger: report_rejected
+      recipients: [payroll_admin, finance_manager]
+      message: "Statutory report {report_name} was rejected: {response_message}"
+
+compliance:
+  - standard: BHXH_Law_2014
+    requirement: Monthly contribution reporting
+  - standard: PIT_Law
+    circular: Circular_111
+    requirement: Tax withholding reporting
+  - standard: Labor_Code_2019
+    requirement: Labor statistics reporting

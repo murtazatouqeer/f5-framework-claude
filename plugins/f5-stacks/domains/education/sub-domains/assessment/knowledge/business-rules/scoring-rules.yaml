@@ -1,0 +1,527 @@
+# Scoring Business Rules
+# F5 Framework v2.0 - Education/Assessment
+# Rules governing grading and scoring
+
+business_rules:
+  domain: education
+  subdomain: assessment
+  category: scoring
+  version: "1.0.0"
+
+  rules:
+    # ==========================================
+    # Auto-Grading Rules
+    # ==========================================
+    
+    - id: SCR-001
+      name: Multiple Choice Scoring
+      name_ja: 選択問題採点
+      description: Score multiple choice questions automatically
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'multiple_choice'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          IF selected_option_ids[0] IN question.correct_option_ids
+          THEN points_earned = question.points
+          ELSE IF exam.negative_marking
+          THEN points_earned = -exam.negative_mark_value
+          ELSE points_earned = 0
+          
+    - id: SCR-002
+      name: Multiple Select Scoring
+      name_ja: 複数選択問題採点
+      description: Score multiple select questions with partial credit
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'multiple_select'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          correct_selected = INTERSECT(selected_option_ids, question.correct_option_ids)
+          incorrect_selected = EXCEPT(selected_option_ids, question.correct_option_ids)
+          
+          IF exam.partial_credit
+          THEN
+            points_per_correct = question.points / question.correct_option_ids.length
+            points_earned = correct_selected.length * points_per_correct
+            IF exam.negative_marking
+            THEN points_earned = points_earned - (incorrect_selected.length * exam.negative_mark_value)
+          ELSE
+            IF selected_option_ids = question.correct_option_ids
+            THEN points_earned = question.points
+            ELSE points_earned = 0
+            
+    - id: SCR-003
+      name: True False Scoring
+      name_ja: 真偽問題採点
+      description: Score true/false questions
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'true_false'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          IF selected_option_ids[0] IN question.correct_option_ids
+          THEN points_earned = question.points
+          ELSE IF exam.negative_marking
+          THEN points_earned = -exam.negative_mark_value
+          ELSE points_earned = 0
+          
+    - id: SCR-004
+      name: Matching Scoring
+      name_ja: マッチング採点
+      description: Score matching questions with partial credit
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'matching'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          correct_matches = INTERSECT(matches, question.correct_matches)
+          
+          IF exam.partial_credit
+          THEN
+            points_per_match = question.points / question.correct_matches.length
+            points_earned = correct_matches.length * points_per_match
+          ELSE
+            IF matches = question.correct_matches
+            THEN points_earned = question.points
+            ELSE points_earned = 0
+            
+    - id: SCR-005
+      name: Ordering Scoring
+      name_ja: 並び替え採点
+      description: Score ordering questions with partial credit
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'ordering'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          IF exam.partial_credit
+          THEN
+            # Calculate number of correctly positioned items
+            correct_positions = 0
+            FOR i IN 0..ordered_items.length
+              IF ordered_items[i] = question.correct_order[i]
+              THEN correct_positions++
+            points_earned = (correct_positions / question.correct_order.length) * question.points
+          ELSE
+            IF ordered_items = question.correct_order
+            THEN points_earned = question.points
+            ELSE points_earned = 0
+            
+    - id: SCR-006
+      name: Fill Blank Scoring
+      name_ja: 穴埋め採点
+      description: Score fill-in-the-blank questions
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'fill_blank'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          correct_blanks = 0
+          FOR blank IN blank_answers
+            correct_values = question.blanks.find(b => b.id = blank.blank_id).correct_answers
+            answer = blank.answer
+            IF NOT blank.case_sensitive
+            THEN answer = LOWER(answer)
+            IF answer IN correct_values
+            THEN correct_blanks++
+            
+          IF exam.partial_credit
+          THEN points_earned = (correct_blanks / question.blanks.length) * question.points
+          ELSE
+            IF correct_blanks = question.blanks.length
+            THEN points_earned = question.points
+            ELSE points_earned = 0
+            
+    - id: SCR-007
+      name: Numeric Scoring
+      name_ja: 数値問題採点
+      description: Score numeric questions with tolerance
+      category: auto_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type = 'numeric'"
+        
+      action:
+        type: auto_grade
+        algorithm: |
+          correct = question.numeric_answer
+          tolerance = question.numeric_tolerance OR 0
+          
+          IF question.tolerance_type = 'percentage'
+          THEN tolerance_value = correct * (tolerance / 100)
+          ELSE tolerance_value = tolerance
+          
+          IF ABS(numeric_response - correct) <= tolerance_value
+          THEN points_earned = question.points
+          ELSE points_earned = 0
+
+    # ==========================================
+    # Manual Grading Rules
+    # ==========================================
+    
+    - id: SCR-020
+      name: Essay Requires Manual Grading
+      name_ja: エッセイは手動採点必須
+      description: Essay questions must be manually graded
+      category: manual_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create]
+        expression: "question.question_type = 'essay'"
+        
+      action:
+        type: set_status
+        status: pending_manual
+        grading_type: manual
+        
+    - id: SCR-021
+      name: Short Answer May Need Review
+      name_ja: 短答式はレビュー必要
+      description: Short answer questions may need manual review
+      category: manual_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create]
+        expression: "question.question_type = 'short_answer'"
+        
+      action:
+        type: set_status
+        status: pending_review
+        grading_type: hybrid
+        
+    - id: SCR-022
+      name: Rubric Score Bounds
+      name_ja: ルーブリック点数範囲
+      description: Rubric-based scores must be within criterion bounds
+      category: manual_grading
+      severity: error
+      
+      condition:
+        entity: response
+        trigger: [manual_grade]
+        expression: |
+          rubric_scores.all(rs =>
+            rs.points >= 0
+            AND rs.points <= rubric.criteria.find(c => c.id = rs.criterion_id).max_points
+          )
+          
+      action:
+        type: block
+        message: "Rubric scores must be within criterion point ranges"
+        
+    - id: SCR-023
+      name: Complete Rubric Required
+      name_ja: 完全ルーブリック必須
+      description: All rubric criteria must be scored
+      category: manual_grading
+      severity: error
+      
+      condition:
+        entity: response
+        trigger: [complete_grading]
+        expression: |
+          question.rubric_id IS NULL
+          OR rubric_scores.length = rubric.criteria.length
+          
+      action:
+        type: block
+        message: "All rubric criteria must be scored before completing grading"
+
+    # ==========================================
+    # Score Calculation Rules
+    # ==========================================
+    
+    - id: SCR-030
+      name: Raw Score Calculation
+      name_ja: 素点計算
+      description: Calculate raw score from responses
+      category: calculation
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [complete_grading]
+        expression: "status = 'grading' AND pending_manual_grading = 0"
+        
+      action:
+        type: calculate
+        algorithm: |
+          raw_score = SUM(responses.points_earned)
+          total_possible = SUM(responses.points_possible)
+          percentage_score = (raw_score / total_possible) * 100
+          
+    - id: SCR-031
+      name: Scaled Score Calculation
+      name_ja: 換算点計算
+      description: Calculate scaled score if configured
+      category: calculation
+      severity: info
+      
+      condition:
+        entity: exam_result
+        trigger: [calculate]
+        expression: "exam.scoring_type = 'scaled'"
+        
+      action:
+        type: calculate
+        algorithm: |
+          # Example: Scale to 0-100 or 200-800 range
+          scaled_score = (percentage_score / 100) * (scale_max - scale_min) + scale_min
+          
+    - id: SCR-032
+      name: Pass/Fail Determination
+      name_ja: 合否判定
+      description: Determine pass/fail status
+      category: calculation
+      severity: info
+      
+      condition:
+        entity: exam_result
+        trigger: [calculate]
+        expression: "true"
+        
+      action:
+        type: calculate
+        algorithm: |
+          IF exam.passing_percentage IS NOT NULL
+          THEN passed = percentage_score >= exam.passing_percentage
+          ELSE IF exam.passing_score IS NOT NULL
+          THEN passed = raw_score >= exam.passing_score
+          ELSE passed = NULL
+          
+    - id: SCR-033
+      name: Grade Assignment
+      name_ja: 成績付与
+      description: Assign letter grade based on score
+      category: calculation
+      severity: info
+      
+      condition:
+        entity: exam_result
+        trigger: [calculate]
+        expression: "exam.scoring_type = 'grade'"
+        
+      action:
+        type: calculate
+        algorithm: |
+          FOR boundary IN exam.grade_boundaries ORDER BY min_percentage DESC
+            IF percentage_score >= boundary.min_percentage
+            THEN 
+              grade = boundary.grade
+              BREAK
+
+    # ==========================================
+    # Negative Marking Rules
+    # ==========================================
+    
+    - id: SCR-040
+      name: Negative Marking Bounds
+      name_ja: 減点の範囲
+      description: Negative marking cannot reduce score below zero
+      category: negative_marking
+      severity: info
+      
+      condition:
+        entity: exam_result
+        trigger: [calculate]
+        expression: "exam.negative_marking = true"
+        
+      action:
+        type: calculate
+        algorithm: |
+          raw_score = MAX(0, raw_score)
+          
+    - id: SCR-041
+      name: Negative Mark Value Limit
+      name_ja: 減点上限
+      description: Negative mark should not exceed question points
+      category: negative_marking
+      severity: warning
+      
+      condition:
+        entity: exam
+        trigger: [create, update]
+        expression: |
+          negative_marking = false
+          OR negative_mark_value <= MIN(questions.points)
+          
+      action:
+        type: warn
+        message: "Negative mark value should not exceed minimum question points"
+
+    # ==========================================
+    # Double Grading Rules
+    # ==========================================
+    
+    - id: SCR-050
+      name: Double Grading Required
+      name_ja: ダブルチェック必須
+      description: High-stakes responses require double grading
+      category: double_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [manual_grade]
+        expression: |
+          question.rubric.require_double_grading = true
+          OR exam.exam_type = 'certification'
+          
+      action:
+        type: require_second_grade
+        message: "This response requires review by a second grader"
+        
+    - id: SCR-051
+      name: Score Variance Check
+      name_ja: 点数差異チェック
+      description: Flag significant variance between graders
+      category: double_grading
+      severity: warning
+      
+      condition:
+        entity: response
+        trigger: [second_grade]
+        expression: |
+          ABS(first_grader_score - second_grader_score) > rubric.score_variance_threshold
+          
+      action:
+        type: flag_for_review
+        message: "Significant variance between graders - supervisor review required"
+        
+    - id: SCR-052
+      name: Resolve Grading Conflict
+      name_ja: 採点相違解決
+      description: Final score from conflicting grades
+      category: double_grading
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [resolve_conflict]
+        expression: "grading_conflict_exists = true"
+        
+      action:
+        type: calculate
+        algorithm: |
+          IF supervisor_score IS NOT NULL
+          THEN points_earned = supervisor_score
+          ELSE points_earned = AVG(first_grader_score, second_grader_score)
+
+    # ==========================================
+    # Score Protection Rules
+    # ==========================================
+    
+    - id: SCR-060
+      name: Score Immutability After Release
+      name_ja: リリース後のスコア不変
+      description: Scores cannot be changed after results are released
+      category: protection
+      severity: error
+      
+      condition:
+        entity: exam_result
+        trigger: [update]
+        fields: [raw_score, percentage_score, grade, passed]
+        expression: "released = false"
+        
+      action:
+        type: block
+        message: "Scores cannot be modified after results are released"
+        exception_roles: [admin]
+        
+    - id: SCR-061
+      name: Grade Override Audit
+      name_ja: 成績変更監査
+      description: All score overrides must be audited
+      category: protection
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [override_score]
+        expression: "true"
+        
+      action:
+        type: audit
+        audit_fields: [previous_score, new_score, override_reason, overridden_by]
+        require_reason: true
+
+  rule_groups:
+    auto_grading:
+      rules: [SCR-001, SCR-002, SCR-003, SCR-004, SCR-005, SCR-006, SCR-007]
+      description: Automatic grading algorithms
+      
+    manual_grading:
+      rules: [SCR-020, SCR-021, SCR-022, SCR-023]
+      description: Manual grading rules
+      
+    calculation:
+      rules: [SCR-030, SCR-031, SCR-032, SCR-033]
+      description: Score calculation rules
+      
+    negative_marking:
+      rules: [SCR-040, SCR-041]
+      description: Negative marking rules
+      
+    double_grading:
+      rules: [SCR-050, SCR-051, SCR-052]
+      description: Double grading and conflict resolution
+      
+    protection:
+      rules: [SCR-060, SCR-061]
+      description: Score protection rules
+
+  exceptions:
+    - role: admin
+      bypasses: [SCR-060]
+      requires_justification: true
+      audit_required: true
+      
+    - role: chief_examiner
+      bypasses: [SCR-050]
+      conditions:
+        - time_critical

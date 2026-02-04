@@ -1,0 +1,198 @@
+name: Inventory
+display_name: Inventory Record
+description: |
+  Real-time inventory position tracking.
+  Tracks quantities by location, lot, and status.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: location_id
+    type: uuid
+    required: true
+
+  - name: item_id
+    type: uuid
+    required: true
+
+  - name: lpn
+    type: string
+    required: false
+    description: License Plate Number
+    validation:
+      pattern: "^LPN-[A-Z0-9]{10}$"
+    example: "LPN-A1B2C3D4E5"
+
+  - name: lot_id
+    type: uuid
+    required: false
+    description: Lot ID if lot-tracked
+
+  # Quantities
+  - name: quantity_on_hand
+    type: integer
+    required: true
+    default: 0
+
+  - name: quantity_available
+    type: integer
+    required: true
+    default: 0
+    description: On hand minus allocated and on hold
+
+  - name: quantity_allocated
+    type: integer
+    required: true
+    default: 0
+    description: Reserved for outbound orders
+
+  - name: quantity_in_transit
+    type: integer
+    required: true
+    default: 0
+    description: Being moved between locations
+
+  - name: quantity_on_hold
+    type: integer
+    required: true
+    default: 0
+    description: Held for QA or other reasons
+
+  # Status
+  - name: inventory_status
+    type: enum
+    required: true
+    validation:
+      values: [available, allocated, picked, damaged, expired, qa_hold, customer_hold, recall_hold]
+    default: available
+
+  # Tracking
+  - name: lot_number
+    type: string
+    required: false
+
+  - name: serial_number
+    type: string
+    required: false
+
+  - name: expiry_date
+    type: date
+    required: false
+
+  - name: manufacture_date
+    type: date
+    required: false
+
+  - name: received_date
+    type: date
+    required: true
+
+  # Cost
+  - name: unit_cost
+    type: decimal
+    required: false
+
+  - name: total_value
+    type: decimal
+    required: false
+
+  - name: cost_method
+    type: enum
+    required: false
+    validation:
+      values: [fifo, lifo, weighted_average, specific]
+    default: fifo
+
+  # Audit
+  - name: last_count_date
+    type: date
+    required: false
+
+  - name: last_count_quantity
+    type: integer
+    required: false
+
+  - name: last_movement_date
+    type: timestamp
+    required: false
+
+  - name: last_movement_type
+    type: enum
+    required: false
+    validation:
+      values: [receive, putaway, pick, move, adjust, count]
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: location
+    type: belongs_to
+    entity: Location
+    required: true
+
+  - name: item
+    type: belongs_to
+    entity: Item
+    required: true
+
+  - name: lot
+    type: belongs_to
+    entity: Lot
+    required: false
+
+indexes:
+  - [warehouse_id, item_id]
+  - [location_id]
+  - [lpn]
+  - [lot_number]
+  - [inventory_status]
+  - [expiry_date]
+
+computed_fields:
+  - name: quantity_available
+    formula: quantity_on_hand - quantity_allocated - quantity_on_hold
+  - name: days_until_expiry
+    formula: expiry_date - today()
+  - name: is_expired
+    formula: expiry_date < today()
+
+business_rules:
+  - BR-INV-001: quantity_available = on_hand - allocated - on_hold
+  - BR-INV-002: Inventory cannot go negative
+  - BR-INV-003: FEFO allocation for expiry-tracked items
+  - BR-INV-004: Expired inventory must be moved to hold
+  - BR-INV-005: LPN must be unique within warehouse
+
+events:
+  - name: inventory.received
+    payload: [id, item_id, quantity, location_id]
+  - name: inventory.allocated
+    payload: [id, item_id, quantity, order_id]
+  - name: inventory.picked
+    payload: [id, item_id, quantity, task_id]
+  - name: inventory.adjusted
+    payload: [id, item_id, old_quantity, new_quantity, reason]
+  - name: inventory.expired
+    payload: [id, item_id, quantity, expiry_date]

@@ -1,0 +1,364 @@
+name: reserve
+display_name: Claim Reserve
+description: |
+  Financial reserve allocation for claims representing estimated future payments.
+  Includes case reserves, IBNR, and reserve adjustments.
+
+domain: insurance
+subdomain: claims
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique reserve identifier
+
+    - name: claim_id
+      type: uuid
+      foreign_key: claim.id
+      required: true
+      description: Associated claim
+
+    - name: claim_item_id
+      type: uuid
+      foreign_key: claim_item.id
+      description: Specific claim item (if applicable)
+
+    - name: reserve_number
+      type: string
+      format: "RES-{YYYYMMDD}-{NNNN}"
+      description: Reserve reference number
+
+  classification:
+    - name: reserve_type
+      type: enum
+      values:
+        - case_reserve
+        - ibnr
+        - catastrophe
+        - bulk
+        - salvage
+        - subrogation
+      required: true
+      description: Type of reserve
+
+    - name: reserve_category
+      type: enum
+      values:
+        - indemnity
+        - medical
+        - legal
+        - expense
+        - general
+      required: true
+      description: Reserve category
+
+    - name: coverage_type
+      type: string
+      description: Applicable coverage type
+
+  amounts:
+    - name: currency
+      type: string
+      default: VND
+      description: Currency code
+
+    - name: initial_reserve
+      type: decimal
+      precision: 2
+      required: true
+      description: Initial reserve amount
+
+    - name: current_reserve
+      type: decimal
+      precision: 2
+      required: true
+      description: Current reserve amount
+
+    - name: paid_amount
+      type: decimal
+      precision: 2
+      default: 0
+      description: Amount already paid
+
+    - name: outstanding_reserve
+      type: decimal
+      precision: 2
+      computed: true
+      formula: "current_reserve - paid_amount"
+      description: Remaining reserve
+
+    - name: incurred_amount
+      type: decimal
+      precision: 2
+      computed: true
+      formula: "paid_amount + outstanding_reserve"
+      description: Total incurred (paid + outstanding)
+
+  status:
+    - name: status
+      type: enum
+      values:
+        - active
+        - released
+        - transferred
+        - closed
+      default: active
+      description: Reserve status
+
+    - name: is_open
+      type: boolean
+      computed: true
+      formula: "status = 'active'"
+      description: Reserve is open
+
+  adjustment_history:
+    - name: adjustment_count
+      type: integer
+      default: 0
+      description: Number of adjustments
+
+    - name: last_adjustment_date
+      type: datetime
+      description: Last adjustment date
+
+    - name: last_adjustment_amount
+      type: decimal
+      precision: 2
+      description: Last adjustment amount
+
+    - name: last_adjustment_reason
+      type: text
+      description: Last adjustment reason
+
+    - name: adjustments
+      type: array
+      items:
+        type: object
+        properties:
+          adjustment_date: datetime
+          previous_amount: decimal
+          new_amount: decimal
+          change_amount: decimal
+          reason: text
+          adjusted_by: uuid
+          approval_required: boolean
+          approved_by: uuid
+          approved_at: datetime
+      description: Adjustment history
+
+  authority:
+    - name: set_by
+      type: uuid
+      foreign_key: user.id
+      required: true
+      description: Who set the reserve
+
+    - name: authority_level
+      type: enum
+      values:
+        - handler
+        - senior_handler
+        - supervisor
+        - manager
+        - director
+      description: Authority level required
+
+    - name: requires_approval
+      type: boolean
+      default: false
+      description: Needs approval for changes
+
+    - name: approved_by
+      type: uuid
+      foreign_key: user.id
+      description: Approval authority
+
+    - name: approved_at
+      type: datetime
+      description: Approval timestamp
+
+  basis:
+    - name: reserve_basis
+      type: enum
+      values:
+        - estimated_settlement
+        - average_cost
+        - formula_based
+        - expert_opinion
+        - surveyor_assessment
+        - medical_assessment
+      description: Basis for reserve calculation
+
+    - name: basis_notes
+      type: text
+      description: Reserve basis explanation
+
+    - name: confidence_level
+      type: enum
+      values:
+        - high
+        - medium
+        - low
+      description: Confidence in estimate
+
+    - name: supporting_documents
+      type: array
+      items: string
+      description: Supporting document references
+
+  review:
+    - name: review_frequency
+      type: enum
+      values:
+        - monthly
+        - quarterly
+        - annually
+        - on_demand
+      default: quarterly
+      description: Review frequency
+
+    - name: last_reviewed_at
+      type: datetime
+      description: Last review date
+
+    - name: last_reviewed_by
+      type: uuid
+      foreign_key: user.id
+      description: Last reviewer
+
+    - name: next_review_date
+      type: date
+      description: Next scheduled review
+
+    - name: review_notes
+      type: text
+      description: Review comments
+
+  release:
+    - name: released_at
+      type: datetime
+      description: When reserve was released
+
+    - name: released_by
+      type: uuid
+      foreign_key: user.id
+      description: Who released reserve
+
+    - name: release_reason
+      type: enum
+      values:
+        - claim_closed
+        - claim_denied
+        - claim_withdrawn
+        - transferred
+        - adjustment
+      description: Reason for release
+
+    - name: release_notes
+      type: text
+      description: Release comments
+
+  timestamps:
+    - name: created_at
+      type: datetime
+      auto: true
+      description: Record creation
+
+    - name: updated_at
+      type: datetime
+      auto: true
+      on_update: true
+      description: Record update
+
+relationships:
+  - name: claim
+    type: belongs_to
+    entity: claim
+    foreign_key: claim_id
+    description: Associated claim
+
+  - name: claim_item
+    type: belongs_to
+    entity: claim_item
+    foreign_key: claim_item_id
+    description: Specific claim item
+
+  - name: setter
+    type: belongs_to
+    entity: user
+    foreign_key: set_by
+    description: Who set reserve
+
+  - name: approver
+    type: belongs_to
+    entity: user
+    foreign_key: approved_by
+    description: Approval authority
+
+business_rules:
+  - rule: BR-RES-001
+    name: Positive reserve
+    condition: "current_reserve >= 0"
+    error_message: "Reserve cannot be negative"
+
+  - rule: BR-RES-002
+    name: Authority limit
+    condition: "current_reserve <= authority_limit(set_by)"
+    error_message: "Reserve exceeds authority limit"
+
+  - rule: BR-RES-003
+    name: Approval for large adjustments
+    condition: "ABS(change_amount) > 100000000 IMPLIES requires_approval = true"
+    error_message: "Large adjustments require approval"
+
+  - rule: BR-RES-004
+    name: Review compliance
+    condition: "NOW() <= next_review_date"
+    warning_message: "Reserve review overdue"
+
+events:
+  - name: reserve.created
+    description: New reserve created
+    payload: [reserve_id, claim_id, initial_reserve]
+
+  - name: reserve.adjusted
+    description: Reserve adjusted
+    payload: [reserve_id, previous_amount, new_amount, reason]
+
+  - name: reserve.released
+    description: Reserve released
+    payload: [reserve_id, released_amount, reason]
+
+api_endpoints:
+  - method: POST
+    path: /claims/{claim_id}/reserves
+    description: Create reserve
+    request_body: ReserveCreateRequest
+    response: ReserveResponse
+
+  - method: GET
+    path: /claims/{claim_id}/reserves
+    description: List reserves
+    response: ReserveListResponse
+
+  - method: GET
+    path: /claims/{claim_id}/reserves/{id}
+    description: Get reserve details
+    response: ReserveResponse
+
+  - method: PUT
+    path: /claims/{claim_id}/reserves/{id}
+    description: Adjust reserve
+    request_body: ReserveAdjustRequest
+    response: ReserveResponse
+
+  - method: POST
+    path: /claims/{claim_id}/reserves/{id}/release
+    description: Release reserve
+    request_body: ReserveReleaseRequest
+    response: ReserveResponse

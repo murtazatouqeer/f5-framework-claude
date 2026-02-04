@@ -1,0 +1,467 @@
+# Fraud Detection Rules
+# Domain: fintech/payment
+# Purpose: Rules for detecting and preventing fraudulent transactions
+
+name: Fraud Detection Rules
+display_name: Fraud Detection Rules
+description: |
+  Business rules for fraud detection and prevention including velocity checks,
+  behavioral analysis, and risk scoring.
+
+  Vietnamese: Quy tắc phát hiện và ngăn chặn gian lận bao gồm kiểm tra
+  tần suất, phân tích hành vi và chấm điểm rủi ro.
+
+domain: fintech
+sub_domain: payment
+category: business-rules
+version: "1.0.0"
+
+risk_score_config:
+  min_score: 0
+  max_score: 100
+  thresholds:
+    low: 0-30
+    medium: 31-50
+    high: 51-75
+    very_high: 76-100
+  default_actions:
+    low: allow
+    medium: allow_with_monitoring
+    high: require_3ds_or_review
+    very_high: block_or_manual_review
+
+rules:
+  # ============ VELOCITY CHECKS ============
+  velocity:
+    - id: BR-FRD-001
+      name: Card Velocity - Hourly
+      description: Limit transactions per card per hour
+      vietnamese: Giới hạn giao dịch mỗi thẻ mỗi giờ
+      condition: |
+        card_transactions_count(card_fingerprint, 1 hour) <= limit
+      parameters:
+        limit: 10
+      risk_score_impact: +30
+      action_on_breach: block
+      error_code: VELOCITY_EXCEEDED
+
+    - id: BR-FRD-002
+      name: Card Velocity - Daily
+      description: Limit transactions per card per day
+      vietnamese: Giới hạn giao dịch mỗi thẻ mỗi ngày
+      condition: |
+        card_transactions_count(card_fingerprint, 24 hours) <= limit
+      parameters:
+        limit: 25
+      risk_score_impact: +25
+      action_on_breach: review
+
+    - id: BR-FRD-003
+      name: Card Amount - Daily
+      description: Limit total amount per card per day
+      vietnamese: Giới hạn tổng số tiền mỗi thẻ mỗi ngày
+      condition: |
+        card_transactions_sum(card_fingerprint, 24 hours) <= limit
+      parameters:
+        limit: 50000000  # VND
+      risk_score_impact: +20
+      action_on_breach: review
+
+    - id: BR-FRD-004
+      name: IP Velocity - Hourly
+      description: Limit transactions from same IP per hour
+      vietnamese: Giới hạn giao dịch từ cùng IP mỗi giờ
+      condition: |
+        ip_transactions_count(ip_address, 1 hour) <= limit
+      parameters:
+        limit: 20
+      risk_score_impact: +15
+      action_on_breach: challenge
+
+    - id: BR-FRD-005
+      name: Device Velocity
+      description: Limit transactions from same device
+      vietnamese: Giới hạn giao dịch từ cùng thiết bị
+      condition: |
+        device_transactions_count(device_fingerprint, 1 hour) <= limit
+      parameters:
+        limit: 15
+      risk_score_impact: +15
+      action_on_breach: challenge
+
+    - id: BR-FRD-006
+      name: Email Velocity
+      description: Limit transactions per email
+      vietnamese: Giới hạn giao dịch mỗi email
+      condition: |
+        email_transactions_count(customer_email, 24 hours) <= limit
+      parameters:
+        limit: 10
+      risk_score_impact: +10
+      action_on_breach: review
+
+  # ============ AMOUNT ANALYSIS ============
+  amount_patterns:
+    - id: BR-FRD-010
+      name: Unusual Amount - Customer Average
+      description: Flag transactions significantly above customer average
+      vietnamese: Đánh dấu giao dịch cao hơn đáng kể mức trung bình của khách hàng
+      condition: |
+        amount > customer_average_transaction * multiplier
+      parameters:
+        multiplier: 3
+        min_transactions_for_average: 5
+      risk_score_impact: +20
+      action_on_breach: review
+
+    - id: BR-FRD-011
+      name: Round Amount Pattern
+      description: Flag suspicious round amounts
+      vietnamese: Đánh dấu các số tiền tròn đáng ngờ
+      condition: |
+        is_round_amount(amount) = true
+        AND amount > threshold
+      parameters:
+        threshold: 10000000  # VND
+      risk_score_impact: +5
+      action_on_breach: monitor
+
+    - id: BR-FRD-012
+      name: Card Testing Pattern
+      description: Detect card testing with small amounts
+      vietnamese: Phát hiện thử nghiệm thẻ với số tiền nhỏ
+      condition: |
+        amount < small_amount_threshold
+        AND card_first_use = true
+        AND followed_by_larger_transaction(5 minutes)
+      parameters:
+        small_amount_threshold: 10000  # VND
+      risk_score_impact: +40
+      action_on_breach: block
+
+    - id: BR-FRD-013
+      name: Split Transaction Detection
+      description: Detect split transactions to avoid limits
+      vietnamese: Phát hiện chia nhỏ giao dịch để tránh giới hạn
+      condition: |
+        same_card_similar_amounts_short_timeframe(
+          card_fingerprint,
+          amount_variance: 10%,
+          timeframe: 10 minutes,
+          count: 3
+        )
+      risk_score_impact: +35
+      action_on_breach: review
+
+  # ============ GEOGRAPHIC ANALYSIS ============
+  geographic:
+    - id: BR-FRD-020
+      name: Country Mismatch - Card vs Billing
+      description: Card issuing country differs from billing country
+      vietnamese: Quốc gia phát hành thẻ khác với quốc gia thanh toán
+      condition: |
+        card_issuer_country != billing_country
+      risk_score_impact: +10
+      action_on_breach: monitor
+
+    - id: BR-FRD-021
+      name: Country Mismatch - IP vs Billing
+      description: IP country differs from billing country
+      vietnamese: Quốc gia IP khác với quốc gia thanh toán
+      condition: |
+        ip_country != billing_country
+      risk_score_impact: +15
+      action_on_breach: challenge
+
+    - id: BR-FRD-022
+      name: Triple Country Mismatch
+      description: Card, IP, and billing all different countries
+      vietnamese: Thẻ, IP và thanh toán đều ở các quốc gia khác nhau
+      condition: |
+        card_issuer_country != ip_country
+        AND ip_country != billing_country
+        AND card_issuer_country != billing_country
+      risk_score_impact: +30
+      action_on_breach: review
+
+    - id: BR-FRD-023
+      name: High Risk Country
+      description: Transaction from high-risk country
+      vietnamese: Giao dịch từ quốc gia rủi ro cao
+      condition: |
+        ip_country IN high_risk_countries
+        OR card_issuer_country IN high_risk_countries
+      parameters:
+        high_risk_countries: [NG, GH, PK, BD, PH, ID, VE, BY, RU, UA]
+      risk_score_impact: +25
+      action_on_breach: require_3ds
+
+    - id: BR-FRD-024
+      name: Impossible Travel
+      description: Transactions from distant locations in short time
+      vietnamese: Giao dịch từ các địa điểm xa trong thời gian ngắn
+      condition: |
+        distance(previous_transaction.ip_location, current.ip_location) > threshold
+        AND time_between_transactions < travel_time_minimum
+      parameters:
+        threshold: 500  # km
+        travel_time_minimum: 1 hour
+      risk_score_impact: +45
+      action_on_breach: block
+
+  # ============ DEVICE ANALYSIS ============
+  device:
+    - id: BR-FRD-030
+      name: New Device
+      description: Transaction from new/unknown device
+      vietnamese: Giao dịch từ thiết bị mới/không xác định
+      condition: |
+        device_fingerprint NOT IN customer.known_devices
+      risk_score_impact: +10
+      action_on_breach: challenge
+
+    - id: BR-FRD-031
+      name: VPN/Proxy Detection
+      description: Detect VPN or proxy usage
+      vietnamese: Phát hiện sử dụng VPN hoặc proxy
+      condition: |
+        is_vpn(ip_address) = true
+        OR is_proxy(ip_address) = true
+        OR is_tor(ip_address) = true
+      risk_score_impact: +25
+      action_on_breach: review
+
+    - id: BR-FRD-032
+      name: Device Fingerprint Anomaly
+      description: Device fingerprint has suspicious characteristics
+      vietnamese: Device fingerprint có đặc điểm đáng ngờ
+      condition: |
+        device_fingerprint.has_automation_indicators = true
+        OR device_fingerprint.browser_spoofing = true
+        OR device_fingerprint.timezone_mismatch = true
+      risk_score_impact: +30
+      action_on_breach: review
+
+    - id: BR-FRD-033
+      name: Multiple Cards Same Device
+      description: Multiple different cards used from same device
+      vietnamese: Nhiều thẻ khác nhau sử dụng từ cùng thiết bị
+      condition: |
+        distinct_cards_count(device_fingerprint, 24 hours) > threshold
+      parameters:
+        threshold: 3
+      risk_score_impact: +40
+      action_on_breach: block
+
+  # ============ BEHAVIORAL ANALYSIS ============
+  behavioral:
+    - id: BR-FRD-040
+      name: Session Duration Anomaly
+      description: Unusually short session before payment
+      vietnamese: Phiên ngắn bất thường trước khi thanh toán
+      condition: |
+        session_duration < minimum_session_time
+        AND high_value_purchase = true
+      parameters:
+        minimum_session_time: 30  # seconds
+        high_value_threshold: 5000000  # VND
+      risk_score_impact: +20
+      action_on_breach: review
+
+    - id: BR-FRD-041
+      name: Checkout Abandonment Pattern
+      description: Multiple abandoned checkouts before successful one
+      vietnamese: Nhiều lần bỏ checkout trước khi thành công
+      condition: |
+        abandoned_checkouts_count(session, 30 minutes) >= threshold
+      parameters:
+        threshold: 3
+      risk_score_impact: +15
+      action_on_breach: monitor
+
+    - id: BR-FRD-042
+      name: Rapid Card Entry
+      description: Card details entered suspiciously fast
+      vietnamese: Nhập thông tin thẻ nhanh đáng ngờ
+      condition: |
+        card_entry_time < minimum_entry_time
+      parameters:
+        minimum_entry_time: 5  # seconds
+      risk_score_impact: +15
+      action_on_breach: challenge
+
+    - id: BR-FRD-043
+      name: Copy-Paste Detection
+      description: Card number appears to be pasted
+      vietnamese: Số thẻ dường như được paste
+      condition: |
+        card_entry_method = 'paste'
+        AND card_first_use = true
+      risk_score_impact: +10
+      action_on_breach: monitor
+
+  # ============ BLACKLIST CHECKS ============
+  blacklists:
+    - id: BR-FRD-050
+      name: Blocked Card
+      description: Card is on block list
+      vietnamese: Thẻ nằm trong danh sách chặn
+      condition: |
+        card_fingerprint IN blocked_cards_list
+      risk_score_impact: +100
+      action_on_breach: block
+      error_code: CARD_BLOCKED
+
+    - id: BR-FRD-051
+      name: Blocked Email
+      description: Email is on block list
+      vietnamese: Email nằm trong danh sách chặn
+      condition: |
+        customer_email IN blocked_emails_list
+      risk_score_impact: +100
+      action_on_breach: block
+
+    - id: BR-FRD-052
+      name: Blocked IP
+      description: IP address is on block list
+      vietnamese: Địa chỉ IP nằm trong danh sách chặn
+      condition: |
+        ip_address IN blocked_ips_list
+      risk_score_impact: +100
+      action_on_breach: block
+
+    - id: BR-FRD-053
+      name: Blocked Device
+      description: Device fingerprint is on block list
+      vietnamese: Device fingerprint nằm trong danh sách chặn
+      condition: |
+        device_fingerprint IN blocked_devices_list
+      risk_score_impact: +100
+      action_on_breach: block
+
+    - id: BR-FRD-054
+      name: BIN Block
+      description: Card BIN is blocked
+      vietnamese: BIN thẻ bị chặn
+      condition: |
+        card_bin IN blocked_bins_list
+      risk_score_impact: +100
+      action_on_breach: block
+
+  # ============ POSITIVE SIGNALS ============
+  positive_signals:
+    - id: BR-FRD-060
+      name: Verified Customer
+      description: Customer has verified identity
+      vietnamese: Khách hàng đã xác minh danh tính
+      condition: |
+        customer.verification_status = 'verified'
+      risk_score_impact: -15
+
+    - id: BR-FRD-061
+      name: Repeat Customer
+      description: Customer has successful transaction history
+      vietnamese: Khách hàng có lịch sử giao dịch thành công
+      condition: |
+        customer.successful_transactions_count >= threshold
+        AND customer.dispute_rate < max_dispute_rate
+      parameters:
+        threshold: 5
+        max_dispute_rate: 0.01
+      risk_score_impact: -20
+
+    - id: BR-FRD-062
+      name: Known Device
+      description: Transaction from previously used device
+      vietnamese: Giao dịch từ thiết bị đã sử dụng trước đó
+      condition: |
+        device_fingerprint IN customer.known_devices
+        AND device_last_used < 30 days ago
+      risk_score_impact: -10
+
+    - id: BR-FRD-063
+      name: Consistent Behavior
+      description: Transaction consistent with customer history
+      vietnamese: Giao dịch nhất quán với lịch sử khách hàng
+      condition: |
+        amount WITHIN customer_typical_range
+        AND merchant_category IN customer_usual_categories
+        AND transaction_time WITHIN customer_usual_hours
+      risk_score_impact: -10
+
+  # ============ MERCHANT SPECIFIC ============
+  merchant_specific:
+    - id: BR-FRD-070
+      name: High Risk Merchant Category
+      description: Transaction at high-risk merchant type
+      vietnamese: Giao dịch tại merchant loại rủi ro cao
+      condition: |
+        merchant.mcc_code IN high_risk_mccs
+      parameters:
+        high_risk_mccs: ["5816", "5817", "5912", "5962", "5966", "5967", "7273", "7841", "7995"]
+      risk_score_impact: +15
+      action_on_breach: monitor
+
+    - id: BR-FRD-071
+      name: New Merchant
+      description: Merchant is newly onboarded
+      vietnamese: Merchant mới tham gia
+      condition: |
+        merchant.created_at > 30 days ago
+      risk_score_impact: +5
+      action_on_breach: monitor
+
+actions_config:
+  allow:
+    description: Allow transaction to proceed
+    log_level: info
+
+  allow_with_monitoring:
+    description: Allow but flag for monitoring
+    log_level: info
+    alerts: [fraud_team_dashboard]
+
+  monitor:
+    description: Allow and add to monitoring queue
+    log_level: warning
+    alerts: [fraud_team_dashboard, daily_report]
+
+  challenge:
+    description: Require additional verification (3DS, OTP)
+    log_level: warning
+    actions: [require_3ds, send_otp]
+
+  review:
+    description: Hold for manual review
+    log_level: warning
+    actions: [queue_for_review]
+    sla: 2 hours
+
+  require_3ds:
+    description: Force 3D Secure authentication
+    log_level: warning
+    actions: [require_3ds_authentication]
+
+  block:
+    description: Block transaction
+    log_level: error
+    actions: [reject_transaction, add_to_watchlist]
+
+machine_learning_integration:
+  enabled: true
+  model_id: fraud_detection_v2
+  features:
+    - transaction_amount
+    - transaction_frequency
+    - device_fingerprint
+    - ip_reputation_score
+    - card_issuer_country
+    - merchant_category
+    - customer_tenure
+    - time_of_day
+    - day_of_week
+  model_score_weight: 0.4
+  rule_score_weight: 0.6
+  override_conditions:
+    - model_confidence < 0.7: use_rule_score_only
+    - blacklist_match: always_block

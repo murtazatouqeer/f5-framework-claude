@@ -1,0 +1,658 @@
+# =============================================================================
+# LAB ORDER WORKFLOW - EHR Sub-domain
+# Quy trình Xét nghiệm
+# =============================================================================
+
+name: LabOrderWorkflow
+display_name: Lab Order Workflow / Quy trình Xét nghiệm
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: diagnostic
+
+description: |
+  End-to-end workflow for laboratory test ordering from order entry through
+  result review and patient notification. Includes specimen collection,
+  critical value handling, and result communication.
+
+# =============================================================================
+# WORKFLOW TRIGGERS
+# =============================================================================
+triggers:
+  - id: TRIG-LAB-001
+    name: Provider Order
+    description: Provider orders laboratory tests
+    event: lab_order_created
+    actors: [physician, np, pa]
+
+  - id: TRIG-LAB-002
+    name: Standing Order
+    description: Pre-authorized recurring order
+    event: standing_order_due
+    conditions:
+      - order_active: true
+      - frequency_due: true
+
+  - id: TRIG-LAB-003
+    name: Protocol Order
+    description: Order triggered by clinical protocol
+    event: protocol_criteria_met
+    examples:
+      - diabetes_annual_labs
+      - anticoagulation_monitoring
+      - therapeutic_drug_level
+
+  - id: TRIG-LAB-004
+    name: Reflex Testing
+    description: Automatic follow-up based on result
+    event: reflex_criteria_met
+    examples:
+      - abnormal_screening_triggers_confirmatory
+      - positive_culture_triggers_sensitivity
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: draft
+    name: Draft
+    description: Order being composed
+    allowed_transitions: [pending, cancelled]
+
+  - id: pending
+    name: Pending Signature
+    description: Awaiting provider signature
+    allowed_transitions: [signed, cancelled, draft]
+
+  - id: signed
+    name: Signed
+    description: Order signed, ready for collection
+    entry_actions:
+      - validate_order
+      - check_medical_necessity
+      - schedule_if_future
+      - print_labels_if_now
+    allowed_transitions: [scheduled, ready_to_collect, cancelled]
+
+  - id: scheduled
+    name: Scheduled
+    description: Appointment scheduled for collection
+    allowed_transitions: [ready_to_collect, no_show, cancelled]
+
+  - id: ready_to_collect
+    name: Ready for Collection
+    description: Patient ready, awaiting specimen collection
+    entry_actions:
+      - generate_collection_list
+      - print_labels
+    allowed_transitions: [collected, patient_refused, cancelled]
+
+  - id: collected
+    name: Specimen Collected
+    description: Specimen obtained from patient
+    entry_actions:
+      - record_collection_time
+      - record_collector
+      - verify_labeling
+    allowed_transitions: [in_transit, received_at_lab]
+
+  - id: in_transit
+    name: In Transit
+    description: Specimen being transported to lab
+    allowed_transitions: [received_at_lab, specimen_lost]
+
+  - id: received_at_lab
+    name: Received at Lab
+    description: Specimen received and accessioned
+    entry_actions:
+      - assign_accession_number
+      - verify_specimen_quality
+    allowed_transitions: [in_process, specimen_rejected]
+
+  - id: specimen_rejected
+    name: Specimen Rejected
+    description: Specimen not acceptable for testing
+    entry_actions:
+      - notify_ordering_provider
+      - document_rejection_reason
+    allowed_transitions: [ready_to_collect]
+
+  - id: in_process
+    name: In Process
+    description: Testing in progress
+    allowed_transitions: [preliminary_result, final_result, test_cancelled]
+
+  - id: preliminary_result
+    name: Preliminary Result
+    description: Initial result available, pending verification
+    entry_actions:
+      - display_preliminary_flag
+    allowed_transitions: [final_result]
+
+  - id: final_result
+    name: Final Result
+    description: Verified result available
+    entry_actions:
+      - file_result
+      - notify_ordering_provider
+      - check_for_critical
+      - update_patient_portal
+    allowed_transitions: [reviewed, amended]
+
+  - id: reviewed
+    name: Reviewed
+    description: Provider has reviewed result
+    entry_actions:
+      - document_review_action
+    allowed_transitions: [patient_notified, follow_up_ordered]
+
+  - id: patient_notified
+    name: Patient Notified
+    description: Patient informed of results
+    allowed_transitions: [completed]
+
+  - id: amended
+    name: Amended
+    description: Result corrected after final
+    entry_actions:
+      - notify_ordering_provider
+      - document_amendment_reason
+    allowed_transitions: [reviewed]
+
+  - id: completed
+    name: Completed
+    description: Order fully completed
+    allowed_transitions: []
+
+  - id: cancelled
+    name: Cancelled
+    description: Order cancelled
+    entry_actions:
+      - document_cancellation_reason
+    allowed_transitions: []
+
+# =============================================================================
+# ORDER ENTRY WORKFLOW
+# =============================================================================
+order_entry:
+  # Step 1: Test Selection
+  - id: STEP-001
+    name: Test Selection
+    description: Select laboratory tests
+    order: 1
+    actors: [provider]
+    actions:
+      - action: search_tests
+        description: Search by name, code, or panel
+        features:
+          - search_by_name
+          - search_by_loinc
+          - frequently_ordered
+          - order_sets
+      - action: select_tests
+        description: Choose tests or panels
+        displays:
+          - test_name
+          - specimen_requirements
+          - fasting_required
+          - expected_turnaround
+
+  # Step 2: Clinical Information
+  - id: STEP-002
+    name: Clinical Information
+    description: Provide clinical context
+    order: 2
+    actors: [provider]
+    actions:
+      - action: diagnosis_code
+        description: Link to ICD-10 diagnosis
+        purpose: medical_necessity
+      - action: clinical_indication
+        description: Free-text indication
+      - action: relevant_history
+        description: Pertinent clinical info
+        examples:
+          - current_medications
+          - recent_procedures
+          - relevant_conditions
+
+  # Step 3: Order Details
+  - id: STEP-003
+    name: Order Details
+    description: Specify order parameters
+    order: 3
+    actors: [provider]
+    actions:
+      - action: set_priority
+        options:
+          - routine: standard_turnaround
+          - urgent: expedited_processing
+          - stat: immediate_processing
+          - timed: specific_collection_time
+      - action: collection_timing
+        options:
+          - now: collect_immediately
+          - future_date: schedule_collection
+          - fasting: schedule_fasting_collection
+      - action: special_instructions
+        examples:
+          - trough_level_timing
+          - peak_level_timing
+          - specific_collection_site
+
+  # Step 4: Safety Checks
+  - id: STEP-004
+    name: Safety Checks
+    description: Automated order validation
+    order: 4
+    actors: [system]
+    checks:
+      - check: duplicate_order
+        description: Same test within timeframe
+        action: alert_allow_override
+      - check: frequency_limits
+        description: Maximum order frequency
+        action: alert_require_justification
+      - check: medical_necessity
+        description: Diagnosis supports test
+        action: warn_for_abn
+
+  # Step 5: Signature
+  - id: STEP-005
+    name: Order Signature
+    description: Authenticate and sign order
+    order: 5
+    actors: [provider]
+    actions:
+      - action: review_order
+        description: Final order review
+      - action: sign_order
+        description: Apply electronic signature
+      - action: verbal_order
+        conditional: provider_unavailable
+        requires: read_back_verification
+
+# =============================================================================
+# SPECIMEN COLLECTION WORKFLOW
+# =============================================================================
+specimen_collection:
+  # Pre-Collection
+  - id: COLL-001
+    name: Pre-Collection Preparation
+    description: Prepare for specimen collection
+    actors: [phlebotomist, nurse, ma]
+    actions:
+      - action: review_orders
+        description: Review pending collection orders
+        displays:
+          - patient_name
+          - tests_ordered
+          - specimen_types
+          - special_requirements
+      - action: verify_preparation
+        description: Confirm patient preparation
+        checks:
+          - fasting_confirmed: if_required
+          - medication_held: if_required
+          - timing_appropriate: if_timed
+
+  # Patient Identification
+  - id: COLL-002
+    name: Patient Identification
+    description: Positive patient identification
+    actors: [phlebotomist]
+    actions:
+      - action: two_identifier_check
+        description: Verify patient identity
+        identifiers:
+          - full_name: ask_patient_to_state
+          - date_of_birth: ask_patient_to_state
+        match: against_order_and_wristband
+      - action: document_verification
+        description: Record ID verification
+
+  # Collection Process
+  - id: COLL-003
+    name: Specimen Collection
+    description: Obtain specimens
+    actors: [phlebotomist]
+    actions:
+      - action: prepare_supplies
+        description: Gather appropriate tubes and supplies
+        tube_selection:
+          - based_on_test_requirements
+          - correct_order_of_draw
+      - action: perform_venipuncture
+        description: Collect blood specimen
+        documentation:
+          - site_used
+          - number_of_attempts
+          - complications
+      - action: label_specimens
+        description: Apply labels to tubes
+        requirements:
+          - at_bedside: true
+          - before_leaving_patient: true
+          - minimum_two_identifiers: true
+      - action: collect_other_specimens
+        description: Collect non-blood specimens
+        types:
+          - urine: midstream_clean_catch
+          - stool: collection_container
+          - swabs: appropriate_transport_media
+
+  # Post-Collection
+  - id: COLL-004
+    name: Post-Collection Processing
+    description: Handle collected specimens
+    actors: [phlebotomist, lab_assistant]
+    actions:
+      - action: document_collection
+        description: Record collection details
+        elements:
+          - collection_time
+          - collector_id
+          - specimen_condition
+      - action: process_specimen
+        description: Initial specimen processing
+        steps:
+          - centrifuge_if_required
+          - aliquot_if_required
+          - store_appropriately
+      - action: transport_specimen
+        description: Send to laboratory
+        requirements:
+          - appropriate_temperature
+          - timely_transport
+          - chain_of_custody
+
+# =============================================================================
+# LABORATORY PROCESSING WORKFLOW
+# =============================================================================
+laboratory_processing:
+  # Receiving
+  - id: LAB-001
+    name: Specimen Receiving
+    description: Receive and accession specimens
+    actors: [lab_technician]
+    actions:
+      - action: verify_specimen
+        description: Check specimen acceptability
+        criteria:
+          - proper_labeling
+          - adequate_volume
+          - correct_container
+          - appropriate_condition
+          - timely_receipt
+      - action: accession_specimen
+        description: Assign accession number
+        links: specimen_to_order
+      - action: reject_if_unacceptable
+        reasons:
+          - hemolyzed
+          - lipemic
+          - icteric
+          - clotted
+          - quantity_not_sufficient
+          - improper_container
+          - expired_transport_time
+          - mislabeled
+
+  # Testing
+  - id: LAB-002
+    name: Laboratory Testing
+    description: Perform requested tests
+    actors: [medical_technologist]
+    actions:
+      - action: prepare_specimen
+        description: Prepare for analysis
+      - action: run_analysis
+        description: Perform testing
+        documentation:
+          - instrument_used
+          - reagent_lot
+          - calibration_status
+      - action: review_quality
+        description: Check QC data
+      - action: result_entry
+        description: Enter or verify results
+
+  # Verification
+  - id: LAB-003
+    name: Result Verification
+    description: Verify and release results
+    actors: [medical_technologist, pathologist]
+    actions:
+      - action: technical_review
+        description: Review for technical accuracy
+        checks:
+          - qc_in_range
+          - delta_check
+          - critical_value_check
+      - action: clinical_review
+        description: Pathologist review if required
+        for:
+          - pathology_specimens
+          - abnormal_cytology
+          - complex_interpretations
+      - action: release_result
+        description: Finalize and release
+        actions:
+          - mark_as_final
+          - file_to_chart
+          - trigger_notifications
+
+# =============================================================================
+# CRITICAL VALUE WORKFLOW
+# =============================================================================
+critical_value_handling:
+  - id: CRIT-001
+    name: Critical Value Detection
+    description: System identifies critical result
+    trigger: result_outside_critical_limits
+    examples:
+      - potassium: "< 2.5 or > 6.5 mEq/L"
+      - glucose: "< 40 or > 400 mg/dL"
+      - hemoglobin: "< 7.0 or > 20.0 g/dL"
+      - inr: "> 5.0"
+      - positive_blood_culture: any
+
+  - id: CRIT-002
+    name: Critical Value Notification
+    description: Notify ordering provider
+    actors: [lab_technician, nurse]
+    timeline: within_30_minutes
+    process:
+      step_1: Attempt to reach ordering provider
+      step_2: If unavailable, reach covering provider
+      step_3: If unavailable, reach nursing unit
+      step_4: Document notification
+    documentation:
+      - result_value
+      - time_of_result
+      - person_notified
+      - time_of_notification
+      - read_back_confirmed
+
+  - id: CRIT-003
+    name: Critical Value Acknowledgment
+    description: Provider acknowledges critical result
+    actors: [provider]
+    timeline: within_60_minutes
+    actions:
+      - acknowledge_receipt
+      - document_action_taken
+      - repeat_test_if_needed
+
+# =============================================================================
+# RESULT REVIEW WORKFLOW
+# =============================================================================
+result_review:
+  - id: RESULT-001
+    name: Provider Result Review
+    description: Provider reviews lab results
+    actors: [provider]
+    actions:
+      - action: view_results
+        displays:
+          - current_values
+          - reference_ranges
+          - abnormal_flags
+          - trend_data
+          - delta_from_previous
+      - action: acknowledge_review
+        options:
+          - normal_no_action
+          - abnormal_monitor
+          - abnormal_action_needed
+      - action: document_plan
+        description: Document response to result
+
+  - id: RESULT-002
+    name: Patient Notification
+    description: Communicate results to patient
+    actors: [provider, nurse]
+    methods:
+      - patient_portal: automatic_for_normal
+      - phone_call: for_abnormal_or_actionable
+      - in_person: at_next_visit
+      - letter: if_unable_to_reach
+    documentation:
+      - method_of_notification
+      - date_and_time
+      - patient_understanding
+
+  - id: RESULT-003
+    name: Follow-up Ordering
+    description: Order additional tests based on results
+    actors: [provider]
+    triggers:
+      - abnormal_result
+      - reflex_testing_indicated
+      - monitoring_required
+    actions:
+      - order_confirmatory_test
+      - order_additional_workup
+      - schedule_repeat_test
+
+# =============================================================================
+# SPECIAL SCENARIOS
+# =============================================================================
+special_scenarios:
+  - id: SCEN-001
+    name: STAT Order Handling
+    description: Urgent laboratory orders
+    priority: immediate
+    timeline:
+      collection: within_30_minutes
+      result: within_1_hour
+    escalation:
+      delay_notification: to_ordering_provider
+      alternative_collection: if_needed
+
+  - id: SCEN-002
+    name: Timed Specimen Collection
+    description: Time-sensitive collections
+    examples:
+      - peak_level: 30_minutes_post_dose
+      - trough_level: before_next_dose
+      - 2_hour_postprandial: 2_hours_after_meal
+      - cortisol: 8am_specimen
+    requirements:
+      - collection_time_documented
+      - timing_verified
+
+  - id: SCEN-003
+    name: Send-Out Tests
+    description: Tests sent to reference laboratory
+    handling:
+      - package_per_lab_requirements
+      - include_requisition
+      - ship_appropriately
+      - track_specimen
+    result_management:
+      - receive_electronically_or_fax
+      - enter_into_system
+      - file_to_chart
+
+  - id: SCEN-004
+    name: Point of Care Testing
+    description: POCT at bedside or clinic
+    tests:
+      - glucose
+      - hemoglobin
+      - urinalysis
+      - pregnancy
+      - strep
+    requirements:
+      - waived_test_compliance
+      - qc_documentation
+      - operator_competency
+      - result_entry_to_ehr
+
+# =============================================================================
+# INTEGRATIONS
+# =============================================================================
+integrations:
+  - id: INT-001
+    name: Laboratory Information System
+    description: Bidirectional interface with LIS
+    transactions:
+      - order_transmission
+      - result_receipt
+      - order_status_updates
+
+  - id: INT-002
+    name: Instrument Interfaces
+    description: Analyzer result interfaces
+    format: hl7_or_astm
+    validation:
+      - auto_verification_rules
+      - critical_value_flags
+
+  - id: INT-003
+    name: Patient Portal
+    description: Result publication to portal
+    timing:
+      normal_results: immediate_on_release
+      abnormal_results: provider_review_first
+    content:
+      - result_values
+      - reference_ranges
+      - simple_interpretation
+
+# =============================================================================
+# METRICS
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: Specimen Collection Time
+    description: Order signed to specimen collected
+    targets:
+      routine: "< 24 hours"
+      urgent: "< 4 hours"
+      stat: "< 30 minutes"
+
+  - id: MET-002
+    name: Turnaround Time
+    description: Specimen receipt to result
+    targets:
+      routine_chemistry: "< 4 hours"
+      routine_hematology: "< 2 hours"
+      stat: "< 1 hour"
+
+  - id: MET-003
+    name: Critical Value Notification Time
+    description: Result to provider notification
+    target: "< 30 minutes"
+    compliance: "100%"
+
+  - id: MET-004
+    name: Specimen Rejection Rate
+    description: Specimens rejected / specimens received
+    target: "< 1%"
+
+  - id: MET-005
+    name: Result Review Rate
+    description: Results reviewed by provider
+    target: "100% within 7 days"

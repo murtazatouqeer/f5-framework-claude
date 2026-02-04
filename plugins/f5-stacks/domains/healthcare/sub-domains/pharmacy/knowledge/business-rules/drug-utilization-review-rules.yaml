@@ -1,0 +1,399 @@
+# Drug Utilization Review Rules
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# DUR/clinical screening business rules
+
+business_rules:
+  id: drug-utilization-review-rules
+  name: Drug Utilization Review Rules
+  name_ja: 薬剤使用評価ルール
+  description: Clinical drug utilization review and screening rules
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  regulatory_references:
+    - OBRA '90 (Omnibus Budget Reconciliation Act)
+    - State Pharmacy Practice Acts
+    - CMS Requirements for Part D
+
+  categories:
+    - id: drug_drug
+      name: Drug-Drug Interactions
+      description: Drug interaction screening
+      
+    - id: drug_disease
+      name: Drug-Disease Interactions
+      description: Contraindicated conditions
+      
+    - id: drug_allergy
+      name: Drug-Allergy Checking
+      description: Allergy screening
+      
+    - id: therapeutic_duplication
+      name: Therapeutic Duplication
+      description: Duplicate therapy detection
+      
+    - id: dose_checking
+      name: Dose Checking
+      description: Dose range and frequency validation
+      
+    - id: age_gender
+      name: Age/Gender Appropriateness
+      description: Age and gender specific screening
+
+  rules:
+    # Drug-Drug Interactions
+    - id: BR-DUR-001
+      name: Contraindicated Drug Combinations
+      category: drug_drug
+      severity: critical
+      
+      description: Block dispensing of contraindicated drug combinations
+      
+      condition: |
+        interaction.severity == 'contraindicated' AND
+        both_drugs_active
+        
+      interaction_sources:
+        - First Databank (FDB)
+        - Medi-Span
+        - Clinical Pharmacology
+        
+      action: |
+        IF contraindicated:
+          HARD STOP - pharmacist review required
+          REQUIRE documented override reason
+          CONTACT prescriber
+          
+    - id: BR-DUR-002
+      name: Severe Drug Interactions
+      category: drug_drug
+      severity: high
+      
+      description: Alert on severe drug interactions
+      
+      condition: |
+        interaction.severity == 'severe' AND
+        both_drugs_active
+        
+      action: |
+        ALERT pharmacist
+        REQUIRE acknowledgment
+        DOCUMENT clinical decision
+        CONSIDER prescriber contact
+        
+    - id: BR-DUR-003
+      name: Moderate Drug Interactions
+      category: drug_drug
+      severity: medium
+      
+      description: Alert on moderate interactions with clinical significance
+      
+      condition: |
+        interaction.severity == 'moderate' AND
+        clinical_significance == true
+        
+      action: |
+        DISPLAY alert
+        ALLOW pharmacist override
+        DOCUMENT if override
+
+    # Drug-Disease Interactions
+    - id: BR-DUR-004
+      name: Contraindicated Disease States
+      category: drug_disease
+      severity: critical
+      
+      description: Block drugs contraindicated for patient conditions
+      
+      examples:
+        - NSAID with GI bleeding history
+        - Beta blockers with severe asthma
+        - Metformin with severe renal impairment
+        
+      condition: |
+        patient.conditions INCLUDES contraindicated_condition AND
+        drug IS contraindicated for condition
+        
+      action: |
+        HARD STOP
+        ALERT pharmacist
+        REQUIRE prescriber contact
+        
+    - id: BR-DUR-005
+      name: Dose Adjustment for Conditions
+      category: drug_disease
+      severity: high
+      
+      description: Flag drugs requiring dose adjustment
+      
+      condition_adjustments:
+        renal_impairment:
+          - Check CrCl/eGFR
+          - Apply renal dosing guidelines
+        hepatic_impairment:
+          - Check Child-Pugh score
+          - Apply hepatic dosing
+          
+      action: |
+        ALERT if dose exceeds condition-specific limit
+        DISPLAY recommended dose
+        REQUIRE pharmacist review
+
+    # Drug-Allergy Checking
+    - id: BR-DUR-006
+      name: Direct Allergy Match
+      category: drug_allergy
+      severity: critical
+      
+      description: Block dispensing of drugs patient is allergic to
+      
+      condition: |
+        drug.ingredient IN patient.allergy_list OR
+        drug.ndc IN patient.allergy_list
+        
+      action: |
+        HARD STOP
+        DISPLAY allergy information
+        REQUIRE prescriber contact to override
+        
+    - id: BR-DUR-007
+      name: Cross-Sensitivity Allergy
+      category: drug_allergy
+      severity: high
+      
+      description: Alert on potential cross-reactivity
+      
+      cross_sensitivity_groups:
+        - Penicillins/Cephalosporins
+        - Sulfonamides
+        - NSAIDs
+        - ACE inhibitors/ARBs
+        
+      condition: |
+        drug.class HAS cross_sensitivity WITH patient.allergy_class
+        
+      action: |
+        ALERT pharmacist
+        DISPLAY cross-sensitivity information
+        REQUIRE documented decision
+
+    # Therapeutic Duplication
+    - id: BR-DUR-008
+      name: Same Drug Duplication
+      category: therapeutic_duplication
+      severity: high
+      
+      description: Detect duplicate prescriptions for same drug
+      
+      condition: |
+        patient.active_medications CONTAINS same_drug OR
+        same_drug_different_strength
+        
+      exceptions:
+        - Different prescribers for legitimate reason
+        - Titration/transition period
+        - Documented intentional duplication
+        
+      action: |
+        ALERT pharmacist
+        DISPLAY existing medication
+        VERIFY intentional before dispensing
+        
+    - id: BR-DUR-009
+      name: Therapeutic Class Duplication
+      category: therapeutic_duplication
+      severity: medium
+      
+      description: Detect multiple drugs from same therapeutic class
+      
+      condition: |
+        patient.active_medications CONTAINS same_therapeutic_class
+        
+      clinical_relevance:
+        high:
+          - Multiple opioids
+          - Multiple benzodiazepines
+          - Multiple stimulants
+        medium:
+          - Multiple PPIs
+          - Multiple statins
+          - Multiple SSRIs
+          
+      action: |
+        ALERT for high relevance
+        DISPLAY for medium relevance
+        DOCUMENT clinical justification if dispensed
+
+    # Dose Checking
+    - id: BR-DUR-010
+      name: Maximum Daily Dose Check
+      category: dose_checking
+      severity: high
+      
+      description: Verify dose does not exceed maximum
+      
+      condition: |
+        calculated_daily_dose <= drug.max_daily_dose
+        
+      calculation: |
+        dose_per_admin * administrations_per_day = daily_dose
+        
+      action: |
+        IF exceeds maximum:
+          ALERT pharmacist
+          DISPLAY max dose and calculated dose
+          REQUIRE prescriber verification
+          
+    - id: BR-DUR-011
+      name: Subtherapeutic Dose Check
+      category: dose_checking
+      severity: medium
+      
+      description: Alert on potentially subtherapeutic doses
+      
+      condition: |
+        calculated_daily_dose >= drug.min_therapeutic_dose
+        
+      action: |
+        IF below therapeutic:
+          ALERT pharmacist
+          DISPLAY therapeutic range
+          ALLOW continuation with documentation
+          
+    - id: BR-DUR-012
+      name: Frequency Validation
+      category: dose_checking
+      severity: medium
+      
+      description: Validate dosing frequency is appropriate
+      
+      condition: |
+        sig.frequency IS appropriate for drug
+        
+      examples:
+        - QD drugs not given BID
+        - Short half-life drugs given frequently enough
+        
+      action: |
+        ALERT if frequency unusual
+        DISPLAY typical frequency
+
+    # Age/Gender Appropriateness
+    - id: BR-DUR-013
+      name: Pediatric Age Limits
+      category: age_gender
+      severity: high
+      
+      description: Check drug appropriateness for pediatric patients
+      
+      condition: |
+        patient.age >= drug.min_age OR
+        pediatric_indication_documented
+        
+      action: |
+        IF below minimum age:
+          ALERT pharmacist
+          REQUIRE weight-based dosing verification
+          CHECK pediatric formulation available
+          
+    - id: BR-DUR-014
+      name: Geriatric Cautions
+      category: age_gender
+      severity: medium
+      
+      description: Flag Beers Criteria drugs in elderly
+      
+      condition: |
+        patient.age >= 65 AND
+        drug IN beers_criteria_list
+        
+      beers_criteria:
+        avoid: "Generally avoid"
+        caution: "Use with caution"
+        conditional: "Avoid in certain conditions"
+        
+      action: |
+        DISPLAY Beers criteria warning
+        ALERT pharmacist
+        CONSIDER alternative therapy
+        
+    - id: BR-DUR-015
+      name: Gender-Specific Medications
+      category: age_gender
+      severity: medium
+      
+      description: Verify gender-appropriate medications
+      
+      condition: |
+        drug.gender_restriction == null OR
+        drug.gender_restriction == patient.gender
+        
+      action: |
+        IF gender mismatch:
+          ALERT pharmacist
+          VERIFY patient gender
+          CONTACT prescriber if needed
+
+    # Pregnancy/Lactation
+    - id: BR-DUR-016
+      name: Pregnancy Category Screening
+      category: age_gender
+      severity: critical
+      
+      description: Screen for teratogenic drugs in pregnancy
+      
+      condition: |
+        patient.pregnancy_status != 'pregnant' OR
+        drug.pregnancy_category IN ['A', 'B'] OR
+        documented_risk_benefit_analysis
+        
+      high_risk_categories:
+        - Category X (Contraindicated)
+        - Category D (Evidence of risk)
+        
+      action: |
+        IF category X and pregnant:
+          HARD STOP
+          CONTACT prescriber immediately
+        IF category D:
+          ALERT pharmacist
+          REQUIRE documented counseling
+
+  decision_flow:
+    dur_screening:
+      steps:
+        1: Drug-Allergy check (BR-DUR-006, BR-DUR-007)
+        2: Drug-Drug interaction check (BR-DUR-001 to BR-DUR-003)
+        3: Drug-Disease check (BR-DUR-004, BR-DUR-005)
+        4: Therapeutic duplication check (BR-DUR-008, BR-DUR-009)
+        5: Dose validation (BR-DUR-010 to BR-DUR-012)
+        6: Age/Gender check (BR-DUR-013 to BR-DUR-016)
+        7: Generate DUR report
+        
+      screening_result:
+        pass: "Continue to dispensing"
+        soft_stop: "Pharmacist must acknowledge"
+        hard_stop: "Cannot proceed without override"
+
+  dur_codes:
+    professional_service:
+      - M0: Prescriber consulted
+      - P0: Patient consulted
+      - R0: Pharmacist acknowledged
+    reason_for_service:
+      - DD: Drug-drug interaction
+      - DC: Drug-disease contraindication
+      - DA: Drug-allergy interaction
+      - TD: Therapeutic duplication
+      - HD: High dose
+      - LD: Low dose
+
+  audit:
+    log_all_screenings: true
+    retention_days: 2555
+    required_documentation:
+      - All DUR alerts generated
+      - Override reasons
+      - Prescriber consultations
+      - Patient counseling

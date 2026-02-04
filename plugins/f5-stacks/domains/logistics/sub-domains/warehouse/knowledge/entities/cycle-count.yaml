@@ -1,0 +1,348 @@
+name: CycleCount
+display_name: Cycle Count
+description: |
+  Inventory cycle counting task for accuracy verification.
+  Supports ABC-based counting frequencies and blind/guided counts.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: count_number
+    type: string
+    required: true
+    validation:
+      pattern: "^CC-[0-9]{8}-[0-9]{4}$"
+    example: "CC-20241201-0001"
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: worker_id
+    type: uuid
+    required: false
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [scheduled, assigned, in_progress, pending_recount, pending_approval, completed, cancelled]
+    default: scheduled
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, urgent]
+    default: medium
+
+  # Count Type
+  - name: count_type
+    type: enum
+    required: true
+    validation:
+      values: [scheduled, ad_hoc, discrepancy, perpetual, full_physical]
+    default: scheduled
+
+  - name: count_method
+    type: enum
+    required: true
+    validation:
+      values: [blind, guided, quantity_verification]
+    default: blind
+    description: |
+      blind: Counter doesn't see expected quantity
+      guided: Counter sees expected quantity
+      quantity_verification: Quick Y/N verification
+
+  # Scope
+  - name: scope_type
+    type: enum
+    required: true
+    validation:
+      values: [location, zone, item, abc_class, all]
+
+  - name: location_id
+    type: uuid
+    required: false
+
+  - name: zone_id
+    type: uuid
+    required: false
+
+  - name: item_id
+    type: uuid
+    required: false
+
+  - name: abc_class
+    type: enum
+    required: false
+    validation:
+      values: [A, B, C]
+
+  # Count Details
+  - name: count_lines
+    type: array
+    required: true
+    description: Individual count lines
+    example:
+      - location_id: "uuid"
+        item_id: "uuid"
+        lpn: "LPN-123"
+        lot_number: "LOT-001"
+        system_quantity: 100
+        counted_quantity: 98
+        variance: -2
+        variance_percent: -2.0
+        recount_required: false
+        recount_quantity: null
+        status: "counted"
+
+  - name: total_lines
+    type: integer
+    required: true
+    default: 0
+
+  - name: lines_counted
+    type: integer
+    required: true
+    default: 0
+
+  - name: lines_with_variance
+    type: integer
+    required: true
+    default: 0
+
+  # Variance Summary
+  - name: total_system_quantity
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_counted_quantity
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_variance
+    type: integer
+    required: true
+    default: 0
+
+  - name: variance_value
+    type: decimal
+    required: false
+    description: Financial impact of variance
+
+  # Thresholds
+  - name: variance_threshold_percent
+    type: decimal
+    required: true
+    default: 2.0
+    description: Threshold for recount
+
+  - name: variance_threshold_units
+    type: integer
+    required: false
+    description: Absolute unit threshold
+
+  # Recount
+  - name: recount_required
+    type: boolean
+    required: true
+    default: false
+
+  - name: recount_by
+    type: uuid
+    required: false
+    description: Different worker for recount
+
+  - name: recount_completed_at
+    type: timestamp
+    required: false
+
+  # Approval
+  - name: requires_approval
+    type: boolean
+    required: true
+    default: true
+
+  - name: approved_by
+    type: uuid
+    required: false
+
+  - name: approved_at
+    type: timestamp
+    required: false
+
+  - name: approval_notes
+    type: text
+    required: false
+
+  # Adjustments
+  - name: adjustments_posted
+    type: boolean
+    required: true
+    default: false
+
+  - name: adjustment_ids
+    type: array
+    required: false
+    description: Inventory adjustment records created
+
+  # Schedule
+  - name: scheduled_date
+    type: date
+    required: true
+
+  - name: due_date
+    type: date
+    required: false
+
+  # Execution
+  - name: assigned_at
+    type: timestamp
+    required: false
+
+  - name: started_at
+    type: timestamp
+    required: false
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  # Performance
+  - name: count_time_seconds
+    type: integer
+    required: false
+
+  - name: lines_per_hour
+    type: decimal
+    required: false
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: worker
+    type: belongs_to
+    entity: WarehouseWorker
+    required: false
+
+  - name: location
+    type: belongs_to
+    entity: Location
+    required: false
+
+  - name: zone
+    type: belongs_to
+    entity: Zone
+    required: false
+
+  - name: item
+    type: belongs_to
+    entity: Item
+    required: false
+
+  - name: approver
+    type: belongs_to
+    entity: WarehouseWorker
+    required: false
+
+indexes:
+  - [count_number]
+  - [warehouse_id, status]
+  - [warehouse_id, scheduled_date]
+  - [worker_id, status]
+  - [location_id]
+  - [item_id]
+
+computed_fields:
+  - name: count_progress
+    formula: (lines_counted / total_lines) * 100
+  - name: accuracy_rate
+    formula: ((total_lines - lines_with_variance) / total_lines) * 100
+  - name: variance_percent
+    formula: (total_variance / total_system_quantity) * 100
+
+state_machine:
+  initial: scheduled
+  states:
+    - name: scheduled
+      description: Count scheduled for future date
+    - name: assigned
+      description: Assigned to worker
+    - name: in_progress
+      description: Counting in progress
+    - name: pending_recount
+      description: Variance requires recount
+    - name: pending_approval
+      description: Awaiting supervisor approval
+    - name: completed
+      description: Count finalized
+    - name: cancelled
+      description: Count cancelled
+  transitions:
+    - from: scheduled
+      to: assigned
+      trigger: assign
+    - from: assigned
+      to: in_progress
+      trigger: start
+    - from: in_progress
+      to: pending_recount
+      trigger: flag_variance
+      conditions: [variance_exceeds_threshold]
+    - from: in_progress
+      to: pending_approval
+      trigger: submit
+      conditions: [all_lines_counted]
+    - from: pending_recount
+      to: pending_approval
+      trigger: complete_recount
+    - from: pending_approval
+      to: completed
+      trigger: approve
+      actions: [post_adjustments]
+    - from: [scheduled, assigned]
+      to: cancelled
+      trigger: cancel
+
+business_rules:
+  - BR-CC-001: Class A items counted monthly, B quarterly, C annually
+  - BR-CC-002: Variance > threshold requires recount by different person
+  - BR-CC-003: High-value variances require manager approval
+  - BR-CC-004: Location must be locked during count
+
+events:
+  - name: cycle_count.started
+    payload: [id, scope_type, total_lines]
+  - name: cycle_count.variance_found
+    payload: [id, location_id, item_id, variance]
+  - name: cycle_count.completed
+    payload: [id, accuracy_rate, total_variance]
+  - name: cycle_count.adjustments_posted
+    payload: [id, adjustment_ids, variance_value]

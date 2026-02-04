@@ -1,0 +1,650 @@
+# Item Analysis Workflow
+# F5 Framework v2.0 - Education/Assessment
+# Complete workflow for psychometric analysis
+
+workflow:
+  id: item_analysis
+  name: Item Analysis Workflow
+  name_ja: 項目分析ワークフロー
+  description: End-to-end workflow for psychometric analysis of exam questions
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+  
+  trigger:
+    type: scheduled
+    schedule: after_exam_completion
+    minimum_responses: 30
+    
+  actors:
+    - id: system
+      name: Analysis System
+      name_ja: 分析システム
+      responsibilities:
+        - Run statistical calculations
+        - Generate reports
+        - Flag problematic items
+        
+    - id: psychometrician
+      name: Psychometrician
+      name_ja: 心理測定専門家
+      responsibilities:
+        - Review analysis results
+        - Interpret statistics
+        - Make recommendations
+        
+    - id: examiner
+      name: Examiner
+      name_ja: 出題者
+      responsibilities:
+        - Review flagged questions
+        - Implement improvements
+        - Update question bank
+
+  stages:
+    # ==========================================
+    # Stage 1: Data Collection
+    # ==========================================
+    - id: data_collection
+      name: Data Collection
+      name_ja: データ収集
+      description: Collect response data for analysis
+      
+      steps:
+        - id: identify_scope
+          name: Identify Analysis Scope
+          name_ja: 分析範囲特定
+          actor: system
+          action:
+            type: configure
+            parameters:
+              - exam_id
+              - analysis_period_start
+              - analysis_period_end
+              - minimum_responses: 30
+              
+        - id: gather_responses
+          name: Gather Response Data
+          name_ja: 回答データ収集
+          actor: system
+          action:
+            type: query
+            entity: response
+            join:
+              - exam_attempt
+              - question
+            filters:
+              - attempt.status = 'graded'
+              - attempt.submitted_at BETWEEN analysis_period
+            exclude:
+              - voided_attempts
+              - incomplete_responses
+              
+        - id: validate_sample_size
+          name: Validate Sample Size
+          name_ja: サンプルサイズ確認
+          actor: system
+          action:
+            type: validate
+            condition: total_responses >= minimum_responses
+            per_question: responses_per_question >= 30
+            on_failure:
+              action: defer_analysis
+              message: "Insufficient responses for reliable analysis"
+              
+        - id: prepare_datasets
+          name: Prepare Datasets
+          name_ja: データセット準備
+          actor: system
+          action:
+            type: prepare
+            datasets:
+              - response_matrix: questions x candidates
+              - score_vector: total_scores
+              - time_matrix: response_times
+              - option_selections: for_distractor_analysis
+              
+      transition:
+        on_complete: classical_analysis
+        
+    # ==========================================
+    # Stage 2: Classical Test Theory Analysis
+    # ==========================================
+    - id: classical_analysis
+      name: Classical Test Theory Analysis
+      name_ja: 古典的テスト理論分析
+      description: CTT-based item analysis
+      
+      steps:
+        - id: calculate_difficulty
+          name: Calculate Difficulty Index
+          name_ja: 困難度指数計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            formula: |
+              difficulty_index = correct_responses / total_responses
+            categorize:
+              - very_easy: p > 0.9
+              - easy: 0.7 < p <= 0.9
+              - medium: 0.4 < p <= 0.7
+              - hard: 0.2 < p <= 0.4
+              - very_hard: p <= 0.2
+              
+        - id: calculate_discrimination
+          name: Calculate Discrimination Index
+          name_ja: 識別力指数計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            method: upper_lower_27
+            formula: |
+              upper_group = top_27%_by_total_score
+              lower_group = bottom_27%_by_total_score
+              discrimination = (upper_correct / upper_n) - (lower_correct / lower_n)
+            categorize:
+              - excellent: d >= 0.4
+              - good: 0.3 <= d < 0.4
+              - acceptable: 0.2 <= d < 0.3
+              - poor: 0 <= d < 0.2
+              - negative: d < 0
+              
+        - id: calculate_point_biserial
+          name: Calculate Point-Biserial Correlation
+          name_ja: 点双列相関計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            formula: |
+              r_pb = (mean_correct - mean_incorrect) / sd_total * sqrt(p * q)
+            interpretation:
+              - strong: r > 0.3
+              - moderate: 0.2 < r <= 0.3
+              - weak: r <= 0.2
+              
+        - id: calculate_item_total
+          name: Calculate Corrected Item-Total Correlation
+          name_ja: 修正項目全体相関計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            formula: |
+              r_it = correlation(item_score, total_score - item_score)
+              
+      transition:
+        on_complete: distractor_analysis
+        
+    # ==========================================
+    # Stage 3: Distractor Analysis
+    # ==========================================
+    - id: distractor_analysis
+      name: Distractor Analysis
+      name_ja: ディストラクター分析
+      description: Analyze multiple choice distractors
+      condition: has_multiple_choice_questions
+      
+      steps:
+        - id: calculate_option_stats
+          name: Calculate Option Statistics
+          name_ja: 選択肢統計計算
+          actor: system
+          action:
+            type: calculate
+            for_each: [question, option]
+            metrics:
+              - selection_count
+              - selection_percentage
+              - upper_group_selection
+              - lower_group_selection
+              - point_biserial
+              
+        - id: evaluate_distractors
+          name: Evaluate Distractor Effectiveness
+          name_ja: ディストラクター効果評価
+          actor: system
+          action:
+            type: evaluate
+            for_each: distractor
+            criteria:
+              - effective: |
+                  selection_percentage >= 5%
+                  AND lower_selection > upper_selection
+                  AND point_biserial < 0
+              - weak: |
+                  selection_percentage >= 5%
+                  AND NOT(lower_selection > upper_selection)
+              - non_functioning: |
+                  selection_percentage < 5%
+                  
+        - id: correct_answer_check
+          name: Correct Answer Check
+          name_ja: 正解確認
+          actor: system
+          action:
+            type: validate
+            for_each: correct_option
+            checks:
+              - positive_point_biserial
+              - higher_upper_selection
+            flag_if:
+              - negative_point_biserial: possible_key_error
+              - lower_selection_than_distractor: review_required
+              
+      transition:
+        on_complete: irt_analysis
+        skip_if: sample_size < 200
+        skip_to: response_time_analysis
+        
+    # ==========================================
+    # Stage 4: Item Response Theory Analysis
+    # ==========================================
+    - id: irt_analysis
+      name: Item Response Theory Analysis
+      name_ja: 項目反応理論分析
+      description: IRT-based item analysis
+      condition: sample_size >= 200
+      
+      steps:
+        - id: select_irt_model
+          name: Select IRT Model
+          name_ja: IRTモデル選択
+          actor: system
+          action:
+            type: select
+            options:
+              - rasch: dichotomous_simple
+              - 2pl: dichotomous_varying_discrimination
+              - 3pl: dichotomous_with_guessing
+              - grm: polytomous
+            based_on:
+              - question_type
+              - sample_size
+              - model_fit
+              
+        - id: estimate_parameters
+          name: Estimate Item Parameters
+          name_ja: パラメータ推定
+          actor: system
+          action:
+            type: estimate
+            method: marginal_maximum_likelihood
+            for_each: question
+            parameters:
+              - b: difficulty
+              - a: discrimination
+              - c: guessing (3pl only)
+            outputs:
+              - parameter_estimates
+              - standard_errors
+              
+        - id: calculate_fit_statistics
+          name: Calculate Fit Statistics
+          name_ja: 適合度統計計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            statistics:
+              - infit_mnsq
+              - outfit_mnsq
+              - infit_zstd
+              - outfit_zstd
+            categorize:
+              - good_fit: 0.7 <= mnsq <= 1.3
+              - acceptable: 0.5 <= mnsq <= 1.5
+              - overfit: mnsq < 0.5
+              - underfit: mnsq > 1.5
+              
+        - id: calculate_information
+          name: Calculate Information Function
+          name_ja: 情報関数計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            outputs:
+              - item_information_function
+              - max_information
+              - theta_at_max_info
+              - test_information_function
+              
+      transition:
+        on_complete: response_time_analysis
+        
+    # ==========================================
+    # Stage 5: Response Time Analysis
+    # ==========================================
+    - id: response_time_analysis
+      name: Response Time Analysis
+      name_ja: 回答時間分析
+      description: Analyze response time patterns
+      
+      steps:
+        - id: calculate_time_stats
+          name: Calculate Time Statistics
+          name_ja: 時間統計計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            statistics:
+              - mean_time
+              - median_time
+              - std_dev_time
+              - min_time
+              - max_time
+              - time_by_correctness
+              
+        - id: detect_anomalies
+          name: Detect Time Anomalies
+          name_ja: 時間異常検出
+          actor: system
+          action:
+            type: detect
+            anomalies:
+              - rapid_correct: |
+                  correct AND time < expected_min_time
+                  => possible_memorization OR test_wise
+              - slow_incorrect: |
+                  incorrect AND time > expected_max_time
+                  => possible_confusion OR difficulty
+              - uniform_times: |
+                  low_variance_across_questions
+                  => possible_rushing OR random_responding
+                  
+      transition:
+        on_complete: dif_analysis
+        skip_if: NOT high_stakes_exam
+        skip_to: quality_flagging
+        
+    # ==========================================
+    # Stage 6: Differential Item Functioning
+    # ==========================================
+    - id: dif_analysis
+      name: Differential Item Functioning Analysis
+      name_ja: 項目機能差異分析
+      description: Detect potential bias in items
+      condition: demographic_data_available AND high_stakes_exam
+      
+      steps:
+        - id: identify_groups
+          name: Identify Comparison Groups
+          name_ja: 比較グループ特定
+          actor: system
+          action:
+            type: identify
+            group_variables:
+              - gender
+              - ethnicity
+              - language
+              - age_group
+            minimum_group_size: 100
+            
+        - id: run_dif_analysis
+          name: Run DIF Analysis
+          name_ja: DIF分析実行
+          actor: system
+          action:
+            type: analyze
+            for_each: [question, group_variable]
+            methods:
+              - mantel_haenszel:
+                  output: [chi_square, delta_mh]
+              - logistic_regression:
+                  output: [delta_r2, significance]
+              - irt_based:
+                  output: [delta_b, delta_a]
+                  
+        - id: classify_dif
+          name: Classify DIF
+          name_ja: DIF分類
+          actor: system
+          action:
+            type: classify
+            criteria:
+              - negligible: delta < 1.0
+              - slight: 1.0 <= delta < 1.5
+              - moderate: 1.5 <= delta < 2.0
+              - large: delta >= 2.0
+            flag_threshold: moderate
+            
+      transition:
+        on_complete: quality_flagging
+        
+    # ==========================================
+    # Stage 7: Quality Flagging
+    # ==========================================
+    - id: quality_flagging
+      name: Quality Flagging
+      name_ja: 品質フラグ付け
+      description: Flag items needing attention
+      
+      steps:
+        - id: apply_quality_rules
+          name: Apply Quality Rules
+          name_ja: 品質ルール適用
+          actor: system
+          action:
+            type: evaluate
+            for_each: question
+            flags:
+              - too_easy:
+                  condition: difficulty_index > 0.95
+                  severity: warning
+              - too_hard:
+                  condition: difficulty_index < 0.2
+                  severity: warning
+              - low_discrimination:
+                  condition: discrimination_index < 0.2
+                  severity: warning
+              - negative_discrimination:
+                  condition: discrimination_index < 0
+                  severity: critical
+              - non_functioning_distractors:
+                  condition: functioning_distractors < 2
+                  severity: warning
+              - poor_fit:
+                  condition: outfit_mnsq > 1.5 OR infit_mnsq > 1.5
+                  severity: warning
+              - potential_dif:
+                  condition: dif_classification >= 'moderate'
+                  severity: critical
+                  
+        - id: calculate_overall_quality
+          name: Calculate Overall Quality
+          name_ja: 総合品質計算
+          actor: system
+          action:
+            type: calculate
+            for_each: question
+            inputs:
+              - critical_flags_count
+              - warning_flags_count
+              - discrimination_index
+              - point_biserial
+            output: overall_quality
+            categories:
+              - excellent: no_flags AND disc >= 0.4
+              - good: no_critical AND disc >= 0.3
+              - acceptable: no_critical AND disc >= 0.2
+              - needs_review: any_flags
+              - problematic: critical_flags > 0
+              
+        - id: generate_recommendations
+          name: Generate Recommendations
+          name_ja: 推奨事項生成
+          actor: system
+          action:
+            type: generate
+            for_each: flagged_question
+            recommendations:
+              - type: action_recommendation
+              - priority: based_on_severity
+              - details: specific_improvement_suggestions
+              
+      transition:
+        on_complete: report_generation
+        
+    # ==========================================
+    # Stage 8: Report Generation
+    # ==========================================
+    - id: report_generation
+      name: Report Generation
+      name_ja: レポート生成
+      description: Generate analysis reports
+      
+      steps:
+        - id: create_analysis_records
+          name: Create Analysis Records
+          name_ja: 分析レコード作成
+          actor: system
+          action:
+            type: create
+            entity: item_analysis
+            for_each: question
+            fields:
+              - all_calculated_metrics
+              - flags
+              - recommendations
+              
+        - id: generate_summary_report
+          name: Generate Summary Report
+          name_ja: サマリーレポート生成
+          actor: system
+          action:
+            type: generate
+            report_type: summary
+            sections:
+              - exam_overview
+              - reliability_statistics
+              - difficulty_distribution
+              - discrimination_distribution
+              - flagged_items_summary
+              - overall_quality_assessment
+              
+        - id: generate_detailed_report
+          name: Generate Detailed Report
+          name_ja: 詳細レポート生成
+          actor: system
+          action:
+            type: generate
+            report_type: detailed
+            sections:
+              - item_by_item_analysis
+              - distractor_analysis
+              - irt_parameters
+              - dif_results
+              - response_time_analysis
+              - recommendations
+              
+        - id: generate_visualizations
+          name: Generate Visualizations
+          name_ja: ビジュアライゼーション生成
+          actor: system
+          action:
+            type: generate
+            charts:
+              - difficulty_histogram
+              - discrimination_scatter
+              - item_characteristic_curves
+              - test_information_function
+              - distractor_analysis_charts
+              
+      transition:
+        on_complete: review_and_action
+        
+    # ==========================================
+    # Stage 9: Review and Action
+    # ==========================================
+    - id: review_and_action
+      name: Review and Action
+      name_ja: レビューとアクション
+      description: Expert review and improvement actions
+      
+      steps:
+        - id: psychometrician_review
+          name: Psychometrician Review
+          name_ja: 心理測定専門家レビュー
+          actor: psychometrician
+          action:
+            type: review
+            items:
+              - flagged_questions
+              - borderline_questions
+              - dif_flagged_questions
+            outputs:
+              - expert_recommendations
+              - priority_ranking
+              
+        - id: notify_examiners
+          name: Notify Examiners
+          name_ja: 出題者通知
+          actor: system
+          action:
+            type: notify
+            recipients: question_authors
+            include:
+              - flagged_questions_owned
+              - recommendations
+              - improvement_suggestions
+              
+        - id: track_improvements
+          name: Track Improvements
+          name_ja: 改善追跡
+          actor: system
+          action:
+            type: track
+            create_tasks:
+              - retire_question
+              - revise_question
+              - replace_distractors
+              - review_content
+            link_to:
+              - question_id
+              - analysis_id
+              
+        - id: update_question_status
+          name: Update Question Status
+          name_ja: 問題ステータス更新
+          actor: examiner
+          action:
+            type: update
+            entity: question
+            based_on: recommendations
+            options:
+              - keep_active
+              - flag_for_revision
+              - retire
+              
+  completion:
+    status: analyzed
+    outputs:
+      - analysis_reports
+      - flagged_items
+      - recommendations
+      - improvement_tasks
+      
+  scheduling:
+    automatic:
+      trigger: exam_completed
+      delay_days: 1
+      min_responses: 30
+    periodic:
+      frequency: monthly
+      scope: active_question_banks
+      
+  metrics:
+    exam_level:
+      - cronbach_alpha
+      - average_difficulty
+      - average_discrimination
+      - test_information
+    item_level:
+      - difficulty_index
+      - discrimination_index
+      - point_biserial
+      - irt_parameters

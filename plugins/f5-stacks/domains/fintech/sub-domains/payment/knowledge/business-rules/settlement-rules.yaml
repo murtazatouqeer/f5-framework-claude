@@ -1,0 +1,391 @@
+# Settlement Rules
+# Domain: fintech/payment
+# Purpose: Rules governing settlement processing and payout scheduling
+
+name: Settlement Rules
+display_name: Settlement Rules
+description: |
+  Business rules governing settlement batch processing, payout scheduling,
+  reserve management, and reconciliation.
+
+  Vietnamese: Quy tắc điều chỉnh xử lý đợt quyết toán, lịch thanh toán,
+  quản lý dự phòng và đối chiếu.
+
+domain: fintech
+sub_domain: payment
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # ============ SETTLEMENT SCHEDULE ============
+  schedule:
+    - id: BR-SET-001
+      name: Default Settlement Schedule
+      description: Standard settlement schedule is T+2
+      vietnamese: Lịch quyết toán tiêu chuẩn là T+2
+      condition: |
+        merchant.payout_schedule = 'daily'
+        AND merchant.risk_level IN ['low', 'standard']
+      formula: |
+        settlement_date = transaction_date + payout_delay_days
+      parameters:
+        payout_delay_days: 2
+      note: T+2 means 2 business days after transaction
+
+    - id: BR-SET-002
+      name: High Risk Settlement Schedule
+      description: Extended settlement for high-risk merchants
+      vietnamese: Quyết toán kéo dài cho merchant rủi ro cao
+      condition: |
+        merchant.risk_level IN ['elevated', 'high']
+      formula: |
+        settlement_date = transaction_date + extended_delay
+      parameters:
+        extended_delay: 7  # T+7 for high risk
+
+    - id: BR-SET-003
+      name: Weekly Settlement
+      description: Weekly settlement batch processing
+      vietnamese: Xử lý đợt quyết toán hàng tuần
+      condition: |
+        merchant.payout_schedule = 'weekly'
+      formula: |
+        settlement_date = next_settlement_day(weekly)
+        period_start = previous_settlement_date
+        period_end = current_settlement_date - 1
+      parameters:
+        weekly_settlement_day: friday
+
+    - id: BR-SET-004
+      name: Monthly Settlement
+      description: Monthly settlement batch processing
+      vietnamese: Xử lý đợt quyết toán hàng tháng
+      condition: |
+        merchant.payout_schedule = 'monthly'
+      formula: |
+        settlement_date = first_business_day_of_month
+        period_start = first_day_of_previous_month
+        period_end = last_day_of_previous_month
+
+    - id: BR-SET-005
+      name: Instant Settlement
+      description: Instant settlement (premium feature)
+      vietnamese: Quyết toán tức thì (tính năng cao cấp)
+      condition: |
+        merchant.instant_settlement_enabled = true
+        AND merchant.verification_status = 'verified'
+        AND requested_instant = true
+      formula: |
+        settlement_date = now
+        payout_date = now + processing_time
+      parameters:
+        processing_time: 30 minutes
+        instant_fee_applies: true
+
+  # ============ RESERVE MANAGEMENT ============
+  reserve:
+    - id: BR-SET-010
+      name: Standard Reserve
+      description: No reserve for standard-risk merchants
+      vietnamese: Không giữ dự phòng cho merchant rủi ro tiêu chuẩn
+      condition: |
+        merchant.risk_level = 'standard'
+        AND merchant.dispute_rate < 0.5%
+      formula: |
+        reserve_amount = 0
+        reserve_rate = 0%
+
+    - id: BR-SET-011
+      name: Elevated Risk Reserve
+      description: Reserve for elevated-risk merchants
+      vietnamese: Dự phòng cho merchant rủi ro nâng cao
+      condition: |
+        merchant.risk_level = 'elevated'
+        OR merchant.dispute_rate BETWEEN 0.5% AND 0.9%
+      formula: |
+        reserve_amount = gross_amount * reserve_rate
+      parameters:
+        reserve_rate: 5  # percent
+        reserve_period: 90  # days
+
+    - id: BR-SET-012
+      name: High Risk Reserve
+      description: Higher reserve for high-risk merchants
+      vietnamese: Dự phòng cao hơn cho merchant rủi ro cao
+      condition: |
+        merchant.risk_level = 'high'
+        OR merchant.dispute_rate > 0.9%
+      formula: |
+        reserve_amount = gross_amount * reserve_rate
+      parameters:
+        reserve_rate: 10  # percent
+        reserve_period: 180  # days
+
+    - id: BR-SET-013
+      name: Rolling Reserve Release
+      description: Release reserve after holding period
+      vietnamese: Giải phóng dự phòng sau thời gian giữ
+      condition: |
+        reserve.held_date + reserve_period < today
+      action: |
+        release_reserve(reserve_amount)
+        add_to_settlement(released_amount)
+
+    - id: BR-SET-014
+      name: Reserve for New Merchants
+      description: Initial reserve for new merchants
+      vietnamese: Dự phòng ban đầu cho merchant mới
+      condition: |
+        merchant.age < 90 days
+        AND merchant.processed_volume < threshold
+      formula: |
+        reserve_amount = gross_amount * new_merchant_reserve_rate
+      parameters:
+        threshold: 100000000  # VND
+        new_merchant_reserve_rate: 10  # percent
+        release_after: 90 days of good standing
+
+  # ============ MINIMUM PAYOUT ============
+  minimum_payout:
+    - id: BR-SET-020
+      name: Minimum Payout Threshold
+      description: Minimum amount for payout processing
+      vietnamese: Số tiền tối thiểu để xử lý thanh toán
+      condition: |
+        net_amount < minimum_payout_amount
+      action: |
+        rollover_to_next_settlement = true
+        settlement.status = 'deferred'
+      parameters:
+        minimum_payout_amount: 100000  # VND
+
+    - id: BR-SET-021
+      name: Forced Payout After Period
+      description: Force payout after maximum holding period
+      vietnamese: Buộc thanh toán sau thời gian giữ tối đa
+      condition: |
+        accumulated_balance > 0
+        AND last_payout_date + max_holding_period < today
+      action: |
+        force_payout = true
+        waive_minimum_threshold = true
+      parameters:
+        max_holding_period: 30  # days
+
+  # ============ SETTLEMENT CALCULATION ============
+  calculation:
+    - id: BR-SET-030
+      name: Gross Amount Calculation
+      description: Calculate gross settlement amount
+      vietnamese: Tính tổng số tiền quyết toán
+      formula: |
+        gross_amount = SUM(payments.captured_amount)
+                       WHERE payment.merchant_id = merchant.id
+                       AND payment.status = 'succeeded'
+                       AND payment.captured_at BETWEEN period_start AND period_end
+                       AND payment.settled = false
+
+    - id: BR-SET-031
+      name: Refund Deduction
+      description: Deduct refunds from settlement
+      vietnamese: Trừ hoàn tiền khỏi quyết toán
+      formula: |
+        refund_amount = SUM(refunds.amount)
+                        WHERE refund.merchant_id = merchant.id
+                        AND refund.status = 'succeeded'
+                        AND refund.completed_at BETWEEN period_start AND period_end
+                        AND refund.settlement_id IS NULL
+
+    - id: BR-SET-032
+      name: Dispute Deduction
+      description: Deduct disputes from settlement
+      vietnamese: Trừ tranh chấp khỏi quyết toán
+      formula: |
+        dispute_amount = SUM(disputes.amount)
+                         WHERE dispute.merchant_id = merchant.id
+                         AND dispute.status = 'lost'
+                         AND dispute.resolved_at BETWEEN period_start AND period_end
+                         AND dispute.settlement_id IS NULL
+
+    - id: BR-SET-033
+      name: Fee Calculation
+      description: Calculate total fees for settlement
+      vietnamese: Tính tổng phí cho quyết toán
+      formula: |
+        total_fees = processing_fees + refund_fees + dispute_fees + other_fees
+        WHERE fee.settlement_id = settlement.id
+
+    - id: BR-SET-034
+      name: Net Amount Calculation
+      description: Calculate net payout amount
+      vietnamese: Tính số tiền thanh toán ròng
+      formula: |
+        net_amount = gross_amount
+                     - refund_amount
+                     - dispute_amount
+                     - total_fees
+                     - reserve_amount
+                     + reserve_release_amount
+                     + adjustment_amount
+      validation:
+        net_amount >= 0
+
+  # ============ PAYOUT PROCESSING ============
+  payout_processing:
+    - id: BR-SET-040
+      name: Payout Initiation Time
+      description: Time when payouts are initiated
+      vietnamese: Thời gian bắt đầu thanh toán
+      condition: |
+        settlement.status = 'completed'
+        AND settlement_date = today
+        AND current_time >= payout_initiation_time
+      parameters:
+        payout_initiation_time: "14:00"  # 2 PM local time
+
+    - id: BR-SET-041
+      name: Verified Account Required
+      description: Payout only to verified bank accounts
+      vietnamese: Chỉ thanh toán đến tài khoản đã xác minh
+      condition: |
+        merchant_account.status = 'verified'
+      error_code: ACCOUNT_NOT_VERIFIED
+      error_message: "Payout account must be verified"
+
+    - id: BR-SET-042
+      name: Business Day Processing
+      description: Payouts processed on business days only
+      vietnamese: Thanh toán chỉ xử lý vào ngày làm việc
+      condition: |
+        IF !is_business_day(settlement_date)
+        THEN actual_payout_date = next_business_day(settlement_date)
+
+    - id: BR-SET-043
+      name: Currency Conversion
+      description: Convert settlement to payout currency
+      vietnamese: Chuyển đổi quyết toán sang tiền tệ thanh toán
+      condition: |
+        settlement.currency != merchant.payout_currency
+      formula: |
+        payout_amount = net_amount * exchange_rate
+        exchange_rate = daily_rate(settlement.currency, merchant.payout_currency)
+        conversion_fee = payout_amount * conversion_fee_rate
+      parameters:
+        conversion_fee_rate: 2  # percent
+
+  # ============ FAILED PAYOUT HANDLING ============
+  failed_payout:
+    - id: BR-SET-050
+      name: Payout Retry Logic
+      description: Retry failed payouts
+      vietnamese: Thử lại thanh toán thất bại
+      condition: |
+        payout.status = 'failed'
+        AND payout.retry_count < max_retries
+      action: |
+        schedule_retry(next_business_day)
+        increment_retry_count()
+      parameters:
+        max_retries: 3
+
+    - id: BR-SET-051
+      name: Failed Payout Notification
+      description: Notify merchant of failed payout
+      vietnamese: Thông báo merchant về thanh toán thất bại
+      condition: |
+        payout.status = 'failed'
+      action: |
+        send_notification(merchant, 'payout_failed', payout)
+        update_dashboard_alert()
+
+    - id: BR-SET-052
+      name: Invalid Account Handling
+      description: Handle invalid bank account
+      vietnamese: Xử lý tài khoản ngân hàng không hợp lệ
+      condition: |
+        payout.failure_code IN ['invalid_account', 'account_closed']
+      action: |
+        disable_merchant_account()
+        require_new_account_verification()
+        hold_funds_until_resolved()
+
+  # ============ RECONCILIATION ============
+  reconciliation:
+    - id: BR-SET-060
+      name: Daily Reconciliation
+      description: Reconcile settlements daily
+      vietnamese: Đối chiếu quyết toán hàng ngày
+      schedule: daily at 23:00
+      process: |
+        1. Compare transaction totals vs settlement totals
+        2. Verify fee calculations
+        3. Check reserve balances
+        4. Identify discrepancies
+        5. Generate reconciliation report
+
+    - id: BR-SET-061
+      name: Discrepancy Threshold
+      description: Flag discrepancies above threshold
+      vietnamese: Đánh dấu chênh lệch vượt ngưỡng
+      condition: |
+        ABS(calculated_total - actual_total) > threshold
+      parameters:
+        threshold: 1000  # VND
+      action: |
+        flag_for_review()
+        notify_finance_team()
+
+    - id: BR-SET-062
+      name: Auto-Resolution of Small Discrepancies
+      description: Auto-resolve minor discrepancies
+      vietnamese: Tự động giải quyết chênh lệch nhỏ
+      condition: |
+        ABS(discrepancy_amount) <= auto_resolve_threshold
+      action: |
+        create_adjustment(discrepancy_amount)
+        mark_as_auto_resolved()
+      parameters:
+        auto_resolve_threshold: 100  # VND
+
+settlement_batching:
+  batch_size:
+    payments_per_batch: 10000
+    amount_per_batch: 10000000000  # 10B VND
+
+  processing_order:
+    - high_volume_merchants
+    - standard_merchants
+    - new_merchants
+
+  parallel_processing:
+    enabled: true
+    max_concurrent_batches: 10
+
+reporting:
+  settlement_report:
+    frequency: daily
+    contents:
+      - total_payments_settled
+      - total_gross_amount
+      - total_fees
+      - total_refunds
+      - total_disputes
+      - total_net_payout
+      - reserve_held
+      - reserve_released
+
+  merchant_statement:
+    frequency: monthly
+    format: [pdf, csv]
+    contents:
+      - transaction_detail
+      - fee_breakdown
+      - reserve_summary
+      - payout_history
+
+audit_requirements:
+  - settlement_calculation_audit_trail
+  - fee_calculation_verification
+  - reserve_movement_tracking
+  - payout_authorization_log
+  - reconciliation_history

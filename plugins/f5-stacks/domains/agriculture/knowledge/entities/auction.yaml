@@ -1,0 +1,222 @@
+name: Auction
+display_name: Auction / Phiên đấu giá
+description: |
+  Phiên đấu giá cho listing có selling_type = auction.
+  Theo dõi trạng thái, thời gian, các lượt đấu giá.
+
+domain: agriculture
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: listing_id
+    type: uuid
+    required: true
+    description: Listing đang đấu giá
+
+  - name: auction_code
+    type: string
+    required: true
+    validation:
+      pattern: "^AUC-[0-9]{8}-[A-Z0-9]{4}$"
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [scheduled, active, extended, ended, cancelled, completed]
+    default: scheduled
+
+  - name: auction_type
+    type: enum
+    required: true
+    description: Loại đấu giá
+    validation:
+      values: [english, dutch, sealed]
+    default: english
+
+  - name: starting_price
+    type: decimal
+    required: true
+    description: Giá khởi điểm
+
+  - name: reserve_price
+    type: decimal
+    required: false
+    description: Giá tối thiểu (hidden)
+
+  - name: bid_increment
+    type: decimal
+    required: true
+    description: Bước giá tối thiểu
+
+  - name: current_price
+    type: decimal
+    required: false
+    description: Giá hiện tại
+
+  - name: current_winner_id
+    type: uuid
+    required: false
+    description: Người đang dẫn đầu
+
+  - name: bid_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: unique_bidders
+    type: integer
+    required: true
+    default: 0
+    description: Số người tham gia đấu giá
+
+  - name: start_at
+    type: timestamp
+    required: true
+
+  - name: original_end_at
+    type: timestamp
+    required: true
+    description: Thời gian kết thúc ban đầu
+
+  - name: end_at
+    type: timestamp
+    required: true
+    description: Thời gian kết thúc (có thể gia hạn)
+
+  - name: extension_count
+    type: integer
+    required: true
+    default: 0
+    description: Số lần gia hạn
+
+  - name: max_extensions
+    type: integer
+    required: true
+    default: 5
+    description: Số lần gia hạn tối đa
+
+  - name: extension_minutes
+    type: integer
+    required: true
+    default: 5
+    description: Số phút gia hạn mỗi lần
+
+  - name: auto_extend
+    type: boolean
+    required: true
+    default: true
+    description: Tự động gia hạn
+
+  - name: winning_bid_id
+    type: uuid
+    required: false
+    description: Bid thắng cuộc
+
+  - name: final_price
+    type: decimal
+    required: false
+    description: Giá cuối cùng
+
+  - name: reserve_met
+    type: boolean
+    required: false
+    description: Đã đạt giá reserve chưa
+
+  - name: ended_at
+    type: timestamp
+    required: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: listing
+    type: belongs_to
+    entity: Listing
+    required: true
+
+  - name: bids
+    type: has_many
+    entity: Bid
+
+  - name: winner
+    type: belongs_to
+    entity: User
+    required: false
+
+state_machine:
+  initial: scheduled
+  states:
+    - name: scheduled
+      description: Đã lên lịch, chưa bắt đầu
+    - name: active
+      description: Đang diễn ra
+    - name: extended
+      description: Đang trong thời gian gia hạn
+    - name: ended
+      description: Đã kết thúc, chờ xử lý
+    - name: cancelled
+      description: Đã hủy
+    - name: completed
+      description: Đã hoàn tất (có order)
+  transitions:
+    - from: scheduled
+      to: active
+      trigger: start
+      conditions: [reached_start_time]
+      actions: [notify_watchers]
+    - from: active
+      to: extended
+      trigger: extend
+      conditions: [bid_in_last_5_minutes, under_max_extensions]
+      actions: [add_extension_time, notify_bidders]
+    - from: [active, extended]
+      to: ended
+      trigger: end
+      conditions: [reached_end_time]
+      actions: [determine_winner, notify_all]
+    - from: ended
+      to: completed
+      trigger: complete
+      conditions: [order_created]
+    - from: [scheduled, active]
+      to: cancelled
+      trigger: cancel
+      actions: [notify_bidders, release_deposits]
+
+indexes:
+  - [auction_code]
+  - [listing_id]
+  - [status]
+  - [end_at]
+  - [current_winner_id]
+
+business_rules:
+  - BR-AUC-001: Bid mới phải >= current_price + bid_increment
+  - BR-AUC-002: Không được bid listing của chính mình
+  - BR-AUC-003: Gia hạn tối đa 5 lần, mỗi lần 5 phút
+  - BR-AUC-004: Bid trong 5 phút cuối triggers auto-extend
+  - BR-AUC-005: Nếu không đạt reserve_price, seller có quyền hủy
+  - BR-AUC-006: Winner có 24h để thanh toán, quá hạn = hủy, chuyển người 2
+
+events:
+  - name: auction.started
+    payload: [id, auction_code, listing_id]
+  - name: auction.bid_placed
+    payload: [id, bid_id, bidder_id, amount]
+  - name: auction.extended
+    payload: [id, new_end_at, extension_count]
+  - name: auction.ended
+    payload: [id, winning_bid_id, final_price]
+  - name: auction.completed
+    payload: [id, order_id]

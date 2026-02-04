@@ -1,0 +1,242 @@
+name: Role
+display_name: Role / Vai trò
+description: |
+  Defines user roles within a tenant with associated permissions.
+  Supports both predefined system roles and custom tenant-defined roles.
+
+domain: saas-platform
+entity_type: reference
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    nullable: true
+    description: Tenant for custom roles (null = system role)
+    description_vi: Khách thuê cho vai trò tùy chỉnh (null = vai trò hệ thống)
+
+  - name: name
+    type: string
+    required: true
+    max_length: 100
+    description: Role identifier
+    description_vi: Mã định danh vai trò
+    examples: [owner, admin, member, viewer, billing_admin]
+
+  - name: display_name
+    type: string
+    required: true
+    max_length: 255
+    description: Human-readable role name
+    description_vi: Tên vai trò dễ đọc
+    examples: ["Owner", "Administrator", "Member", "Viewer"]
+
+  - name: description
+    type: text
+    description: Role description
+    description_vi: Mô tả vai trò
+
+  # Type & Scope
+  - name: type
+    type: enum
+    values: [system, custom]
+    default: custom
+    description: Whether role is system-defined or custom
+    description_vi: Vai trò do hệ thống định nghĩa hay tùy chỉnh
+
+  - name: scope
+    type: enum
+    values: [platform, tenant]
+    default: tenant
+    description: Role scope
+    description_vi: Phạm vi vai trò
+
+  # Permissions
+  - name: permissions
+    type: json
+    required: true
+    description: Permission set for this role
+    description_vi: Tập quyền cho vai trò này
+    schema:
+      # Resource-based permissions
+      users:
+        create: boolean
+        read: boolean
+        update: boolean
+        delete: boolean
+        invite: boolean
+      billing:
+        read: boolean
+        manage: boolean
+      settings:
+        read: boolean
+        update: boolean
+      api_keys:
+        create: boolean
+        read: boolean
+        delete: boolean
+      audit_logs:
+        read: boolean
+      integrations:
+        create: boolean
+        read: boolean
+        update: boolean
+        delete: boolean
+
+  # Hierarchy
+  - name: level
+    type: integer
+    default: 0
+    description: Role hierarchy level (higher = more authority)
+    description_vi: Cấp độ phân quyền (cao hơn = nhiều quyền hơn)
+
+  - name: is_assignable
+    type: boolean
+    default: true
+    description: Can this role be assigned to users
+    description_vi: Vai trò này có thể gán cho người dùng không
+
+  - name: is_default
+    type: boolean
+    default: false
+    description: Default role for new users
+    description_vi: Vai trò mặc định cho người dùng mới
+
+  # Status
+  - name: is_active
+    type: boolean
+    default: true
+    description: Whether role is active
+    description_vi: Vai trò có hoạt động không
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: updated_at
+    type: timestamp
+    auto: true
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Tenant that owns this custom role
+
+  - name: users
+    type: has_many
+    target: User
+    foreign_key: role_id
+    description: Users assigned this role
+
+indexes:
+  - name: idx_role_tenant_name
+    columns: [tenant_id, name]
+    unique: true
+    description: Role name unique per tenant
+
+  - name: idx_role_type
+    columns: [type]
+    description: Filter by system vs custom
+
+  - name: idx_role_tenant_default
+    columns: [tenant_id, is_default]
+    where: "is_default = true"
+    description: Find default role per tenant
+
+business_rules:
+  - id: BR-ROL-001
+    name: System Roles Immutable
+    description: System roles cannot be modified by tenants
+    description_vi: Vai trò hệ thống không thể bị sửa đổi bởi khách thuê
+    condition: "type = 'system' IMPLIES tenant_id IS NULL AND NOT editable"
+
+  - id: BR-ROL-002
+    name: One Default Per Tenant
+    description: Each tenant has exactly one default role
+    description_vi: Mỗi khách thuê có đúng một vai trò mặc định
+
+  - id: BR-ROL-003
+    name: Owner Role Special
+    description: Owner role has all permissions and cannot be restricted
+    description_vi: Vai trò chủ sở hữu có tất cả quyền và không thể bị hạn chế
+
+  - id: BR-ROL-004
+    name: Custom Roles Enterprise Only
+    description: Custom roles only available for professional+ tiers
+    description_vi: Vai trò tùy chỉnh chỉ có cho gói professional trở lên
+
+  - id: BR-ROL-005
+    name: Cannot Delete Role With Users
+    description: Role cannot be deleted if users are assigned
+    description_vi: Không thể xóa vai trò nếu có người dùng được gán
+
+events:
+  - name: role.created
+    payload: [role_id, tenant_id, name, type]
+
+  - name: role.updated
+    payload: [role_id, changes]
+
+  - name: role.deleted
+    payload: [role_id, migrated_users_count]
+
+system_roles:
+  - name: owner
+    display_name: Owner
+    level: 100
+    is_assignable: false
+    description: Tenant owner with full control
+    permissions:
+      all: true
+
+  - name: admin
+    display_name: Administrator
+    level: 90
+    description: Full administrative access except ownership
+    permissions:
+      users: { create: true, read: true, update: true, delete: true, invite: true }
+      billing: { read: true, manage: true }
+      settings: { read: true, update: true }
+      api_keys: { create: true, read: true, delete: true }
+      audit_logs: { read: true }
+      integrations: { create: true, read: true, update: true, delete: true }
+
+  - name: member
+    display_name: Member
+    level: 50
+    is_default: true
+    description: Standard team member access
+    permissions:
+      users: { create: false, read: true, update: false, delete: false }
+      billing: { read: false, manage: false }
+      settings: { read: true, update: false }
+      api_keys: { create: false, read: false, delete: false }
+      audit_logs: { read: false }
+      integrations: { create: false, read: true, update: false, delete: false }
+
+  - name: viewer
+    display_name: Viewer
+    level: 10
+    description: Read-only access
+    permissions:
+      users: { read: true }
+      settings: { read: true }
+      integrations: { read: true }
+
+  - name: billing_admin
+    display_name: Billing Administrator
+    level: 60
+    description: Manages billing and payments only
+    permissions:
+      billing: { read: true, manage: true }
+      settings: { read: true }

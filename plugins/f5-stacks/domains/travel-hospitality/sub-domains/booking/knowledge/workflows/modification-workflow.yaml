@@ -1,0 +1,424 @@
+name: modification-workflow
+display_name: Booking Modification Workflow
+display_name_vi: Quy trình sửa đổi đặt chỗ
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Workflow for modifying existing bookings including date changes,
+  passenger updates, service additions, and itinerary adjustments.
+
+workflow:
+  id: WF-MOD-BOOK
+  name: Booking Modification
+  type: branched_by_modification_type
+
+  trigger:
+    types:
+      - user_request: via_app_or_web
+      - agent_request: via_agent_portal
+      - airline_initiated: schedule_change
+      - hotel_initiated: property_change
+
+  actors:
+    - customer: Booking owner
+    - agent: Customer service
+    - system: OTA platform
+    - supplier: Airline/hotel/activity provider
+
+  states:
+    - modification_requested
+    - checking_eligibility
+    - calculating_fees
+    - awaiting_customer_approval
+    - processing_modification
+    - updating_suppliers
+    - modification_confirmed
+    - documents_regenerated
+    - failed
+    - cancelled
+
+modification_types:
+  - flight_date_change
+  - flight_route_change
+  - hotel_date_change
+  - hotel_property_change
+  - room_upgrade
+  - passenger_name_correction
+  - passenger_addition
+  - passenger_removal
+  - service_addition
+  - service_removal
+  - contact_update
+
+steps:
+  - id: STEP-01
+    name: Modification Request
+    description: Customer initiates modification
+    state: modification_requested
+    actor: customer
+    inputs:
+      - booking_reference
+      - modification_type
+      - modification_details:
+          date_change:
+            - new_departure_date
+            - new_return_date
+          route_change:
+            - new_origin
+            - new_destination
+          name_correction:
+            - passenger_index
+            - corrected_name
+          service_change:
+            - add_services: list
+            - remove_services: list
+    authentication:
+      - verify_booking_owner
+      - verify_email_or_phone
+    outputs:
+      - modification_request_id
+      - modification_type
+      - modification_details
+    next: STEP-02
+
+  - id: STEP-02
+    name: Eligibility Check
+    description: Check if modification is allowed
+    state: checking_eligibility
+    actor: system
+    checks:
+      fare_rules:
+        - is_changeable: check_fare_class
+        - change_allowed_until: time_limit
+        - route_change_allowed: fare_specific
+      booking_status:
+        - not_cancelled
+        - not_already_traveled
+        - not_in_processing
+      supplier_rules:
+        - within_modification_window
+        - modification_type_allowed
+      inventory:
+        - new_dates_available: if_date_change
+        - new_route_available: if_route_change
+    outputs:
+      - eligibility_result: eligible | not_eligible | partial
+      - eligibility_reasons
+      - restrictions: list
+    on_not_eligible:
+      - explain_reason
+      - offer_alternatives: cancel_and_rebook
+    next: STEP-03 | END (not_eligible)
+
+  - id: STEP-03
+    name: Fee Calculation
+    description: Calculate modification fees
+    state: calculating_fees
+    actor: system
+
+    for_flight_changes:
+      components:
+        - airline_change_fee: per_fare_rules
+        - fare_difference: new_fare - old_fare
+        - service_fee: ota_handling
+        - tax_difference: if_applicable
+      calculation: |
+        total_fee = airline_fee + max(0, fare_difference) + service_fee + tax_adjustment
+
+    for_hotel_changes:
+      components:
+        - rate_difference: new_rate - old_rate
+        - modification_fee: if_applicable
+        - service_fee: ota_handling
+      calculation: |
+        total_fee = rate_difference + modification_fee + service_fee
+
+    for_name_corrections:
+      components:
+        - airline_fee: if_charged
+        - service_fee: minimal_or_waived
+
+    for_service_changes:
+      components:
+        - service_price: for_additions
+        - refund_amount: for_removals
+        - net_difference
+
+    outputs:
+      - fee_breakdown
+      - total_additional_charge
+      - total_refund: if_applicable
+      - new_booking_total
+    next: STEP-04
+
+  - id: STEP-04
+    name: Customer Approval
+    description: Present fees and get approval
+    state: awaiting_customer_approval
+    actor: customer
+    display:
+      - original_booking_summary
+      - requested_changes
+      - fee_breakdown:
+          - change_fees
+          - fare/rate_difference
+          - service_fee
+          - total
+      - new_booking_details
+      - updated_policies
+    options:
+      - approve_and_pay
+      - modify_request
+      - cancel_request
+    inputs:
+      - customer_decision
+      - payment_method: if_additional_charge
+    timeout: 24h
+    on_timeout: request_expired
+    next: STEP-05 (approved) | STEP-01 (modify) | END (cancel)
+
+  - id: STEP-05
+    name: Payment Processing
+    description: Process additional payment or refund
+    state: processing_modification
+    actor: system
+
+    if_additional_charge:
+      actions:
+        - collect_payment
+        - process_transaction
+        - verify_success
+      on_failure:
+        - retry_payment
+        - hold_modification
+
+    if_refund_due:
+      actions:
+        - calculate_refund
+        - process_refund
+        - original_payment_method
+
+    if_no_charge:
+      actions:
+        - proceed_to_modification
+
+    outputs:
+      - payment_status
+      - transaction_reference
+    next: STEP-06
+
+  - id: STEP-06
+    name: Supplier Updates
+    description: Update booking with suppliers
+    state: updating_suppliers
+    actor: system
+
+    for_flight:
+      actions:
+        - send_modification_request: to_gds
+        - await_confirmation
+        - receive_new_pnr: if_reissue
+        - update_ticket: if_reissue
+      validations:
+        - modification_confirmed
+        - new_ticket_issued: if_required
+
+    for_hotel:
+      actions:
+        - send_modification_request: to_supplier
+        - await_confirmation
+        - receive_new_confirmation
+      validations:
+        - hotel_confirmed_change
+
+    for_activities:
+      actions:
+        - send_modification: to_each_provider
+        - await_confirmations
+
+    rollback_on_failure:
+      - if_partial_success: assess_options
+      - offer_alternatives: or_rollback
+
+    outputs:
+      - supplier_confirmations
+      - new_references
+      - updated_booking_details
+    next: STEP-07
+
+  - id: STEP-07
+    name: Booking Update
+    description: Update internal booking record
+    state: modification_confirmed
+    actor: system
+    actions:
+      - update_booking_record:
+          fields:
+            - modified_details
+            - new_references
+            - price_adjustments
+            - modification_history
+      - update_payment_record:
+          if: payment_made_or_refund
+      - log_modification:
+          audit_trail: complete
+    outputs:
+      - updated_booking
+      - modification_record
+    next: STEP-08
+
+  - id: STEP-08
+    name: Document Regeneration
+    description: Generate updated travel documents
+    state: documents_regenerated
+    actor: system
+    documents:
+      flight_modified:
+        - new_eticket: if_reissued
+        - updated_itinerary
+        - modification_receipt
+      hotel_modified:
+        - new_voucher
+        - updated_confirmation
+      all_modifications:
+        - updated_master_itinerary
+        - payment_receipt: if_applicable
+        - refund_receipt: if_applicable
+    outputs:
+      - document_urls
+    next: STEP-09
+
+  - id: STEP-09
+    name: Confirmation Delivery
+    description: Send modification confirmation
+    state: documents_regenerated
+    actor: system
+    actions:
+      - send_modification_confirmation:
+          content:
+            - what_changed
+            - new_booking_details
+            - fee_summary
+            - updated_documents
+      - send_sms: if_enabled
+      - update_app: if_app_user
+      - update_calendar: if_integrated
+    outputs:
+      - delivery_status
+    next: END
+
+airline_initiated_changes:
+  id: WF-MOD-AIRLINE
+  trigger: airline_schedule_change
+  steps:
+    - id: AIC-01
+      name: Receive Schedule Change
+      actor: system
+      actions:
+        - parse_schedule_change
+        - assess_impact
+        - categorize_change: minor | significant
+
+    - id: AIC-02
+      name: Customer Notification
+      actor: system
+      actions:
+        - notify_customer:
+            content:
+              - original_schedule
+              - new_schedule
+              - impact_assessment
+              - options_available
+        - present_options:
+            - accept_change
+            - request_alternative
+            - request_full_refund
+
+    - id: AIC-03
+      name: Process Customer Choice
+      actor: system
+      branches:
+        accept:
+          - update_booking
+          - regenerate_documents
+          - confirm_to_customer
+        alternative:
+          - search_alternatives
+          - present_options
+          - process_selection
+        refund:
+          - process_full_refund
+          - cancel_booking
+          - confirm_refund
+
+special_modifications:
+  name_correction:
+    rules:
+      - minor_spelling: up_to_3_characters
+      - usually_free: or_minimal_fee
+      - documentation_may_be_required
+    process:
+      - verify_correction_type
+      - check_airline_policy
+      - submit_correction
+      - update_ticket
+
+  passenger_addition:
+    rules:
+      - subject_to_availability
+      - new_passenger_fare: current_rates
+      - may_affect_room_allocation
+    process:
+      - check_availability
+      - quote_additional_cost
+      - collect_passenger_details
+      - add_to_booking
+
+  passenger_removal:
+    rules:
+      - cancellation_policy_applies
+      - remaining_passengers_must_meet_minimum
+      - pricing_recalculation
+    process:
+      - calculate_cancellation_fee
+      - recalculate_remaining_booking
+      - process_refund_if_applicable
+      - update_booking
+
+error_handling:
+  - error: supplier_rejection
+    action: offer_alternatives
+    notification: customer_and_agent
+
+  - error: partial_modification_failure
+    action: rollback_or_partial_proceed
+
+  - error: payment_failure
+    action: hold_and_retry
+
+audit_requirements:
+  - log_all_modification_requests
+  - log_eligibility_checks
+  - log_fee_calculations
+  - log_customer_approvals
+  - log_supplier_communications
+  - retain_modification_history
+
+sla:
+  - eligibility_check: < 10s
+  - fee_calculation: < 5s
+  - supplier_update: < 120s
+  - overall_simple_modification: < 5m
+  - overall_complex_modification: < 15m
+
+metrics:
+  - name: modification_success_rate
+    target: "> 95%"
+
+  - name: average_modification_time
+    target: "< 5 minutes"
+
+  - name: customer_satisfaction_post_modification
+    target: "> 4.0/5"

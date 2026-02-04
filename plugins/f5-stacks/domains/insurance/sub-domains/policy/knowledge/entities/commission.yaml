@@ -1,0 +1,531 @@
+name: Commission
+display_name: Agent Commission
+description: |
+  Commission calculations and payments to agents.
+  Tracks first year, renewal, and override commissions.
+
+domain: insurance
+subdomain: policy
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: commissions
+  primary_key: id
+  indexes:
+    - columns: [agent_id]
+    - columns: [policy_id]
+    - columns: [commission_number]
+      unique: true
+    - columns: [status]
+    - columns: [commission_type]
+    - columns: [payment_period]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: commission_number
+    type: string
+    description: Commission reference
+    pattern: "COM-[A-Z0-9]{10}"
+    example: "COM-2024A00001"
+    required: true
+    unique: true
+
+  - name: agent_id
+    type: uuid
+    description: Receiving agent
+    required: true
+
+  - name: policy_id
+    type: uuid
+    description: Related policy
+    required: true
+
+  - name: premium_id
+    type: uuid
+    description: Related premium
+
+  - name: policy_number
+    type: string
+    description: Policy reference
+
+  # Type
+  - name: commission_type
+    type: enum
+    description: Commission category
+    values:
+      - first_year
+      - renewal
+      - single_premium
+      - top_up
+      - override
+      - bonus
+      - production_bonus
+      - persistency_bonus
+      - trail
+    required: true
+
+  - name: commission_category
+    type: enum
+    description: Category classification
+    values:
+      - regular
+      - override
+      - bonus
+      - adjustment
+    default: regular
+
+  # Period
+  - name: policy_year
+    type: integer
+    description: Policy year (1, 2, 3...)
+    required: true
+
+  - name: payment_period
+    type: string
+    description: Payment period
+    example: "2024-01"
+
+  - name: period_start_date
+    type: date
+    description: Period start
+
+  - name: period_end_date
+    type: date
+    description: Period end
+
+  # Premium basis
+  - name: premium_amount
+    type: decimal
+    description: Premium basis for commission
+    precision: 12
+    scale: 2
+    required: true
+
+  - name: premium_type
+    type: enum
+    description: Type of premium
+    values:
+      - annual
+      - modal
+      - single
+      - top_up
+
+  - name: commissionable_premium
+    type: decimal
+    description: Premium eligible for commission
+    precision: 12
+    scale: 2
+
+  # Commission calculation
+  - name: commission_rate
+    type: decimal
+    description: Commission percentage
+    precision: 5
+    scale: 2
+    required: true
+
+  - name: base_commission
+    type: decimal
+    description: Base commission amount
+    precision: 12
+    scale: 2
+    computed: "commissionable_premium * commission_rate / 100"
+
+  - name: rate_adjustments
+    type: array
+    description: Rate adjustments
+    items:
+      type: object
+      properties:
+        adjustment_type:
+          type: string
+        rate_change:
+          type: decimal
+        reason:
+          type: string
+
+  - name: bonus_rate
+    type: decimal
+    description: Bonus percentage
+    precision: 5
+    scale: 2
+    default: 0
+
+  - name: bonus_amount
+    type: decimal
+    description: Bonus amount
+    precision: 12
+    scale: 2
+    default: 0
+
+  # Override commission
+  - name: is_override
+    type: boolean
+    description: Is override commission
+    default: false
+
+  - name: override_from_agent_id
+    type: uuid
+    description: Subordinate agent
+
+  - name: override_level
+    type: integer
+    description: Override level (1, 2, 3...)
+
+  - name: override_rate
+    type: decimal
+    description: Override percentage
+    precision: 5
+    scale: 2
+
+  # Gross commission
+  - name: gross_commission
+    type: decimal
+    description: Total before deductions
+    precision: 12
+    scale: 2
+    computed: "base_commission + bonus_amount"
+
+  # Deductions
+  - name: deductions
+    type: array
+    description: Commission deductions
+    items:
+      type: object
+      properties:
+        deduction_type:
+          type: string
+        amount:
+          type: decimal
+        reason:
+          type: string
+        reference:
+          type: string
+
+  - name: total_deductions
+    type: decimal
+    description: Total deductions
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: withholding_tax
+    type: decimal
+    description: Tax withheld
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: withholding_tax_rate
+    type: decimal
+    description: Tax rate
+    precision: 5
+    scale: 2
+
+  # Clawback
+  - name: clawback_amount
+    type: decimal
+    description: Clawback amount
+    precision: 12
+    scale: 2
+    default: 0
+
+  - name: clawback_reason
+    type: string
+    description: Why clawback
+
+  - name: clawback_reference
+    type: uuid
+    description: Related clawback
+
+  - name: original_commission_id
+    type: uuid
+    description: Original commission being clawed back
+
+  # Net commission
+  - name: net_commission
+    type: decimal
+    description: Final payable amount
+    precision: 12
+    scale: 2
+    computed: "gross_commission - total_deductions - withholding_tax - clawback_amount"
+
+  - name: currency
+    type: string
+    description: Commission currency
+    default: "VND"
+
+  # Status
+  - name: status
+    type: enum
+    description: Commission status
+    values:
+      - pending
+      - calculated
+      - approved
+      - on_hold
+      - paid
+      - reversed
+      - clawed_back
+    default: pending
+
+  - name: hold_reason
+    type: string
+    description: Why on hold
+
+  - name: hold_date
+    type: date
+    description: When put on hold
+
+  - name: released_date
+    type: date
+    description: When released from hold
+
+  # Vesting
+  - name: vested
+    type: boolean
+    description: Commission vested
+    default: false
+
+  - name: vesting_date
+    type: date
+    description: When vested
+
+  - name: vesting_period_days
+    type: integer
+    description: Vesting period
+    default: 0
+
+  # Payment
+  - name: payment_status
+    type: enum
+    description: Payment status
+    values:
+      - pending
+      - scheduled
+      - processing
+      - paid
+      - failed
+    default: pending
+
+  - name: scheduled_payment_date
+    type: date
+    description: Scheduled payment date
+
+  - name: payment_date
+    type: date
+    description: Actual payment date
+
+  - name: payment_reference
+    type: string
+    description: Payment reference
+
+  - name: payment_batch_id
+    type: uuid
+    description: Payment batch
+
+  - name: payment_method
+    type: enum
+    description: Payment method
+    values:
+      - bank_transfer
+      - cheque
+      - cash
+
+  # Statement
+  - name: statement_id
+    type: uuid
+    description: Commission statement
+
+  - name: statement_period
+    type: string
+    description: Statement period
+
+  # Approval
+  - name: requires_approval
+    type: boolean
+    description: Needs approval
+    default: false
+
+  - name: approved
+    type: boolean
+    description: Approved
+    default: false
+
+  - name: approved_by
+    type: uuid
+    description: Approver
+
+  - name: approved_at
+    type: timestamp
+    description: Approval time
+
+  # Product info
+  - name: product_id
+    type: uuid
+    description: Product
+
+  - name: product_code
+    type: string
+    description: Product code
+
+  - name: product_type
+    type: string
+    description: Product type
+
+  # Hierarchy
+  - name: upline_commissions
+    type: array
+    description: Upline override commissions
+    items:
+      type: object
+      properties:
+        agent_id:
+          type: uuid
+        level:
+          type: integer
+        rate:
+          type: decimal
+        amount:
+          type: decimal
+
+  # Notes
+  - name: notes
+    type: text
+    description: Internal notes
+
+  - name: calculation_details
+    type: object
+    description: Calculation breakdown
+    properties:
+      formula:
+        type: string
+      inputs:
+        type: object
+      intermediate_values:
+        type: object
+
+  # Audit
+  - name: calculated_at
+    type: timestamp
+    description: When calculated
+
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+  - name: created_by
+    type: uuid
+
+relationships:
+  - name: agent
+    type: belongs_to
+    entity: Agent
+    foreign_key: agent_id
+
+  - name: policy
+    type: belongs_to
+    entity: Policy
+    foreign_key: policy_id
+
+  - name: premium
+    type: belongs_to
+    entity: Premium
+    foreign_key: premium_id
+
+  - name: product
+    type: belongs_to
+    entity: Product
+    foreign_key: product_id
+
+  - name: payment_batch
+    type: belongs_to
+    entity: PaymentBatch
+    foreign_key: payment_batch_id
+
+  - name: original_commission
+    type: belongs_to
+    entity: Commission
+    foreign_key: original_commission_id
+
+business_rules:
+  - rule: BR-COM-001
+    description: First year commission only on first premium
+    validation: IF commission_type = 'first_year' THEN policy_year = 1
+
+  - rule: BR-COM-002
+    description: Override only for agents with downline
+    validation: IF is_override = true THEN agent.hierarchy_level > 1
+
+  - rule: BR-COM-003
+    description: Clawback on lapse within period
+    validation: IF policy.status = 'lapsed' AND policy_months < 24 THEN create_clawback
+
+  - rule: BR-COM-004
+    description: Vesting before payment
+    validation: payment_status = 'paid' ONLY IF vested = true
+
+  - rule: BR-COM-005
+    description: Active agent for payment
+    validation: payment_status = 'paid' ONLY IF agent.status = 'active'
+
+events:
+  - name: commission.calculated
+    payload: [commission_id, agent_id, gross_commission]
+
+  - name: commission.approved
+    payload: [commission_id, approved_by]
+
+  - name: commission.paid
+    payload: [commission_id, net_commission, payment_date]
+
+  - name: commission.clawed_back
+    payload: [commission_id, clawback_amount, reason]
+
+  - name: commission.on_hold
+    payload: [commission_id, hold_reason]
+
+api_endpoints:
+  - method: GET
+    path: /commissions
+    description: List commissions
+
+  - method: GET
+    path: /commissions/{id}
+    description: Get commission details
+
+  - method: POST
+    path: /commissions/calculate
+    description: Calculate commissions for period
+
+  - method: POST
+    path: /commissions/{id}/approve
+    description: Approve commission
+
+  - method: POST
+    path: /commissions/{id}/hold
+    description: Put on hold
+
+  - method: POST
+    path: /commissions/{id}/release
+    description: Release from hold
+
+  - method: GET
+    path: /agents/{agent_id}/commissions
+    description: Get agent commissions
+
+  - method: GET
+    path: /agents/{agent_id}/commission-statement
+    description: Get commission statement

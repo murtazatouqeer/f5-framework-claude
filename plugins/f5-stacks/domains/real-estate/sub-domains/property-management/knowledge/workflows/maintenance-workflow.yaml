@@ -1,0 +1,788 @@
+# Maintenance Workflow
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy trình bảo trì / メンテナンスワークフロー
+
+workflow:
+  name: MaintenanceWorkflow
+  name_vi: Quy trình bảo trì
+  name_ja: メンテナンスワークフロー
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Complete workflow for handling maintenance requests
+    from submission through resolution, including
+    emergency response, vendor coordination, and
+    quality verification.
+
+  # Workflow Triggers
+  triggers:
+    - event: request_submitted
+      source: tenant_portal
+    - event: request_received
+      source: phone_call
+    - event: emergency_reported
+      source: any
+    - event: inspection_finding
+      source: routine_inspection
+    - event: preventive_maintenance_due
+      source: scheduler
+
+  # Primary Actors
+  actors:
+    primary:
+      - tenant
+      - property_manager
+      - maintenance_staff
+    supporting:
+      - vendor
+      - accounting
+      - emergency_services
+
+  # Referenced Entities
+  entities:
+    - MaintenanceRequest
+    - WorkOrder
+    - Vendor
+    - Unit
+    - Expense
+
+  # Business Rules Applied
+  business_rules:
+    - MaintenanceRules
+
+  # ==========================================
+  # WORKFLOW STEPS
+  # ==========================================
+
+  steps:
+    - step_id: WF-MNT-001
+      name: Receive Request
+      name_vi: Nhận yêu cầu
+      order: 1
+      description: |
+        Receive and log maintenance request from
+        any source with complete details.
+
+      inputs:
+        - request_description
+        - unit_information
+        - tenant_contact
+        - photos_if_available
+        - preferred_contact_times
+
+      actions:
+        - action: create_request_record
+          entity: MaintenanceRequest
+          status: submitted
+        - action: capture_details
+          fields:
+            - issue_description
+            - location_in_unit
+            - when_issue_started
+            - severity_reported
+            - permission_to_enter
+        - action: attach_photos
+          if_provided: true
+        - action: acknowledge_receipt
+          system: notification
+          to: tenant
+
+      outputs:
+        - request_id
+        - acknowledgment_confirmation
+        - initial_record
+
+      sla:
+        acknowledgment:
+          emergency: 30_minutes
+          urgent: 2_hours
+          normal: 24_hours
+          low: 48_hours
+        rule: BR-MNT-001
+
+      next_step: WF-MNT-002
+
+    - step_id: WF-MNT-002
+      name: Triage and Prioritize
+      name_vi: Phân loại và ưu tiên
+      order: 2
+      description: |
+        Assess request urgency and assign appropriate
+        priority level.
+
+      inputs:
+        - request_details
+        - issue_category
+        - tenant_reported_severity
+
+      actions:
+        - action: assess_priority
+          categories:
+            emergency:
+              criteria:
+                - no_running_water
+                - no_electricity
+                - no_heat_in_winter
+                - flooding
+                - fire_damage
+                - gas_leak
+                - sewage_backup
+                - security_breach
+              sla: 2_hours
+            urgent:
+              criteria:
+                - broken_appliance_essential
+                - ac_not_cooling
+                - hot_water_failure
+                - toilet_clogged_single_bathroom
+                - partial_electrical_failure
+                - active_contained_leak
+              sla: 24_hours
+            normal:
+              criteria:
+                - minor_repairs
+                - non_essential_appliances
+                - cosmetic_issues
+              sla: 3_business_days
+            low:
+              criteria:
+                - aesthetic_improvements
+                - nice_to_have_repairs
+                - seasonal_maintenance
+              sla: 14_business_days
+        - action: determine_responsibility
+          options:
+            - landlord_responsibility
+            - tenant_responsibility
+            - shared_responsibility
+          rule: BR-MNT-010
+        - action: update_request_priority
+          entity: MaintenanceRequest
+
+      outputs:
+        - assigned_priority
+        - responsibility_determination
+        - sla_deadline
+
+      decision_point:
+        condition: priority_level
+        outcomes:
+          emergency: WF-MNT-002a
+          urgent: WF-MNT-003
+          normal: WF-MNT-003
+          low: WF-MNT-003
+          tenant_responsible: WF-MNT-TENANT
+
+    - step_id: WF-MNT-002a
+      name: Emergency Response
+      name_vi: Phản hồi khẩn cấp
+      order: 2.5
+      description: |
+        Immediate response protocol for emergency
+        maintenance situations.
+
+      inputs:
+        - emergency_details
+        - tenant_contact
+        - property_information
+
+      actions:
+        - action: immediate_acknowledgment
+          timing: within_30_minutes
+        - action: dispatch_emergency_response
+          options:
+            - on_call_technician
+            - emergency_vendor
+            - utility_company
+            - emergency_services_if_life_safety
+        - action: advise_tenant
+          instructions:
+            - immediate_safety_steps
+            - what_to_do_while_waiting
+            - emergency_contact_numbers
+        - action: escalate_to_manager
+          timing: immediately
+        - action: document_response_time
+          system: property_management
+
+      outputs:
+        - emergency_dispatch_confirmation
+        - tenant_instructions
+        - escalation_record
+
+      sla:
+        acknowledge: 30_minutes
+        response: 2_hours
+        resolution_target: 24_hours
+
+      next_step: WF-MNT-004
+
+    - step_id: WF-MNT-003
+      name: Assess and Estimate
+      name_vi: Đánh giá và ước tính
+      order: 3
+      description: |
+        Detailed assessment of issue and cost
+        estimation for repair.
+
+      inputs:
+        - request_details
+        - priority_level
+        - historical_data
+
+      actions:
+        - action: schedule_assessment
+          with_tenant: if_needed
+          notice: 24_hours
+          rule: BR-MNT-020
+        - action: conduct_assessment
+          by: maintenance_staff_or_vendor
+          document:
+            - issue_confirmation
+            - scope_of_work
+            - parts_needed
+            - time_estimate
+        - action: estimate_cost
+          breakdown:
+            - labor
+            - materials
+            - vendor_costs
+        - action: determine_approval_needed
+          thresholds:
+            auto_approve: 2000000_VND
+            pm_approve: 10000000_VND
+            owner_approve: ">10000000_VND"
+          rule: BR-MNT-030
+
+      outputs:
+        - assessment_report
+        - cost_estimate
+        - approval_requirement
+
+      decision_point:
+        condition: approval_level
+        outcomes:
+          auto_approved: WF-MNT-004
+          needs_pm_approval: WF-MNT-003a
+          needs_owner_approval: WF-MNT-003b
+
+    - step_id: WF-MNT-003a
+      name: Obtain PM Approval
+      name_vi: Xin phê duyệt quản lý
+      order: 3.5
+      description: |
+        Get property manager approval for
+        mid-range repairs.
+
+      inputs:
+        - cost_estimate
+        - scope_of_work
+        - urgency_level
+
+      actions:
+        - action: submit_for_approval
+          to: property_manager
+        - action: review_and_decide
+          options:
+            - approve
+            - request_more_info
+            - decline
+            - modify_scope
+        - action: document_decision
+          system: property_management
+
+      outputs:
+        - approval_decision
+        - approved_budget
+        - any_modifications
+
+      sla:
+        decision: 24_hours
+
+      decision_point:
+        condition: approval_status
+        outcomes:
+          approved: WF-MNT-004
+          declined: WF-MNT-CLOSE
+          modified: WF-MNT-003
+
+    - step_id: WF-MNT-003b
+      name: Obtain Owner Approval
+      name_vi: Xin phê duyệt chủ nhà
+      order: 3.6
+      description: |
+        Get property owner approval for
+        major repairs.
+
+      inputs:
+        - cost_estimate
+        - scope_of_work
+        - alternatives_if_any
+        - urgency_justification
+
+      actions:
+        - action: prepare_approval_request
+          content:
+            - issue_description
+            - recommended_solution
+            - cost_breakdown
+            - alternatives_considered
+            - urgency_explanation
+        - action: submit_to_owner
+          method: per_owner_preference
+        - action: follow_up
+          if_no_response: 48_hours
+        - action: document_decision
+          system: property_management
+
+      outputs:
+        - owner_decision
+        - approved_budget
+        - special_instructions
+
+      sla:
+        decision: 3_business_days
+        emergency_exception: 24_hours
+
+      decision_point:
+        condition: approval_status
+        outcomes:
+          approved: WF-MNT-004
+          declined: WF-MNT-CLOSE
+          defer: schedule_for_later
+
+    - step_id: WF-MNT-004
+      name: Create Work Order
+      name_vi: Tạo lệnh công việc
+      order: 4
+      description: |
+        Generate formal work order with complete
+        specifications and assignment.
+
+      inputs:
+        - approved_scope
+        - cost_estimate
+        - priority_level
+        - vendor_or_staff_assignment
+
+      actions:
+        - action: generate_work_order
+          entity: WorkOrder
+          content:
+            - work_description
+            - location_details
+            - parts_required
+            - time_estimate
+            - budget_approved
+            - special_instructions
+        - action: assign_to_technician
+          options:
+            - internal_staff
+            - preferred_vendor
+            - bid_out_if_large
+        - action: schedule_work
+          with_tenant_coordination: true
+          notice_required: 24_hours
+        - action: notify_tenant
+          content:
+            - scheduled_date_time
+            - work_description
+            - expected_duration
+            - entry_requirements
+
+      outputs:
+        - work_order_number
+        - assignment_confirmation
+        - scheduled_appointment
+        - tenant_notification
+
+      next_step: WF-MNT-005
+
+    - step_id: WF-MNT-005
+      name: Procure Materials
+      name_vi: Mua sắm vật tư
+      order: 5
+      description: |
+        Order or retrieve necessary parts
+        and materials.
+
+      inputs:
+        - parts_list
+        - budget_approved
+        - urgency_level
+
+      actions:
+        - action: check_inventory
+          system: inventory_management
+        - action: order_parts
+          if_not_in_stock: true
+          vendors: preferred_suppliers
+        - action: track_delivery
+          system: procurement
+        - action: prepare_materials
+          for_scheduled_work: true
+
+      outputs:
+        - materials_ready_confirmation
+        - delivery_tracking
+        - cost_actuals
+
+      conditions:
+        skip_if: no_parts_needed
+
+      next_step: WF-MNT-006
+
+    - step_id: WF-MNT-006
+      name: Execute Work
+      name_vi: Thực hiện công việc
+      order: 6
+      description: |
+        Perform the maintenance or repair work
+        at the property.
+
+      inputs:
+        - work_order
+        - materials
+        - scheduled_appointment
+
+      actions:
+        - action: confirm_appointment
+          with_tenant: 24_hours_prior
+        - action: arrive_on_time
+          window: scheduled_time
+        - action: verify_entry_permission
+          methods:
+            - tenant_present
+            - pre_authorized_entry
+            - emergency_entry_documented
+        - action: perform_work
+          per: work_order_specifications
+        - action: document_work
+          include:
+            - before_photos
+            - work_performed
+            - after_photos
+            - time_spent
+            - materials_used
+        - action: clean_work_area
+          required: true
+        - action: test_repair
+          verify: issue_resolved
+
+      outputs:
+        - work_completion_record
+        - photos_documentation
+        - time_and_materials_log
+
+      next_step: WF-MNT-007
+
+    - step_id: WF-MNT-007
+      name: Verify Quality
+      name_vi: Xác minh chất lượng
+      order: 7
+      description: |
+        Verify work quality and tenant satisfaction.
+
+      inputs:
+        - completed_work_order
+        - work_documentation
+
+      actions:
+        - action: inspect_work
+          by: property_manager_or_staff
+          checklist:
+            - issue_resolved
+            - no_new_damage
+            - clean_work_area
+            - all_materials_removed
+          rule: BR-MNT-032
+        - action: obtain_tenant_confirmation
+          method: signature_or_portal
+          questions:
+            - is_issue_resolved
+            - satisfaction_rating
+            - any_concerns
+        - action: document_warranty
+          vendor_warranty: required
+          minimum_period: 30_days
+
+      outputs:
+        - quality_verification_report
+        - tenant_confirmation
+        - warranty_documentation
+
+      decision_point:
+        condition: quality_check
+        outcomes:
+          passed: WF-MNT-008
+          failed: WF-MNT-007a
+
+    - step_id: WF-MNT-007a
+      name: Handle Rework
+      name_vi: Xử lý làm lại
+      order: 7.5
+      description: |
+        Address quality issues requiring
+        additional work.
+
+      inputs:
+        - quality_issues_identified
+        - original_work_order
+
+      actions:
+        - action: document_deficiencies
+          system: property_management
+        - action: notify_vendor
+          content: rework_required
+        - action: schedule_rework
+          no_additional_charge: per_warranty
+          rule: BR-MNT-032
+        - action: update_vendor_performance
+          system: vendor_management
+
+      outputs:
+        - rework_order
+        - vendor_notification
+        - performance_record
+
+      next_step: WF-MNT-006
+
+    - step_id: WF-MNT-008
+      name: Process Payment
+      name_vi: Xử lý thanh toán
+      order: 8
+      description: |
+        Process vendor invoices and record
+        expense.
+
+      inputs:
+        - completed_work_order
+        - vendor_invoice
+        - approved_budget
+
+      actions:
+        - action: receive_invoice
+          from: vendor
+        - action: verify_against_work_order
+          checks:
+            - work_completed_as_specified
+            - costs_within_approved_budget
+            - no_unauthorized_charges
+        - action: create_expense_record
+          entity: Expense
+          category: maintenance
+        - action: approve_payment
+          per_authority: threshold_based
+        - action: process_payment
+          system: accounting
+          timing: per_vendor_terms
+
+      outputs:
+        - expense_record
+        - payment_confirmation
+        - vendor_payment
+
+      next_step: WF-MNT-009
+
+    - step_id: WF-MNT-009
+      name: Update Records
+      name_vi: Cập nhật hồ sơ
+      order: 9
+      description: |
+        Update all property and equipment records
+        with maintenance history.
+
+      inputs:
+        - completed_work_order
+        - expense_records
+        - equipment_affected
+
+      actions:
+        - action: update_maintenance_history
+          entity: Unit
+          add: maintenance_record
+        - action: update_equipment_records
+          if_applicable: equipment_serviced
+        - action: update_preventive_schedule
+          if: reset_maintenance_interval
+        - action: close_work_order
+          entity: WorkOrder
+          status: completed
+        - action: close_request
+          entity: MaintenanceRequest
+          status: resolved
+
+      outputs:
+        - updated_property_records
+        - closed_work_order
+        - resolved_request
+
+      next_step: WF-MNT-010
+
+    - step_id: WF-MNT-010
+      name: Follow Up
+      name_vi: Theo dõi
+      order: 10
+      description: |
+        Post-resolution follow-up and satisfaction
+        survey.
+
+      inputs:
+        - resolved_request
+        - tenant_contact
+
+      actions:
+        - action: send_satisfaction_survey
+          timing: 3_days_after_resolution
+          questions:
+            - overall_satisfaction
+            - timeliness
+            - quality_of_work
+            - communication
+            - technician_professionalism
+        - action: record_feedback
+          system: property_management
+        - action: update_vendor_rating
+          based_on: tenant_feedback
+          rule: BR-MNT-041
+        - action: identify_patterns
+          if: recurring_issue
+          escalate_to: preventive_maintenance
+
+      outputs:
+        - satisfaction_score
+        - feedback_record
+        - pattern_analysis
+
+      next_step: WF-MNT-011
+
+    - step_id: WF-MNT-011
+      name: Close Request
+      name_vi: Đóng yêu cầu
+      order: 11
+      description: |
+        Final closure and reporting.
+
+      inputs:
+        - all_documentation
+        - satisfaction_feedback
+
+      actions:
+        - action: archive_documentation
+          retention: 5_years
+        - action: update_metrics
+          metrics:
+            - response_time
+            - resolution_time
+            - cost
+            - satisfaction
+        - action: generate_reports
+          if: significant_repair
+          to: property_owner
+        - action: mark_workflow_complete
+          system: property_management
+
+      outputs:
+        - closed_request
+        - metrics_updated
+        - owner_report_if_applicable
+
+      workflow_complete: true
+
+    # Branch for tenant-responsible issues
+    - step_id: WF-MNT-TENANT
+      name: Tenant Responsibility Notice
+      name_vi: Thông báo trách nhiệm người thuê
+      order: 99
+      description: |
+        Inform tenant of their responsibility
+        for the maintenance issue.
+
+      inputs:
+        - request_details
+        - responsibility_determination
+
+      actions:
+        - action: notify_tenant
+          content:
+            - issue_is_tenant_responsibility
+            - reason_explanation
+            - options_for_resolution
+            - recommended_vendors_optional
+        - action: offer_coordination
+          if: tenant_requests
+          note: "At tenant expense"
+        - action: close_request
+          status: tenant_responsible
+
+      outputs:
+        - responsibility_notice
+        - request_closed
+
+      workflow_complete: true
+
+    # Branch for declined/closed requests
+    - step_id: WF-MNT-CLOSE
+      name: Close Without Action
+      name_vi: Đóng không hành động
+      order: 98
+      description: |
+        Close request that will not be actioned.
+
+      inputs:
+        - closure_reason
+        - request_details
+
+      actions:
+        - action: document_reason
+          options:
+            - declined_by_owner
+            - not_property_issue
+            - duplicate_request
+            - resolved_by_other_means
+        - action: notify_tenant
+          if_applicable: true
+        - action: close_request
+          entity: MaintenanceRequest
+          status: closed
+
+      outputs:
+        - closure_documentation
+        - tenant_notification
+
+      workflow_complete: true
+
+  # ==========================================
+  # WORKFLOW METRICS
+  # ==========================================
+
+  metrics:
+    - name: emergency_response_time
+      description: "Time to respond to emergencies"
+      target: "<2 hours"
+
+    - name: first_time_fix_rate
+      description: "Percentage resolved on first visit"
+      target: ">85%"
+
+    - name: average_resolution_time
+      description: "Average time from request to resolution"
+      target: "<5 days"
+
+    - name: tenant_satisfaction
+      description: "Average satisfaction score"
+      target: ">4.0/5.0"
+
+    - name: cost_per_unit
+      description: "Average maintenance cost per unit"
+      target: track_and_benchmark
+
+  # Summary
+  summary:
+    total_steps: 15
+    decision_points: 4
+    average_duration: 1-14_days
+    emergency_path: "Receive → Emergency Response → Execute → Close"
+    standard_path: "Receive → Triage → Assess → Approve → Work Order → Execute → Verify → Close"

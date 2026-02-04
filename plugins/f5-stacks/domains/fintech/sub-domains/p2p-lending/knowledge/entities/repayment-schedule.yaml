@@ -1,0 +1,409 @@
+name: Repayment Schedule
+display_name: Repayment Schedule / Lịch trả nợ
+description: |
+  Repayment schedule entity defining the complete payment plan
+  for a loan with installment breakdown and status tracking.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: RepaymentSchedule
+  name_vi: Lịch trả nợ
+  table_name: repayment_schedules
+
+  primary_key: id
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique schedule entry identifier
+
+    # References
+    - name: loan_id
+      type: uuid
+      required: true
+      references: loans.id
+      indexed: true
+      description: The loan this schedule belongs to
+
+    # Installment Information
+    - name: installment_number
+      type: integer
+      required: true
+      min: 1
+      description: Installment number in sequence
+
+    - name: due_date
+      type: date
+      required: true
+      indexed: true
+      description: Payment due date
+
+    # Scheduled Amounts
+    - name: scheduled_payment
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Total scheduled payment amount
+
+    - name: scheduled_principal
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Scheduled principal portion
+
+    - name: scheduled_interest
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Scheduled interest portion
+
+    - name: scheduled_fee
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Scheduled fee amount
+
+    # Balances
+    - name: beginning_balance
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Principal balance at start of period
+
+    - name: ending_balance
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Principal balance after scheduled payment
+
+    # Actual Payment Tracking
+    - name: actual_payment
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual amount paid
+
+    - name: actual_principal
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual principal paid
+
+    - name: actual_interest
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual interest paid
+
+    - name: actual_fee
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual fees paid
+
+    - name: late_fee
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Late fee charged
+
+    - name: penalty
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Other penalties charged
+
+    # Status
+    - name: status
+      type: enum
+      values: [scheduled, due, grace_period, overdue, paid, partial, waived, written_off]
+      default: scheduled
+      indexed: true
+      description: Installment payment status
+
+    - name: payment_date
+      type: date
+      description: Date payment was actually received
+
+    - name: repayment_id
+      type: uuid
+      references: repayments.id
+      description: Associated repayment record
+
+    # Timing Analysis
+    - name: days_early
+      type: integer
+      default: 0
+      description: Days paid before due date (if early)
+
+    - name: days_late
+      type: integer
+      default: 0
+      indexed: true
+      description: Days paid after due date (if late)
+
+    - name: is_late
+      type: boolean
+      default: false
+      indexed: true
+      description: Whether payment was late
+
+    # Remaining Balance
+    - name: outstanding_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "scheduled_payment - actual_payment + late_fee + penalty"
+      description: Amount still owed for this installment
+
+    # Auto-Debit
+    - name: auto_debit_scheduled
+      type: boolean
+      default: false
+      description: Whether auto-debit is scheduled
+
+    - name: auto_debit_date
+      type: date
+      description: Scheduled auto-debit date
+
+    - name: auto_debit_attempts
+      type: integer
+      default: 0
+      description: Number of auto-debit attempts made
+
+    # Notification Tracking
+    - name: reminder_sent
+      type: boolean
+      default: false
+      description: Whether due date reminder sent
+
+    - name: reminder_date
+      type: timestamp
+      description: When reminder was sent
+
+    - name: overdue_notice_sent
+      type: boolean
+      default: false
+      description: Whether overdue notice sent
+
+    - name: overdue_notice_date
+      type: timestamp
+      description: When overdue notice was sent
+
+    # Adjustment Tracking
+    - name: is_adjusted
+      type: boolean
+      default: false
+      description: Whether schedule has been adjusted
+
+    - name: adjustment_reason
+      type: string
+      max_length: 500
+      description: Reason for adjustment
+
+    - name: original_due_date
+      type: date
+      description: Original due date before adjustment
+
+    - name: original_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Original amount before adjustment
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      description: When schedule entry was created
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: loan_id
+
+    - name: repayment
+      type: belongs_to
+      entity: Repayment
+      foreign_key: repayment_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_schedule_loan
+      columns: [loan_id, installment_number]
+      unique: true
+
+    - name: idx_schedule_due_date
+      columns: [due_date]
+
+    - name: idx_schedule_status
+      columns: [status]
+
+    - name: idx_schedule_overdue
+      columns: [loan_id, status]
+      where: "status IN ('due', 'overdue', 'partial')"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  generation:
+    - rule: "Schedule generated upon loan disbursement"
+      enforcement: system
+
+    - rule: "First payment 30 days after disbursement"
+      enforcement: system
+
+    - rule: "Monthly payments on same day as first payment"
+      enforcement: system
+
+  status_transitions:
+    - rule: "Scheduled → Due on due date"
+      enforcement: system
+
+    - rule: "Due → Grace Period after due date"
+      grace_days: 3
+      enforcement: system
+
+    - rule: "Grace Period → Overdue after grace period"
+      enforcement: system
+
+    - rule: "Overdue/Due/Grace → Paid when fully paid"
+      enforcement: system
+
+    - rule: "Partial status if payment < scheduled"
+      enforcement: system
+
+  notifications:
+    - rule: "Reminder 3 days before due date"
+      enforcement: system
+
+    - rule: "Due date notification on due date"
+      enforcement: system
+
+    - rule: "Overdue notice daily until payment"
+      enforcement: system
+      max_notices: 30
+
+# =============================================================================
+# SCHEDULE CALCULATION FORMULAS
+# =============================================================================
+calculation_formulas:
+  emi:
+    description: "Equal Monthly Installment"
+    formula: |
+      monthly_rate = annual_rate / 12 / 100
+      EMI = P * (r * (1 + r)^n) / ((1 + r)^n - 1)
+      where:
+        P = principal
+        r = monthly_rate
+        n = term_months
+
+    interest_calculation: "outstanding_balance * monthly_rate"
+    principal_calculation: "EMI - interest"
+
+  equal_principal:
+    description: "Equal Principal Payment"
+    formula: |
+      monthly_principal = P / n
+      monthly_interest = outstanding_balance * monthly_rate
+      monthly_payment = monthly_principal + monthly_interest
+
+    interest_calculation: "outstanding_balance * monthly_rate"
+    principal_calculation: "principal / term_months"
+
+  bullet:
+    description: "Interest Only with Bullet Principal"
+    formula: |
+      monthly_interest = P * monthly_rate
+      final_payment = P + monthly_interest
+
+    interest_calculation: "principal * monthly_rate"
+    principal_calculation: |
+      IF installment_number = term_months THEN principal
+      ELSE 0
+
+# =============================================================================
+# COMPUTED FIELDS
+# =============================================================================
+computed_fields:
+  - name: payment_variance
+    formula: "actual_payment - scheduled_payment"
+
+  - name: is_fully_paid
+    formula: "outstanding_amount <= 0"
+
+  - name: days_until_due
+    formula: "DATEDIFF(due_date, CURRENT_DATE)"
+
+  - name: current_status
+    formula: |
+      CASE
+        WHEN actual_payment >= scheduled_payment THEN 'paid'
+        WHEN actual_payment > 0 THEN 'partial'
+        WHEN CURRENT_DATE > due_date + 3 THEN 'overdue'
+        WHEN CURRENT_DATE > due_date THEN 'grace_period'
+        WHEN CURRENT_DATE = due_date THEN 'due'
+        ELSE 'scheduled'
+      END
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: installment_number
+    rules:
+      - min: 1
+        message: "Installment number must be positive"
+
+  - field: scheduled_payment
+    rules:
+      - min: 0
+        message: "Scheduled payment cannot be negative"
+
+  - field: component_sum
+    rules:
+      - custom: "scheduled_principal + scheduled_interest + scheduled_fee = scheduled_payment"
+        message: "Component amounts must equal scheduled payment"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  retention_years: 10

@@ -1,0 +1,365 @@
+name: Order Rules
+display_name: Order Rules / Quy tắc đơn hàng
+description: |
+  Business rules governing order lifecycle, validation, and processing.
+  Includes creation, modification, cancellation, and completion rules.
+
+domain: e-commerce
+category: orders
+
+rules:
+  # Order Creation Rules
+  - id: BR-ORD-001
+    name: Order Number Generation
+    description: Auto-generate unique order number
+    priority: critical
+    condition: order.created = true
+    action: |
+      order.order_number = 'ORD-' +
+        FORMAT(NOW(), 'YYYYMMDD') + '-' +
+        RANDOM_ALPHANUMERIC(4)
+    applies_to: [Order]
+
+  - id: BR-ORD-002
+    name: Minimum Item Requirement
+    description: Order must have at least one item
+    priority: critical
+    condition: COUNT(order.items) >= 1
+    action: reject_if_violated
+    message: "Order must contain at least one item"
+    applies_to: [Order]
+
+  - id: BR-ORD-003
+    name: Customer Email Required
+    description: Valid email required for order notifications
+    priority: critical
+    condition: |
+      order.customer_email IS NOT NULL AND
+      VALID_EMAIL(order.customer_email)
+    action: reject_if_violated
+    message: "Valid email address required"
+    applies_to: [Order]
+
+  - id: BR-ORD-004
+    name: Shipping Address Required
+    description: Shipping address required for physical products
+    priority: critical
+    condition: |
+      ALL(order_items.product.type = 'digital') OR
+      order.shipping_address IS NOT NULL
+    action: reject_if_violated
+    message: "Shipping address required for physical products"
+    applies_to: [Order]
+
+  - id: BR-ORD-005
+    name: Price Snapshot
+    description: Lock prices at order creation
+    priority: critical
+    condition: order.created = true
+    action: |
+      FOR each order_item:
+        order_item.unit_price = current_product_price
+        order_item.product_snapshot = product.to_json()
+    applies_to: [Order, OrderItem]
+
+  # Order Validation Rules
+  - id: BR-ORD-010
+    name: Stock Validation
+    description: Verify stock availability at order creation
+    priority: critical
+    condition: |
+      FOR each order_item:
+        inventory.available_quantity >= order_item.quantity
+    action: reject_if_violated
+    message: "Some items are out of stock"
+    applies_to: [Order, OrderItem]
+
+  - id: BR-ORD-011
+    name: Product Active Validation
+    description: Cannot order inactive or discontinued products
+    priority: high
+    condition: |
+      ALL(order_items.product.status = 'active')
+    action: reject_if_violated
+    message: "Some products are no longer available"
+    applies_to: [Order, OrderItem]
+
+  - id: BR-ORD-012
+    name: Customer Status Validation
+    description: Suspended customers cannot place orders
+    priority: high
+    condition: |
+      order.customer_id IS NULL OR
+      customer.status = 'active'
+    action: reject_if_violated
+    message: "Your account is suspended"
+    applies_to: [Order, Customer]
+
+  - id: BR-ORD-013
+    name: Quantity Limits
+    description: Enforce min/max order quantity per product
+    priority: medium
+    condition: |
+      FOR each order_item:
+        (product.min_order_quantity IS NULL OR
+         order_item.quantity >= product.min_order_quantity) AND
+        (product.max_order_quantity IS NULL OR
+         order_item.quantity <= product.max_order_quantity)
+    action: reject_if_violated
+    message: "Quantity outside allowed range"
+    applies_to: [OrderItem]
+
+  - id: BR-ORD-014
+    name: COD Limit
+    description: COD orders have maximum value limit
+    priority: high
+    condition: |
+      order.payment_method != 'cod' OR
+      order.total_amount <= config.cod_limit
+    action: reject_if_violated
+    message: "Order exceeds COD limit"
+    applies_to: [Order]
+    config:
+      cod_limit: 5000000
+
+  # Order Modification Rules
+  - id: BR-ORD-020
+    name: Modification Window
+    description: Orders can be modified within 1 hour before processing
+    priority: high
+    condition: |
+      order.status = 'pending' AND
+      NOW() - order.created_at < INTERVAL '1 hour'
+    action: allow_modification
+    message: "Order can no longer be modified"
+    applies_to: [Order]
+
+  - id: BR-ORD-021
+    name: No Modification After Processing
+    description: Cannot modify order after processing starts
+    priority: critical
+    condition: order.status NOT IN ('processing', 'shipped', 'delivered')
+    action: reject_if_violated
+    message: "Order cannot be modified after processing"
+    applies_to: [Order]
+
+  - id: BR-ORD-022
+    name: Address Change Before Ship
+    description: Shipping address can be changed before shipping
+    priority: medium
+    condition: order.status IN ('pending', 'confirmed', 'processing')
+    action: allow_address_change
+    applies_to: [Order]
+
+  # Order Cancellation Rules
+  - id: BR-ORD-030
+    name: Customer Cancellation
+    description: Customer can cancel before shipping
+    priority: high
+    condition: order.status IN ('pending', 'confirmed', 'processing')
+    action: |
+      allow_cancellation
+      IF order.payment_status = 'paid' THEN initiate_refund()
+    applies_to: [Order]
+
+  - id: BR-ORD-031
+    name: No Cancel After Ship
+    description: Cannot cancel after shipping, must use return process
+    priority: critical
+    condition: order.status NOT IN ('shipped', 'delivered', 'completed')
+    action: reject_if_violated
+    message: "Please initiate a return request instead"
+    applies_to: [Order]
+
+  - id: BR-ORD-032
+    name: Cancellation Reason Required
+    description: Cancellation must have a reason
+    priority: medium
+    condition: order.cancellation_reason IS NOT NULL
+    action: reject_if_violated
+    message: "Please provide a cancellation reason"
+    applies_to: [Order]
+
+  - id: BR-ORD-033
+    name: Inventory Release on Cancel
+    description: Release reserved/committed inventory on cancellation
+    priority: critical
+    condition: order.status = 'cancelled'
+    action: |
+      FOR each order_item:
+        release_inventory(order_item.quantity)
+    applies_to: [Order, Inventory]
+
+  # Order Status Rules
+  - id: BR-ORD-040
+    name: Confirm Requires Payment
+    description: Order confirmed only after payment authorization
+    priority: critical
+    condition: |
+      order.payment_method = 'cod' OR
+      order.payment_status IN ('authorized', 'paid')
+    action: allow_confirmation
+    message: "Payment required before confirmation"
+    applies_to: [Order]
+
+  - id: BR-ORD-041
+    name: Processing Requires Confirmation
+    description: Cannot process unconfirmed orders
+    priority: critical
+    condition: order.status = 'confirmed'
+    action: allow_processing
+    applies_to: [Order]
+
+  - id: BR-ORD-042
+    name: Ship Requires Tracking
+    description: Tracking number required to mark as shipped
+    priority: high
+    condition: |
+      order.tracking_number IS NOT NULL AND
+      order.carrier IS NOT NULL
+    action: reject_if_violated
+    message: "Tracking number and carrier required"
+    applies_to: [Order]
+
+  - id: BR-ORD-043
+    name: Auto Complete
+    description: Auto-complete order 7 days after delivery
+    priority: medium
+    condition: |
+      order.status = 'delivered' AND
+      NOW() - order.delivered_at > INTERVAL '7 days' AND
+      NOT EXISTS(active_return_requests)
+    action: |
+      order.status = 'completed'
+      award_loyalty_points()
+    applies_to: [Order]
+
+  # Payment Rules
+  - id: BR-ORD-050
+    name: Payment Timeout
+    description: Cancel pending payment orders after 24 hours
+    priority: high
+    condition: |
+      order.status = 'pending' AND
+      order.payment_status = 'pending' AND
+      NOW() - order.created_at > INTERVAL '24 hours'
+    action: |
+      order.status = 'cancelled'
+      order.cancellation_reason = 'Payment timeout'
+      order.cancelled_by = 'system'
+    applies_to: [Order]
+
+  - id: BR-ORD-051
+    name: Partial Payment Allowed
+    description: Allow multiple payments to complete order
+    priority: medium
+    condition: config.allow_partial_payment = true
+    action: |
+      IF SUM(payments.captured_amount) >= order.total_amount
+      THEN order.payment_status = 'paid'
+    applies_to: [Order, Payment]
+    config:
+      allow_partial_payment: false
+
+  - id: BR-ORD-052
+    name: Refund on Cancellation
+    description: Auto-refund paid orders when cancelled
+    priority: high
+    condition: |
+      order.status = 'cancelled' AND
+      order.paid_amount > 0
+    action: |
+      CREATE refund(
+        amount = order.paid_amount - order.refunded_amount
+      )
+    applies_to: [Order, Refund]
+
+  # Fulfillment Rules
+  - id: BR-ORD-060
+    name: Partial Fulfillment
+    description: Allow partial fulfillment of orders
+    priority: medium
+    condition: config.allow_partial_fulfillment = true
+    action: |
+      order.fulfillment_status =
+        CASE
+          WHEN SUM(fulfilled) = 0 THEN 'unfulfilled'
+          WHEN SUM(fulfilled) < SUM(quantity) THEN 'partially_fulfilled'
+          ELSE 'fulfilled'
+        END
+    applies_to: [Order, OrderItem]
+    config:
+      allow_partial_fulfillment: true
+
+  - id: BR-ORD-061
+    name: Fulfilled Quantity Limit
+    description: Cannot fulfill more than ordered quantity
+    priority: critical
+    condition: order_item.fulfilled_quantity <= order_item.quantity
+    action: reject_if_violated
+    message: "Cannot fulfill more than ordered"
+    applies_to: [OrderItem]
+
+  - id: BR-ORD-062
+    name: Return Window
+    description: Returns allowed within 30 days of delivery
+    priority: high
+    condition: |
+      order.status = 'delivered' AND
+      NOW() - order.delivered_at <= INTERVAL '30 days'
+    action: allow_return
+    message: "Return window has expired"
+    applies_to: [Order]
+    config:
+      return_window_days: 30
+
+  # Loyalty Rules
+  - id: BR-ORD-070
+    name: Loyalty Points Earning
+    description: Award points on order completion
+    priority: medium
+    condition: |
+      order.status = 'completed' AND
+      order.customer_id IS NOT NULL
+    action: |
+      points = FLOOR(order.total_amount / config.points_per_currency)
+      customer.loyalty_points += points
+      TRIGGER order.points_awarded
+    applies_to: [Order, Customer]
+    config:
+      points_per_currency: 10000
+
+  - id: BR-ORD-071
+    name: Loyalty Points Deduction
+    description: Deduct points if order returned after completion
+    priority: medium
+    condition: |
+      return.approved = true AND
+      order.loyalty_points_awarded > 0
+    action: |
+      points_to_deduct = FLOOR(return.refund_amount / config.points_per_currency)
+      customer.loyalty_points -= points_to_deduct
+    applies_to: [Return, Customer]
+
+validation_order:
+  - BR-ORD-002  # Minimum items
+  - BR-ORD-003  # Email required
+  - BR-ORD-010  # Stock validation
+  - BR-ORD-011  # Product active
+  - BR-ORD-012  # Customer status
+  - BR-ORD-013  # Quantity limits
+  - BR-ORD-014  # COD limit
+  - BR-ORD-004  # Shipping address
+  - BR-ORD-001  # Order number
+  - BR-ORD-005  # Price snapshot
+
+exceptions:
+  - name: VIPOrderOverride
+    description: VIP customers can exceed COD limits
+    requires: vip_status
+    max_cod_increase: 50%
+
+  - name: ExtendedReturnWindow
+    description: Extended return window for premium customers
+    requires: platinum_or_diamond_tier
+    return_window_days: 60

@@ -1,0 +1,374 @@
+name: Shipment
+display_name: Shipment / Vận chuyển
+description: |
+  Thông tin vận chuyển đơn hàng gia súc/gia cầm.
+  Bao gồm cold-chain cho thịt đã giết mổ.
+
+domain: agriculture
+category: logistics
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: shipment_code
+    type: string
+    required: true
+    validation:
+      pattern: "^SHP-[0-9]{8}-[A-Z0-9]{6}$"
+    example: "SHP-20241201-ABC123"
+
+  - name: order_id
+    type: uuid
+    required: true
+
+  - name: shipment_type
+    type: enum
+    required: true
+    description: Loại vận chuyển
+    validation:
+      values: [live_animal, processed_meat, mixed]
+
+  - name: transport_method
+    type: enum
+    required: true
+    validation:
+      values: [truck, refrigerated_truck, self_pickup, third_party]
+
+  - name: shipper_id
+    type: uuid
+    required: false
+    description: Đơn vị vận chuyển
+
+  - name: driver_id
+    type: uuid
+    required: false
+
+  - name: vehicle_id
+    type: uuid
+    required: false
+
+  - name: vehicle_plate
+    type: string
+    required: false
+    description: Biển số xe
+
+  # Pickup info
+  - name: pickup_address
+    type: object
+    required: true
+    example:
+      province: "Đồng Nai"
+      district: "Trảng Bom"
+      address: "Trang trại ABC"
+      contact_name: "Nguyễn Văn A"
+      contact_phone: "0901234567"
+      coordinates:
+        lat: 10.9876
+        lng: 106.9876
+
+  - name: scheduled_pickup_at
+    type: timestamp
+    required: true
+
+  - name: actual_pickup_at
+    type: timestamp
+    required: false
+
+  # Delivery info
+  - name: delivery_address
+    type: object
+    required: true
+
+  - name: scheduled_delivery_at
+    type: timestamp
+    required: false
+
+  - name: actual_delivery_at
+    type: timestamp
+    required: false
+
+  - name: estimated_duration_hours
+    type: decimal
+    required: false
+    description: Thời gian vận chuyển ước tính
+
+  - name: distance_km
+    type: decimal
+    required: false
+
+  # Tracking
+  - name: current_location
+    type: object
+    required: false
+    description: GPS location hiện tại
+    example:
+      lat: 10.8231
+      lng: 106.6297
+      updated_at: "2024-12-01T10:30:00Z"
+
+  - name: tracking_history
+    type: array
+    required: false
+    description: Lịch sử GPS tracking
+
+  # Cold-chain monitoring
+  - name: requires_cold_chain
+    type: boolean
+    required: true
+    default: false
+
+  - name: target_temperature_min
+    type: decimal
+    required: false
+    description: Nhiệt độ tối thiểu (°C)
+
+  - name: target_temperature_max
+    type: decimal
+    required: false
+    description: Nhiệt độ tối đa (°C)
+
+  - name: temperature_readings
+    type: array
+    required: false
+    description: Lịch sử nhiệt độ từ sensor
+    example:
+      - temperature: 4.5
+        timestamp: "2024-12-01T10:30:00Z"
+        sensor_id: "TEMP-001"
+
+  - name: temperature_breach
+    type: boolean
+    required: false
+    default: false
+    description: Có vi phạm nhiệt độ không
+
+  - name: temperature_breach_count
+    type: integer
+    required: false
+    default: 0
+
+  # Weight verification
+  - name: declared_weight_kg
+    type: decimal
+    required: true
+
+  - name: pickup_weight_kg
+    type: decimal
+    required: false
+    description: Cân lúc pickup
+
+  - name: delivery_weight_kg
+    type: decimal
+    required: false
+    description: Cân lúc delivery
+
+  - name: weight_variance_percent
+    type: decimal
+    required: false
+
+  # Proof of delivery
+  - name: pickup_photos
+    type: array
+    required: false
+    description: Ảnh lúc pickup
+
+  - name: delivery_photos
+    type: array
+    required: false
+    description: Ảnh lúc delivery
+
+  - name: recipient_name
+    type: string
+    required: false
+
+  - name: recipient_signature
+    type: string
+    required: false
+    description: URL signature image
+
+  # Costs
+  - name: shipping_fee
+    type: decimal
+    required: true
+    default: 0
+
+  - name: additional_fees
+    type: array
+    required: false
+    example:
+      - type: "cold_chain"
+        amount: 500000
+      - type: "express"
+        amount: 200000
+
+  - name: total_shipping_cost
+    type: decimal
+    required: true
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [
+        pending,
+        confirmed,
+        driver_assigned,
+        en_route_to_pickup,
+        arrived_pickup,
+        loading,
+        in_transit,
+        at_hub,
+        out_for_delivery,
+        arrived_delivery,
+        unloading,
+        delivered,
+        failed,
+        cancelled
+      ]
+    default: pending
+
+  - name: failure_reason
+    type: text
+    required: false
+
+  - name: notes
+    type: text
+    required: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    required: true
+
+  - name: shipper
+    type: belongs_to
+    entity: Shipper
+    required: false
+
+  - name: driver
+    type: belongs_to
+    entity: User
+    required: false
+
+  - name: hub
+    type: belongs_to
+    entity: Hub
+    required: false
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Chờ xác nhận
+    - name: confirmed
+      description: Đã xác nhận
+    - name: driver_assigned
+      description: Đã phân công tài xế
+    - name: en_route_to_pickup
+      description: Đang đến điểm lấy hàng
+    - name: arrived_pickup
+      description: Đã đến điểm lấy hàng
+    - name: loading
+      description: Đang xếp hàng
+    - name: in_transit
+      description: Đang vận chuyển
+    - name: at_hub
+      description: Đang ở Hub trung chuyển
+    - name: out_for_delivery
+      description: Đang giao hàng
+    - name: arrived_delivery
+      description: Đã đến điểm giao
+    - name: unloading
+      description: Đang dỡ hàng
+    - name: delivered
+      description: Đã giao thành công
+    - name: failed
+      description: Giao thất bại
+    - name: cancelled
+      description: Đã hủy
+  transitions:
+    - from: pending
+      to: confirmed
+      trigger: confirm
+      actions: [notify_seller]
+    - from: confirmed
+      to: driver_assigned
+      trigger: assign_driver
+      actions: [notify_driver, notify_seller]
+    - from: driver_assigned
+      to: en_route_to_pickup
+      trigger: start_pickup
+      actions: [start_tracking]
+    - from: en_route_to_pickup
+      to: arrived_pickup
+      trigger: arrive_pickup
+    - from: arrived_pickup
+      to: loading
+      trigger: start_loading
+      actions: [record_pickup_weight, take_pickup_photos]
+    - from: loading
+      to: in_transit
+      trigger: depart
+      actions: [start_cold_chain_monitoring]
+    - from: in_transit
+      to: at_hub
+      trigger: arrive_hub
+      conditions: [hub_id_not_null]
+    - from: [in_transit, at_hub]
+      to: out_for_delivery
+      trigger: out_for_delivery
+    - from: out_for_delivery
+      to: arrived_delivery
+      trigger: arrive_delivery
+    - from: arrived_delivery
+      to: unloading
+      trigger: start_unloading
+      actions: [record_delivery_weight, take_delivery_photos]
+    - from: unloading
+      to: delivered
+      trigger: complete_delivery
+      actions: [get_signature, stop_tracking, notify_all]
+    - from: any
+      to: failed
+      trigger: fail
+      actions: [notify_admin, notify_buyer_seller]
+    - from: [pending, confirmed]
+      to: cancelled
+      trigger: cancel
+      actions: [notify_all]
+
+indexes:
+  - [shipment_code]
+  - [order_id]
+  - [shipper_id]
+  - [status]
+  - [scheduled_pickup_at]
+
+business_rules:
+  - BR-SHP-001: Cold-chain bắt buộc cho processed_meat
+  - BR-SHP-002: Alert nếu nhiệt độ vượt ngưỡng
+  - BR-SHP-003: Chênh lệch cân nặng > 5% = Auto alert
+  - BR-SHP-004: Phải có ảnh pickup và delivery
+  - BR-SHP-005: GPS tracking mỗi 5 phút
+
+events:
+  - name: shipment.created
+    payload: [id, shipment_code, order_id]
+  - name: shipment.pickup_completed
+    payload: [id, pickup_weight_kg, pickup_photos]
+  - name: shipment.temperature_breach
+    payload: [id, temperature, threshold]
+  - name: shipment.delivered
+    payload: [id, delivery_weight_kg, recipient_name]

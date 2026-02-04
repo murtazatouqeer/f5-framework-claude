@@ -1,0 +1,265 @@
+name: GPSTracking
+display_name: GPS Tracking
+description: |
+  Real-time and historical GPS position data for vehicles.
+  Supports location tracking, route replay, and geofencing.
+
+domain: logistics
+subdomain: fleet
+category: telematics
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: vehicle_id
+    type: uuid
+    required: true
+
+  - name: driver_id
+    type: uuid
+    required: false
+
+  - name: trip_id
+    type: uuid
+    required: false
+
+  - name: device_id
+    type: string
+    required: true
+    description: GPS device identifier
+
+  # Position
+  - name: latitude
+    type: decimal
+    required: true
+    validation:
+      min: -90
+      max: 90
+
+  - name: longitude
+    type: decimal
+    required: true
+    validation:
+      min: -180
+      max: 180
+
+  - name: altitude_m
+    type: decimal
+    required: false
+
+  - name: accuracy_m
+    type: decimal
+    required: false
+    description: GPS accuracy in meters
+
+  # Movement
+  - name: speed_kmh
+    type: decimal
+    required: false
+
+  - name: heading
+    type: decimal
+    required: false
+    description: Direction in degrees (0-360)
+
+  - name: odometer_km
+    type: decimal
+    required: false
+
+  # Status
+  - name: ignition_on
+    type: boolean
+    required: true
+    default: false
+
+  - name: engine_running
+    type: boolean
+    required: false
+
+  - name: moving
+    type: boolean
+    required: true
+    default: false
+
+  - name: idle_seconds
+    type: integer
+    required: false
+
+  # Timing
+  - name: recorded_at
+    type: timestamp
+    required: true
+    description: Time from GPS device
+
+  - name: received_at
+    type: timestamp
+    required: true
+    description: Time received by server
+
+  - name: processed_at
+    type: timestamp
+    required: false
+
+  # Address
+  - name: address
+    type: string
+    required: false
+    description: Reverse geocoded address
+
+  - name: city
+    type: string
+    required: false
+
+  - name: state
+    type: string
+    required: false
+
+  - name: country
+    type: string
+    required: false
+
+  - name: postal_code
+    type: string
+    required: false
+
+  # Geofencing
+  - name: geofence_ids
+    type: array
+    required: false
+    description: Geofences vehicle is currently within
+
+  - name: geofence_event
+    type: enum
+    required: false
+    validation:
+      values: [enter, exit, inside, outside]
+
+  - name: geofence_name
+    type: string
+    required: false
+
+  # Events
+  - name: event_type
+    type: enum
+    required: false
+    validation:
+      values: [periodic, ignition_on, ignition_off, speeding, harsh_brake, harsh_accel, geofence_enter, geofence_exit, sos, tamper]
+
+  - name: event_value
+    type: decimal
+    required: false
+
+  # Diagnostics
+  - name: fuel_level_percent
+    type: decimal
+    required: false
+
+  - name: battery_voltage
+    type: decimal
+    required: false
+
+  - name: engine_temp_c
+    type: decimal
+    required: false
+
+  - name: dtc_codes
+    type: array
+    required: false
+    description: Diagnostic Trouble Codes
+
+  # Signal Quality
+  - name: gps_satellites
+    type: integer
+    required: false
+
+  - name: gps_fix_type
+    type: enum
+    required: false
+    validation:
+      values: [no_fix, 2d, 3d, dgps]
+
+  - name: cell_signal_strength
+    type: integer
+    required: false
+    description: dBm
+
+  # Raw Data
+  - name: raw_data
+    type: object
+    required: false
+    description: Original message from device
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: vehicle
+    type: belongs_to
+    entity: Vehicle
+    required: true
+
+  - name: driver
+    type: belongs_to
+    entity: Driver
+    required: false
+
+  - name: trip
+    type: belongs_to
+    entity: Trip
+    required: false
+
+indexes:
+  - [vehicle_id, recorded_at]
+  - [driver_id, recorded_at]
+  - [trip_id, recorded_at]
+  - [device_id]
+  - [recorded_at]
+  - [event_type]
+  - [latitude, longitude]
+
+partitioning:
+  type: time
+  column: recorded_at
+  interval: daily
+
+retention:
+  raw_data: 90 days
+  aggregated: 2 years
+
+computed_fields:
+  - name: latency_ms
+    formula: (received_at - recorded_at) * 1000
+  - name: distance_from_previous
+    formula: haversine(prev_lat, prev_lng, latitude, longitude)
+
+aggregations:
+  - name: hourly_summary
+    fields: [avg_speed, max_speed, total_distance, idle_time]
+    interval: 1 hour
+  - name: daily_summary
+    fields: [avg_speed, max_speed, total_distance, driving_time, idle_time]
+    interval: 1 day
+
+business_rules:
+  - BR-GPS-001: Position updates every 30 seconds minimum
+  - BR-GPS-002: Speed alerts trigger above 120 km/h
+  - BR-GPS-003: Idle alerts trigger after 5 minutes
+  - BR-GPS-004: Missing positions for 15+ minutes trigger alert
+
+events:
+  - name: gps.position_update
+    payload: [vehicle_id, lat, lng, speed_kmh]
+  - name: gps.speeding
+    payload: [vehicle_id, speed_kmh, speed_limit]
+  - name: gps.geofence_enter
+    payload: [vehicle_id, geofence_id, geofence_name]
+  - name: gps.geofence_exit
+    payload: [vehicle_id, geofence_id, geofence_name]
+  - name: gps.idle_alert
+    payload: [vehicle_id, idle_seconds, location]
+  - name: gps.device_offline
+    payload: [vehicle_id, last_seen_at]

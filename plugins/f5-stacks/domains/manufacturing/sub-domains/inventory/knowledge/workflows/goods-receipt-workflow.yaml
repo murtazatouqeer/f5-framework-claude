@@ -1,0 +1,448 @@
+name: goods-receipt-workflow
+display_name: Goods Receipt Workflow
+display_name_vi: Quy trình nhập kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Workflow for receiving materials into inventory.
+  Covers physical receipt, quality inspection, inventory posting,
+  and discrepancy handling.
+
+workflow_type: sequential
+triggers:
+  - Supplier delivery arrives
+  - Production completion
+  - Customer return
+  - Stock transfer arrival
+
+participants:
+  - role: receiver
+    description: Warehouse receiving clerk
+  - role: qc_inspector
+    description: Quality control inspector
+  - role: supervisor
+    description: Warehouse supervisor
+  - role: buyer
+    description: Procurement representative
+
+stages:
+  # ============================================
+  # STAGE 1: ARRIVAL
+  # ============================================
+  - id: arrival
+    name: Delivery Arrival
+    name_vi: Tiếp nhận giao hàng
+    sequence: 1
+    description: Initial receipt of delivery
+
+    steps:
+      - id: dock_check_in
+        name: Dock Check-In
+        actor: receiver
+        description: Record vehicle arrival at dock
+        inputs:
+          - Vehicle/carrier identification
+          - Delivery note/packing slip
+          - Driver information
+        actions:
+          - Assign dock door
+          - Log arrival time
+          - Retrieve expected delivery info
+        outputs:
+          - Dock assignment
+          - Arrival record
+
+      - id: verify_documentation
+        name: Verify Documentation
+        actor: receiver
+        description: Check delivery documents
+        checks:
+          - Delivery note present
+          - PO reference valid
+          - Supplier matches PO
+          - Material matches order
+        outcomes:
+          pass: Proceed to unloading
+          fail: Hold for investigation
+        outputs:
+          - Document verification status
+
+      - id: unload_delivery
+        name: Unload Delivery
+        actor: receiver
+        description: Physically unload materials
+        actions:
+          - Safely unload goods
+          - Place in staging area
+          - Initial visual inspection
+        safety_checks:
+          - Proper handling equipment
+          - Hazmat protocols if applicable
+        outputs:
+          - Unloaded materials
+
+  # ============================================
+  # STAGE 2: VERIFICATION
+  # ============================================
+  - id: verification
+    name: Quantity & Condition Verification
+    name_vi: Kiểm tra số lượng & tình trạng
+    sequence: 2
+    description: Verify received quantity and condition
+
+    steps:
+      - id: count_verify
+        name: Count Verification
+        actor: receiver
+        description: Verify received quantity
+        methods:
+          piece_count: For discrete items
+          weight_check: For bulk materials
+          volume_measure: For liquids
+        comparisons:
+          - Delivery note quantity
+          - PO quantity
+          - ASN quantity (if available)
+        outputs:
+          - Actual quantity received
+
+      - id: condition_check
+        name: Condition Check
+        actor: receiver
+        description: Inspect for damage or defects
+        checks:
+          - Packaging integrity
+          - Visible damage
+          - Temperature (if controlled)
+          - Labels and markings
+        outcomes:
+          acceptable: Proceed to recording
+          damaged: Photograph and document
+          rejected: Hold and notify
+        outputs:
+          - Condition status
+          - Damage documentation (if any)
+
+      - id: batch_serial_capture
+        name: Batch/Serial Capture
+        actor: receiver
+        description: Capture batch and serial information
+        for_batch_managed:
+          - Batch number
+          - Production date
+          - Expiry date
+          - Supplier batch reference
+        for_serial_managed:
+          - Each serial number
+          - Verify against packing list
+        validations:
+          - Batch format valid
+          - Expiry date acceptable
+          - Serial numbers unique
+        outputs:
+          - Batch/serial records
+
+  # ============================================
+  # STAGE 3: QUALITY INSPECTION
+  # ============================================
+  - id: quality_inspection
+    name: Quality Inspection
+    name_vi: Kiểm tra chất lượng
+    sequence: 3
+    description: Quality inspection if required
+    conditional: Material.inspection_required = true
+
+    steps:
+      - id: create_inspection_lot
+        name: Create Inspection Lot
+        actor: system
+        description: Auto-create inspection lot
+        trigger: Receipt of inspection-required material
+        inputs:
+          - Material specifications
+          - Inspection plan
+          - Sampling requirements
+        outputs:
+          - Inspection lot
+          - Stock in quality status
+
+      - id: sampling
+        name: Sample Selection
+        actor: qc_inspector
+        description: Select samples per plan
+        methods:
+          - AQL-based sampling
+          - 100% inspection (if required)
+          - Skip lot (if qualified)
+        outputs:
+          - Selected samples
+
+      - id: perform_inspection
+        name: Perform Inspection
+        actor: qc_inspector
+        description: Execute inspection tests
+        inspection_types:
+          - Visual inspection
+          - Dimensional checks
+          - Functional testing
+          - Chemical analysis
+          - Documentation review (CoA)
+        documentation:
+          - Test results
+          - Measurements
+          - Photos (if needed)
+        outputs:
+          - Inspection results
+
+      - id: usage_decision
+        name: Usage Decision
+        actor: qc_inspector
+        description: Make quality decision
+        decisions:
+          accept:
+            - Release to unrestricted stock
+            - Update supplier quality metrics
+          conditional_accept:
+            - Accept with deviation
+            - Require engineering approval
+          reject:
+            - Block stock
+            - Create NCR
+            - Initiate return process
+        outputs:
+          - Quality decision
+          - Updated stock status
+
+  # ============================================
+  # STAGE 4: INVENTORY POSTING
+  # ============================================
+  - id: inventory_posting
+    name: Inventory Posting
+    name_vi: Ghi nhận tồn kho
+    sequence: 4
+    description: Post receipt to inventory
+
+    steps:
+      - id: record_receipt
+        name: Record Goods Receipt
+        actor: receiver
+        description: Create goods receipt document
+        inputs:
+          - PO reference
+          - Actual quantity
+          - Batch/serial info
+          - Receiving location
+        validations:
+          - Quantity within tolerance
+          - Location valid
+          - Batch/serial complete
+        outputs:
+          - Draft goods receipt
+
+      - id: assign_location
+        name: Assign Storage Location
+        actor: receiver
+        description: Determine putaway location
+        methods:
+          directed: System assigns location
+          guided: System suggests, user confirms
+          manual: User selects location
+        considerations:
+          - Material restrictions
+          - Available capacity
+          - Picking efficiency
+          - Storage conditions
+        outputs:
+          - Assigned location(s)
+
+      - id: post_receipt
+        name: Post Receipt
+        actor: receiver
+        description: Post to inventory and GL
+        system_actions:
+          - Create inventory transaction
+          - Update on-hand quantity
+          - Update material value
+          - Create GL posting
+          - Update PO received quantity
+        outputs:
+          - Posted goods receipt
+          - Inventory transaction
+          - GL document
+
+      - id: update_po_status
+        name: Update PO Status
+        actor: system
+        description: Update purchase order status
+        logic:
+          all_received: PO status = Received
+          partial: PO status = Partially Received
+          over_receipt: Flag for review
+        outputs:
+          - Updated PO status
+
+  # ============================================
+  # STAGE 5: PUTAWAY
+  # ============================================
+  - id: putaway
+    name: Putaway
+    name_vi: Xếp kho
+    sequence: 5
+    description: Move material to storage location
+
+    steps:
+      - id: generate_putaway_task
+        name: Generate Putaway Task
+        actor: system
+        description: Create putaway work order
+        inputs:
+          - Material and quantity
+          - Source (staging)
+          - Destination location
+        outputs:
+          - Putaway task
+
+      - id: execute_putaway
+        name: Execute Putaway
+        actor: receiver
+        description: Move material to location
+        actions:
+          - Pick from staging
+          - Transport to location
+          - Place in bin
+          - Confirm location
+        confirmations:
+          - Scan destination location
+          - Scan material/batch
+          - Confirm quantity
+        outputs:
+          - Completed putaway
+
+      - id: confirm_putaway
+        name: Confirm Putaway
+        actor: receiver
+        description: System confirmation of putaway
+        system_actions:
+          - Update inventory location
+          - Clear staging
+          - Complete task
+        outputs:
+          - Confirmed inventory location
+
+  # ============================================
+  # STAGE 6: DISCREPANCY HANDLING
+  # ============================================
+  - id: discrepancy_handling
+    name: Discrepancy Handling
+    name_vi: Xử lý sai lệch
+    sequence: 6
+    description: Handle receipt discrepancies
+    conditional: Discrepancy exists
+
+    steps:
+      - id: document_discrepancy
+        name: Document Discrepancy
+        actor: receiver
+        description: Record discrepancy details
+        discrepancy_types:
+          - Quantity variance
+          - Quality issue
+          - Wrong material
+          - Damaged goods
+          - Missing documentation
+        documentation:
+          - Actual vs expected
+          - Photos if applicable
+          - Witness signatures
+        outputs:
+          - Discrepancy report
+
+      - id: notify_stakeholders
+        name: Notify Stakeholders
+        actor: system
+        description: Alert relevant parties
+        notifications:
+          quantity_variance: [buyer, supplier]
+          quality_issue: [QC, buyer, supplier]
+          damage: [buyer, supplier, carrier]
+        outputs:
+          - Notifications sent
+
+      - id: resolve_discrepancy
+        name: Resolve Discrepancy
+        actor: supervisor
+        description: Determine resolution
+        options:
+          accept_as_is: Receive actual quantity
+          request_credit: Claim shortage from supplier
+          return_goods: Arrange return shipment
+          file_claim: Insurance/carrier claim
+        approval:
+          required_for: Value > threshold
+        outputs:
+          - Resolution decision
+
+      - id: implement_resolution
+        name: Implement Resolution
+        actor: receiver
+        description: Execute resolution actions
+        actions_by_resolution:
+          accept_as_is: Complete receipt as recorded
+          request_credit: Create credit request
+          return_goods: Create return delivery
+          file_claim: Submit claim documentation
+        outputs:
+          - Completed resolution
+
+process_metrics:
+  - name: Dock to Stock Time
+    formula: AVG(Putaway_Complete - Dock_Arrival)
+    target: "< 4 hours"
+
+  - name: Inspection Cycle Time
+    formula: AVG(QC_Complete - QC_Start)
+    target: "< 24 hours"
+
+  - name: Receipt Accuracy
+    formula: (Accurate_Receipts / Total_Receipts) × 100
+    target: "> 99%"
+
+  - name: First Pass Receipt Rate
+    formula: (No_Discrepancy_Receipts / Total_Receipts) × 100
+    target: "> 95%"
+
+exceptions:
+  - name: No PO Receipt
+    description: Receipt without purchase order
+    approval: Procurement Manager
+    documentation: Justification required
+    follow_up: Create PO within 24 hours
+
+  - name: Over-Tolerance Receipt
+    description: Quantity exceeds tolerance
+    approval: Supervisor + Buyer
+    options: [Accept, Return excess, Negotiate]
+
+  - name: Failed Inspection
+    description: Quality inspection failed
+    mandatory_steps:
+      - Create NCR
+      - Notify supplier
+      - Quarantine stock
+    options: [Return, Rework, Scrap, Use-as-is]
+
+sla:
+  dock_to_receipt: 4 hours
+  inspection_complete: 24 hours
+  discrepancy_resolution: 48 hours
+  putaway_complete: 8 hours
+
+integrations:
+  - system: WMS
+    integration_points: [task_creation, location_assignment, putaway_confirmation]
+  - system: QMS
+    integration_points: [inspection_lot, test_results, NCR]
+  - system: ERP
+    integration_points: [goods_receipt, inventory_posting, PO_update]

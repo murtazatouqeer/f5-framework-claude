@@ -1,0 +1,500 @@
+name: BankAccount
+display_name: Bank Account / Tài khoản ngân hàng
+description: |
+  Core entity representing a customer's bank account. Supports checking,
+  savings, and fixed deposit account types with balance management,
+  transfer limits, and lifecycle state tracking.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique account identifier
+
+  account_number:
+    type: string
+    format: "^[0-9]{10,16}$"
+    unique: true
+    indexed: true
+    description: Bank account number (10-16 digits)
+    description_vi: Số tài khoản ngân hàng
+
+  account_holder_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: AccountHolder
+    description: Link to account holder (customer)
+
+  # ---------------------------------------------------------------------------
+  # Account Type & Status
+  # ---------------------------------------------------------------------------
+  account_type:
+    type: enum
+    values: [checking, savings, fixed_deposit]
+    required: true
+    description: Type of bank account
+    description_vi: Loại tài khoản
+    value_descriptions:
+      checking: "Current account for daily transactions / Tài khoản thanh toán"
+      savings: "Savings account with interest / Tài khoản tiết kiệm"
+      fixed_deposit: "Fixed term deposit / Tiền gửi có kỳ hạn"
+
+  status:
+    type: enum
+    values: [pending, active, dormant, frozen, closed]
+    default: pending
+    indexed: true
+    description: Account lifecycle status
+    description_vi: Trạng thái tài khoản
+    value_descriptions:
+      pending: "Awaiting activation / Chờ kích hoạt"
+      active: "Fully operational / Đang hoạt động"
+      dormant: "Inactive for 12+ months / Không hoạt động"
+      frozen: "Temporarily suspended / Tạm khóa"
+      closed: "Permanently closed / Đã đóng"
+
+  # ---------------------------------------------------------------------------
+  # Balance Management
+  # ---------------------------------------------------------------------------
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+    description: Account currency (ISO 4217)
+
+  balance:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Current account balance
+    description_vi: Số dư tài khoản
+
+  available_balance:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    computed: true
+    formula: "balance - hold_amount - minimum_balance + overdraft_limit"
+    description: Balance available for transactions
+    description_vi: Số dư khả dụng
+
+  hold_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Amount held for pending transactions
+    description_vi: Số tiền tạm giữ
+
+  minimum_balance:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Required minimum balance
+    description_vi: Số dư tối thiểu
+
+  overdraft_limit:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Approved overdraft limit (checking only)
+    description_vi: Hạn mức thấu chi
+
+  # ---------------------------------------------------------------------------
+  # Transfer Limits
+  # ---------------------------------------------------------------------------
+  daily_transfer_limit:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 500000000
+    description: Maximum transfer amount per day
+    description_vi: Hạn mức chuyển khoản/ngày
+
+  daily_transfer_used:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Transfer amount used today
+    description_vi: Đã chuyển trong ngày
+
+  monthly_transfer_limit:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 2000000000
+    description: Maximum transfer amount per month
+    description_vi: Hạn mức chuyển khoản/tháng
+
+  monthly_transfer_used:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Transfer amount used this month
+    description_vi: Đã chuyển trong tháng
+
+  # ---------------------------------------------------------------------------
+  # Interest (Savings/Fixed Deposit)
+  # ---------------------------------------------------------------------------
+  interest_rate:
+    type: decimal
+    precision: 5
+    scale: 4
+    nullable: true
+    description: Annual interest rate (savings accounts)
+    description_vi: Lãi suất năm
+
+  interest_calculation_method:
+    type: enum
+    values: [daily_balance, minimum_balance, average_balance]
+    nullable: true
+    description: Method for interest calculation
+
+  term_months:
+    type: integer
+    nullable: true
+    description: Term length for fixed deposits
+    description_vi: Kỳ hạn (tháng)
+
+  maturity_date:
+    type: date
+    nullable: true
+    description: Maturity date for fixed deposits
+    description_vi: Ngày đáo hạn
+
+  auto_renew:
+    type: boolean
+    default: false
+    description: Auto-renew on maturity
+    description_vi: Tự động tái tục
+
+  # ---------------------------------------------------------------------------
+  # Account Settings
+  # ---------------------------------------------------------------------------
+  nickname:
+    type: string
+    max_length: 50
+    nullable: true
+    description: Customer-defined account nickname
+    description_vi: Tên gợi nhớ
+
+  is_primary:
+    type: boolean
+    default: false
+    description: Primary account for customer
+    description_vi: Tài khoản chính
+
+  is_default_receive:
+    type: boolean
+    default: false
+    description: Default account for receiving transfers
+    description_vi: Tài khoản nhận tiền mặc định
+
+  allow_debit:
+    type: boolean
+    default: true
+    description: Allow debit transactions
+    description_vi: Cho phép ghi nợ
+
+  allow_credit:
+    type: boolean
+    default: true
+    description: Allow credit transactions
+    description_vi: Cho phép ghi có
+
+  notification_enabled:
+    type: boolean
+    default: true
+    description: Enable transaction notifications
+    description_vi: Bật thông báo giao dịch
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  last_transaction_at:
+    type: timestamp
+    nullable: true
+    description: Last transaction timestamp
+
+  dormant_at:
+    type: timestamp
+    nullable: true
+    description: When account became dormant
+
+  opened_at:
+    type: timestamp
+    required: true
+    description: Account opening date
+
+  closed_at:
+    type: timestamp
+    nullable: true
+    description: Account closure date
+
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  account_holder:
+    type: belongs_to
+    entity: AccountHolder
+    foreign_key: account_holder_id
+    description: Account owner
+
+  transactions:
+    type: has_many
+    entity: CardTransaction
+    foreign_key: account_id
+    description: Card transactions on this account
+
+  transfers_out:
+    type: has_many
+    entity: Transfer
+    foreign_key: from_account_id
+    description: Outgoing transfers
+
+  transfers_in:
+    type: has_many
+    entity: Transfer
+    foreign_key: to_account_id
+    description: Incoming transfers
+
+  cards:
+    type: has_many
+    entity: Card
+    foreign_key: account_id
+    description: Cards linked to account
+
+  standing_orders:
+    type: has_many
+    entity: StandingOrder
+    foreign_key: account_id
+    description: Recurring payment orders
+
+  direct_debits:
+    type: has_many
+    entity: DirectDebit
+    foreign_key: account_id
+    description: Direct debit mandates
+
+  beneficiaries:
+    type: has_many
+    entity: Beneficiary
+    through: account_holder
+    description: Saved transfer recipients
+
+  statements:
+    type: has_many
+    entity: Statement
+    foreign_key: account_id
+    description: Account statements
+
+  spending_limits:
+    type: has_many
+    entity: SpendingLimit
+    foreign_key: account_id
+    description: Custom spending limits
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending
+
+  states:
+    pending:
+      description: "Account created, awaiting activation"
+      allowed_operations: [view]
+
+    active:
+      description: "Fully operational account"
+      allowed_operations: [view, transfer, receive, card_transactions]
+
+    dormant:
+      description: "No activity for 12+ months"
+      allowed_operations: [view, receive]
+      restrictions:
+        - "No outgoing transfers"
+        - "No card transactions"
+        - "Reactivates on any credit"
+
+    frozen:
+      description: "Temporarily suspended"
+      allowed_operations: [view]
+      restrictions:
+        - "No debit or credit"
+        - "Pending transactions cancelled"
+
+    closed:
+      description: "Permanently closed"
+      allowed_operations: []
+      restrictions:
+        - "Record retention only"
+
+  transitions:
+    - from: pending
+      to: active
+      event: activate
+      conditions:
+        - "KYC verified"
+        - "Initial deposit received (if required)"
+
+    - from: active
+      to: dormant
+      event: mark_dormant
+      conditions:
+        - "No transactions for 12 months"
+      actions:
+        - "Send dormancy notification"
+        - "Restrict debit operations"
+
+    - from: dormant
+      to: active
+      event: reactivate
+      conditions:
+        - "Any transaction or explicit reactivation"
+      actions:
+        - "Clear dormant flag"
+        - "Restore full operations"
+
+    - from: [active, dormant]
+      to: frozen
+      event: freeze
+      conditions:
+        - "Court order OR fraud alert OR AML trigger OR customer request"
+      actions:
+        - "Block all operations"
+        - "Notify compliance"
+
+    - from: frozen
+      to: active
+      event: unfreeze
+      conditions:
+        - "Freeze reason resolved"
+        - "Authorized by compliance"
+
+    - from: [active, dormant, frozen]
+      to: closed
+      event: close
+      conditions:
+        - "Balance = 0"
+        - "No pending transactions"
+        - "No active cards"
+        - "No active standing orders"
+        - "No active direct debits"
+      actions:
+        - "Archive account data"
+        - "Send closure confirmation"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-ACC-001
+    name: One Primary Checking
+    description: Customer can have only one primary checking account
+    description_vi: Khách hàng chỉ có một tài khoản thanh toán chính
+    rule: |
+      COUNT(accounts WHERE account_holder_id = ?
+            AND account_type = 'checking'
+            AND is_primary = true) <= 1
+
+  - id: BR-ACC-002
+    name: Available Balance Calculation
+    description: Available balance formula
+    description_vi: Công thức tính số dư khả dụng
+    rule: |
+      available_balance = balance - hold_amount - minimum_balance + overdraft_limit
+      available_balance >= 0 (unless overdraft approved)
+
+  - id: BR-ACC-003
+    name: Dormancy Rule
+    description: Mark dormant after 12 months of inactivity
+    description_vi: Đánh dấu không hoạt động sau 12 tháng
+    rule: |
+      IF last_transaction_at < NOW() - INTERVAL '12 months'
+      THEN status = 'dormant'
+
+  - id: BR-ACC-004
+    name: Closure Balance Rule
+    description: Balance must be zero to close account
+    description_vi: Số dư phải bằng 0 để đóng tài khoản
+    rule: |
+      IF action = 'close' THEN balance = 0 AND hold_amount = 0
+
+  - id: BR-ACC-005
+    name: Daily Limit Reset
+    description: Reset daily transfer used at midnight
+    description_vi: Reset hạn mức hàng ngày lúc 0h
+    rule: |
+      AT 00:00 daily: daily_transfer_used = 0
+
+  - id: BR-ACC-006
+    name: Monthly Limit Reset
+    description: Reset monthly transfer used on 1st of month
+    description_vi: Reset hạn mức hàng tháng ngày 1
+    rule: |
+      AT 00:00 on day 1 of month: monthly_transfer_used = 0
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_account_holder
+    fields: [account_holder_id]
+
+  - name: idx_account_number
+    fields: [account_number]
+    unique: true
+
+  - name: idx_account_status
+    fields: [status]
+
+  - name: idx_account_type_status
+    fields: [account_type, status]
+
+  - name: idx_dormancy_check
+    fields: [status, last_transaction_at]
+    where: "status = 'active'"
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  events:
+    - account_opened
+    - account_activated
+    - account_frozen
+    - account_unfrozen
+    - account_closed
+    - balance_updated
+    - limit_changed
+    - status_changed

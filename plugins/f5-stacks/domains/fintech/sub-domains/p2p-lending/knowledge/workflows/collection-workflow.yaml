@@ -1,0 +1,819 @@
+name: Collection Workflow
+display_name: Collection Workflow / Quy trình thu hồi nợ
+description: |
+  Workflow for managing delinquent loan collection from early reminders
+  through legal action and potential write-off.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-P2P-COLL
+  name: Debt Collection
+  name_vi: Thu hồi nợ
+  category: loan_collection
+
+  trigger:
+    type: delinquency
+    event: payment_past_grace_period
+
+  actors:
+    - system
+    - collection_agent
+    - senior_agent
+    - underwriter
+    - legal_team
+    - external_agency
+    - borrower
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Detect Delinquency
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: detect_delinquency
+    name: Detect Delinquency
+    name_vi: Phát hiện nợ quá hạn
+    actor: system
+
+    description: |
+      Automatically detect when loans become delinquent after grace period.
+
+    detection_criteria:
+      grace_period_ended: true
+      payment_status: not_received
+      dpd: ">= 4"
+
+    batch_processing:
+      timing: "00:01 daily"
+      scope: all_active_loans
+
+    for_each_delinquent_loan:
+      - calculate_dpd
+      - calculate_overdue_amount
+      - determine_collection_stage
+      - assign_priority
+
+    priority_calculation:
+      factors:
+        - overdue_amount: weight_30
+        - dpd: weight_25
+        - previous_late_payments: weight_20
+        - loan_grade: weight_15
+        - response_history: weight_10
+
+    outputs:
+      - delinquent_loans_count
+      - total_overdue_amount
+      - new_delinquencies
+      - stage_distribution
+
+    next_step: assign_collection_stage
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Assign Collection Stage
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: assign_collection_stage
+    name: Assign Collection Stage
+    name_vi: Phân giai đoạn thu hồi
+    actor: system
+
+    description: |
+      Assign loans to appropriate collection stage based on DPD.
+
+    stage_assignment:
+      early_collection:
+        dpd_range: [4, 15]
+        assignment: system_automated
+        priority: normal
+
+      soft_collection:
+        dpd_range: [16, 30]
+        assignment: internal_agent
+        priority: elevated
+
+      hard_collection:
+        dpd_range: [31, 60]
+        assignment: senior_agent_or_agency
+        priority: high
+
+      legal_collection:
+        dpd_range: [61, 180]
+        assignment: legal_team
+        priority: critical
+
+      write_off:
+        dpd_range: [181, null]
+        assignment: recovery_team
+        priority: final
+
+    transition_triggers:
+      escalate:
+        - dpd_threshold_crossed
+        - no_response_5_days
+        - ptp_broken_twice
+        - no_contact_established
+      de_escalate:
+        - partial_payment_received
+        - payment_plan_agreed
+        - hardship_verified
+
+    outputs:
+      - assigned_stage
+      - assigned_agent
+      - priority_level
+
+    next_step: route_to_stage
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Early Collection (Automated)
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: early_collection
+    name: Early Collection
+    name_vi: Thu hồi sớm
+    actor: system
+    stage: early
+
+    description: |
+      Automated reminders and gentle collection for newly delinquent loans.
+
+    objectives:
+      - remind_borrower
+      - recover_before_escalation
+      - maintain_relationship
+
+    activities:
+      automated_reminders:
+        day_4:
+          channel: [push, sms]
+          content: "Payment overdue - please pay now"
+          include_payment_link: true
+
+        day_7:
+          channel: [push, sms, email]
+          content: "Urgent: Payment 7 days overdue"
+          tone: concerned
+
+        day_10:
+          channel: [push, sms, email]
+          content: "Warning: Late fees accumulating"
+          include_fee_breakdown: true
+
+        day_14:
+          channel: [push, sms, email, ivr]
+          content: "Final warning before escalation"
+          tone: serious
+
+      self_service_options:
+        - view_outstanding_balance
+        - make_partial_payment
+        - request_payment_extension
+        - contact_support
+
+    escalation_trigger:
+      dpd: 16
+      or: no_response_5_days
+
+    outputs:
+      - contacts_made
+      - response_received
+      - payment_status
+
+    next_step:
+      if_paid: close_collection
+      if_escalate: soft_collection
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Soft Collection (Agent Contact)
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: soft_collection
+    name: Soft Collection
+    name_vi: Thu hồi mềm
+    actor: collection_agent
+    stage: soft
+
+    description: |
+      Personal contact to understand situation and arrange payment.
+
+    objectives:
+      - establish_contact
+      - understand_hardship
+      - arrange_payment
+      - negotiate_if_needed
+
+    activities:
+      phone_calls:
+        frequency: max_3_per_day
+        timing: "08:00 - 20:00"
+        duration: record_all
+        script: empathetic_collection
+
+      personalized_messages:
+        channel: [sms, email]
+        content: personalized_based_on_situation
+
+      assessment:
+        hardship_evaluation:
+          - employment_status
+          - income_changes
+          - health_issues
+          - family_circumstances
+
+    agent_actions:
+      - attempt_contact
+      - document_conversation
+      - assess_willingness
+      - propose_solutions
+
+    solution_options:
+      promise_to_pay:
+        max_days: 14
+        amount: minimum_full_overdue
+        tracking: automatic
+
+      payment_plan:
+        eligibility: minimum_15_dpd
+        duration: based_on_amount
+        down_payment: 10_percent
+
+      hardship_program:
+        eligibility: documented_hardship
+        options: [rate_reduction, term_extension, forbearance]
+
+    contact_protocol:
+      frequency_limits:
+        calls_per_day: 3
+        sms_per_day: 2
+        emails_per_day: 1
+        total_per_week: 15
+
+      timing_restrictions:
+        earliest: "08:00"
+        latest: "20:00"
+        weekends: saturday_only
+        holidays: not_allowed
+
+    escalation_trigger:
+      dpd: 31
+      or: ptp_broken_twice
+
+    outputs:
+      - contact_log
+      - ptp_arranged
+      - plan_agreed
+
+    next_step:
+      if_paid: close_collection
+      if_ptp: monitor_ptp
+      if_plan: execute_payment_plan
+      if_escalate: hard_collection
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Monitor Promise to Pay
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: monitor_ptp
+    name: Monitor Promise to Pay
+    name_vi: Theo dõi hứa thanh toán
+    actor: system
+    conditional: true
+
+    description: |
+      Track and enforce promise to pay commitments.
+
+    monitoring:
+      reminder_before:
+        timing: 1_day
+        channel: [sms, push]
+        content: "Reminder: Payment due tomorrow"
+
+      on_due_date:
+        check_payment: automatic
+        if_not_received: contact_immediately
+
+    ptp_tracking:
+      max_duration: 14_days
+      amount: as_agreed
+      method: specified
+
+    if_ptp_kept:
+      actions:
+        - record_payment
+        - update_status
+        - reduce_priority
+      result: de_escalate_or_close
+
+    if_ptp_broken:
+      threshold: 2_broken_ptps
+      consequences:
+        - escalate_to_next_stage
+        - increase_priority
+        - note_in_profile
+
+    outputs:
+      - ptp_status
+      - payment_received
+      - broken_count
+
+    next_step:
+      if_paid: close_collection
+      if_broken: escalate_stage
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Hard Collection (Intensive)
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: hard_collection
+    name: Hard Collection
+    name_vi: Thu hồi cứng
+    actor: senior_agent
+    stage: hard
+
+    description: |
+      Intensive collection efforts for seriously delinquent loans.
+
+    objectives:
+      - recover_maximum_possible
+      - explore_all_options
+      - prepare_for_legal
+
+    activities:
+      intensive_calling:
+        frequency: daily_attempts
+        escalation: supervisor_calls
+
+      field_visits:
+        eligibility: after_30_dpd
+        requirements:
+          - business_hours_only
+          - identification_required
+          - no_confrontation
+          - document_visit
+        purpose: verify_situation
+
+      reference_contact:
+        if_authorized: contact_emergency_reference
+        purpose: locate_borrower
+        restriction: no_debt_disclosure
+
+      settlement_offers:
+        eligibility: 30_plus_dpd
+        discount_matrix:
+          30_to_60_dpd: max_10_percent
+        approval: manager_required
+
+    external_agency_referral:
+      criteria:
+        - dpd: ">= 45"
+        - internal_efforts: exhausted
+        - cost_benefit: favorable
+
+      agency_requirements:
+        - licensing: required
+        - insurance: required
+        - compliance: verified
+
+      commission:
+        dpd_60_to_90: 15_percent
+        of: collected_amount
+
+    escalation_trigger:
+      dpd: 61
+      or: no_contact_established
+
+    outputs:
+      - recovery_amount
+      - settlement_agreed
+      - field_visit_results
+
+    next_step:
+      if_paid: close_collection
+      if_settlement: execute_settlement
+      if_escalate: legal_collection
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Execute Settlement
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: execute_settlement
+    name: Execute Settlement
+    name_vi: Thực hiện thỏa thuận
+    actor: senior_agent
+    conditional: true
+
+    description: |
+      Process approved settlement offers.
+
+    settlement_terms:
+      discount_by_dpd:
+        30_to_60: { max: 10, approval: manager }
+        61_to_90: { max: 20, approval: manager }
+        91_to_120: { max: 25, approval: director }
+        121_to_180: { max: 30, approval: director }
+        above_180: { max: 40, approval: cco }
+
+      payment_options:
+        lump_sum:
+          discount: full_offered
+          timing: within_7_days
+
+        installments:
+          discount: reduced_by_5_percent
+          max_installments: 3
+          timing: within_90_days
+
+    agreement_requirements:
+      - written_agreement
+      - payment_terms_specified
+      - waiver_of_further_claims
+      - borrower_signature
+
+    investor_notification:
+      timing: before_approval
+      content: proposed_settlement
+      loss_distribution: pro_rata
+
+    outputs:
+      - settlement_amount
+      - payment_plan
+      - agreement_signed
+
+    next_step:
+      if_completed: close_collection
+      if_defaulted: resume_collection
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Legal Collection
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: legal_collection
+    name: Legal Collection
+    name_vi: Thu hồi pháp lý
+    actor: legal_team
+    stage: legal
+
+    description: |
+      Legal remedies for seriously delinquent loans.
+
+    pre_legal_actions:
+      demand_letter:
+        timing: 14_days_before_filing
+        content:
+          - outstanding_amount
+          - payment_deadline
+          - consequences_of_non_payment
+          - legal_costs_warning
+
+      final_notice:
+        timing: 7_days_before_filing
+        content: intent_to_file_lawsuit
+
+    legal_process:
+      initiation_criteria:
+        - minimum_dpd: 60
+        - minimum_outstanding: 5000000
+        - collection_exhausted: true
+        - recovery_likelihood: medium_or_higher
+        - cost_benefit: positive
+
+      process_steps:
+        - file_complaint
+        - court_summons
+        - hearing
+        - judgment
+        - enforcement
+
+      jurisdiction: borrower_residence_or_contract
+
+    cost_recovery:
+      legal_fees: added_to_debt
+      court_costs: added_to_debt
+      enforcement_costs: added_to_debt
+
+    judgment_enforcement:
+      methods:
+        - wage_garnishment
+        - bank_account_levy
+        - asset_seizure
+        - property_lien
+
+    escalation_trigger:
+      dpd: 181
+      or: legal_exhausted
+
+    outputs:
+      - legal_status
+      - judgment_obtained
+      - enforcement_actions
+
+    next_step:
+      if_recovered: close_collection
+      if_exhausted: prepare_write_off
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Prepare Write-Off
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: prepare_write_off
+    name: Prepare Write-Off
+    name_vi: Chuẩn bị xóa nợ
+    actor: underwriter
+    stage: write_off
+
+    description: |
+      Prepare documentation for loan write-off.
+
+    write_off_criteria:
+      automatic:
+        dpd: ">= 180"
+        collection_score: "< 10"
+        no_payment_received: 6_months
+
+      discretionary:
+        conditions:
+          - borrower_deceased_no_estate
+          - borrower_bankrupt
+          - borrower_left_country
+          - cost_exceeds_recovery
+          - fraud_unrecoverable
+
+    documentation_required:
+      - collection_history
+      - contact_attempts_log
+      - financial_analysis
+      - recovery_likelihood_assessment
+      - approval_signatures
+
+    approval_authority:
+      up_to_10m: collection_director
+      10m_to_50m: cco
+      50m_to_200m: ceo
+      above_200m: board_of_directors
+
+    outputs:
+      - write_off_package
+      - recommendation
+      - supporting_documents
+
+    next_step: approve_write_off
+
+  # ---------------------------------------------------------------------------
+  # Step 10: Approve Write-Off
+  # ---------------------------------------------------------------------------
+  - step: 10
+    id: approve_write_off
+    name: Approve Write-Off
+    name_vi: Phê duyệt xóa nợ
+    actor: approving_authority
+    conditional: true
+
+    description: |
+      Final approval for loan write-off.
+
+    review_process:
+      - verify_documentation_complete
+      - assess_recovery_efforts
+      - confirm_exhausted_options
+      - evaluate_future_recovery
+
+    decision_options:
+      approve:
+        action: proceed_to_write_off
+      reject:
+        action: continue_collection_efforts
+      conditional:
+        action: require_additional_efforts
+
+    outputs:
+      - approval_status
+      - approver_name
+      - approval_date
+      - conditions_if_any
+
+    next_step:
+      if_approved: execute_write_off
+      if_rejected: resume_collection
+
+  # ---------------------------------------------------------------------------
+  # Step 11: Execute Write-Off
+  # ---------------------------------------------------------------------------
+  - step: 11
+    id: execute_write_off
+    name: Execute Write-Off
+    name_vi: Thực hiện xóa nợ
+    actor: system
+
+    description: |
+      Execute approved write-off and process investor claims.
+
+    write_off_actions:
+      - update_loan_status_to_written_off
+      - calculate_loss_amount
+      - process_provision_fund_claims
+      - distribute_recovery_to_investors
+      - update_accounting_records
+
+    provision_fund_claim:
+      coverage: 80_percent_of_principal
+      eligibility:
+        - loan_status: defaulted
+        - dpd: ">= 90"
+        - collection_attempted: true
+      processing_time: 30_days
+
+    investor_notification:
+      content:
+        - loan_written_off
+        - provision_claim_amount
+        - total_loss_after_claim
+      timing: immediate
+
+    accounting_treatment:
+      provision: utilize_existing_provision
+      shortfall: charge_to_p_and_l
+      tax_treatment: per_regulations
+
+    post_write_off:
+      recovery_attempts: continue
+      statute_of_limitations: monitor
+      recovery_proceeds: share_with_investors
+      reporting: annual_review
+
+    outputs:
+      - write_off_amount
+      - provision_claimed
+      - investor_loss
+      - loan_status: written_off
+
+    next_step: post_write_off_monitoring
+
+  # ---------------------------------------------------------------------------
+  # Step 12: Post Write-Off Monitoring
+  # ---------------------------------------------------------------------------
+  - step: 12
+    id: post_write_off_monitoring
+    name: Post Write-Off Monitoring
+    name_vi: Theo dõi sau xóa nợ
+    actor: recovery_team
+
+    description: |
+      Continue monitoring and attempt recovery after write-off.
+
+    monitoring_activities:
+      periodic_check:
+        frequency: quarterly
+        duration: until_statute_expires
+
+      recovery_attempts:
+        - settlement_offers
+        - payment_plan_proposals
+        - asset_discovery
+
+      triggers_for_action:
+        - borrower_returns_to_country
+        - new_assets_discovered
+        - borrower_contacts_platform
+
+    recovery_proceeds:
+      distribution:
+        - deduct_recovery_costs
+        - share_with_investors_pro_rata
+      reporting: transparent
+
+    outputs:
+      - monitoring_status
+      - any_recovery_made
+
+    next_step: complete
+
+  # ---------------------------------------------------------------------------
+  # Step 13: Close Collection
+  # ---------------------------------------------------------------------------
+  - step: 13
+    id: close_collection
+    name: Close Collection Case
+    name_vi: Đóng hồ sơ thu hồi
+    actor: system
+
+    description: |
+      Close collection case after successful recovery.
+
+    closure_reasons:
+      - full_payment_received
+      - settlement_completed
+      - payment_plan_completed
+      - borrower_current_again
+
+    actions:
+      - update_collection_status
+      - calculate_final_recovery
+      - update_borrower_credit
+      - archive_collection_records
+
+    credit_reporting:
+      if_paid_in_full: report_positive
+      if_settled: report_settled
+      timing: next_reporting_cycle
+
+    outputs:
+      - collection_status: closed
+      - total_recovered
+      - recovery_rate
+      - closure_reason
+
+    next_step: complete
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  contact_failure:
+    retries: 3
+    alternative: try_other_channel
+    escalation: supervisor_review
+
+  payment_processing_error:
+    action: queue_for_manual
+    notification: operations
+
+  legal_process_error:
+    action: escalate_to_legal_manager
+    documentation: required
+
+# =============================================================================
+# SLA & METRICS
+# =============================================================================
+sla:
+  early_collection:
+    first_contact: within_24_hours
+    response_handling: same_day
+
+  soft_collection:
+    contact_attempt: within_48_hours
+    ptp_follow_up: same_day
+
+  hard_collection:
+    field_visit: within_7_days
+    settlement_response: 24_hours
+
+  legal_collection:
+    demand_letter: within_48_hours
+    court_filing: per_legal_timeline
+
+metrics:
+  tracked:
+    - collection_rate_by_stage
+    - recovery_rate
+    - average_days_to_recovery
+    - settlement_rate
+    - write_off_rate
+    - cost_per_dollar_collected
+
+  targets:
+    early_recovery_rate: "> 80%"
+    soft_recovery_rate: "> 50%"
+    hard_recovery_rate: "> 30%"
+    overall_recovery_rate: "> 70%"
+
+# =============================================================================
+# COMPLIANCE
+# =============================================================================
+compliance:
+  fair_collection:
+    no_harassment: required
+    no_false_statements: required
+    no_unfair_practices: required
+    consumer_rights_respected: required
+
+  contact_restrictions:
+    do_not_contact:
+      - borrower_requested_in_writing
+      - legal_representation_engaged
+      - bankruptcy_filed
+      - deceased_borrower
+
+  data_protection:
+    confidentiality: required
+    access_control: role_based
+    third_party_disclosure: prohibited
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_all_contacts: true
+  log_all_decisions: true
+  call_recording: required
+  retention_years: 10

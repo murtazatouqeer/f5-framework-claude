@@ -1,0 +1,238 @@
+name: routing
+display_name: Production Routing
+display_name_vi: Quy trình sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: entity
+
+description: |
+  Production routing defines the sequence of operations required to
+  manufacture a product, including work centers, times, and instructions.
+
+description_vi: |
+  Quy trình sản xuất xác định trình tự các công đoạn cần thiết để
+  sản xuất sản phẩm, bao gồm trung tâm làm việc, thời gian và hướng dẫn.
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      required: true
+
+    - name: routing_code
+      type: string
+      required: true
+      unique: true
+      pattern: "^RTG-[A-Z0-9-]+$"
+      description: Routing identifier
+      description_vi: Mã quy trình
+
+    - name: product_id
+      type: uuid
+      required: true
+      description: Product this routing is for
+      description_vi: Sản phẩm
+
+    - name: status
+      type: enum
+      required: true
+      default: draft
+      values:
+        - draft: Under development
+        - pending_approval: Awaiting approval
+        - active: Current active version
+        - obsolete: No longer used
+      description_vi: Trạng thái
+
+    - name: version
+      type: string
+      required: true
+      default: "1.0"
+      description: Routing version
+      description_vi: Phiên bản
+
+  header:
+    - name: name
+      type: string
+      required: true
+      description: Routing name
+      description_vi: Tên quy trình
+
+    - name: description
+      type: text
+      description: Routing description
+      description_vi: Mô tả
+
+    - name: effective_from
+      type: date
+      required: true
+      description: Start of effectivity
+      description_vi: Hiệu lực từ ngày
+
+    - name: effective_to
+      type: date
+      description: End of effectivity
+      description_vi: Hiệu lực đến ngày
+
+    - name: base_quantity
+      type: decimal
+      required: true
+      default: 1
+      description: Base quantity for time calculations
+      description_vi: Số lượng cơ sở
+
+  summary:
+    - name: total_operations
+      type: integer
+      description: Number of operations
+      description_vi: Số công đoạn
+
+    - name: total_setup_time
+      type: decimal
+      description: Total setup time (minutes)
+      description_vi: Tổng thời gian cài đặt
+
+    - name: total_run_time
+      type: decimal
+      description: Total run time per unit (minutes)
+      description_vi: Tổng thời gian chạy
+
+    - name: total_queue_time
+      type: decimal
+      description: Total queue time (minutes)
+
+    - name: total_move_time
+      type: decimal
+      description: Total move time (minutes)
+
+    - name: total_lead_time_days
+      type: decimal
+      description: Total manufacturing lead time
+      description_vi: Tổng thời gian sản xuất
+
+  costing:
+    - name: total_labor_cost
+      type: decimal
+      precision: 15
+      scale: 4
+      description: Total labor cost per unit
+      description_vi: Tổng chi phí nhân công
+
+    - name: total_machine_cost
+      type: decimal
+      precision: 15
+      scale: 4
+      description: Total machine cost per unit
+      description_vi: Tổng chi phí máy
+
+    - name: total_overhead_cost
+      type: decimal
+      precision: 15
+      scale: 4
+      description: Total overhead cost per unit
+      description_vi: Tổng chi phí chung
+
+  flags:
+    - name: is_primary
+      type: boolean
+      default: true
+      description: Primary routing for product
+      description_vi: Quy trình chính
+
+    - name: has_alternatives
+      type: boolean
+      default: false
+      description: Has alternative routings
+
+    - name: alternative_routing_ids
+      type: array
+      item_type: uuid
+      description: Alternative routing references
+
+  approval:
+    - name: approved_by
+      type: uuid
+      description: User who approved
+
+    - name: approved_at
+      type: timestamp
+
+    - name: approval_notes
+      type: text
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: uuid
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+    - name: updated_by
+      type: uuid
+
+relationships:
+  - name: product
+    type: belongs_to
+    entity: product
+    foreign_key: product_id
+    description: Parent product
+
+  - name: operations
+    type: has_many
+    entity: operation
+    foreign_key: routing_id
+    order_by: sequence_number
+    description: Routing operations
+
+  - name: work_orders
+    type: has_many
+    entity: work_order
+    foreign_key: routing_id
+    description: Work orders using this routing
+
+indexes:
+  - columns: [routing_code]
+    unique: true
+  - columns: [product_id, status]
+  - columns: [product_id, effective_from]
+  - columns: [status]
+
+state_machine:
+  field: status
+  initial: draft
+  transitions:
+    - from: draft
+      to: pending_approval
+      event: submit
+      guard: has_operations
+
+    - from: pending_approval
+      to: active
+      event: approve
+      action: calculate_totals
+
+    - from: pending_approval
+      to: draft
+      event: reject
+
+    - from: active
+      to: obsolete
+      event: obsolete
+
+validation_rules:
+  - rule: "effective_to IS NULL OR effective_to > effective_from"
+    message: "End date must be after start date"
+
+  - rule: "base_quantity > 0"
+    message: "Base quantity must be positive"
+
+computed_fields:
+  - name: total_time_minutes
+    formula: "total_setup_time + (total_run_time * base_quantity) + total_queue_time + total_move_time"
+    description: Total time for base quantity

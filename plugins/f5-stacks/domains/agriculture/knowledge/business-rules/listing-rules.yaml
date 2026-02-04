@@ -1,0 +1,321 @@
+name: Listing Rules
+display_name: Listing Rules / Quy tắc đăng tin
+description: |
+  Quy tắc tạo và quản lý tin đăng bán gia súc/gia cầm.
+
+domain: agriculture
+category: listings
+
+rules:
+  # Listing Creation Rules
+  - id: BR-LST-001
+    name: Listing Code Generation
+    description: Tự động tạo mã tin đăng
+    priority: critical
+    condition: listing.created = true
+    action: |
+      listing.listing_code = 'LST-' +
+        FORMAT(NOW(), 'YYYYMMDD') + '-' +
+        RANDOM_ALPHANUMERIC(6)
+    applies_to: [Listing]
+
+  - id: BR-LST-002
+    name: Farm Verification Required
+    description: Trang trại phải được xác minh mới được đăng tin
+    priority: critical
+    condition: |
+      listing.farm.verification_status = 'verified' AND
+      listing.farm.status = 'active'
+    action: reject_if_violated
+    message: "Trang trại chưa được xác minh hoặc đang bị tạm ngưng"
+    applies_to: [Listing, Farm]
+
+  - id: BR-LST-003
+    name: Livestock Health Required
+    description: Chỉ đăng bán gia súc/gia cầm khỏe mạnh
+    priority: critical
+    condition: |
+      listing.livestock.health_status = 'healthy'
+    action: reject_if_violated
+    message: "Gia súc/gia cầm phải có tình trạng sức khỏe 'healthy'"
+    applies_to: [Listing, Livestock]
+
+  - id: BR-LST-004
+    name: Minimum Images Required
+    description: Tối thiểu 3 ảnh rõ ràng
+    priority: high
+    condition: |
+      COUNT(listing.images) >= 3
+    action: reject_if_violated
+    message: "Vui lòng upload ít nhất 3 ảnh"
+    applies_to: [Listing]
+    config:
+      min_images: 3
+      max_images: 10
+
+  - id: BR-LST-005
+    name: Video Recommended
+    description: Khuyến khích có video
+    priority: low
+    condition: listing.video_url IS NOT NULL
+    action: |
+      IF listing.video_url IS NULL THEN
+        warning('Khuyến khích có video để tăng độ tin cậy')
+      END
+    applies_to: [Listing]
+
+  # Pricing Rules
+  - id: BR-LST-010
+    name: Fixed Price Required Fields
+    description: Giá cố định phải có price_per_kg
+    priority: critical
+    condition: |
+      listing.selling_type = 'fixed_price' AND
+      listing.price_per_kg > 0
+    action: reject_if_violated
+    message: "Vui lòng nhập giá/kg cho hình thức giá cố định"
+    applies_to: [Listing]
+
+  - id: BR-LST-011
+    name: Auction Required Fields
+    description: Đấu giá phải có starting_price và bid_increment
+    priority: critical
+    condition: |
+      listing.selling_type = 'auction' AND
+      listing.starting_price > 0 AND
+      listing.bid_increment > 0
+    action: reject_if_violated
+    message: "Đấu giá cần giá khởi điểm và bước giá"
+    applies_to: [Listing]
+
+  - id: BR-LST-012
+    name: Auction Bid Increment Range
+    description: Bước giá phải từ 1-10% giá khởi điểm
+    priority: medium
+    condition: |
+      listing.selling_type = 'auction' AND
+      listing.bid_increment >= listing.starting_price * 0.01 AND
+      listing.bid_increment <= listing.starting_price * 0.10
+    action: reject_if_violated
+    message: "Bước giá phải từ 1% đến 10% giá khởi điểm"
+    applies_to: [Listing]
+    config:
+      min_increment_percent: 1
+      max_increment_percent: 10
+
+  - id: BR-LST-013
+    name: Negotiable Floor Price
+    description: Giá sàn (floor_price) phải thấp hơn giá niêm yết
+    priority: high
+    condition: |
+      listing.selling_type = 'negotiable' AND
+      (listing.floor_price_per_kg IS NULL OR
+       listing.floor_price_per_kg < listing.price_per_kg)
+    action: |
+      IF listing.floor_price_per_kg >= listing.price_per_kg THEN
+        reject('Giá sàn phải thấp hơn giá niêm yết')
+      END
+    applies_to: [Listing]
+
+  - id: BR-LST-014
+    name: Price Cannot Be Changed After Bid
+    description: Không được sửa giá sau khi có bid/offer
+    priority: critical
+    condition: |
+      listing.bid_count = 0 AND listing.offer_count = 0
+    action: allow_price_change
+    message: "Không thể sửa giá khi đã có bid hoặc offer"
+    applies_to: [Listing]
+
+  # Quantity and Weight Rules
+  - id: BR-LST-020
+    name: Available Quantity Check
+    description: Số lượng đăng bán không vượt quá available
+    priority: critical
+    condition: |
+      listing.quantity <= listing.livestock.available_quantity
+    action: reject_if_violated
+    message: "Số lượng đăng bán vượt quá số lượng khả dụng"
+    applies_to: [Listing, Livestock]
+
+  - id: BR-LST-021
+    name: Weight Consistency
+    description: Tổng trọng lượng = quantity * avg_weight
+    priority: high
+    condition: |
+      ABS(listing.total_weight_kg - listing.quantity * listing.avg_weight_kg) < 1
+    action: |
+      listing.total_weight_kg = listing.quantity * listing.avg_weight_kg
+    applies_to: [Listing]
+
+  # Listing Limits Rules
+  - id: BR-LST-030
+    name: Max Active Listings Per Farm
+    description: Tối đa 10 listing active mỗi farm
+    priority: medium
+    condition: |
+      (SELECT COUNT(*) FROM listings
+       WHERE farm_id = listing.farm_id AND status = 'active') < 10
+    action: reject_if_violated
+    message: "Trang trại đã đạt giới hạn 10 tin đăng active"
+    applies_to: [Listing]
+    config:
+      max_active_listings: 10
+
+  - id: BR-LST-031
+    name: Listing Expiry
+    description: Tin đăng hết hạn sau 30 ngày
+    priority: medium
+    condition: listing.status = 'active'
+    action: |
+      listing.expires_at = listing.published_at + INTERVAL '30 days'
+    applies_to: [Listing]
+    config:
+      default_expiry_days: 30
+
+  - id: BR-LST-032
+    name: Auto Expire Listings
+    description: Tự động expire tin đăng hết hạn
+    priority: medium
+    condition: |
+      listing.status = 'active' AND
+      NOW() > listing.expires_at
+    action: |
+      listing.status = 'expired'
+      notify_seller('Tin đăng đã hết hạn')
+    applies_to: [Listing]
+
+  # Approval Rules
+  - id: BR-LST-040
+    name: First Time Seller Review
+    description: Seller lần đầu cần review thủ công
+    priority: high
+    condition: |
+      (SELECT COUNT(*) FROM listings WHERE farm_id = listing.farm_id AND status = 'sold') = 0
+    action: |
+      listing.requires_manual_review = true
+      listing.status = 'pending_approval'
+    applies_to: [Listing, Farm]
+
+  - id: BR-LST-041
+    name: High Value Listing Review
+    description: Listing giá trị cao cần review
+    priority: high
+    condition: |
+      listing.total_price > 100000000
+    action: |
+      listing.requires_manual_review = true
+    applies_to: [Listing]
+    config:
+      high_value_threshold: 100000000
+
+  - id: BR-LST-042
+    name: Trusted Seller Auto Approve
+    description: Seller uy tín được auto approve
+    priority: medium
+    condition: |
+      listing.farm.rating >= 4.5 AND
+      listing.farm.total_orders >= 10 AND
+      listing.farm.accuracy_rate >= 95 AND
+      listing.total_price <= 100000000
+    action: |
+      listing.status = 'active'
+      listing.published_at = NOW()
+    applies_to: [Listing, Farm]
+
+  # Content Rules
+  - id: BR-LST-050
+    name: Title Length
+    description: Tiêu đề từ 20-200 ký tự
+    priority: medium
+    condition: |
+      LENGTH(listing.title) >= 20 AND
+      LENGTH(listing.title) <= 200
+    action: reject_if_violated
+    message: "Tiêu đề phải từ 20-200 ký tự"
+    applies_to: [Listing]
+
+  - id: BR-LST-051
+    name: No Contact Info In Description
+    description: Không được để SĐT, email trong mô tả
+    priority: high
+    condition: |
+      NOT REGEXP_MATCH(listing.description, '([0-9]{10,11}|@[a-zA-Z0-9]+\.[a-zA-Z]+)')
+    action: reject_if_violated
+    message: "Không được để thông tin liên hệ trong mô tả"
+    applies_to: [Listing]
+
+  # Auction Timing Rules
+  - id: BR-LST-060
+    name: Auction Duration Limits
+    description: Thời gian đấu giá từ 2 giờ đến 7 ngày
+    priority: medium
+    condition: |
+      listing.selling_type = 'auction' AND
+      (listing.auction_end_at - listing.auction_start_at) >= INTERVAL '2 hours' AND
+      (listing.auction_end_at - listing.auction_start_at) <= INTERVAL '7 days'
+    action: reject_if_violated
+    message: "Thời gian đấu giá phải từ 2 giờ đến 7 ngày"
+    applies_to: [Listing]
+
+  - id: BR-LST-061
+    name: Auction Start Time
+    description: Đấu giá phải bắt đầu trong vòng 7 ngày
+    priority: medium
+    condition: |
+      listing.selling_type = 'auction' AND
+      listing.auction_start_at <= NOW() + INTERVAL '7 days'
+    action: reject_if_violated
+    message: "Đấu giá phải bắt đầu trong vòng 7 ngày"
+    applies_to: [Listing]
+
+  # Cancellation Rules
+  - id: BR-LST-070
+    name: Cancel Listing With Bids
+    description: Hủy listing có bid = Phạt seller
+    priority: high
+    condition: |
+      listing.status = 'active' AND
+      listing.selling_type = 'auction' AND
+      listing.bid_count > 0 AND
+      action = 'cancel'
+    action: |
+      notify_all_bidders('Seller đã hủy đấu giá')
+      apply_seller_penalty()
+      listing.status = 'cancelled'
+    applies_to: [Listing]
+
+  - id: BR-LST-071
+    name: Cancel Without Bids
+    description: Hủy listing không có bid = Không phạt
+    priority: medium
+    condition: |
+      listing.status IN ('draft', 'pending_approval', 'active') AND
+      listing.bid_count = 0 AND
+      listing.offer_count = 0
+    action: |
+      listing.status = 'cancelled'
+      release_livestock_quantity()
+    applies_to: [Listing]
+
+validation_order:
+  - BR-LST-002  # Farm verification
+  - BR-LST-003  # Livestock health
+  - BR-LST-020  # Quantity check
+  - BR-LST-004  # Images
+  - BR-LST-010  # Pricing - fixed
+  - BR-LST-011  # Pricing - auction
+  - BR-LST-012  # Bid increment
+  - BR-LST-030  # Max listings
+  - BR-LST-001  # Code generation
+
+exceptions:
+  - name: PremiumFarmExtraListings
+    description: Premium farm được đăng thêm listings
+    requires: farm.tier = 'premium'
+    max_active_listings: 20
+
+  - name: VerifiedFarmAutoApprove
+    description: Farm đã verify được auto approve
+    requires: farm.verification_status = 'verified'
+    auto_approve: true

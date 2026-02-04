@@ -1,0 +1,589 @@
+# Enrollment Workflow
+# F5 Framework v2.0 - Education/LMS
+# End-to-end workflow for course enrollment
+
+workflow:
+  id: enrollment-workflow
+  name: Enrollment Workflow
+  name_ja: 登録ワークフロー
+  description: Complete workflow for learner enrollment process
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  actors:
+    primary:
+      - learner
+    supporting:
+      - organization_admin
+      - manager
+      - sales_representative
+    system:
+      - payment_processor
+      - enrollment_service
+
+  triggers:
+    - event: enroll_button_clicked
+      source: course_page
+    - event: add_to_cart
+      source: course_catalog
+    - event: bulk_enrollment_uploaded
+      source: admin_dashboard
+    - event: corporate_assignment
+      source: manager_dashboard
+
+  enrollment_types:
+    individual:
+      description: Single learner self-enrollment
+      flow: standard_flow
+      
+    corporate:
+      description: B2B seat assignment
+      flow: corporate_flow
+      
+    group:
+      description: Bulk enrollment by admin
+      flow: group_flow
+      
+    scholarship:
+      description: Sponsored enrollment
+      flow: scholarship_flow
+
+  states:
+    initiated:
+      description: Enrollment process started
+      name_ja: 開始
+      
+    cart_added:
+      description: Course added to cart
+      name_ja: カート追加
+      
+    checkout:
+      description: In checkout process
+      name_ja: チェックアウト
+      
+    payment_pending:
+      description: Awaiting payment confirmation
+      name_ja: 支払い待ち
+      
+    payment_failed:
+      description: Payment attempt failed
+      name_ja: 支払い失敗
+      
+    pending_approval:
+      description: Awaiting manager/admin approval
+      name_ja: 承認待ち
+      
+    prerequisites_check:
+      description: Verifying prerequisites
+      name_ja: 前提条件確認
+      
+    waitlisted:
+      description: Course full, on waitlist
+      name_ja: ウェイトリスト
+      
+    enrolled:
+      description: Successfully enrolled
+      name_ja: 登録完了
+      
+    cancelled:
+      description: Enrollment cancelled
+      name_ja: キャンセル
+
+  # Standard Individual Flow
+  stages:
+    # Stage 1: Course Selection
+    - id: course_selection
+      name: Course Selection
+      name_ja: コース選択
+      state: initiated
+      
+      steps:
+        - id: view_course
+          name: View Course Details
+          actor: learner
+          action: view_course_page
+          displays:
+            - course_description
+            - curriculum_overview
+            - instructor_info
+            - reviews_ratings
+            - pricing
+            
+        - id: check_eligibility
+          name: Check Eligibility
+          actor: system
+          action: verify_eligibility
+          checks:
+            - prerequisites_met
+            - not_already_enrolled
+            - geographic_restrictions
+            - age_requirements
+          outputs:
+            - eligibility_status
+            - missing_prerequisites
+            
+        - id: add_to_cart
+          name: Add to Cart
+          actor: learner
+          action: add_to_cart
+          alternatives:
+            - buy_now
+            - enroll_free
+            - apply_coupon
+          outputs:
+            - cart_item
+            
+      completion_criteria:
+        required:
+          - course_added_to_cart_or_direct_checkout
+
+    # Stage 2: Checkout
+    - id: checkout
+      name: Checkout Process
+      name_ja: チェックアウト
+      state: checkout
+      conditional: course.price > 0
+      
+      steps:
+        - id: review_cart
+          name: Review Cart
+          actor: learner
+          action: review_cart
+          displays:
+            - cart_items
+            - subtotal
+            - applicable_discounts
+            
+        - id: apply_coupon
+          name: Apply Coupon/Discount
+          actor: learner
+          action: apply_coupon
+          inputs:
+            - coupon_code
+          validations:
+            - coupon_valid
+            - coupon_applicable
+            - not_expired
+          optional: true
+          
+        - id: select_payment_method
+          name: Select Payment Method
+          actor: learner
+          action: select_payment
+          options:
+            - credit_card
+            - paypal
+            - apple_pay
+            - google_pay
+            - bank_transfer
+            - corporate_billing
+            
+        - id: enter_billing_info
+          name: Enter Billing Information
+          actor: learner
+          action: enter_billing
+          inputs:
+            - billing_address
+            - payment_details
+          compliance:
+            - pci_dss
+            
+        - id: review_order
+          name: Review Order
+          actor: learner
+          action: review_order
+          displays:
+            - order_summary
+            - total_amount
+            - refund_policy
+            
+      completion_criteria:
+        required:
+          - payment_method_selected
+          - billing_info_provided
+
+    # Stage 3: Payment Processing
+    - id: payment_processing
+      name: Payment Processing
+      name_ja: 支払い処理
+      state: payment_pending
+      
+      steps:
+        - id: process_payment
+          name: Process Payment
+          actor: system
+          action: process_payment
+          integration: payment_gateway
+          timeout: 30 seconds
+          outputs:
+            - payment_status
+            - transaction_id
+            - receipt
+            
+        - id: handle_failure
+          name: Handle Payment Failure
+          actor: system
+          action: handle_failure
+          conditional: payment_failed
+          actions:
+            - display_error
+            - offer_retry
+            - offer_alternative_payment
+            - save_cart
+          max_retries: 3
+          
+        - id: confirm_payment
+          name: Confirm Payment
+          actor: system
+          action: confirm_payment
+          conditional: payment_success
+          triggers:
+            - create_invoice
+            - send_receipt
+            
+      completion_criteria:
+        success:
+          - payment_confirmed
+        failure:
+          - max_retries_exceeded
+          - user_cancelled
+
+    # Stage 4: Prerequisites Verification
+    - id: prerequisites_verification
+      name: Prerequisites Verification
+      name_ja: 前提条件確認
+      state: prerequisites_check
+      conditional: course.has_prerequisites
+      
+      steps:
+        - id: check_prerequisites
+          name: Check Prerequisites
+          actor: system
+          action: verify_prerequisites
+          checks:
+            - completed_courses: course.prerequisites
+            - skill_assessments: course.required_skills
+          outputs:
+            - prerequisites_met
+            - missing_items
+            
+        - id: offer_prerequisites
+          name: Offer Prerequisite Courses
+          actor: system
+          action: suggest_prerequisites
+          conditional: prerequisites_not_met
+          displays:
+            - missing_courses
+            - bundle_option
+            
+      completion_criteria:
+        pass:
+          - all_prerequisites_met
+        block:
+          - prerequisites_required_and_missing
+
+    # Stage 5: Capacity Check
+    - id: capacity_check
+      name: Capacity Check
+      name_ja: 定員確認
+      state: initiated
+      
+      steps:
+        - id: check_availability
+          name: Check Course Availability
+          actor: system
+          action: check_capacity
+          checks:
+            - current_enrollment < max_capacity
+            - cohort_has_space (if cohort-based)
+          outputs:
+            - space_available
+            - waitlist_position
+            
+        - id: add_to_waitlist
+          name: Add to Waitlist
+          actor: system
+          action: add_waitlist
+          conditional: no_space_available
+          outputs:
+            - waitlist_position
+            - estimated_wait
+          notifications:
+            - waitlist_confirmation
+            
+      completion_criteria:
+        enrolled:
+          - space_available
+        waitlisted:
+          - added_to_waitlist
+
+    # Stage 6: Enrollment Activation
+    - id: enrollment_activation
+      name: Enrollment Activation
+      name_ja: 登録有効化
+      state: enrolled
+      
+      steps:
+        - id: create_enrollment
+          name: Create Enrollment Record
+          actor: system
+          action: create_enrollment
+          data:
+            - learner_id
+            - course_id
+            - enrollment_date
+            - access_type
+            - expiration_date
+            
+        - id: grant_access
+          name: Grant Course Access
+          actor: system
+          action: grant_access
+          actions:
+            - unlock_course_content
+            - add_to_learner_courses
+            - initialize_progress
+            
+        - id: send_confirmation
+          name: Send Confirmation
+          actor: system
+          action: send_notifications
+          notifications:
+            - enrollment_confirmation_email
+            - welcome_message
+            - getting_started_guide
+            
+        - id: assign_to_cohort
+          name: Assign to Cohort
+          actor: system
+          action: assign_cohort
+          conditional: course.is_cohort_based
+          selection:
+            - next_available_cohort
+            - preferred_cohort
+            
+      completion_criteria:
+        required:
+          - enrollment_record_created
+          - access_granted
+          - confirmation_sent
+
+  # Corporate Enrollment Flow
+  corporate_flow:
+    stages:
+      - id: seat_request
+        name: Seat Request
+        steps:
+          - id: manager_assigns
+            actor: manager
+            action: assign_seat
+            inputs:
+              - employee_email
+              - course_id
+              
+      - id: approval
+        name: Manager Approval
+        conditional: requires_approval
+        steps:
+          - id: request_approval
+            actor: system
+            action: request_approval
+          - id: approve_reject
+            actor: approver
+            action: decide
+            
+      - id: seat_allocation
+        name: Seat Allocation
+        steps:
+          - id: allocate_seat
+            actor: system
+            action: allocate_from_pool
+            checks:
+              - seats_available
+              - budget_available
+              
+      - id: learner_notification
+        name: Notify Learner
+        steps:
+          - id: send_invite
+            actor: system
+            action: send_enrollment_invite
+            
+      - id: learner_acceptance
+        name: Learner Accepts
+        steps:
+          - id: accept_enrollment
+            actor: learner
+            action: accept_invitation
+            timeout: 7 days
+
+  # Group Enrollment Flow
+  group_flow:
+    stages:
+      - id: upload_list
+        name: Upload Learner List
+        steps:
+          - id: upload_csv
+            actor: organization_admin
+            action: upload_learners
+            inputs:
+              - csv_file
+            validation:
+              - email_format
+              - no_duplicates
+              
+      - id: validate_batch
+        name: Validate Batch
+        steps:
+          - id: validate_all
+            actor: system
+            action: validate_enrollments
+            outputs:
+              - valid_count
+              - invalid_entries
+              - reasons
+              
+      - id: process_batch
+        name: Process Enrollments
+        steps:
+          - id: batch_enroll
+            actor: system
+            action: batch_create_enrollments
+            progress: show_progress_bar
+            
+      - id: notify_all
+        name: Send Notifications
+        steps:
+          - id: batch_notify
+            actor: system
+            action: send_batch_notifications
+            
+      - id: generate_report
+        name: Generate Report
+        steps:
+          - id: create_report
+            actor: system
+            action: generate_enrollment_report
+
+  transitions:
+    # Standard flow
+    - from: initiated
+      to: cart_added
+      trigger: add_to_cart
+      
+    - from: cart_added
+      to: checkout
+      trigger: proceed_to_checkout
+      
+    - from: checkout
+      to: payment_pending
+      trigger: submit_payment
+      
+    - from: payment_pending
+      to: enrolled
+      trigger: payment_success
+      condition: no_prerequisites OR prerequisites_met
+      
+    - from: payment_pending
+      to: prerequisites_check
+      trigger: payment_success
+      condition: has_prerequisites AND not_met
+      
+    - from: payment_pending
+      to: payment_failed
+      trigger: payment_declined
+      
+    - from: payment_failed
+      to: checkout
+      trigger: retry_payment
+      
+    - from: prerequisites_check
+      to: enrolled
+      trigger: prerequisites_verified
+      
+    - from: initiated
+      to: enrolled
+      trigger: free_enrollment
+      condition: course.price == 0
+      
+    - from: initiated
+      to: waitlisted
+      trigger: capacity_full
+      
+    - from: waitlisted
+      to: enrolled
+      trigger: space_available
+      
+    # Cancellation from any state
+    - from: "*"
+      to: cancelled
+      trigger: user_cancelled
+      except: [enrolled]
+
+  notifications:
+    cart_abandoned:
+      trigger: cart_inactive_24h
+      template: cart_reminder
+      
+    payment_failed:
+      recipients: [learner]
+      template: payment_failed
+      
+    enrollment_confirmed:
+      recipients: [learner]
+      template: enrollment_confirmation
+      include:
+        - course_details
+        - access_instructions
+        - getting_started
+        
+    waitlist_added:
+      recipients: [learner]
+      template: waitlist_confirmation
+      
+    waitlist_available:
+      recipients: [learner]
+      template: spot_available
+      action_required: true
+      expiry: 48 hours
+      
+    corporate_assigned:
+      recipients: [learner]
+      template: corporate_enrollment_invite
+      
+    manager_approval_needed:
+      recipients: [manager]
+      template: approval_request
+
+  error_handling:
+    payment_errors:
+      - insufficient_funds: offer_alternative
+      - card_declined: offer_alternative
+      - fraud_detected: escalate
+      - timeout: retry
+      
+    capacity_errors:
+      - course_full: offer_waitlist
+      - cohort_full: offer_next_cohort
+      
+    eligibility_errors:
+      - prerequisites_not_met: show_requirements
+      - already_enrolled: redirect_to_course
+      - geographic_restriction: show_alternatives
+
+  metrics:
+    track:
+      - conversion_rate
+      - cart_abandonment_rate
+      - time_to_enroll
+      - payment_success_rate
+      - waitlist_conversion_rate
+
+  compliance:
+    - standard: PCI-DSS
+      for: payment_processing
+    - standard: GDPR
+      for: learner_data
+    - standard: FERPA
+      for: student_records

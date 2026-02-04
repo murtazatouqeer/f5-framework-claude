@@ -1,0 +1,606 @@
+name: Tenant Offboarding
+display_name: Tenant Offboarding Workflow / Quy trình đưa khách thuê ra khỏi hệ thống
+description: |
+  Complete workflow for tenant offboarding including cancellation processing,
+  data export, account cleanup, and compliance requirements.
+
+domain: saas-platform
+workflow_type: customer_journey
+version: "1.0"
+compliance: [GDPR, CCPA]
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: "Subscription cancelled or tenant requests account deletion"
+  outcome: "Clean tenant exit with data export and proper cleanup"
+
+  phases:
+    - phase: cancellation_confirmation
+      description: "Confirm intent and collect feedback"
+    - phase: access_wind_down
+      description: "Gradual access restriction during notice period"
+    - phase: data_export
+      description: "Provide data export options"
+    - phase: cleanup
+      description: "Remove tenant data and resources"
+    - phase: compliance
+      description: "Ensure regulatory compliance"
+
+  timelines:
+    notice_period: "Until end of billing period"
+    grace_period: "7 days after cancellation"
+    data_retention: "30 days for recovery"
+    permanent_deletion: "30 days after retention"
+    compliance_retention: "As required by law"
+
+# =============================================================================
+# PHASE 1: CANCELLATION CONFIRMATION
+# =============================================================================
+phases:
+  cancellation_confirmation:
+    name: Cancellation Confirmation
+    name_vi: Xác nhận hủy
+
+    triggers:
+      - type: user_action
+        action: "Click cancel subscription"
+
+      - type: automatic
+        condition: "Dunning failed after 30 days"
+
+      - type: user_request
+        action: "Request account deletion (GDPR)"
+
+    steps:
+      - id: CC-01
+        name: Authentication Verification
+        name_vi: Xác minh xác thực
+        type: security_check
+        requirements:
+          - recent_authentication: "Within 15 minutes"
+          - mfa_if_enabled: required
+          - owner_or_admin: required
+
+      - id: CC-02
+        name: Display Cancellation Impact
+        name_vi: Hiển thị tác động hủy
+        type: user_display
+        content:
+          title: "Before you go..."
+          impact_summary:
+            - billing: "No more charges after {period_end}"
+            - access: "Full access until {period_end}"
+            - data: "Data retained for 30 days, then deleted"
+            - team: "{user_count} team members will lose access"
+            - integrations: "{integration_count} integrations will be disconnected"
+
+          data_export_reminder:
+            message: "Want to export your data first?"
+            cta: "Export Data"
+
+      - id: CC-03
+        name: Collect Cancellation Reason
+        name_vi: Thu thập lý do hủy
+        type: survey
+        fields:
+          - primary_reason:
+              type: select
+              required: true
+              options:
+                - too_expensive: "Too expensive"
+                - missing_features: "Missing features I need"
+                - switching_competitor: "Switching to another solution"
+                - business_closed: "Business is closing"
+                - not_using_enough: "Not using it enough"
+                - technical_issues: "Technical problems"
+                - poor_support: "Poor customer support"
+                - other: "Other reason"
+
+          - specific_competitor:
+              type: text
+              condition: "primary_reason == 'switching_competitor'"
+              optional: true
+
+          - missing_feature:
+              type: text
+              condition: "primary_reason == 'missing_features'"
+              optional: true
+
+          - detailed_feedback:
+              type: textarea
+              optional: true
+              placeholder: "Help us improve..."
+
+          - willing_to_discuss:
+              type: checkbox
+              label: "I'm open to discussing with the team"
+
+      - id: CC-04
+        name: Retention Attempt
+        name_vi: Nỗ lực giữ chân
+        type: conditional
+        condition: "retention_offer_eligible"
+
+        offers_by_reason:
+          too_expensive:
+            eligible_if: "tenure > 3 months"
+            offer: "25% off for 3 months"
+            show_savings: true
+
+          not_using_enough:
+            offer: "Free 30-minute onboarding session"
+            schedule_link: true
+
+          missing_features:
+            offer: "Roadmap preview + PM conversation"
+            condition: "professional_or_higher"
+
+          technical_issues:
+            offer: "Priority support ticket + engineering review"
+
+        on_accept:
+          - apply_retention_offer
+          - cancel_cancellation_flow
+          - emit_event: retention.success
+
+        on_decline:
+          - continue_to: CC-05
+
+      - id: CC-05
+        name: Final Confirmation
+        name_vi: Xác nhận cuối cùng
+        type: confirmation
+        display:
+          title: "Confirm Cancellation"
+          warnings:
+            - "This action cannot be undone after {data_deletion_date}"
+            - "All team members will lose access on {access_end_date}"
+
+          checkbox_confirmations:
+            - "I understand my data will be deleted after {data_retention_period}"
+            - "I have exported any data I need"
+            - "I understand team members will lose access"
+
+          cta: "Confirm Cancellation"
+          cta_style: destructive
+
+      - id: CC-06
+        name: Process Cancellation
+        name_vi: Xử lý hủy
+        type: automated
+        actions:
+          - set_subscription_cancel_at_period_end
+          - record_cancellation_reason
+          - notify_account_manager_if_enterprise
+          - schedule_offboarding_jobs
+          - send_cancellation_confirmation_email
+          - emit_event: subscription.cancellation_scheduled
+
+  # =============================================================================
+  # PHASE 2: ACCESS WIND-DOWN
+  # =============================================================================
+  access_wind_down:
+    name: Access Wind-Down Period
+    name_vi: Giai đoạn giảm quyền truy cập
+    description: "Gradual restriction of access during notice and grace periods"
+
+    timeline:
+      during_notice_period:
+        description: "From cancellation to period_end"
+        access_level: full
+        restrictions:
+          - cannot_change_billing
+          - cannot_upgrade
+          - banner_showing_cancellation
+
+      grace_period:
+        description: "7 days after period_end"
+        access_level: limited
+        restrictions:
+          - read_only_data_access
+          - cannot_create_new_data
+          - cannot_invite_users
+          - api_access_read_only
+          - integrations_paused
+
+      post_grace:
+        description: "After grace period"
+        access_level: export_only
+        restrictions:
+          - data_export_only
+          - no_operational_access
+          - support_access_for_billing_queries
+
+    steps:
+      - id: AW-01
+        name: Apply Notice Period Restrictions
+        type: scheduled
+        trigger: "On cancellation"
+        actions:
+          - add_cancellation_banner
+          - disable_plan_changes
+          - start_export_reminder_sequence
+
+      - id: AW-02
+        name: Send Period End Warning
+        type: scheduled
+        trigger: "3 days before period_end"
+        actions:
+          - send_access_ending_email
+          - send_in_app_notification
+          - remind_about_data_export
+
+      - id: AW-03
+        name: Enter Grace Period
+        type: scheduled
+        trigger: "period_end"
+        actions:
+          - switch_to_read_only_mode
+          - pause_all_integrations
+          - disable_api_write_access
+          - send_grace_period_started_email
+
+      - id: AW-04
+        name: Grace Period Ending Warning
+        type: scheduled
+        trigger: "2 days before grace_end"
+        actions:
+          - send_final_export_reminder
+          - send_sms_if_opted_in
+
+      - id: AW-05
+        name: End Grace Period
+        type: scheduled
+        trigger: "grace_period_end"
+        actions:
+          - disable_all_user_access
+          - revoke_all_api_keys
+          - disable_sso_access
+          - send_access_ended_email
+          - start_data_retention_countdown
+
+  # =============================================================================
+  # PHASE 3: DATA EXPORT
+  # =============================================================================
+  data_export:
+    name: Data Export
+    name_vi: Xuất dữ liệu
+    description: "Provide comprehensive data export options"
+
+    export_options:
+      self_service:
+        available_during: [notice_period, grace_period, retention_period]
+        format: [json, csv, xlsx]
+        includes:
+          core_data:
+            - users_and_roles
+            - settings_and_configurations
+            - integrations_settings
+
+          business_data:
+            - all_tenant_scoped_records
+            - custom_fields
+            - file_attachments
+
+          analytics:
+            - usage_history
+            - audit_logs
+
+        excludes:
+          - password_hashes
+          - api_key_secrets
+          - payment_method_details
+
+      assisted_export:
+        available_for: [professional, enterprise]
+        includes:
+          - dedicated_support
+          - custom_format_requests
+          - migration_assistance
+
+    steps:
+      - id: DE-01
+        name: Generate Export Package
+        type: user_initiated
+        trigger: "User requests export"
+        actions:
+          - validate_user_permissions
+          - queue_export_job
+          - send_export_started_email
+
+      - id: DE-02
+        name: Process Export
+        type: background_job
+        timeout: 4_hours
+        actions:
+          - extract_all_tenant_data
+          - sanitize_sensitive_fields
+          - compress_attachments
+          - create_data_manifest
+          - zip_package
+
+      - id: DE-03
+        name: Deliver Export
+        type: notification
+        actions:
+          - generate_secure_download_link
+          - set_link_expiry: 7_days
+          - send_export_ready_email
+          - log_export_for_compliance
+
+    gdpr_data_request:
+      name: GDPR Data Subject Request
+      name_vi: Yêu cầu chủ thể dữ liệu GDPR
+      timeline: "30 days maximum"
+      includes:
+        - all_personal_data
+        - processing_purposes
+        - data_sharing_recipients
+        - data_retention_periods
+      format: machine_readable
+
+  # =============================================================================
+  # PHASE 4: CLEANUP
+  # =============================================================================
+  cleanup:
+    name: Data Cleanup
+    name_vi: Dọn dẹp dữ liệu
+    description: "Systematic removal of tenant data and resources"
+
+    retention_schedule:
+      active_data:
+        period: 30_days_after_grace
+        purpose: "Recovery if tenant reactivates"
+
+      archived_data:
+        period: varies_by_compliance
+        purpose: "Legal and compliance requirements"
+
+      anonymized_analytics:
+        period: indefinite
+        purpose: "Aggregate business metrics"
+
+    steps:
+      - id: CL-01
+        name: Begin Retention Period
+        type: scheduled
+        trigger: "grace_period_end"
+        actions:
+          - archive_tenant_data
+          - remove_from_active_indices
+          - disable_all_access_tokens
+          - notify_retention_started
+
+      - id: CL-02
+        name: Pre-Deletion Review
+        type: scheduled
+        trigger: "7 days before deletion"
+        actions:
+          - check_legal_holds
+          - verify_compliance_requirements
+          - send_final_recovery_reminder
+
+      - id: CL-03
+        name: Execute Deletion
+        type: scheduled
+        trigger: "retention_period_end"
+        condition: "no_legal_holds AND no_compliance_requirements"
+
+        deletion_order:
+          # Order matters for foreign key constraints
+          1_operational_data:
+            - usage_records
+            - audit_logs_operational
+            - webhook_logs
+            - notification_history
+
+          2_business_data:
+            - custom_entities
+            - integrations_data
+            - api_keys
+
+          3_user_data:
+            - user_sessions
+            - user_preferences
+            - user_records
+
+          4_tenant_core:
+            - organizations
+            - roles_and_permissions
+            - settings
+
+          5_billing_data:
+            - keep: invoice_records  # Legal requirement
+            - keep: payment_history  # Legal requirement
+            - delete: payment_methods
+
+          6_storage:
+            - delete_s3_objects: "s3://bucket/{tenant_id}/*"
+            - delete_cache: "redis:{tenant_id}:*"
+
+          7_tenant_record:
+            - anonymize_tenant_record
+            - set_status: deleted
+
+        verification:
+          - verify_data_removed_from_backups: "After next backup cycle"
+          - verify_cache_cleared
+          - verify_search_indices_updated
+
+      - id: CL-04
+        name: Post-Deletion Cleanup
+        type: automated
+        actions:
+          - remove_from_email_lists
+          - anonymize_analytics_data
+          - update_capacity_planning
+          - generate_deletion_certificate
+
+  # =============================================================================
+  # PHASE 5: COMPLIANCE
+  # =============================================================================
+  compliance:
+    name: Compliance Processing
+    name_vi: Xử lý tuân thủ
+    description: "Ensure regulatory compliance during offboarding"
+
+    requirements:
+      gdpr:
+        right_to_erasure:
+          timeline: 30_days
+          scope: all_personal_data
+          exceptions:
+            - legal_obligations
+            - public_interest
+            - legal_claims
+
+        data_portability:
+          format: machine_readable
+          timeline: 30_days
+          includes: all_provided_data
+
+        notification:
+          data_recipients: required
+          timeline: without_undue_delay
+
+      ccpa:
+        deletion_request:
+          timeline: 45_days
+          extensions: up_to_45_days_additional
+          verification: required
+
+        disclosure:
+          categories_collected: required
+          purposes: required
+          third_parties: required
+
+      financial:
+        invoice_retention:
+          period: 7_years
+          format: original
+
+        payment_records:
+          period: 7_years
+          format: anonymized_if_no_disputes
+
+    steps:
+      - id: CO-01
+        name: Assess Compliance Requirements
+        type: automated
+        trigger: "cancellation_confirmed"
+        actions:
+          - determine_applicable_regulations
+          - identify_data_categories
+          - calculate_retention_requirements
+          - document_compliance_plan
+
+      - id: CO-02
+        name: Process Data Subject Requests
+        type: conditional
+        condition: "GDPR or CCPA applies"
+        actions:
+          - acknowledge_request_receipt
+          - verify_identity
+          - process_within_timeline
+          - document_completion
+
+      - id: CO-03
+        name: Notify Data Recipients
+        type: automated
+        condition: "GDPR applies AND data_shared_with_third_parties"
+        actions:
+          - identify_all_recipients
+          - send_deletion_notifications
+          - track_confirmation_receipts
+
+      - id: CO-04
+        name: Generate Compliance Records
+        type: automated
+        trigger: "deletion_complete"
+        actions:
+          - generate_deletion_certificate
+          - update_data_processing_records
+          - document_retention_decisions
+          - archive_compliance_evidence
+
+# =============================================================================
+# WINBACK WORKFLOW
+# =============================================================================
+winback:
+  name: Winback Campaign
+  name_vi: Chiến dịch giành lại khách hàng
+  description: "Attempt to re-engage cancelled tenants"
+
+  eligibility:
+    exclude:
+      - reason: business_closed
+      - tenure: less_than_30_days
+      - payment_issues: fraud_or_chargebacks
+
+  sequence:
+    - day: 30
+      type: email
+      subject: "We miss you at {product_name}"
+      content:
+        - personalized_value_reminder
+        - new_features_since_leaving
+        - special_comeback_offer
+
+    - day: 60
+      type: email
+      subject: "Special offer just for you"
+      content:
+        - comeback_discount: 30%_for_3_months
+        - success_story_from_similar_company
+        - easy_reactivation_link
+
+    - day: 90
+      type: email
+      subject: "Last chance: {offer_description}"
+      content:
+        - final_offer
+        - data_deletion_warning
+        - feedback_request
+
+  reactivation:
+    data_available: true
+    condition: "within_retention_period"
+    pricing: current_rates
+    trial: not_eligible
+    action: restore_archived_data
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+events:
+  - name: tenant.cancellation_requested
+    payload: [tenant_id, reason, feedback]
+
+  - name: tenant.cancellation_confirmed
+    payload: [tenant_id, effective_date]
+
+  - name: tenant.retention_offer_shown
+    payload: [tenant_id, offer_type]
+
+  - name: tenant.retention_offer_accepted
+    payload: [tenant_id, offer_type, discount_applied]
+
+  - name: tenant.grace_period_started
+    payload: [tenant_id, grace_end_date]
+
+  - name: tenant.data_exported
+    payload: [tenant_id, export_format, size_mb]
+
+  - name: tenant.data_deletion_started
+    payload: [tenant_id, deletion_scope]
+
+  - name: tenant.data_deleted
+    payload: [tenant_id, deletion_certificate_id]
+
+  - name: tenant.winback_attempted
+    payload: [tenant_id, campaign_stage, offer]
+
+  - name: tenant.reactivated
+    payload: [tenant_id, days_since_cancellation]

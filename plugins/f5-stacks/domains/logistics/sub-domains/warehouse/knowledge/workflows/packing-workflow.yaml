@@ -1,0 +1,435 @@
+name: PackingWorkflow
+display_name: Order Packing Process Workflow
+description: |
+  End-to-end workflow for packing picked items into shipping containers.
+  Covers verification, packaging, labeling, and quality checks.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: pick_tasks.completed
+  conditions:
+    - outbound_order.status == 'picked'
+    - all_picks_at_staging
+
+actors:
+  - role: packer
+    responsibilities:
+      - Verify picked items
+      - Pack items properly
+      - Apply labels
+      - Quality checks
+  - role: supervisor
+    responsibilities:
+      - Handle exceptions
+      - Weight variance approval
+      - Quality oversight
+
+steps:
+  - id: step_01
+    name: Receive Pack Task
+    description: |
+      Packer receives task at pack station.
+      Scan tote/container to begin.
+    actor: packer
+    actions:
+      - action: assign_pack_station
+        input: [packer_id]
+        output: station_assigned
+      - action: scan_source_container
+        input: [container_barcode]
+        output: container_identified
+      - action: load_order_details
+        input: [order_id]
+        output: order_loaded
+    validations:
+      - container at pack station
+      - order ready for packing
+    outputs:
+      - pack_station_id
+      - order_details
+    events:
+      - name: pack.started
+        payload: [task_id, station_id]
+    next_step: step_02
+
+  - id: step_02
+    name: Verify Contents
+    description: |
+      Scan each item to verify correct products.
+      Confirm quantities match order.
+    actor: packer
+    actions:
+      - action: scan_items
+        input: [items_in_container]
+        output: items_scanned
+      - action: verify_against_order
+        input: [scanned_items, order_lines]
+        output: verification_result
+      - action: check_quantity
+        input: [scanned_quantities, expected_quantities]
+        output: quantity_check
+    validations:
+      - all items scanned
+      - quantities match order
+    decision:
+      condition: verification_result == 'mismatch'
+      true_path: step_02a
+      false_path: step_03
+    outputs:
+      - items_verified
+      - discrepancies
+
+  - id: step_02a
+    name: Content Discrepancy
+    description: |
+      Handle missing or extra items.
+      Investigate and resolve.
+    actor: packer
+    actions:
+      - action: identify_discrepancy
+        input: [expected, actual]
+        output: discrepancy_details
+      - action: search_for_missing
+        input: [missing_items]
+        output: search_result
+      - action: escalate_if_needed
+        input: [discrepancy_details]
+        output: escalation_status
+    decision:
+      condition: discrepancy_resolved
+      true_path: step_03
+      false_path: step_02b
+    outputs:
+      - resolution_status
+
+  - id: step_02b
+    name: Supervisor Resolution
+    description: |
+      Supervisor handles unresolved discrepancy.
+      May short ship or hold order.
+    actor: supervisor
+    actions:
+      - action: investigate_discrepancy
+        input: [order_id, discrepancy_details]
+        output: investigation_result
+      - action: determine_action
+        input: [investigation_result]
+        output: action_decision
+      - action: apply_resolution
+        input: [action_decision]
+        output: resolution_applied
+    outputs:
+      - final_resolution
+    next_step: step_03
+
+  - id: step_03
+    name: Check Special Requirements
+    description: |
+      Check for gift wrap, special handling,
+      or custom packaging needs.
+    actor: packer
+    actions:
+      - action: check_gift_wrap
+        input: [order_id]
+        output: gift_wrap_required
+      - action: check_hazmat
+        input: [items]
+        output: hazmat_handling
+      - action: check_fragile
+        input: [items]
+        output: fragile_handling
+      - action: check_cold_pack
+        input: [items]
+        output: cold_pack_required
+    outputs:
+      - special_requirements
+    next_step: step_04
+
+  - id: step_04
+    name: Select Packaging
+    description: |
+      Choose appropriate box or packaging type.
+      Consider item protection and shipping cost.
+    actor: packer
+    actions:
+      - action: calculate_package_size
+        input: [items, dimensions]
+        output: recommended_package
+      - action: select_packaging
+        input: [recommended_package]
+        output: package_selected
+      - action: get_packing_materials
+        input: [fragile_items, cold_pack_required]
+        output: materials_ready
+    validations:
+      - package fits all items
+      - appropriate protection materials
+    outputs:
+      - package_type
+      - packaging_materials
+    next_step: step_05
+
+  - id: step_05
+    name: Pack Items
+    description: |
+      Physically pack items into container.
+      Add protection and packing materials.
+    actor: packer
+    actions:
+      - action: add_void_fill
+        input: [package, items]
+        output: void_filled
+      - action: pack_items_securely
+        input: [items, package]
+        output: items_packed
+      - action: add_protection
+        input: [fragile_items, cold_packs]
+        output: protection_added
+      - action: add_desiccants
+        input: [moisture_sensitive]
+        output: desiccants_added
+    decision:
+      condition: gift_wrap_required
+      true_path: step_05a
+      false_path: step_06
+    outputs:
+      - pack_complete
+
+  - id: step_05a
+    name: Gift Wrapping
+    description: |
+      Apply gift wrap and add gift message.
+    actor: packer
+    actions:
+      - action: apply_gift_wrap
+        input: [package]
+        output: gift_wrapped
+      - action: print_gift_message
+        input: [order.gift_message]
+        output: message_printed
+      - action: attach_message
+        input: [message]
+        output: message_attached
+    outputs:
+      - gift_wrap_complete
+    next_step: step_06
+
+  - id: step_06
+    name: Add Packing Slip
+    description: |
+      Print and include packing slip.
+      May include return label.
+    actor: packer
+    actions:
+      - action: print_packing_slip
+        input: [order_id]
+        output: packing_slip_printed
+      - action: include_in_package
+        input: [packing_slip]
+        output: slip_included
+      - action: print_return_label
+        input: [return_policy]
+        output: return_label
+    validations:
+      - packing slip accurate
+      - return label if required
+    outputs:
+      - packing_slip_url
+      - return_label_url
+    next_step: step_07
+
+  - id: step_07
+    name: Seal Package
+    description: |
+      Close and seal the shipping container.
+      Apply security seals if needed.
+    actor: packer
+    actions:
+      - action: close_package
+        input: [package]
+        output: package_closed
+      - action: apply_tape
+        input: [tape_type]
+        output: tape_applied
+      - action: apply_security_seal
+        input: [high_value]
+        output: seal_applied
+    outputs:
+      - package_sealed
+    next_step: step_08
+
+  - id: step_08
+    name: Weigh Package
+    description: |
+      Weigh package and validate against expected.
+      Capture dimensions for shipping.
+    actor: packer
+    actions:
+      - action: weigh_package
+        input: [package]
+        output: actual_weight
+      - action: measure_dimensions
+        input: [package]
+        output: actual_dimensions
+      - action: compare_to_expected
+        input: [actual_weight, expected_weight]
+        output: weight_variance
+    validations:
+      - weight within tolerance
+    decision:
+      condition: weight_variance_percent > 5
+      true_path: step_08a
+      false_path: step_09
+    outputs:
+      - actual_weight_kg
+      - dimensions
+
+  - id: step_08a
+    name: Weight Variance Review
+    description: |
+      Investigate significant weight variance.
+      May indicate wrong item or quantity.
+    actor: supervisor
+    actions:
+      - action: review_variance
+        input: [expected_weight, actual_weight]
+        output: variance_reviewed
+      - action: reopen_if_needed
+        input: [package]
+        output: reopen_decision
+      - action: approve_variance
+        input: [variance, reason]
+        output: variance_approved
+    decision:
+      condition: reopen_decision == 'reopen'
+      true_path: step_02
+      false_path: step_09
+    outputs:
+      - variance_resolution
+
+  - id: step_09
+    name: Print Shipping Label
+    description: |
+      Generate and print shipping label.
+      Get tracking number from carrier.
+    actor: packer
+    actions:
+      - action: select_carrier_service
+        input: [order.shipping_method, weight, destination]
+        output: carrier_selected
+      - action: generate_label
+        input: [carrier, shipment_details]
+        output: label_generated
+      - action: get_tracking_number
+        input: [carrier_response]
+        output: tracking_number
+      - action: print_label
+        input: [label_data]
+        output: label_printed
+    validations:
+      - label printed successfully
+      - tracking number valid
+    outputs:
+      - tracking_number
+      - label_url
+    next_step: step_10
+
+  - id: step_10
+    name: Apply Label
+    description: |
+      Apply shipping label to package.
+      Add handling labels if needed.
+    actor: packer
+    actions:
+      - action: apply_shipping_label
+        input: [label, package]
+        output: label_applied
+      - action: apply_handling_labels
+        input: [fragile, hazmat, this_side_up]
+        output: handling_labels_applied
+      - action: scan_label_verification
+        input: [label_barcode]
+        output: label_verified
+    validations:
+      - label securely attached
+      - barcode scannable
+    outputs:
+      - labels_applied
+    next_step: step_11
+
+  - id: step_11
+    name: Photo Capture
+    description: |
+      Take photo of packed shipment.
+      Documentation for disputes.
+    actor: packer
+    conditions:
+      - high_value_order OR photo_required
+    actions:
+      - action: capture_photo
+        input: [package]
+        output: photo_captured
+      - action: upload_photo
+        input: [photo, order_id]
+        output: photo_url
+    outputs:
+      - photo_url
+    next_step: step_12
+
+  - id: step_12
+    name: Complete Pack Task
+    description: |
+      Mark packing complete.
+      Move to staging for shipping.
+    actor: packer
+    actions:
+      - action: complete_pack_task
+        input: [task_id]
+        output: task_completed
+      - action: move_to_staging
+        input: [package, staging_lane]
+        output: staged
+      - action: update_order_status
+        input: [order_id, 'packed']
+        output: order_updated
+    outputs:
+      - pack_complete_time
+      - staging_lane
+    events:
+      - name: pack.completed
+        payload: [task_id, tracking_number]
+      - name: order.packed
+        payload: [order_id, package_count, total_weight]
+
+sla:
+  - name: pack_time
+    description: Time from scan to label applied
+    target: "< 3 minutes per package"
+  - name: pack_accuracy
+    description: Correct contents shipped
+    target: "> 99.8%"
+  - name: packs_per_hour
+    description: Packages completed per hour
+    target: "> 40 PPH"
+
+exceptions:
+  - name: missing_item
+    handling: Search staging, escalate to supervisor
+  - name: damaged_item
+    handling: Replace or short ship with approval
+  - name: label_print_failure
+    handling: Retry or use backup printer
+  - name: weight_discrepancy
+    handling: Reopen package, verify contents
+
+integrations:
+  - system: Shipping_API
+    purpose: Label generation, tracking
+  - system: WMS
+    purpose: Task management, inventory
+  - system: Photo_System
+    purpose: Evidence capture

@@ -1,0 +1,301 @@
+name: MaintenanceRules
+display_name: Maintenance Rules
+description: |
+  Business rules for fleet vehicle maintenance management.
+  Covers scheduling, approvals, and compliance requirements.
+
+domain: logistics
+subdomain: fleet
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # Scheduling Rules
+  - id: BR-MN-001
+    name: Preventive Maintenance Schedule
+    description: Vehicles must follow preventive maintenance schedule
+    severity: critical
+    category: scheduling
+    condition: |
+      vehicle.next_service_date >= today() OR
+      vehicle.current_odometer_km < vehicle.next_service_odometer
+    error_message: "Vehicle has overdue preventive maintenance"
+    applies_to: [vehicle_status, trip_assignment]
+
+  - id: BR-MN-002
+    name: Maintenance Due Warning
+    description: Generate warning when maintenance is due soon
+    severity: warning
+    category: scheduling
+    condition: |
+      (vehicle.next_service_date - today() <= 7) OR
+      (vehicle.next_service_odometer - vehicle.current_odometer_km <= 500)
+    warning_message: "Maintenance due within 7 days or 500 km"
+    action: schedule_maintenance
+    applies_to: [daily_check]
+
+  - id: BR-MN-003
+    name: Critical Maintenance Due
+    description: Restrict vehicle when maintenance is overdue
+    severity: critical
+    category: scheduling
+    condition: |
+      (vehicle.next_service_date < today()) OR
+      (vehicle.current_odometer_km > vehicle.next_service_odometer)
+    error_message: "Vehicle restricted - maintenance overdue"
+    action: set_vehicle_out_of_service
+    applies_to: [trip_assignment]
+
+  # Approval Rules
+  - id: BR-MN-004
+    name: Standard Maintenance Approval
+    description: Standard maintenance auto-approved up to $500
+    severity: info
+    category: approval
+    condition: |
+      maintenance.estimated_cost <= 500 AND
+      maintenance.maintenance_type == 'preventive'
+    action: auto_approve
+    applies_to: [maintenance_request]
+
+  - id: BR-MN-005
+    name: Supervisor Approval Required
+    description: Maintenance $500-$2000 requires supervisor approval
+    severity: warning
+    category: approval
+    condition: |
+      maintenance.estimated_cost > 500 AND
+      maintenance.estimated_cost <= 2000
+    action: require_supervisor_approval
+    applies_to: [maintenance_request]
+
+  - id: BR-MN-006
+    name: Manager Approval Required
+    description: Maintenance over $2000 requires manager approval
+    severity: warning
+    category: approval
+    condition: |
+      maintenance.estimated_cost > 2000
+    action: require_manager_approval
+    applies_to: [maintenance_request]
+
+  - id: BR-MN-007
+    name: Emergency Maintenance Bypass
+    description: Emergency maintenance can bypass approval for safety
+    severity: info
+    category: approval
+    condition: |
+      maintenance.maintenance_type == 'emergency' AND
+      maintenance.category IN ['brakes', 'steering', 'tires']
+    action: auto_approve_with_notification
+    applies_to: [maintenance_request]
+
+  # Vendor Rules
+  - id: BR-MN-008
+    name: Preferred Vendor Usage
+    description: Use preferred vendors for warranty compliance
+    severity: warning
+    category: vendor
+    condition: |
+      IF vehicle.under_warranty THEN
+        maintenance.vendor_id IN preferred_vendors
+    warning_message: "Warranty work should use preferred vendor"
+    applies_to: [maintenance_request]
+
+  - id: BR-MN-009
+    name: External Vendor Cost Threshold
+    description: External vendors require competitive quote above $1000
+    severity: warning
+    category: vendor
+    condition: |
+      IF maintenance.service_location == 'external_shop' AND
+         maintenance.estimated_cost > 1000
+      THEN maintenance.has_competitive_quotes
+    warning_message: "Competitive quotes required for external work over $1000"
+    applies_to: [maintenance_request]
+
+  # Inspection Rules
+  - id: BR-MN-010
+    name: DOT Annual Inspection Required
+    description: Vehicles must have valid annual DOT inspection
+    severity: critical
+    category: inspection
+    condition: |
+      EXISTS inspection WHERE
+        inspection.vehicle_id == vehicle.id AND
+        inspection.inspection_type == 'dot_annual' AND
+        inspection.completed_at >= today() - 365 AND
+        inspection.status == 'passed'
+    error_message: "Vehicle requires annual DOT inspection"
+    applies_to: [vehicle_status, trip_assignment]
+    regulation: "FMCSA 396.17"
+
+  - id: BR-MN-011
+    name: Pre-Trip Inspection Required
+    description: Pre-trip inspection required before each trip
+    severity: critical
+    category: inspection
+    condition: |
+      EXISTS inspection WHERE
+        inspection.vehicle_id == vehicle.id AND
+        inspection.inspection_type == 'pre_trip' AND
+        inspection.inspection_date == today() AND
+        inspection.status == 'passed'
+    error_message: "Pre-trip inspection required before dispatch"
+    applies_to: [dispatch]
+    regulation: "FMCSA 396.13"
+
+  - id: BR-MN-012
+    name: Failed Inspection Follow-up
+    description: Failed inspections require maintenance before operation
+    severity: critical
+    category: inspection
+    condition: |
+      IF inspection.status == 'failed' THEN
+        EXISTS maintenance WHERE
+          maintenance.vehicle_id == inspection.vehicle_id AND
+          maintenance.status == 'completed' AND
+          maintenance.completed_at > inspection.completed_at
+    error_message: "Defects from failed inspection must be repaired"
+    applies_to: [trip_assignment]
+
+  # Parts and Inventory
+  - id: BR-MN-013
+    name: OEM Parts for Safety Systems
+    description: Safety systems require OEM or equivalent parts
+    severity: critical
+    category: parts
+    condition: |
+      IF maintenance.category IN ['brakes', 'steering', 'suspension'] THEN
+        parts.is_oem OR parts.is_certified_equivalent
+    error_message: "Safety components require OEM or certified parts"
+    applies_to: [maintenance_completion]
+
+  - id: BR-MN-014
+    name: Parts Documentation Required
+    description: All parts must be documented with part numbers
+    severity: warning
+    category: parts
+    condition: |
+      FOR ALL parts IN maintenance.parts_used:
+        parts.part_number IS NOT NULL
+    warning_message: "Part numbers required for all parts used"
+    applies_to: [maintenance_completion]
+
+  # Timing Rules
+  - id: BR-MN-015
+    name: Minimize Vehicle Downtime
+    description: Schedule maintenance during low-demand periods
+    severity: recommendation
+    category: scheduling
+    condition: |
+      maintenance.scheduled_date.day_of_week IN [0, 6] OR
+      NOT vehicle.high_utilization
+    recommendation: "Schedule maintenance during weekends or low-demand periods"
+    applies_to: [maintenance_scheduling]
+
+  - id: BR-MN-016
+    name: Combine Maintenance Tasks
+    description: Combine due maintenance tasks to minimize downtime
+    severity: recommendation
+    category: scheduling
+    condition: |
+      IF EXISTS other_maintenance_due WITHIN 500km THEN
+        combine_work_orders
+    recommendation: "Combine multiple due maintenance items"
+    applies_to: [maintenance_scheduling]
+
+  # Cost Control
+  - id: BR-MN-017
+    name: Cost Per Mile Threshold
+    description: Flag vehicles with high maintenance cost per mile
+    severity: warning
+    category: cost
+    condition: |
+      vehicle.maintenance_cost_per_km <= fleet_average * 1.5
+    warning_message: "Vehicle maintenance cost exceeds fleet average by 50%"
+    action: review_vehicle_condition
+    applies_to: [monthly_review]
+
+  - id: BR-MN-018
+    name: Major Repair Evaluation
+    description: Evaluate repair vs replace for major repairs
+    severity: warning
+    category: cost
+    condition: |
+      IF maintenance.estimated_cost > vehicle.current_value * 0.3 THEN
+        require_replacement_analysis
+    warning_message: "Repair cost exceeds 30% of vehicle value - evaluate replacement"
+    applies_to: [maintenance_request]
+
+  # Warranty
+  - id: BR-MN-019
+    name: Warranty Claim Processing
+    description: Process warranty claims for eligible repairs
+    severity: info
+    category: warranty
+    condition: |
+      IF vehicle.under_warranty AND
+         maintenance.category IN warranty_covered_categories THEN
+        create_warranty_claim
+    action: initiate_warranty_claim
+    applies_to: [maintenance_completion]
+
+  - id: BR-MN-020
+    name: Recall Compliance
+    description: Complete manufacturer recalls within required timeframe
+    severity: critical
+    category: compliance
+    condition: |
+      NOT EXISTS recall WHERE
+        recall.vehicle_id == vehicle.id AND
+        recall.status == 'pending' AND
+        recall.deadline < today()
+    error_message: "Vehicle has overdue recall"
+    applies_to: [vehicle_status]
+
+maintenance_intervals:
+  oil_change:
+    km: 15000
+    months: 6
+    trigger: whichever_first
+  tire_rotation:
+    km: 10000
+    months: 6
+    trigger: whichever_first
+  brake_inspection:
+    km: 30000
+    months: 12
+    trigger: whichever_first
+  transmission_service:
+    km: 60000
+    months: 24
+    trigger: whichever_first
+  annual_inspection:
+    km: null
+    months: 12
+    trigger: months
+    regulatory: true
+
+approval_matrix:
+  - cost_range: [0, 500]
+    approver: auto
+    maintenance_types: [preventive]
+  - cost_range: [0, 1000]
+    approver: supervisor
+    maintenance_types: [preventive, corrective]
+  - cost_range: [1001, 5000]
+    approver: fleet_manager
+    maintenance_types: [all]
+  - cost_range: [5001, null]
+    approver: director
+    maintenance_types: [all]
+
+escalation:
+  overdue_maintenance:
+    - days: 0
+      action: notify_fleet_manager
+    - days: 7
+      action: restrict_vehicle
+    - days: 14
+      action: escalate_to_director

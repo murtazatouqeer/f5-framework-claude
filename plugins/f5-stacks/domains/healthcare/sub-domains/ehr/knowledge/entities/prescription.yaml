@@ -1,0 +1,615 @@
+name: Prescription
+display_name: Prescription / Đơn thuốc
+description: |
+  Electronic prescription entity for medication orders including
+  dosing instructions, refills, and pharmacy transmission.
+  Supports EPCS for controlled substances.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: order
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: prescription_number
+      display_name: Prescription Number
+      type: string
+      pattern: "^RX-[0-9]{12}$"
+      example: "RX-202401150001"
+      auto_generated: true
+
+    - name: external_rx_number
+      type: string
+      description: Pharmacy's prescription number
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: draft
+      description: Being composed, not yet signed
+
+    - value: pending_signature
+      description: Awaiting prescriber signature
+
+    - value: pending_transmission
+      description: Signed, awaiting transmission
+
+    - value: transmitted
+      description: Sent to pharmacy electronically
+
+    - value: active
+      description: Dispensed and in use
+
+    - value: completed
+      description: All refills used or expired
+
+    - value: cancelled
+      description: Cancelled before dispensing
+
+    - value: discontinued
+      description: Stopped by prescriber
+
+    - value: expired
+      description: Prescription validity expired
+
+    - value: entered_in_error
+      description: Entered in error
+
+  default: draft
+
+state_machine:
+  initial: draft
+  transitions:
+    draft:
+      - to: pending_signature
+        event: submit_for_signature
+      - to: cancelled
+        event: cancel
+
+    pending_signature:
+      - to: pending_transmission
+        event: sign_prescription
+      - to: draft
+        event: return_to_draft
+
+    pending_transmission:
+      - to: transmitted
+        event: transmit_to_pharmacy
+      - to: cancelled
+        event: cancel
+
+    transmitted:
+      - to: active
+        event: pharmacy_dispensed
+      - to: cancelled
+        event: cancel
+
+    active:
+      - to: completed
+        event: all_refills_used
+      - to: discontinued
+        event: discontinue
+      - to: expired
+        event: expire
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: prescriber_id
+      type: uuid
+      required: true
+      references: Provider
+
+    - name: prescriber_name
+      type: string
+
+    - name: prescriber_npi
+      type: string
+
+    - name: prescriber_dea
+      type: string
+      description: Required for controlled substances
+
+    - name: supervising_provider_id
+      type: uuid
+      references: Provider
+      description: For mid-level providers
+
+  medication:
+    - name: medication_id
+      type: uuid
+      required: true
+      references: Medication
+
+    - name: medication_name
+      type: string
+      required: true
+
+    - name: generic_name
+      type: string
+
+    - name: brand_name
+      type: string
+
+    - name: ndc_code
+      type: string
+
+    - name: rxnorm_code
+      type: string
+
+    - name: strength
+      type: string
+      required: true
+      example: "500 mg"
+
+    - name: strength_value
+      type: decimal
+
+    - name: strength_unit
+      type: string
+
+    - name: dosage_form
+      type: enum
+      required: true
+      values:
+        - tablet
+        - capsule
+        - solution
+        - suspension
+        - syrup
+        - injection
+        - powder
+        - cream
+        - ointment
+        - gel
+        - patch
+        - suppository
+        - inhaler
+        - drops
+        - spray
+
+    - name: route
+      type: enum
+      required: true
+      values:
+        - oral
+        - sublingual
+        - topical
+        - transdermal
+        - intravenous
+        - intramuscular
+        - subcutaneous
+        - inhalation
+        - nasal
+        - ophthalmic
+        - otic
+        - rectal
+        - vaginal
+
+  dosage:
+    - name: dose_quantity
+      type: decimal
+      required: true
+      description: Amount per dose
+
+    - name: dose_unit
+      type: string
+      required: true
+      example: "tablet, mL, mg"
+
+    - name: frequency
+      type: enum
+      required: true
+      values:
+        - once_daily
+        - twice_daily
+        - three_times_daily
+        - four_times_daily
+        - every_4_hours
+        - every_6_hours
+        - every_8_hours
+        - every_12_hours
+        - every_other_day
+        - once_weekly
+        - twice_weekly
+        - once_monthly
+        - as_needed
+        - at_bedtime
+        - with_meals
+        - before_meals
+        - after_meals
+        - other
+
+    - name: frequency_code
+      type: string
+      description: HL7 frequency code
+
+    - name: frequency_text
+      type: string
+      max_length: 500
+      description: Full sig text
+
+    - name: prn
+      type: boolean
+      default: false
+      description: As needed
+
+    - name: prn_reason
+      type: string
+      description: Reason for PRN use
+
+    - name: duration_value
+      type: integer
+
+    - name: duration_unit
+      type: enum
+      values: [days, weeks, months]
+
+    - name: max_daily_dose
+      type: decimal
+
+    - name: max_daily_dose_unit
+      type: string
+
+  quantity:
+    - name: quantity_prescribed
+      type: decimal
+      required: true
+
+    - name: quantity_unit
+      type: string
+      required: true
+      example: "tablets, mL, patches"
+
+    - name: days_supply
+      type: integer
+      required: true
+
+    - name: refills_authorized
+      type: integer
+      required: true
+      default: 0
+
+    - name: refills_remaining
+      type: integer
+
+    - name: refill_too_soon_date
+      type: date
+      description: Earliest allowed refill date
+
+  instructions:
+    - name: patient_instructions
+      type: text
+      description: Instructions for patient
+
+    - name: patient_instructions_vi
+      type: text
+
+    - name: pharmacy_instructions
+      type: text
+
+    - name: special_instructions
+      type: text
+      description: Additional prescriber notes
+
+    - name: indication
+      type: string
+      description: Why medication is prescribed
+
+    - name: diagnosis_id
+      type: uuid
+      references: Diagnosis
+
+  dates:
+    - name: prescribed_date
+      type: timestamp
+      auto_set: on_create
+
+    - name: signed_date
+      type: timestamp
+
+    - name: start_date
+      type: date
+      required: true
+
+    - name: end_date
+      type: date
+
+    - name: expiration_date
+      type: date
+      description: When prescription expires (typically 1 year)
+
+    - name: last_filled_date
+      type: date
+
+    - name: next_fill_date
+      type: date
+
+  pharmacy:
+    - name: pharmacy_id
+      type: uuid
+      references: Pharmacy
+
+    - name: pharmacy_name
+      type: string
+
+    - name: pharmacy_ncpdp
+      type: string
+      description: NCPDP ID
+
+    - name: pharmacy_npi
+      type: string
+
+    - name: pharmacy_address
+      type: string
+
+    - name: pharmacy_phone
+      type: string
+
+    - name: transmission_method
+      type: enum
+      values:
+        - electronic
+        - fax
+        - phone
+        - print
+        - hand_delivered
+
+    - name: transmission_timestamp
+      type: timestamp
+
+    - name: transmission_reference
+      type: string
+      description: eRx transaction ID
+
+  substitution:
+    - name: dispense_as_written
+      type: boolean
+      default: false
+
+    - name: daw_code
+      type: enum
+      values:
+        - "0"  # Substitution allowed
+        - "1"  # Substitution not allowed by prescriber
+        - "2"  # Substitution allowed, patient requested brand
+        - "3"  # Substitution allowed, pharmacist selected brand
+        - "4"  # Substitution allowed, generic not available
+        - "5"  # Brand dispensed as generic
+
+    - name: substitution_allowed
+      type: boolean
+      default: true
+
+  controlled_substance:
+    - name: is_controlled
+      type: boolean
+      default: false
+
+    - name: dea_schedule
+      type: enum
+      values: [II, IIN, III, IIIN, IV, V]
+
+    - name: epcs_signed
+      type: boolean
+      default: false
+
+    - name: epcs_transaction_id
+      type: string
+
+    - name: state_pmp_checked
+      type: boolean
+      description: Prescription Monitoring Program checked
+
+    - name: pmp_check_date
+      type: timestamp
+
+  clinical_checks:
+    - name: allergy_check_passed
+      type: boolean
+
+    - name: allergy_override_reason
+      type: string
+
+    - name: interaction_check_passed
+      type: boolean
+
+    - name: interaction_override_reason
+      type: string
+
+    - name: duplicate_therapy_check
+      type: boolean
+
+    - name: dose_check_passed
+      type: boolean
+
+    - name: formulary_check_passed
+      type: boolean
+
+    - name: prior_auth_required
+      type: boolean
+      default: false
+
+    - name: prior_auth_number
+      type: string
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: prescriber
+    type: many_to_one
+    target: Provider
+    foreign_key: prescriber_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: medication
+    type: many_to_one
+    target: Medication
+    foreign_key: medication_id
+
+  - name: diagnosis
+    type: many_to_one
+    target: Diagnosis
+    foreign_key: diagnosis_id
+
+  - name: fills
+    type: one_to_many
+    target: PrescriptionFill
+    foreign_key: prescription_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-RX-001
+    name: DEA for Controlled
+    description: Controlled substances require prescriber DEA number
+    rule: |
+      is_controlled = TRUE
+      REQUIRES prescriber_dea IS NOT NULL
+
+  - id: BR-RX-002
+    name: EPCS for Schedule II
+    description: Schedule II requires EPCS or written prescription
+    rule: |
+      dea_schedule IN ('II', 'IIN')
+      REQUIRES epcs_signed = TRUE OR transmission_method = 'print'
+
+  - id: BR-RX-003
+    name: Schedule II No Refills
+    description: Schedule II substances cannot have refills
+    rule: |
+      dea_schedule IN ('II', 'IIN')
+      REQUIRES refills_authorized = 0
+
+  - id: BR-RX-004
+    name: Schedule III-V Refill Limit
+    description: Schedule III-V limited to 5 refills in 6 months
+    rule: |
+      dea_schedule IN ('III', 'IIIN', 'IV', 'V')
+      REQUIRES refills_authorized <= 5
+
+  - id: BR-RX-005
+    name: Prescription Expiration
+    description: Prescriptions expire after specified period
+    rule: |
+      IF is_controlled = TRUE AND dea_schedule IN ('II', 'IIN')
+      THEN expiration_date = prescribed_date + INTERVAL '90 days'
+      ELSE expiration_date = prescribed_date + INTERVAL '1 year'
+
+  - id: BR-RX-006
+    name: Allergy Check Required
+    description: Must check patient allergies before signing
+    rule: |
+      ON_SIGN: check_patient_allergies()
+      IF allergy_found THEN require_override_or_change
+
+  - id: BR-RX-007
+    name: Drug Interaction Check
+    description: Must check drug interactions before signing
+    rule: |
+      ON_SIGN: check_drug_interactions()
+      IF interaction_severity = 'contraindicated' THEN block_prescription
+
+  - id: BR-RX-008
+    name: PMP Check for Controlled
+    description: Prescription Monitoring Program check required
+    rule: |
+      is_controlled = TRUE
+      REQUIRES state_pmp_checked = TRUE
+
+  - id: BR-RX-009
+    name: Supervising Physician
+    description: Mid-level prescriptions may require supervision
+    rule: |
+      prescriber.provider_type IN ('nurse_practitioner', 'physician_assistant')
+      AND is_controlled = TRUE
+      REQUIRES supervising_provider_id IS NOT NULL
+
+  - id: BR-RX-010
+    name: Days Supply Validation
+    description: Days supply must be reasonable for quantity
+    rule: |
+      days_supply <= 90 OR (days_supply <= 365 AND prior_auth_number IS NOT NULL)
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_rx_number
+    columns: [prescription_number]
+    unique: true
+
+  - name: idx_rx_patient
+    columns: [patient_id]
+
+  - name: idx_rx_prescriber
+    columns: [prescriber_id]
+
+  - name: idx_rx_medication
+    columns: [medication_id]
+
+  - name: idx_rx_status
+    columns: [status]
+
+  - name: idx_rx_prescribed_date
+    columns: [prescribed_date]
+
+  - name: idx_rx_patient_active
+    columns: [patient_id, status]
+    condition: "status IN ('active', 'transmitted')"
+
+  - name: idx_rx_controlled
+    columns: [is_controlled, dea_schedule]
+    condition: "is_controlled = TRUE"
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  track_all_changes: true
+  epcs_audit:
+    enabled: true
+    retention_years: 7
+  logged_events:
+    - prescription_created
+    - prescription_signed
+    - prescription_transmitted
+    - prescription_cancelled
+    - prescription_refill_authorized
+    - controlled_substance_prescribed

@@ -1,0 +1,539 @@
+# Technical Requirements Rules
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Rules for telehealth platform technical standards
+
+business_rules:
+  id: technical-requirements-rules
+  name: Technical Requirements Rules
+  name_ja: 技術要件ルール
+  description: Technical standards and requirements for telehealth platform
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  categories:
+    - id: video-quality
+      name: Video Quality Standards
+      description: Video and audio quality requirements
+
+    - id: security
+      name: Security Requirements
+      description: Security and encryption standards
+
+    - id: recording
+      name: Recording Requirements
+      description: Session recording rules
+
+    - id: accessibility
+      name: Accessibility Standards
+      description: ADA and accessibility requirements
+
+    - id: failover
+      name: Failover and Reliability
+      description: System reliability requirements
+
+  rules:
+    # Video Quality Standards
+    - id: BR-TEC-001
+      name: Minimum Video Quality Standards
+      category: video-quality
+      priority: high
+      description: Minimum requirements for video quality
+      
+      requirements:
+        video:
+          minimum_resolution: "640x480"
+          recommended_resolution: "1280x720"
+          maximum_resolution: "1920x1080"
+          frame_rate_minimum: 15
+          frame_rate_recommended: 30
+          codec:
+            supported: [H.264, VP8, VP9, AV1]
+            recommended: H.264
+            
+        audio:
+          codec:
+            supported: [Opus, G.711, G.722]
+            recommended: Opus
+          sample_rate_minimum: 16000
+          sample_rate_recommended: 48000
+          channels: [mono, stereo]
+          echo_cancellation: required
+          noise_suppression: required
+          
+        bandwidth:
+          minimum_mbps: 1.5
+          recommended_mbps: 3.0
+          adaptive_bitrate: required
+          
+        latency:
+          acceptable_ms: 150
+          warning_ms: 300
+          unacceptable_ms: 500
+          
+      validation:
+        on: session_active
+        action: |
+          MONITOR video_quality_metrics
+          IF resolution < minimum THEN
+            ATTEMPT quality_upgrade
+            IF fails THEN WARN user
+          IF latency > acceptable THEN
+            DISPLAY connection_quality_warning
+          IF latency > unacceptable THEN
+            SUGGEST audio_only_fallback
+
+    - id: BR-TEC-002
+      name: Audio-Only Fallback
+      category: video-quality
+      priority: high
+      description: Requirements when video fails
+      
+      fallback_triggers:
+        automatic:
+          - bandwidth < 500kbps sustained
+          - video_quality_score < 2.0
+          - repeated_video_freezing
+          
+        manual:
+          - patient_preference
+          - provider_request
+          - accessibility_need
+          
+      fallback_requirements:
+        audio_quality: Must maintain clear audio
+        documentation: Log reason for fallback
+        consent: Note in record if billing audio-only
+        
+      validation:
+        on: video_degradation
+        action: |
+          DETECT video_quality_issues
+          OFFER audio_only_fallback
+          IF patient_accepts THEN
+            SWITCH to_audio_only
+            LOG fallback_reason
+            UPDATE visit_modality
+
+    # Security Requirements
+    - id: BR-TEC-010
+      name: Encryption Requirements
+      category: security
+      priority: critical
+      description: End-to-end encryption for telehealth
+      
+      encryption_standards:
+        transport:
+          protocol: TLS
+          minimum_version: "1.2"
+          recommended_version: "1.3"
+          cipher_suites:
+            required:
+              - TLS_AES_256_GCM_SHA384
+              - TLS_AES_128_GCM_SHA256
+            prohibited:
+              - Any cipher with NULL
+              - DES, 3DES
+              - RC4
+              - MD5
+              
+        media:
+          protocol: SRTP
+          key_exchange: DTLS
+          encryption: AES_CM_128_HMAC_SHA1_80
+          
+        data_at_rest:
+          algorithm: AES-256
+          key_management: HSM or equivalent
+          
+        signaling:
+          protocol: WSS (WebSocket Secure)
+          encryption: TLS 1.2+
+          
+      validation:
+        on: [connection_establishment, ongoing]
+        action: |
+          VERIFY tls_version >= 1.2
+          VERIFY srtp_enabled
+          IF encryption_not_verified THEN
+            BLOCK connection
+            LOG security_failure
+            ALERT security_team
+
+    - id: BR-TEC-011
+      name: Authentication Requirements
+      category: security
+      priority: critical
+      description: User authentication for telehealth
+      
+      requirements:
+        providers:
+          authentication: 
+            - Username/password
+            - Multi-factor required
+          mfa_methods:
+            - TOTP app
+            - SMS (backup only)
+            - Hardware key (preferred)
+          session_timeout: 30 minutes inactive
+          
+        patients:
+          authentication:
+            - Username/password
+            - Optional MFA
+            - Patient portal SSO
+          identity_verification:
+            - Photo ID for new patients
+            - Knowledge-based for established
+          session_timeout: 60 minutes inactive
+          
+        session_tokens:
+          type: JWT
+          expiration: Short-lived (15-60 min)
+          refresh: Secure refresh token flow
+          
+      validation:
+        on: login
+        action: |
+          IF user.role = 'provider' THEN
+            REQUIRE mfa
+          VERIFY password_strength
+          CHECK account_not_locked
+          LOG authentication_attempt
+
+    - id: BR-TEC-012
+      name: HIPAA Technical Safeguards
+      category: security
+      priority: critical
+      description: Required HIPAA technical safeguards
+      
+      safeguards:
+        access_controls:
+          unique_user_ids: required
+          automatic_logoff: required
+          encryption_decryption: required
+          
+        audit_controls:
+          activity_logging: required
+          log_retention: 6 years minimum
+          log_protection: immutable
+          
+        integrity_controls:
+          data_integrity_mechanisms: required
+          authentication_of_ePHI: required
+          
+        transmission_security:
+          encryption: required
+          integrity_verification: required
+          
+      baa_requirements:
+        video_platform_vendor:
+          - Signed BAA required
+          - Verify HIPAA compliance
+          - Annual review
+          
+      validation:
+        on: system_audit
+        action: |
+          VERIFY all_safeguards_implemented
+          CHECK baa_status(video_vendor)
+          GENERATE compliance_report
+          FLAG non_compliant_items
+
+    # Recording Requirements
+    - id: BR-TEC-020
+      name: Session Recording Rules
+      category: recording
+      priority: high
+      description: Requirements for recording telehealth sessions
+      
+      consent_requirements:
+        explicit_consent:
+          required: true
+          timing: Before recording starts
+          method: 
+            - Electronic signature
+            - Verbal with witness
+          scope:
+            - What will be recorded (video/audio)
+            - Purpose of recording
+            - Who will have access
+            - Retention period
+            
+        state_requirements:
+          one_party_consent_states: Verbal consent from participant
+          all_party_consent_states: Consent from all parties
+          check: patient_location_state
+          
+      technical_requirements:
+        storage:
+          encryption: AES-256
+          location: HIPAA-compliant storage
+          redundancy: Geographically distributed
+          
+        access_control:
+          authentication: Required
+          authorization: Role-based
+          audit_trail: All access logged
+          
+        retention:
+          minimum: Per state medical record requirements
+          typical: 7-10 years
+          purge: Secure deletion after retention
+          
+      recording_indicators:
+        visual: Recording indicator on screen
+        audio: Announcement at start
+        
+      validation:
+        on: recording_start
+        action: |
+          VERIFY recording_consent_obtained
+          CHECK state_consent_requirements
+          ENABLE recording_indicator
+          LOG recording_started
+          STORE with_encryption
+
+    - id: BR-TEC-021
+      name: Recording Storage and Access
+      category: recording
+      priority: high
+      description: Rules for storing and accessing recordings
+      
+      storage_rules:
+        immediate:
+          - Encrypt before storage
+          - Associate with visit record
+          - Verify upload success
+          
+        organization:
+          naming: visit_id + timestamp
+          metadata:
+            - Visit ID
+            - Patient ID
+            - Provider ID
+            - Date/time
+            - Duration
+            - Participants
+            
+        retention:
+          policy: Per organization policy + state law
+          review: Annual review of old recordings
+          destruction: Certificate of destruction
+          
+      access_rules:
+        who_can_access:
+          - Treating providers
+          - Quality assurance (limited)
+          - Legal (with subpoena)
+          - Patient (their own)
+          
+        access_logging:
+          log: All access attempts
+          include: User, time, action
+          alert: Unusual access patterns
+          
+      validation:
+        on: recording_access_request
+        action: |
+          VERIFY requester_authorization
+          LOG access_request
+          IF authorized THEN
+            PROVIDE access
+            LOG access_granted
+          ELSE
+            DENY access
+            LOG access_denied
+            ALERT if_suspicious
+
+    # Accessibility Standards
+    - id: BR-TEC-030
+      name: Accessibility Requirements
+      category: accessibility
+      priority: high
+      description: ADA and accessibility standards for telehealth
+      
+      wcag_compliance:
+        level: AA minimum
+        version: "2.1"
+        
+      requirements:
+        visual:
+          - Screen reader compatible
+          - High contrast mode
+          - Adjustable text size
+          - Alt text for images
+          - Color not sole indicator
+          
+        auditory:
+          - Closed captioning available
+          - Volume controls
+          - Visual notifications
+          - Transcript generation
+          
+        motor:
+          - Keyboard navigation
+          - Large click targets
+          - No time-based actions
+          - Voice control compatible
+          
+        cognitive:
+          - Clear navigation
+          - Consistent layout
+          - Simple language options
+          - Error prevention
+          
+      accommodations:
+        interpreter_services:
+          - ASL interpreter integration
+          - Language interpreter
+          - Real-time captioning
+          
+        alternative_formats:
+          - Large print documents
+          - Screen reader materials
+          
+      validation:
+        on: [deployment, quarterly_audit]
+        action: |
+          RUN accessibility_scan
+          CHECK wcag_compliance_score
+          DOCUMENT accommodations_available
+          FLAG accessibility_barriers
+
+    # Failover and Reliability
+    - id: BR-TEC-040
+      name: System Reliability Requirements
+      category: failover
+      priority: critical
+      description: Uptime and failover requirements
+      
+      uptime_requirements:
+        target: "99.9%"
+        measurement: Monthly
+        planned_maintenance: Excluded
+        sla_penalties: Per contract
+        
+      failover_requirements:
+        video_platform:
+          redundancy: Multi-region
+          failover_time: < 30 seconds
+          automatic: Yes
+          
+        database:
+          replication: Synchronous
+          failover: Automatic
+          rpo: < 1 minute
+          rto: < 5 minutes
+          
+        application:
+          load_balancing: Required
+          health_checks: Every 10 seconds
+          auto_scaling: Enabled
+          
+      disaster_recovery:
+        dr_site: Required
+        distance: > 100 miles
+        data_sync: Real-time or near-real-time
+        testing: Quarterly DR tests
+        
+      monitoring:
+        real_time:
+          - System health
+          - Error rates
+          - Latency
+          - Capacity
+          
+        alerting:
+          - PagerDuty or equivalent
+          - Escalation paths
+          - On-call rotation
+          
+      validation:
+        on: continuous
+        action: |
+          MONITOR system_metrics
+          IF outage_detected THEN
+            TRIGGER failover
+            NOTIFY on_call
+            LOG incident
+          GENERATE monthly_uptime_report
+
+    - id: BR-TEC-041
+      name: Connection Failure Handling
+      category: failover
+      priority: high
+      description: Handling connection failures during visits
+      
+      failure_scenarios:
+        patient_disconnection:
+          detection: < 5 seconds
+          action:
+            - Attempt reconnection (3 times)
+            - Notify provider
+            - Hold session state
+            - Timeout after 5 minutes
+            
+        provider_disconnection:
+          detection: < 5 seconds
+          action:
+            - Attempt reconnection
+            - Notify patient (hold music/message)
+            - Escalate if prolonged
+            
+        platform_failure:
+          detection: Automated monitoring
+          action:
+            - Trigger failover
+            - Notify active users
+            - Log all affected sessions
+            - Auto-reschedule if unrecoverable
+            
+      reconnection_handling:
+        preserve_session: Yes, for 5 minutes
+        preserve_chat: Yes
+        preserve_recording: Resume if consented
+        
+      patient_communication:
+        on_disconnect:
+          - Display "Reconnecting..."
+          - Provide callback number
+          - Offer to reschedule
+          
+      validation:
+        on: connection_issue
+        action: |
+          LOG disconnection(user, timestamp, reason)
+          ATTEMPT reconnection
+          IF reconnection_fails THEN
+            NOTIFY other_party
+            START session_hold_timer
+          IF session_abandoned THEN
+            MARK visit_technical_failure
+            TRIGGER follow_up_process
+
+  performance_monitoring:
+    metrics_collected:
+      - connection_success_rate
+      - average_video_quality
+      - average_latency
+      - session_completion_rate
+      - technical_failure_rate
+      
+    reporting:
+      frequency: Daily, weekly, monthly
+      recipients: Operations, leadership
+      
+    continuous_improvement:
+      - Root cause analysis for failures
+      - Vendor performance review
+      - Capacity planning
+
+  audit:
+    log_retention: 2555 days
+    required_logs:
+      - All authentication attempts
+      - All session starts/ends
+      - All security events
+      - All recording access
+      - All system errors

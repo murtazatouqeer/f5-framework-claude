@@ -1,0 +1,290 @@
+name: RouteOptimizationRules
+display_name: Route Optimization Rules
+description: |
+  Business rules for route planning and optimization.
+  Covers constraints, preferences, and optimization objectives.
+
+domain: logistics
+subdomain: fleet
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # Time Window Rules
+  - id: BR-RO-001
+    name: Respect Delivery Time Windows
+    description: All stops must be scheduled within customer time windows
+    severity: critical
+    category: time_windows
+    condition: |
+      FOR ALL stops IN trip.stops:
+        stop.scheduled_arrival >= stop.time_window_start AND
+        stop.scheduled_arrival <= stop.time_window_end
+    error_message: "Stop cannot be scheduled within delivery time window"
+    applies_to: [route_planning]
+
+  - id: BR-RO-002
+    name: Priority Stop Scheduling
+    description: Critical priority stops scheduled first
+    severity: critical
+    category: time_windows
+    condition: |
+      FOR ALL stops WHERE priority == 'critical':
+        stop.sequence_number <= COUNT(stops) * 0.3
+    recommendation: "Schedule critical stops in first 30% of route"
+    applies_to: [route_planning]
+
+  - id: BR-RO-003
+    name: Early Delivery Buffer
+    description: Allow 15-minute early arrival buffer
+    severity: recommendation
+    category: time_windows
+    condition: |
+      stop.scheduled_arrival >= stop.time_window_start - 15min
+    recommendation: "Schedule arrival 15 minutes before window opens when possible"
+    applies_to: [route_planning]
+
+  # Distance and Duration Rules
+  - id: BR-RO-004
+    name: Maximum Trip Duration
+    description: Trip duration should not exceed driver available hours
+    severity: critical
+    category: duration
+    condition: |
+      trip.estimated_duration_minutes <= driver.available_drive_hours * 60
+    error_message: "Trip duration exceeds driver's available driving hours"
+    applies_to: [route_planning]
+
+  - id: BR-RO-005
+    name: Maximum Daily Distance
+    description: Warn if daily distance exceeds 800km
+    severity: warning
+    category: duration
+    condition: |
+      trip.planned_distance_km <= 800
+    warning_message: "Planned distance exceeds recommended daily maximum"
+    applies_to: [route_planning]
+
+  - id: BR-RO-006
+    name: Service Time Allocation
+    description: Include adequate service time at each stop
+    severity: warning
+    category: duration
+    condition: |
+      stop.estimated_service_time_minutes >=
+        CASE stop.stop_type
+          WHEN 'delivery' THEN 15
+          WHEN 'pickup' THEN 20
+          WHEN 'service' THEN 30
+          ELSE 10
+        END
+    warning_message: "Insufficient service time allocated"
+    applies_to: [route_planning]
+
+  # Vehicle Restrictions
+  - id: BR-RO-007
+    name: Weight Restriction Compliance
+    description: Route must avoid roads with weight restrictions below vehicle GVWR
+    severity: critical
+    category: restrictions
+    condition: |
+      FOR ALL segments IN route:
+        segment.weight_limit_kg >= vehicle.gvwr_kg OR
+        segment.weight_limit_kg IS NULL
+    error_message: "Route includes weight-restricted roads"
+    applies_to: [route_planning]
+
+  - id: BR-RO-008
+    name: Height Restriction Compliance
+    description: Route must avoid low clearance areas
+    severity: critical
+    category: restrictions
+    condition: |
+      FOR ALL segments IN route:
+        segment.height_limit_m >= vehicle.overall_height_cm / 100 OR
+        segment.height_limit_m IS NULL
+    error_message: "Route includes height-restricted areas"
+    applies_to: [route_planning]
+
+  - id: BR-RO-009
+    name: Hazmat Route Restrictions
+    description: Hazmat loads must use approved routes only
+    severity: critical
+    category: restrictions
+    condition: |
+      IF trip.is_hazmat THEN
+        FOR ALL segments IN route:
+          segment.hazmat_approved
+    error_message: "Hazmat loads must use approved routes"
+    applies_to: [route_planning]
+    regulation: "DOT Hazmat Routing"
+
+  - id: BR-RO-010
+    name: Avoid Toll Roads Option
+    description: Respect toll avoidance preference
+    severity: recommendation
+    category: restrictions
+    condition: |
+      IF route.avoid_tolls THEN
+        COUNT(route.segments WHERE is_toll) == 0
+    recommendation: "Route includes toll roads despite preference to avoid"
+    applies_to: [route_planning]
+
+  # Optimization Objectives
+  - id: BR-RO-011
+    name: Minimize Distance Default
+    description: Default to minimizing total distance
+    severity: recommendation
+    category: optimization
+    condition: |
+      route.total_distance_km == MIN(feasible_routes.distance_km)
+    recommendation: "Select shortest feasible route"
+    priority: 1
+    applies_to: [route_planning]
+
+  - id: BR-RO-012
+    name: Balance Distance and Time
+    description: Consider both distance and time in optimization
+    severity: recommendation
+    category: optimization
+    condition: |
+      route.score = 0.6 * normalize(distance) + 0.4 * normalize(time)
+    applies_to: [route_planning]
+
+  - id: BR-RO-013
+    name: Cluster Nearby Stops
+    description: Group geographically close stops together
+    severity: recommendation
+    category: optimization
+    condition: |
+      FOR consecutive_stops (a, b) IN route:
+        distance(a, b) <= AVG(all_stop_distances) * 1.5
+    recommendation: "Resequence to minimize backtracking"
+    applies_to: [route_planning]
+
+  # Traffic and Conditions
+  - id: BR-RO-014
+    name: Traffic Consideration
+    description: Account for expected traffic conditions
+    severity: recommendation
+    category: traffic
+    condition: |
+      trip.scheduled_departure NOT IN peak_traffic_hours OR
+      route.avoids_congested_areas
+    recommendation: "Consider traffic patterns in departure timing"
+    applies_to: [route_planning]
+
+  - id: BR-RO-015
+    name: Weather Adjustment
+    description: Adjust timing for adverse weather conditions
+    severity: warning
+    category: conditions
+    condition: |
+      IF weather.conditions IN ['rain', 'snow', 'fog'] THEN
+        trip.estimated_duration_minutes *= 1.2
+    warning_message: "Weather conditions may affect travel time"
+    applies_to: [route_planning]
+
+  # Break Requirements
+  - id: BR-RO-016
+    name: Mandatory Break Scheduling
+    description: Include mandatory breaks in route planning
+    severity: critical
+    category: hos
+    condition: |
+      IF trip.estimated_duration_minutes > 480 THEN
+        EXISTS stop IN route WHERE stop.stop_type == 'rest'
+    error_message: "Route must include mandatory driver break"
+    applies_to: [route_planning]
+
+  - id: BR-RO-017
+    name: Fuel Stop Planning
+    description: Include fuel stops when needed
+    severity: warning
+    category: operations
+    condition: |
+      IF trip.planned_distance_km > vehicle.fuel_range_km * 0.8 THEN
+        EXISTS stop IN route WHERE stop.stop_type == 'fuel'
+    warning_message: "Route may require fuel stop"
+    applies_to: [route_planning]
+
+  # Efficiency Rules
+  - id: BR-RO-018
+    name: Minimize Empty Miles
+    description: Minimize distance traveled without load
+    severity: recommendation
+    category: efficiency
+    condition: |
+      empty_distance_km / total_distance_km <= 0.2
+    recommendation: "Consider adding pickup opportunities on return leg"
+    applies_to: [route_planning]
+
+  - id: BR-RO-019
+    name: Right-Turn Preference
+    description: Prefer routes with more right turns (US)
+    severity: recommendation
+    category: efficiency
+    condition: |
+      right_turns >= left_turns * 1.2
+    recommendation: "Route optimized for right-turn preference"
+    applies_to: [route_planning]
+    region: "US"
+
+  # Geofencing
+  - id: BR-RO-020
+    name: Depot Return Routing
+    description: Ensure route returns to appropriate depot
+    severity: warning
+    category: operations
+    condition: |
+      IF route.is_round_trip THEN
+        last_stop.depot_id == first_stop.depot_id OR
+        last_stop.depot_id == vehicle.home_depot_id
+    warning_message: "Route should return to origin or home depot"
+    applies_to: [route_planning]
+
+optimization_parameters:
+  default_objective: "minimize_distance"
+  objectives:
+    minimize_distance:
+      weight: 1.0
+      description: "Shortest total distance"
+    minimize_time:
+      weight: 1.0
+      description: "Shortest total time including traffic"
+    minimize_cost:
+      weight: 1.0
+      description: "Lowest total cost (fuel + tolls)"
+    maximize_stops:
+      weight: 1.0
+      description: "Maximum stops within constraints"
+    balanced:
+      distance_weight: 0.4
+      time_weight: 0.3
+      cost_weight: 0.3
+
+traffic_windows:
+  peak_morning: "07:00-09:00"
+  peak_evening: "16:00-19:00"
+  off_peak_multiplier: 0.8
+  peak_multiplier: 1.4
+
+service_time_defaults:
+  delivery_residential: 10
+  delivery_commercial: 15
+  pickup_residential: 15
+  pickup_commercial: 20
+  fuel_stop: 20
+  rest_break: 30
+
+constraints:
+  hard:
+    - time_windows
+    - vehicle_restrictions
+    - driver_hours
+    - hazmat_routes
+  soft:
+    - minimize_distance
+    - avoid_traffic
+    - cluster_stops
+    - toll_preference

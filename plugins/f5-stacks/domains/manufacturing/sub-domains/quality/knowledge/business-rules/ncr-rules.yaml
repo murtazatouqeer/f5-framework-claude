@@ -1,0 +1,401 @@
+name: ncr-rules
+display_name: NCR Business Rules
+display_name_vi: Quy tắc kinh doanh NCR
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: business-rules
+
+description: |
+  Business rules governing Non-Conformance Report (NCR) management
+  including creation, investigation, disposition, and closure.
+
+description_vi: |
+  Quy tắc kinh doanh quản lý Báo cáo không phù hợp (NCR)
+  bao gồm tạo, điều tra, xử lý và đóng.
+
+rule_categories:
+  - ncr_creation
+  - severity_classification
+  - investigation
+  - disposition
+  - closure
+  - escalation
+
+rules:
+  # NCR Creation Rules
+  - id: NCR-RULE-001
+    name: ncr_mandatory_on_failure
+    name_vi: NCR bắt buộc khi không đạt
+    category: ncr_creation
+    priority: critical
+    description: NCR must be created for any failed inspection or non-conformance
+    description_vi: NCR phải được tạo cho bất kỳ kiểm tra không đạt hoặc không phù hợp nào
+    condition: |
+      WHEN inspection.result = 'fail'
+      OR non_conformance detected
+      THEN NCR creation REQUIRED
+    action: |
+      AUTO-PROMPT NCR creation
+      LINK to source inspection
+      PREVENT inspection closure without NCR
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-002
+    name: ncr_documentation_required
+    name_vi: Yêu cầu tài liệu NCR
+    category: ncr_creation
+    priority: high
+    description: NCR must include complete problem documentation
+    description_vi: NCR phải bao gồm tài liệu vấn đề đầy đủ
+    condition: |
+      NCR creation REQUIRES:
+        - description (clear problem statement)
+        - detected_at (timestamp)
+        - detected_by (employee)
+        - detection_point
+        - affected quantities
+        - lot/batch numbers (if applicable)
+    action: |
+      VALIDATE required fields
+      BLOCK submission if incomplete
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-003
+    name: immediate_containment
+    name_vi: Ngăn chặn ngay lập tức
+    category: ncr_creation
+    priority: critical
+    description: Immediate containment actions required for critical NCRs
+    description_vi: Hành động ngăn chặn ngay lập tức được yêu cầu cho NCR nghiêm trọng
+    condition: |
+      WHEN ncr.severity = 'critical'
+      THEN immediate_action REQUIRED within 4 hours
+      AND containment_verified within 24 hours
+    action: |
+      ESCALATE immediately
+      STOP production if in-process
+      QUARANTINE affected material
+      NOTIFY management
+    enforcement: automatic
+    exception_allowed: false
+
+  # Severity Classification Rules
+  - id: NCR-RULE-010
+    name: severity_determination
+    name_vi: Xác định mức độ nghiêm trọng
+    category: severity_classification
+    priority: critical
+    description: NCR severity based on impact and risk
+    description_vi: Mức độ nghiêm trọng NCR dựa trên tác động và rủi ro
+    condition: |
+      CRITICAL:
+        - Safety hazard
+        - Regulatory non-compliance
+        - Customer shipment stop
+        - Legal/liability exposure
+
+      MAJOR:
+        - Significant quality impact
+        - Customer specification violation
+        - Repeated occurrence
+        - Cost > threshold
+
+      MINOR:
+        - Cosmetic issues
+        - Documentation gaps
+        - First occurrence, limited impact
+    action: |
+      GUIDE severity selection
+      AUTO-ESCALATE based on severity
+    enforcement: semi-automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-011
+    name: severity_upgrade
+    name_vi: Nâng cấp mức độ nghiêm trọng
+    category: severity_classification
+    priority: high
+    description: Severity must be upgraded if additional impact discovered
+    description_vi: Mức độ nghiêm trọng phải được nâng cấp nếu phát hiện tác động bổ sung
+    condition: |
+      IF during_investigation:
+        - Additional affected lots found
+        - Customer impact discovered
+        - Safety concern identified
+        - Scope larger than initial
+      THEN upgrade_severity
+    action: |
+      REQUIRE severity re-evaluation
+      NOTIFY stakeholders of upgrade
+      RESTART escalation timers
+    enforcement: automatic
+    exception_allowed: false
+
+  # Investigation Rules
+  - id: NCR-RULE-020
+    name: investigation_timeline
+    name_vi: Thời gian điều tra
+    category: investigation
+    priority: high
+    description: Investigation must complete within defined timelines
+    description_vi: Điều tra phải hoàn thành trong thời gian quy định
+    condition: |
+      Investigation timelines by severity:
+        critical: 48 hours
+        major: 5 business days
+        minor: 10 business days
+    action: |
+      SET target completion date
+      ALERT at 75% of timeline
+      ESCALATE if overdue
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  - id: NCR-RULE-021
+    name: root_cause_required
+    name_vi: Yêu cầu nguyên nhân gốc
+    category: investigation
+    priority: high
+    description: Root cause analysis required for major and critical NCRs
+    description_vi: Phân tích nguyên nhân gốc được yêu cầu cho NCR lớn và nghiêm trọng
+    condition: |
+      WHEN ncr.severity IN ('critical', 'major')
+      THEN root_cause_analysis REQUIRED
+      WITH documented methodology (5-Why, Fishbone, etc.)
+    action: |
+      REQUIRE root cause entry
+      VALIDATE methodology documented
+      BLOCK disposition without RCA
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-022
+    name: scope_investigation
+    name_vi: Điều tra phạm vi
+    category: investigation
+    priority: critical
+    description: Must investigate full scope of non-conformance
+    description_vi: Phải điều tra toàn bộ phạm vi của không phù hợp
+    condition: |
+      FOR each NCR, investigate:
+        - Other lots from same production run
+        - Same supplier/material lots
+        - Products in transit
+        - Products at customer sites
+        - Inventory in warehouse
+    action: |
+      PROMPT scope investigation checklist
+      DOCUMENT investigation extent
+      QUANTIFY total affected
+    enforcement: procedural
+    exception_allowed: false
+
+  # Disposition Rules
+  - id: NCR-RULE-030
+    name: disposition_options
+    name_vi: Tùy chọn xử lý
+    category: disposition
+    priority: critical
+    description: Valid disposition options based on non-conformance type
+    description_vi: Tùy chọn xử lý hợp lệ dựa trên loại không phù hợp
+    condition: |
+      Valid dispositions:
+        - use_as_is: Requires engineering/customer approval
+        - rework: Defined rework procedure exists
+        - repair: Engineering-approved repair procedure
+        - scrap: Cannot be made conforming
+        - return_to_vendor: Supplier-caused non-conformance
+        - sort_and_use: Good items can be identified
+        - downgrade: Meets lesser specification
+    action: |
+      VALIDATE disposition against NC type
+      ENFORCE approval requirements
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-031
+    name: disposition_authority
+    name_vi: Thẩm quyền xử lý
+    category: disposition
+    priority: critical
+    description: Disposition requires appropriate authority approval
+    description_vi: Xử lý yêu cầu phê duyệt của cấp thẩm quyền phù hợp
+    condition: |
+      Authority matrix:
+        scrap (minor): quality_engineer
+        scrap (major): quality_manager
+        scrap (critical): director
+        use_as_is (minor): quality_engineer
+        use_as_is (major/critical): quality_manager + engineering
+        rework: quality_engineer
+        return_to_vendor: quality_engineer
+    action: |
+      ROUTE for appropriate approval
+      BLOCK without required approvals
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-032
+    name: customer_concession
+    name_vi: Nhượng bộ khách hàng
+    category: disposition
+    priority: critical
+    description: Customer approval required for use-as-is on customer specs
+    description_vi: Yêu cầu phê duyệt khách hàng cho sử dụng nguyên trạng trên thông số khách hàng
+    condition: |
+      WHEN disposition = 'use_as_is'
+      AND affects customer_specification
+      THEN customer_approval REQUIRED
+    action: |
+      NOTIFY customer
+      TRACK customer response
+      DOCUMENT concession
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-033
+    name: supplier_chargeback
+    name_vi: Tính phí nhà cung cấp
+    category: disposition
+    priority: high
+    description: Document and recover costs from supplier for supplier-caused NCRs
+    description_vi: Ghi nhận và thu hồi chi phí từ nhà cung cấp cho NCR do nhà cung cấp gây ra
+    condition: |
+      WHEN ncr.ncr_type = 'supplier'
+      THEN:
+        - Document all costs (scrap, rework, sorting, shipping, admin)
+        - Issue debit memo
+        - Update supplier quality record
+    action: |
+      CALCULATE total cost impact
+      GENERATE cost recovery request
+      UPDATE supplier scorecard
+    enforcement: semi-automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  # Closure Rules
+  - id: NCR-RULE-040
+    name: closure_requirements
+    name_vi: Yêu cầu đóng
+    category: closure
+    priority: high
+    description: NCR closure requires all elements complete
+    description_vi: Đóng NCR yêu cầu tất cả yếu tố hoàn thành
+    condition: |
+      FOR NCR closure:
+        - Disposition completed (all material processed)
+        - Root cause documented (major/critical)
+        - CAPA initiated if required
+        - Costs documented
+        - Verification complete
+    action: |
+      VALIDATE all requirements
+      BLOCK closure if incomplete
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-041
+    name: capa_linkage
+    name_vi: Liên kết CAPA
+    category: closure
+    priority: high
+    description: CAPA required for systemic or recurring NCRs
+    description_vi: CAPA được yêu cầu cho NCR hệ thống hoặc tái phát
+    condition: |
+      CAPA required when:
+        - severity = 'critical'
+        - Same root cause > 1 occurrence
+        - Customer complaint related
+        - Audit finding related
+        - Management decision
+    action: |
+      PROMPT CAPA creation
+      LINK NCR to CAPA
+      TRACK CAPA completion before NCR close
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-042
+    name: closure_timeline
+    name_vi: Thời gian đóng
+    category: closure
+    priority: high
+    description: NCR closure within target timeline
+    description_vi: Đóng NCR trong thời gian mục tiêu
+    condition: |
+      Closure targets by severity:
+        critical: 30 days
+        major: 45 days
+        minor: 60 days
+    action: |
+      TRACK days open
+      ALERT approaching deadline
+      ESCALATE overdue
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  # Escalation Rules
+  - id: NCR-RULE-050
+    name: automatic_escalation
+    name_vi: Leo thang tự động
+    category: escalation
+    priority: critical
+    description: Automatic escalation based on severity and timeline
+    description_vi: Leo thang tự động dựa trên mức độ nghiêm trọng và thời gian
+    condition: |
+      Escalation triggers:
+        critical: Immediate to management
+        major: After 3 days no action
+        Any: After 75% of target timeline
+        Recurring: On second occurrence
+    action: |
+      NOTIFY next level management
+      LOG escalation event
+      TRACK response
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: NCR-RULE-051
+    name: notification_requirements
+    name_vi: Yêu cầu thông báo
+    category: escalation
+    priority: high
+    description: Required notifications based on NCR type and severity
+    description_vi: Thông báo bắt buộc dựa trên loại NCR và mức độ nghiêm trọng
+    condition: |
+      Notification matrix:
+        - supplier_ncr: purchasing, supplier quality
+        - customer_impact: sales, customer service
+        - critical_any: plant_manager, quality_director
+        - safety_related: EHS, legal
+        - regulatory: regulatory_affairs
+    action: |
+      AUTO-SEND notifications
+      TRACK receipt/acknowledgment
+    enforcement: automatic
+    exception_allowed: false
+
+recurrence_tracking:
+  enabled: true
+  matching_criteria:
+    - product_id
+    - defect_code
+    - root_cause_category
+    - supplier_id
+  window_months: 12
+  threshold_for_systemic: 2
+
+metrics:
+  tracked:
+    - ncr_count_by_severity
+    - days_to_close
+    - recurrence_rate
+    - cost_of_non_conformance
+    - supplier_ncr_rate
+    - capa_effectiveness

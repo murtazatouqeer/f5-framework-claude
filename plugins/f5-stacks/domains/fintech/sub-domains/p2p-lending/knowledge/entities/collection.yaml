@@ -1,0 +1,702 @@
+name: Collection
+display_name: Collection / Thu hồi nợ
+description: |
+  Collection entity tracking debt recovery activities for delinquent
+  loans including collection stages, actions, and recovery outcomes.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: Collection
+  name_vi: Thu hồi nợ
+  table_name: collections
+
+  primary_key: id
+  natural_key: collection_reference
+
+  # ---------------------------------------------------------------------------
+  # ATTRIBUTES
+  # ---------------------------------------------------------------------------
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique collection identifier
+
+    - name: collection_reference
+      type: string
+      format: "COL-YYYYMM-XXXXXX"
+      unique: true
+      indexed: true
+      description: Collection case reference
+      example: "COL-202501-000001"
+
+    # References
+    - name: loan_id
+      type: uuid
+      required: true
+      references: loans.id
+      indexed: true
+      description: The delinquent loan
+
+    - name: borrower_id
+      type: uuid
+      required: true
+      references: borrowers.id
+      indexed: true
+      description: The borrower being collected from
+
+    # Delinquency Information
+    - name: days_past_due
+      type: integer
+      required: true
+      indexed: true
+      description: Current days past due
+
+    - name: delinquency_start_date
+      type: date
+      required: true
+      description: When delinquency started
+
+    - name: first_missed_payment_date
+      type: date
+      description: Date of first missed payment
+
+    # Outstanding Amounts
+    - name: principal_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Outstanding principal at collection start
+
+    - name: interest_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Outstanding interest
+
+    - name: fees_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Outstanding fees and penalties
+
+    - name: total_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "principal_outstanding + interest_outstanding + fees_outstanding"
+      description: Total amount to collect
+
+    - name: current_outstanding
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Current total outstanding (updated)
+
+    # Collection Stage
+    - name: stage
+      type: enum
+      values: [early, soft, hard, legal, write_off]
+      default: early
+      indexed: true
+      description: Current collection stage
+
+    - name: stage_start_date
+      type: date
+      description: When current stage started
+
+    - name: previous_stage
+      type: enum
+      values: [early, soft, hard, legal]
+      description: Previous collection stage
+
+    # Collection Status
+    - name: status
+      type: enum
+      values: [active, promise_to_pay, payment_plan, escalated, resolved, closed, written_off]
+      default: active
+      indexed: true
+      description: Collection case status
+
+    - name: resolution_type
+      type: enum
+      values: [full_payment, settlement, payment_plan_completed, written_off, legal_recovery]
+      description: How case was resolved
+
+    # Assigned Resources
+    - name: assigned_agent_id
+      type: uuid
+      references: users.id
+      indexed: true
+      description: Assigned collection agent
+
+    - name: assigned_agency_id
+      type: uuid
+      references: collection_agencies.id
+      description: External collection agency if assigned
+
+    - name: assignment_date
+      type: timestamp
+      description: When case was assigned
+
+    # Contact Information
+    - name: contact_attempts
+      type: integer
+      default: 0
+      description: Number of contact attempts
+
+    - name: successful_contacts
+      type: integer
+      default: 0
+      description: Successful contact count
+
+    - name: last_contact_date
+      type: timestamp
+      description: Date of last contact
+
+    - name: last_contact_method
+      type: enum
+      values: [phone, sms, email, letter, in_person, app_notification]
+      description: Method of last contact
+
+    - name: last_contact_outcome
+      type: enum
+      values: [reached, no_answer, wrong_number, promised_payment, refused, voicemail]
+      description: Outcome of last contact
+
+    - name: next_contact_date
+      type: date
+      indexed: true
+      description: Scheduled next contact
+
+    # Promise to Pay
+    - name: ptp_date
+      type: date
+      description: Promised payment date
+
+    - name: ptp_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Promised payment amount
+
+    - name: ptp_count
+      type: integer
+      default: 0
+      description: Number of promises made
+
+    - name: ptp_broken_count
+      type: integer
+      default: 0
+      description: Number of broken promises
+
+    # Payment Plan
+    - name: has_payment_plan
+      type: boolean
+      default: false
+      description: Whether payment plan established
+
+    - name: payment_plan_id
+      type: uuid
+      description: Associated payment plan
+
+    - name: payment_plan_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Monthly plan payment
+
+    - name: payment_plan_duration
+      type: integer
+      description: Plan duration in months
+
+    # Recovery Tracking
+    - name: total_collected
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Total amount collected
+
+    - name: principal_collected
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Principal portion collected
+
+    - name: interest_collected
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Interest portion collected
+
+    - name: fees_collected
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Fees portion collected
+
+    - name: collection_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(total_collected / total_outstanding) * 100"
+      description: Recovery rate percentage
+
+    # Settlement
+    - name: settlement_offered
+      type: boolean
+      default: false
+      description: Whether settlement offered
+
+    - name: settlement_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Settlement offer amount
+
+    - name: settlement_discount
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Settlement discount percentage
+
+    - name: settlement_accepted
+      type: boolean
+      default: false
+      description: Whether settlement accepted
+
+    - name: settlement_date
+      type: date
+      description: Settlement agreement date
+
+    # Legal Action
+    - name: legal_action_initiated
+      type: boolean
+      default: false
+      indexed: true
+      description: Whether legal action started
+
+    - name: legal_action_date
+      type: date
+      description: When legal action initiated
+
+    - name: legal_case_number
+      type: string
+      max_length: 100
+      description: Court case number
+
+    - name: legal_status
+      type: enum
+      values: [pending, filed, hearing, judgment, enforcement, closed]
+      description: Legal case status
+
+    - name: legal_outcome
+      type: enum
+      values: [pending, won, lost, settled, dismissed]
+      description: Legal case outcome
+
+    - name: judgment_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Court judgment amount
+
+    # Write-off
+    - name: write_off_recommended
+      type: boolean
+      default: false
+      description: Whether write-off recommended
+
+    - name: write_off_date
+      type: date
+      description: Write-off date
+
+    - name: write_off_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount written off
+
+    - name: write_off_reason
+      type: enum
+      values: [uncollectable, bankrupt, deceased, fraud, statute_limitation, other]
+      description: Reason for write-off
+
+    # Risk Indicators
+    - name: skip_trace_required
+      type: boolean
+      default: false
+      description: Whether skip tracing needed
+
+    - name: skip_trace_completed
+      type: boolean
+      default: false
+      description: Whether skip trace completed
+
+    - name: fraud_suspected
+      type: boolean
+      default: false
+      description: Whether fraud is suspected
+
+    - name: hardship_claimed
+      type: boolean
+      default: false
+      description: Whether hardship claimed
+
+    - name: hardship_verified
+      type: boolean
+      default: false
+      description: Whether hardship verified
+
+    # Collection Notes
+    - name: notes
+      type: text
+      description: Collection case notes
+
+    - name: internal_notes
+      type: text
+      description: Internal notes (not for agency)
+
+    # Priority & Scoring
+    - name: priority
+      type: enum
+      values: [low, medium, high, critical]
+      default: medium
+      indexed: true
+      description: Collection priority
+
+    - name: collection_score
+      type: integer
+      min: 0
+      max: 100
+      description: Collectability score
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      description: When case was created
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+    - name: closed_at
+      type: timestamp
+      description: When case was closed
+
+    - name: escalated_at
+      type: timestamp
+      description: When case was escalated
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: loan_id
+
+    - name: borrower
+      type: belongs_to
+      entity: Borrower
+      foreign_key: borrower_id
+
+    - name: assigned_agent
+      type: belongs_to
+      entity: User
+      foreign_key: assigned_agent_id
+
+    - name: collection_actions
+      type: has_many
+      entity: CollectionAction
+      foreign_key: collection_id
+      order_by: created_at desc
+
+    - name: payments
+      type: has_many
+      entity: Repayment
+      foreign_key: collection_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_collections_loan
+      columns: [loan_id]
+
+    - name: idx_collections_borrower
+      columns: [borrower_id]
+
+    - name: idx_collections_status
+      columns: [status]
+
+    - name: idx_collections_stage
+      columns: [stage]
+
+    - name: idx_collections_dpd
+      columns: [days_past_due]
+
+    - name: idx_collections_agent
+      columns: [assigned_agent_id]
+      where: "status = 'active'"
+
+    - name: idx_collections_next_contact
+      columns: [next_contact_date]
+      where: "status = 'active'"
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  initial_state: active
+
+  states:
+    active:
+      description: Active collection case
+      name_vi: Đang thu hồi
+      allowed_actions: [contact, escalate, settle, close]
+
+    promise_to_pay:
+      description: Borrower has made payment promise
+      name_vi: Hứa thanh toán
+      allowed_actions: [confirm_payment, break_promise, extend]
+
+    payment_plan:
+      description: Payment plan in progress
+      name_vi: Kế hoạch trả nợ
+      allowed_actions: [track_payment, default_plan, complete_plan]
+
+    escalated:
+      description: Escalated to higher stage
+      name_vi: Đã leo thang
+      allowed_actions: [legal_action, settle, write_off]
+
+    resolved:
+      description: Debt fully collected
+      name_vi: Đã giải quyết
+      terminal: true
+
+    closed:
+      description: Case closed (various reasons)
+      name_vi: Đã đóng
+      terminal: true
+
+    written_off:
+      description: Debt written off
+      name_vi: Đã xóa nợ
+      terminal: true
+
+  transitions:
+    - from: active
+      to: promise_to_pay
+      event: record_ptp
+      actions:
+        - schedule_follow_up
+        - notify_team
+
+    - from: active
+      to: payment_plan
+      event: setup_plan
+      actions:
+        - create_plan
+        - notify_borrower
+
+    - from: active
+      to: escalated
+      event: escalate
+      actions:
+        - advance_stage
+        - reassign_if_needed
+        - update_priority
+
+    - from: active
+      to: resolved
+      event: full_payment
+      condition: "current_outstanding <= 0"
+      actions:
+        - close_case
+        - update_loan_status
+        - notify_investors
+
+    - from: promise_to_pay
+      to: active
+      event: ptp_broken
+      actions:
+        - increment_broken_count
+        - reassess_priority
+
+    - from: promise_to_pay
+      to: resolved
+      event: payment_received
+      condition: "current_outstanding <= 0"
+      actions:
+        - close_case
+        - update_loan_status
+
+    - from: payment_plan
+      to: active
+      event: plan_defaulted
+      actions:
+        - cancel_plan
+        - reassess_strategy
+
+    - from: payment_plan
+      to: resolved
+      event: plan_completed
+      actions:
+        - close_case
+        - update_loan_status
+
+    - from: escalated
+      to: resolved
+      event: legal_recovery
+      actions:
+        - record_recovery
+        - close_case
+
+    - from: escalated
+      to: written_off
+      event: write_off
+      actions:
+        - record_write_off
+        - update_loan_status
+        - notify_investors
+
+# =============================================================================
+# COLLECTION STAGES
+# =============================================================================
+collection_stages:
+  early:
+    dpd_range: [1, 15]
+    name_vi: Thu hồi sớm
+    activities:
+      - automated_reminders
+      - sms_notifications
+      - email_reminders
+      - app_notifications
+    escalation_trigger: "dpd > 15 OR no_response"
+
+  soft:
+    dpd_range: [16, 30]
+    name_vi: Thu hồi mềm
+    activities:
+      - phone_calls
+      - personalized_messages
+      - payment_plan_offers
+      - hardship_assessment
+    escalation_trigger: "dpd > 30 OR ptp_broken > 2"
+
+  hard:
+    dpd_range: [31, 60]
+    name_vi: Thu hồi cứng
+    activities:
+      - intensive_calling
+      - field_visits
+      - settlement_offers
+      - external_agency_referral
+    escalation_trigger: "dpd > 60 OR no_contact"
+
+  legal:
+    dpd_range: [61, 180]
+    name_vi: Pháp lý
+    activities:
+      - demand_letters
+      - legal_notice
+      - court_filing
+      - judgment_enforcement
+    escalation_trigger: "dpd > 180 OR legal_complete"
+
+  write_off:
+    dpd_range: [181, null]
+    name_vi: Xóa nợ
+    activities:
+      - final_collection_attempt
+      - write_off_processing
+      - post_write_off_recovery
+    terminal: true
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  timing:
+    - rule: "Collection starts at 1 DPD"
+      enforcement: system
+
+    - rule: "Stage progression based on DPD thresholds"
+      enforcement: system
+
+    - rule: "Contact attempts max 3 per day"
+      enforcement: system
+
+  settlement:
+    - rule: "Settlement only after 30 DPD"
+      enforcement: policy
+
+    - rule: "Maximum settlement discount 30%"
+      enforcement: policy
+
+    - rule: "Settlement requires manager approval > 20% discount"
+      enforcement: workflow
+
+  legal:
+    - rule: "Legal action requires > 60 DPD"
+      enforcement: policy
+
+    - rule: "Legal action requires > 5,000,000 VND outstanding"
+      enforcement: policy
+
+  write_off:
+    - rule: "Write-off after 180 DPD"
+      enforcement: policy
+
+    - rule: "Write-off requires collection manager approval"
+      enforcement: workflow
+
+    - rule: "Post write-off recovery attempts continue"
+      enforcement: policy
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: days_past_due
+    rules:
+      - min: 1
+        message: "DPD must be at least 1"
+
+  - field: settlement_discount
+    rules:
+      - max: 30
+        message: "Maximum settlement discount is 30%"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - borrower_id
+    - settlement_amount
+    - legal_case_number
+  retention_years: 10

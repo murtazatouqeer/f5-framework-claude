@@ -1,0 +1,492 @@
+name: Cancellation Rules
+display_name: Policy Cancellation Rules
+description: |
+  Business rules for policy cancellation and surrender.
+  Covers refund calculations, free-look, and termination procedures.
+
+domain: insurance
+subdomain: policy
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - cancellation_eligibility
+  - free_look_period
+  - refund_calculation
+  - surrender_value
+  - clawback_rules
+  - cancellation_process
+
+rules:
+  # Cancellation Eligibility Rules
+  - id: CAN-ELG-001
+    name: Policyholder Cancellation Right
+    category: cancellation_eligibility
+    priority: critical
+    description: |
+      Policyholder can cancel at any time.
+    condition:
+      expression: |
+        cancellation.initiated_by = 'policyholder' AND
+        policy.status IN ['active', 'pending_payment', 'lapsed']
+    effect:
+      allow_cancellation: true
+    message: "Cancellation request accepted"
+
+  - id: CAN-ELG-002
+    name: Insurer Cancellation Grounds
+    category: cancellation_eligibility
+    priority: critical
+    description: |
+      Insurer can cancel for specific reasons.
+    condition:
+      expression: |
+        cancellation.initiated_by = 'insurer' AND
+        cancellation.reason IN [
+          'non_payment',
+          'material_misrepresentation',
+          'fraud',
+          'breach_of_conditions',
+          'regulatory_requirement'
+        ]
+    validation:
+      require_evidence: true
+      require_notice: true
+      notice_period_days: 30
+    effect:
+      allow_cancellation: true
+
+  - id: CAN-ELG-003
+    name: Non-Payment Cancellation
+    category: cancellation_eligibility
+    priority: high
+    description: |
+      Cancel policy after grace period expires.
+    condition:
+      expression: |
+        policy.premium_status = 'overdue' AND
+        NOW() > policy.grace_period_end
+    automatic_action: true
+    action: lapse_policy
+    notification: true
+    message: "Policy lapsed due to non-payment"
+
+  - id: CAN-ELG-004
+    name: Fraud Cancellation
+    category: cancellation_eligibility
+    priority: critical
+    description: |
+      Immediate cancellation for fraud.
+    condition:
+      expression: "cancellation.reason = 'fraud'"
+    effect:
+      allow_cancellation: true
+      refund_amount: 0
+      void_ab_initio: true
+    notification:
+      regulatory: true
+      policyholder: true
+    message: "Policy voided due to fraudulent misrepresentation"
+
+  - id: CAN-ELG-005
+    name: Pending Claims Block
+    category: cancellation_eligibility
+    priority: high
+    description: |
+      Cannot complete cancellation with pending claims.
+    condition:
+      expression: "policy.pending_claims_count > 0"
+    failure_action: hold
+    hold_until: "all claims resolved"
+    message: "Cancellation on hold pending claims resolution"
+
+  # Free Look Period Rules
+  - id: CAN-FREE-001
+    name: Free Look Period Eligibility
+    category: free_look_period
+    priority: critical
+    description: |
+      Customer can cancel within free look period.
+    condition:
+      expression: |
+        DAYS_BETWEEN(policy.issue_date, cancellation.request_date) <= product.free_look_days
+    effect:
+      free_look_cancellation: true
+      full_refund: true
+    message: "Free look cancellation - full refund applicable"
+
+  - id: CAN-FREE-002
+    name: Free Look Period Duration
+    category: free_look_period
+    priority: high
+    description: |
+      Free look period by product type.
+    defaults:
+      life_insurance: 21
+      health_insurance: 15
+      unit_linked: 30
+      motor_insurance: 15
+      general_insurance: 15
+    note: "Days from policy delivery/receipt"
+
+  - id: CAN-FREE-003
+    name: Free Look Refund Calculation
+    category: free_look_period
+    priority: high
+    description: |
+      Calculate refund for free look cancellation.
+    calculation:
+      refund_amount: total_premium_paid
+      deductions:
+        - medical_exam_cost: "IF medical_exam_conducted"
+        - stamp_duty: product.stamp_duty
+        - proportionate_risk_premium: "days_covered * daily_rate"
+      minimum_refund: "total_premium_paid - deductions"
+
+  - id: CAN-FREE-004
+    name: Free Look Documentation
+    category: free_look_period
+    priority: medium
+    description: |
+      Required documents for free look.
+    documents_required:
+      - original_policy_document
+      - cancellation_request_form
+      - identity_proof
+    optional:
+      - reason_for_cancellation
+
+  # Refund Calculation Rules
+  - id: CAN-REF-001
+    name: Pro-Rata Refund
+    category: refund_calculation
+    priority: high
+    description: |
+      Calculate pro-rata premium refund.
+    condition:
+      expression: |
+        cancellation.refund_method = 'pro_rata' AND
+        NOT free_look_cancellation
+    calculation:
+      earned_premium: "annual_premium * days_covered / 365"
+      unearned_premium: "annual_premium - earned_premium"
+      refund_amount: unearned_premium
+    message: "Pro-rata refund calculated"
+
+  - id: CAN-REF-002
+    name: Short-Rate Refund
+    category: refund_calculation
+    priority: high
+    description: |
+      Calculate short-rate refund with penalty.
+    condition:
+      expression: "cancellation.refund_method = 'short_rate'"
+    calculation:
+      short_rate_table:
+        days_0_30: 0.90
+        days_31_60: 0.80
+        days_61_90: 0.70
+        days_91_120: 0.60
+        days_121_180: 0.50
+        days_181_270: 0.35
+        days_271_365: 0.20
+      unearned_premium: "annual_premium * (1 - days_covered/365)"
+      refund_amount: "unearned_premium * short_rate_factor"
+
+  - id: CAN-REF-003
+    name: No Refund Conditions
+    category: refund_calculation
+    priority: high
+    description: |
+      Conditions where no refund applies.
+    conditions:
+      - expression: "cancellation.reason = 'fraud'"
+        refund: 0
+      - expression: "policy.claims_paid > 0 AND product.type = 'annual'"
+        refund: 0
+      - expression: "policy.premium_type = 'single' AND policy.months_elapsed > 6"
+        refund: 0
+
+  - id: CAN-REF-004
+    name: Minimum Refund Threshold
+    category: refund_calculation
+    priority: low
+    description: |
+      Minimum refund threshold for processing.
+    condition:
+      expression: "calculated_refund < 50000"
+    options:
+      - action: waive_refund
+        with_customer_consent: true
+      - action: donate_to_charity
+      - action: process_anyway
+    default: process_anyway
+
+  - id: CAN-REF-005
+    name: Refund Deductions
+    category: refund_calculation
+    priority: high
+    description: |
+      Standard deductions from refund.
+    deductions:
+      - name: cancellation_fee
+        amount: product.cancellation_fee
+        applies: "NOT free_look"
+      - name: outstanding_premiums
+        amount: policy.outstanding_premium_amount
+      - name: policy_loans
+        amount: "policy.loan_balance + policy.loan_interest"
+      - name: claims_paid
+        amount: policy.claims_paid_amount
+        applies: "product.deduct_claims_from_refund = true"
+      - name: admin_charges
+        amount: product.admin_charges
+    formula: "gross_refund - SUM(applicable_deductions)"
+
+  # Surrender Value Rules
+  - id: CAN-SUR-001
+    name: Surrender Value Eligibility
+    category: surrender_value
+    priority: high
+    description: |
+      Policy must have minimum tenure for surrender value.
+    condition:
+      expression: |
+        product.type = 'life' AND
+        policy.years_in_force >= product.surrender_value_qualifying_years
+    effect:
+      has_surrender_value: true
+    default_qualifying_years: 3
+    message: "Policy eligible for surrender value"
+
+  - id: CAN-SUR-002
+    name: Surrender Value Calculation
+    category: surrender_value
+    priority: high
+    description: |
+      Calculate guaranteed surrender value.
+    condition:
+      expression: "product.surrender_value_method = 'guaranteed'"
+    calculation:
+      paid_up_value: "sum_insured * (premiums_paid / total_premiums_due)"
+      surrender_value_factor: "lookup_table(policy.years_in_force)"
+      surrender_value: "paid_up_value * surrender_value_factor"
+    note: "Factor typically 30% in year 3, increasing yearly"
+
+  - id: CAN-SUR-003
+    name: Special Surrender Value
+    category: surrender_value
+    priority: medium
+    description: |
+      Calculate special/non-guaranteed surrender value.
+    condition:
+      expression: "product.has_bonuses = true"
+    calculation:
+      guaranteed_sv: surrender_value
+      vested_bonuses: policy.vested_bonus_amount
+      terminal_bonus: "policy.terminal_bonus * vesting_factor"
+      special_sv: "guaranteed_sv + vested_bonuses + terminal_bonus"
+
+  - id: CAN-SUR-004
+    name: Surrender Charges
+    category: surrender_value
+    priority: high
+    description: |
+      Apply surrender charges based on policy year.
+    calculation:
+      surrender_charge_table:
+        year_1: 100
+        year_2: 75
+        year_3: 50
+        year_4: 35
+        year_5: 20
+        year_6_plus: 0
+      surrender_charge: "fund_value * charge_percentage / 100"
+    applies_to: unit_linked
+
+  - id: CAN-SUR-005
+    name: Unit Linked Surrender
+    category: surrender_value
+    priority: high
+    description: |
+      Calculate unit linked fund value at surrender.
+    condition:
+      expression: "product.type = 'unit_linked'"
+    calculation:
+      fund_value: "SUM(units * current_nav) FOR EACH fund"
+      surrender_charge: "fund_value * surrender_charge_rate"
+      mortality_charge: "pro_rata_for_period"
+      net_surrender_value: "fund_value - surrender_charge - mortality_charge"
+
+  # Clawback Rules
+  - id: CAN-CLW-001
+    name: Commission Clawback Trigger
+    category: clawback_rules
+    priority: high
+    description: |
+      Trigger commission clawback on early cancellation.
+    condition:
+      expression: |
+        policy.months_in_force < clawback_period_months AND
+        agent.first_year_commission_paid = true
+    effect:
+      clawback_required: true
+    default_clawback_period: 24
+    message: "Commission clawback triggered"
+
+  - id: CAN-CLW-002
+    name: Clawback Amount Calculation
+    category: clawback_rules
+    priority: high
+    description: |
+      Calculate commission clawback amount.
+    calculation:
+      clawback_table:
+        months_0_6: 100
+        months_7_12: 75
+        months_13_18: 50
+        months_19_24: 25
+        months_25_plus: 0
+      clawback_amount: "commission_paid * clawback_percentage / 100"
+
+  - id: CAN-CLW-003
+    name: Clawback Processing
+    category: clawback_rules
+    priority: high
+    description: |
+      Process commission clawback.
+    action:
+      debit_from: agent.commission_account
+      fallback: deduct_from_future_commissions
+      notification: agent
+    timeline: immediate
+    documentation: required
+
+  - id: CAN-CLW-004
+    name: Clawback Waiver Conditions
+    category: clawback_rules
+    priority: medium
+    description: |
+      Conditions for waiving clawback.
+    conditions:
+      - condition: "cancellation.reason = 'death_of_policyholder'"
+        waive: true
+      - condition: "cancellation.reason = 'total_disability'"
+        waive: true
+      - condition: "product.successor_purchased = true"
+        waive: true
+    requires_approval: manager
+
+  # Cancellation Process Rules
+  - id: CAN-PRC-001
+    name: Cancellation Request Processing
+    category: cancellation_process
+    priority: high
+    description: |
+      Standard cancellation processing steps.
+    workflow:
+      - step: receive_request
+        validate:
+          - policyholder_identity
+          - signature_verification
+      - step: check_pending_claims
+        action: hold_if_pending
+      - step: calculate_refund
+        method: apply_refund_rules
+      - step: process_clawback
+        condition: "clawback_required"
+      - step: approve_cancellation
+        authority: based_on_amount
+      - step: process_refund
+        method: bank_transfer
+      - step: update_policy_status
+        new_status: cancelled
+      - step: notify_parties
+        recipients: [policyholder, agent]
+
+  - id: CAN-PRC-002
+    name: Cancellation Approval Authority
+    category: cancellation_process
+    priority: high
+    description: |
+      Approval authority based on refund amount.
+    authority_matrix:
+      refund_under_1m: auto_approve
+      refund_1m_to_10m: supervisor
+      refund_10m_to_50m: manager
+      refund_over_50m: department_head
+
+  - id: CAN-PRC-003
+    name: Cancellation Documentation
+    category: cancellation_process
+    priority: high
+    description: |
+      Required documents for cancellation.
+    documents:
+      mandatory:
+        - cancellation_request_form
+        - identity_proof
+        - bank_details_for_refund
+      conditional:
+        - original_policy:
+            condition: "product.type = 'life'"
+        - surrender_form:
+            condition: "cancellation.type = 'surrender'"
+        - death_certificate:
+            condition: "cancellation.reason = 'death'"
+
+  - id: CAN-PRC-004
+    name: Refund Processing Timeline
+    category: cancellation_process
+    priority: high
+    description: |
+      Timeline for processing refunds.
+    sla:
+      free_look_refund: 15
+      standard_refund: 30
+      surrender_value: 30
+    unit: days
+    start_from: complete_documentation_received
+    notification:
+      delay_alert: "sla - 5 days"
+
+  - id: CAN-PRC-005
+    name: Cancellation Confirmation
+    category: cancellation_process
+    priority: medium
+    description: |
+      Confirm cancellation to stakeholders.
+    notifications:
+      policyholder:
+        method: [email, letter]
+        content: [cancellation_date, refund_amount, payment_details]
+      agent:
+        method: [email, portal]
+        content: [policy_cancelled, clawback_if_any]
+      regulatory:
+        condition: "cancellation.reason = 'fraud'"
+        method: official_report
+
+retention_process:
+  trigger: cancellation_request_received
+  steps:
+    - step: analyze_reason
+      actions:
+        - identify_retention_opportunity
+    - step: retention_attempt
+      condition: "retention_opportunity = true"
+      actions:
+        - contact_customer
+        - understand_concerns
+        - offer_alternatives
+      alternatives:
+        - premium_discount
+        - coverage_modification
+        - payment_plan
+        - switch_product
+    - step: record_outcome
+      data:
+        - retention_attempted
+        - customer_response
+        - final_decision

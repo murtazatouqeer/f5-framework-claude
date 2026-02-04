@@ -1,0 +1,446 @@
+# Payment Intent Entity - Pre-authorization object
+# Domain: fintech/payment
+# Purpose: Represents the intent to collect payment before actual processing
+
+name: PaymentIntent
+display_name: Payment Intent
+description: |
+  Represents the intent to collect a payment from a customer. Created before
+  payment processing begins, it provides a client_secret for frontend integration
+  and tracks the payment through its lifecycle.
+
+  Vietnamese: Đại diện cho ý định thu thập thanh toán từ khách hàng.
+  Được tạo trước khi xử lý, cung cấp client_secret cho frontend.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: payment_intent_id
+    type: string
+    required: true
+    description: External ID for API reference (PI-XXXXXXXX)
+    validation:
+      pattern: "^PI-[A-Z0-9]{8}$"
+
+  - name: client_secret
+    type: string
+    required: true
+    description: Secret for frontend SDK authentication
+    validation:
+      pattern: "^pi_secret_[a-zA-Z0-9]{32}$"
+
+  # Parties
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant receiving the payment
+
+  - name: customer_id
+    type: uuid
+    required: false
+    description: Associated customer (optional for guest checkout)
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Intended payment amount (Số tiền dự kiến)
+    validation:
+      min: 1
+
+  - name: currency
+    type: string
+    required: true
+    description: Three-letter ISO currency code
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: amount_capturable
+    type: decimal
+    required: true
+    description: Amount available for capture
+    default: 0
+
+  - name: amount_received
+    type: decimal
+    required: true
+    description: Amount actually received
+    default: 0
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Current status (Trạng thái)
+    validation:
+      values: [requires_payment_method, requires_confirmation, requires_action, processing, requires_capture, succeeded, cancelled]
+
+  # Payment Method Configuration
+  - name: payment_method_types
+    type: json
+    required: true
+    description: Allowed payment method types
+    default: '["card"]'
+
+  - name: payment_method_id
+    type: uuid
+    required: false
+    description: Selected payment method
+
+  - name: payment_method_options
+    type: json
+    required: false
+    description: |
+      Type-specific options:
+      - card: {request_three_d_secure: 'automatic'|'any'}
+      - bank_transfer: {bank_code: 'VCB'}
+
+  # Capture Configuration
+  - name: capture_method
+    type: enum
+    required: true
+    description: Capture method (Phương thức capture)
+    validation:
+      values: [automatic, manual]
+    default: automatic
+
+  - name: confirmation_method
+    type: enum
+    required: true
+    description: How the intent is confirmed
+    validation:
+      values: [automatic, manual]
+    default: automatic
+
+  # Future Usage
+  - name: setup_future_usage
+    type: enum
+    required: false
+    description: Save payment method for future use
+    validation:
+      values: [on_session, off_session]
+
+  # URLs
+  - name: return_url
+    type: string
+    required: false
+    description: URL to redirect after authentication
+    validation:
+      max: 2000
+
+  - name: cancel_url
+    type: string
+    required: false
+    description: URL if customer cancels
+    validation:
+      max: 2000
+
+  # Customer Details
+  - name: receipt_email
+    type: string
+    required: false
+    description: Email for receipt
+    validation:
+      pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+  - name: shipping
+    type: json
+    required: false
+    description: Shipping information (address, name, phone)
+
+  # Statement
+  - name: statement_descriptor
+    type: string
+    required: false
+    description: Text on customer's bank statement
+    validation:
+      max: 22
+
+  - name: statement_descriptor_suffix
+    type: string
+    required: false
+    description: Suffix for statement descriptor
+    validation:
+      max: 22
+
+  # Metadata
+  - name: description
+    type: string
+    required: false
+    description: Internal description
+    validation:
+      max: 1000
+
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  # Error Handling
+  - name: last_payment_error
+    type: json
+    required: false
+    description: |
+      Last payment error details:
+      - code, message, decline_code, payment_method_id
+
+  - name: cancellation_reason
+    type: enum
+    required: false
+    description: Reason for cancellation
+    validation:
+      values: [duplicate, fraudulent, requested_by_customer, abandoned, expired]
+
+  # Processing
+  - name: next_action
+    type: json
+    required: false
+    description: |
+      Required action:
+      - type: 'redirect_to_url' | 'use_sdk' | 'display_qr_code'
+      - redirect_to_url: {url, return_url}
+      - use_sdk: {sdk_type}
+      - display_qr_code: {data, image_url}
+
+  # Livemode
+  - name: livemode
+    type: boolean
+    required: true
+    description: Live mode vs test mode
+    default: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Intent expiration (default 24h for unconfirmed)
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: Cancellation time
+
+relationships:
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant for this intent
+
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: false
+    description: Associated customer
+
+  - name: payment_method
+    type: belongs_to
+    entity: PaymentMethod
+    required: false
+    description: Selected payment method
+
+  - name: payment
+    type: has_one
+    entity: Payment
+    required: false
+    description: Resulting payment record
+
+state_machine:
+  initial: requires_payment_method
+  states:
+    - name: requires_payment_method
+      description: Payment method not yet selected (Cần chọn phương thức)
+    - name: requires_confirmation
+      description: Awaiting confirmation (Chờ xác nhận)
+    - name: requires_action
+      description: Customer action required (e.g., 3DS) (Cần hành động từ KH)
+    - name: processing
+      description: Processing payment (Đang xử lý)
+    - name: requires_capture
+      description: Authorized, awaiting capture (Chờ capture)
+    - name: succeeded
+      description: Payment successful (Thành công)
+    - name: cancelled
+      description: Intent cancelled (Đã hủy)
+
+  transitions:
+    - from: requires_payment_method
+      to: requires_confirmation
+      trigger: attach_payment_method
+      description: Payment method attached
+
+    - from: requires_payment_method
+      to: cancelled
+      trigger: cancel
+      description: Cancel before method selected
+
+    - from: requires_confirmation
+      to: requires_action
+      trigger: require_action
+      description: Authentication required
+
+    - from: requires_confirmation
+      to: processing
+      trigger: confirm
+      description: Intent confirmed
+
+    - from: requires_confirmation
+      to: cancelled
+      trigger: cancel
+      description: Cancel before confirmation
+
+    - from: requires_action
+      to: processing
+      trigger: complete_action
+      description: Action completed successfully
+
+    - from: requires_action
+      to: requires_payment_method
+      trigger: action_failed
+      description: Action failed, retry with new method
+
+    - from: requires_action
+      to: cancelled
+      trigger: cancel
+      description: Cancel during action
+
+    - from: processing
+      to: requires_capture
+      trigger: authorize
+      description: Authorization successful (manual capture)
+
+    - from: processing
+      to: succeeded
+      trigger: capture
+      description: Capture successful (auto capture)
+
+    - from: processing
+      to: requires_payment_method
+      trigger: fail
+      description: Processing failed, allow retry
+
+    - from: requires_capture
+      to: succeeded
+      trigger: capture
+      description: Manual capture completed
+
+    - from: requires_capture
+      to: cancelled
+      trigger: void
+      description: Void authorization
+
+indexes:
+  - [payment_intent_id]
+  - [client_secret]
+  - [merchant_id, status]
+  - [customer_id, created_at]
+  - [status, expires_at]
+
+events:
+  - name: payment_intent.created
+    description: Payment intent created
+    payload: [id, payment_intent_id, merchant_id, amount, currency]
+
+  - name: payment_intent.requires_action
+    description: Customer action required
+    payload: [id, payment_intent_id, next_action]
+
+  - name: payment_intent.processing
+    description: Payment processing
+    payload: [id, payment_intent_id]
+
+  - name: payment_intent.succeeded
+    description: Payment successful
+    payload: [id, payment_intent_id, payment_id, amount_received]
+
+  - name: payment_intent.cancelled
+    description: Intent cancelled
+    payload: [id, payment_intent_id, cancellation_reason]
+
+  - name: payment_intent.payment_failed
+    description: Payment attempt failed
+    payload: [id, payment_intent_id, last_payment_error]
+
+business_rules:
+  - id: BR-PI-001
+    description: Client secret must be unique and cryptographically secure
+    rule: client_secret = 'pi_secret_' + secure_random(32)
+    vietnamese: Client secret phải duy nhất và bảo mật
+
+  - id: BR-PI-002
+    description: Unconfirmed intents expire in 24 hours
+    rule: |
+      IF status = 'requires_payment_method'
+         AND created_at + 24h < now()
+      THEN status = 'cancelled'
+    vietnamese: Intent chưa xác nhận hết hạn sau 24 giờ
+
+  - id: BR-PI-003
+    description: Amount cannot be modified after confirmation
+    rule: |
+      IF status NOT IN ['requires_payment_method', 'requires_confirmation']
+      THEN amount = IMMUTABLE
+    vietnamese: Số tiền không thể thay đổi sau khi xác nhận
+
+  - id: BR-PI-004
+    description: Payment method must match allowed types
+    rule: payment_method.type IN payment_method_types
+    vietnamese: Phương thức phải nằm trong danh sách cho phép
+
+  - id: BR-PI-005
+    description: Setup future usage requires customer
+    rule: |
+      IF setup_future_usage IS NOT NULL
+      THEN customer_id IS NOT NULL
+    vietnamese: Lưu để dùng sau cần có customer
+
+api_endpoints:
+  - method: POST
+    path: /v1/payment-intents
+    description: Create a new payment intent
+
+  - method: GET
+    path: /v1/payment-intents/{id}
+    description: Retrieve payment intent
+
+  - method: POST
+    path: /v1/payment-intents/{id}/confirm
+    description: Confirm the payment intent
+
+  - method: POST
+    path: /v1/payment-intents/{id}/capture
+    description: Capture the payment
+
+  - method: POST
+    path: /v1/payment-intents/{id}/cancel
+    description: Cancel the payment intent
+
+  - method: PATCH
+    path: /v1/payment-intents/{id}
+    description: Update payment intent
+
+security_considerations:
+  - Client secret should only be exposed to frontend
+  - Server-side should use secret API key
+  - Rate limit intent creation per merchant
+  - Monitor for abandoned intents (fraud indicator)
+  - Log all state transitions

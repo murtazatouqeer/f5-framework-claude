@@ -1,0 +1,373 @@
+name: ba-workflow
+display_name: Business Analysis Workflow
+version: 1.2.0
+description: |
+  Real-world business analysis process following BABOK standards.
+  Iterative, with checkpoints and stakeholder confirmation.
+  Integrated with F5 Document Pipeline for version-controlled requirements.
+
+# Document Pipeline Integration
+document_pipeline:
+  enabled: true
+  storage:
+    versions_dir: ".f5/versions"
+    docs_dir: ".f5/docs"
+  auto_import:
+    enabled: true
+    patterns:
+      - "*.xlsx"
+      - "requirements*.xlsx"
+      - "feedback*.xlsx"
+  version_strategy:
+    phase_changes: minor
+    feedback_updates: patch
+    major_restructure: major
+
+phases:
+  - id: phase-1
+    name: enterprise-analysis
+    display_name: Enterprise Analysis
+    description: Understand business context and identify problems
+    gate: gate-1
+    documents:
+      input:
+        - type: excel
+          patterns:
+            - "initial-requirements.xlsx"
+            - "business-context.xlsx"
+          command: "f5 doc import"
+          version_type: minor
+      output:
+        - type: markdown
+          path: "requirements/v{version}/"
+          files:
+            - brs.md
+            - summary.md
+    outputs:
+      - stakeholder-map
+      - as-is-process
+      - problem-statement
+      - business-case
+    next: phase-2
+
+  - id: phase-2
+    name: planning
+    display_name: Requirement Planning
+    description: Plan requirements gathering activities
+    gate: gate-2
+    documents:
+      input:
+        - type: version
+          command: "f5 doc show latest"
+          use_for: planning_baseline
+      output:
+        - type: markdown
+          path: "planning/"
+          files:
+            - interview-schedule.md
+            - communication-plan.md
+    outputs:
+      - project-approach
+      - interview-schedule
+      - communication-plan
+    next: phase-3
+
+  - id: phase-3
+    name: elicitation
+    display_name: Requirements Elicitation
+    description: Gather requirements from stakeholders
+    gate: gate-3
+    documents:
+      input:
+        - type: excel
+          patterns:
+            - "interview-notes/*.xlsx"
+            - "workshop-results/*.xlsx"
+            - "feedback*.xlsx"
+          command: "f5 doc import --type patch"
+          auto_import: true
+      output:
+        - type: changelog
+          command: "f5 doc diff"
+          generate_on: import
+    techniques:
+      - interviews
+      - workshops
+      - observation
+      - document-analysis
+      - surveys
+      - prototyping
+    outputs:
+      - interview-notes
+      - workshop-outcomes
+      - raw-requirements
+    next: phase-4
+
+  - id: phase-4
+    name: documentation
+    display_name: Analysis & Documentation
+    description: Analyze and document requirements
+    gate: gate-4
+    documents:
+      input:
+        - type: version
+          command: "f5 doc show latest"
+          required: true
+      output:
+        - type: export
+          command: "f5 doc export"
+          formats:
+            - brs
+            - srs
+            - traceability
+            - changelog
+      merge:
+        enabled: true
+        strategy: prefer_newer
+        conflict_resolution: manual
+    outputs:
+      - brd-document
+      - srs-document
+      - traceability-matrix
+    next: phase-5
+
+  - id: phase-5
+    name: validation
+    display_name: Validation & Sign-off
+    description: Confirm with stakeholders and establish baseline
+    gate: gate-5
+    documents:
+      input:
+        - type: version
+          command: "f5 doc list"
+          show_history: true
+      output:
+        - type: baseline
+          command: "f5 doc export --baseline"
+          version_type: major
+      validation:
+        - compare_versions: true
+        - require_signoff: true
+        - freeze_version: true
+    rounds:
+      - internal-review
+      - stakeholder-review
+      - final-signoff
+    outputs:
+      - signed-srs
+      - baseline-version
+
+iteration:
+  allowed: true
+  description: |
+    Can return to any phase when:
+    - Gaps are discovered
+    - Requirements change
+    - Conflicts need resolution
+    - Stakeholder feedback received
+  on_iterate:
+    - command: "f5 doc import --type patch"
+      when: excel_updated
+    - command: "f5 doc diff"
+      when: always
+    - command: "f5 doc conflicts"
+      when: merge_required
+
+# Document Pipeline Commands Reference
+commands:
+  import:
+    description: Import Excel requirements and create new version
+    usage: "f5 doc import <file.xlsx> [--type major|minor|patch]"
+    triggers:
+      - new_excel_file
+      - stakeholder_feedback
+      - interview_complete
+
+  diff:
+    description: Compare requirement versions
+    usage: "f5 doc diff <v1> <v2>"
+    triggers:
+      - before_gate_check
+      - after_import
+      - stakeholder_review
+
+  export:
+    description: Export requirements to Markdown
+    usage: "f5 doc export <version> [--output dir]"
+    triggers:
+      - documentation_phase
+      - signoff_phase
+      - baseline_creation
+
+  merge:
+    description: Merge multiple requirement sources
+    usage: "f5 doc merge <v1> <v2> [--strategy prefer_newer|manual]"
+    triggers:
+      - multiple_stakeholder_input
+      - parallel_elicitation
+
+  conflicts:
+    description: Show and resolve requirement conflicts
+    usage: "f5 doc conflicts"
+    triggers:
+      - after_merge
+      - conflicting_feedback
+
+  rollback:
+    description: Rollback to previous requirement version
+    usage: "f5 doc rollback <version>"
+    triggers:
+      - rejected_requirements
+      - scope_change
+
+# Integration Hooks
+hooks:
+  on_interview_complete:
+    - check_for_excel: true
+    - auto_import: "f5 doc import {file} --type patch"
+    - generate_diff: "f5 doc diff"
+
+  on_gate_check:
+    - verify_version: "f5 doc show latest"
+    - generate_report: "f5 doc export --format summary"
+
+  on_phase_complete:
+    - create_checkpoint: "f5 doc export --checkpoint"
+    - log_version: true
+
+  on_iteration:
+    - preserve_history: true
+    - create_branch: false
+    - merge_on_return: true
+
+# ============================================================================
+# Strict Implementation Protocol (SIP) Integration
+# ============================================================================
+strict_implementation:
+  enabled: true
+  description: |
+    Enforces exact match between requirements and implementation.
+    Prevents scope creep and ensures traceability.
+
+  # When to activate strict mode
+  activation:
+    gate: gate-4  # After SRS is documented
+    trigger: "f5 strict start"
+    requirements_source: "srs-document"
+
+  # Pre-flight checklist configuration
+  preflight:
+    auto_generate: true
+    require_approval: true
+    include_sections:
+      - functional_requirements
+      - non_functional_requirements
+      - use_cases
+      - user_stories
+
+  # Implementation tracking
+  tracking:
+    traceability_required: true
+    comment_format: "REQ-{id}"
+    coverage_threshold: 95
+    status_updates:
+      - on_file_save
+      - on_commit
+      - on_test_pass
+
+  # Validation configuration
+  validation:
+    auto_validate: true
+    validate_on:
+      - gate_check
+      - phase_complete
+      - user_request
+    report_format: markdown
+    fail_on_coverage_below: 90
+
+  # Integration with gates
+  gates_integration:
+    gate-4:  # Documentation phase
+      action: "start_session"
+      command: "f5 strict start {srs_path}"
+    gate-5:  # Validation phase
+      action: "validate_coverage"
+      command: "f5 strict validate"
+      require_pass: true
+    deployment:  # Before deployment
+      action: "end_session"
+      command: "f5 strict end"
+      require_success: true
+
+# SIP Commands Reference
+sip_commands:
+  start:
+    description: Start strict implementation session
+    usage: "f5 strict start <requirements.md> [--code-dir src/]"
+    when: "After SRS approval (gate-4)"
+
+  checklist:
+    description: View implementation checklist
+    usage: "f5 strict checklist"
+    when: "During implementation planning"
+
+  approve:
+    description: Approve pre-flight checklist
+    usage: "f5 strict approve"
+    when: "After reviewing checklist"
+
+  mark:
+    description: Update requirement status
+    usage: "f5 strict mark <REQ-ID> <status> [location]"
+    statuses:
+      - done: "Requirement implemented with traceability"
+      - blocked: "Cannot proceed, needs clarification"
+      - in_progress: "Currently implementing"
+      - pending: "Not started"
+
+  validate:
+    description: Validate implementation coverage
+    usage: "f5 strict validate"
+    when: "Periodically and before gate checks"
+
+  report:
+    description: Generate compliance report
+    usage: "f5 strict report"
+    when: "For stakeholder review"
+
+  status:
+    description: Check session status
+    usage: "f5 strict status"
+    when: "Anytime during implementation"
+
+  end:
+    description: End session with final report
+    usage: "f5 strict end"
+    when: "After all requirements implemented"
+
+# SIP Workflow Integration
+sip_workflow:
+  phase_4_integration:
+    description: |
+      After SRS documentation is complete:
+      1. Run `f5 strict start docs/srs.md`
+      2. Review pre-flight checklist
+      3. Get stakeholder approval
+      4. Run `f5 strict approve`
+
+  implementation_flow:
+    description: |
+      During implementation:
+      1. Check `f5 strict checklist` for next requirement
+      2. Mark as in_progress: `f5 strict mark REQ-XXX in_progress`
+      3. Implement with traceability comment
+      4. Mark as done: `f5 strict mark REQ-XXX done "file:lines"`
+      5. Validate: `f5 strict validate`
+
+  phase_5_integration:
+    description: |
+      During validation:
+      1. Run `f5 strict validate` for coverage report
+      2. Generate stakeholder report: `f5 strict report`
+      3. Address any gaps or scope creep
+      4. End session: `f5 strict end`

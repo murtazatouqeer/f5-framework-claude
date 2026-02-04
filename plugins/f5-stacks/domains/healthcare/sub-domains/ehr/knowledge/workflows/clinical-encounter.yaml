@@ -1,0 +1,569 @@
+# =============================================================================
+# CLINICAL ENCOUNTER WORKFLOW - EHR Sub-domain
+# Quy trình Khám lâm sàng
+# =============================================================================
+
+name: ClinicalEncounterWorkflow
+display_name: Clinical Encounter Workflow / Quy trình Khám lâm sàng
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: clinical
+
+description: |
+  End-to-end workflow for clinical encounters from patient rooming through
+  documentation completion. Covers outpatient visits, inpatient rounds,
+  and emergency department encounters. Integrates order entry, documentation,
+  and care coordination activities.
+
+# =============================================================================
+# ENCOUNTER TYPES
+# =============================================================================
+encounter_types:
+  - id: outpatient_office
+    name: Outpatient Office Visit
+    description: Standard clinic appointment
+    typical_duration_minutes: 15_to_60
+    documentation: visit_note
+
+  - id: inpatient_round
+    name: Inpatient Rounding
+    description: Daily inpatient care
+    typical_duration_minutes: 15_to_30_per_patient
+    documentation: progress_note
+
+  - id: emergency_visit
+    name: Emergency Department Visit
+    description: ED evaluation and treatment
+    typical_duration_minutes: varies
+    documentation: ed_note
+
+  - id: telehealth
+    name: Telehealth Visit
+    description: Virtual care encounter
+    typical_duration_minutes: 15_to_30
+    documentation: telehealth_note
+
+  - id: procedure
+    name: Procedure Visit
+    description: Scheduled procedure or treatment
+    typical_duration_minutes: varies
+    documentation: procedure_note
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: scheduled
+    name: Scheduled
+    description: Appointment on schedule, patient not yet arrived
+    allowed_transitions: [checked_in, cancelled, no_show]
+
+  - id: checked_in
+    name: Checked In
+    description: Patient has completed registration
+    entry_actions:
+      - update_arrival_status
+      - notify_clinical_staff
+      - add_to_clinical_worklist
+    allowed_transitions: [roomed, waiting]
+
+  - id: waiting
+    name: In Waiting Room
+    description: Patient waiting to be called
+    entry_actions:
+      - start_wait_timer
+      - display_on_tracker
+    allowed_transitions: [roomed]
+    metrics:
+      wait_time_target: "< 15 minutes"
+
+  - id: roomed
+    name: Roomed
+    description: Patient in exam room, ready for provider
+    entry_actions:
+      - stop_wait_timer
+      - start_room_timer
+      - notify_provider
+    allowed_transitions: [in_progress]
+
+  - id: in_progress
+    name: In Progress
+    description: Provider actively seeing patient
+    entry_actions:
+      - start_encounter_timer
+      - open_documentation
+    allowed_transitions: [documentation, orders_pending]
+
+  - id: orders_pending
+    name: Orders Pending
+    description: Waiting for orders to be completed
+    entry_actions:
+      - track_pending_orders
+    allowed_transitions: [documentation, in_progress]
+
+  - id: documentation
+    name: Documentation
+    description: Provider completing documentation
+    entry_actions:
+      - validate_required_elements
+      - calculate_mdm_complexity
+    allowed_transitions: [ready_for_checkout, provider_pending]
+
+  - id: provider_pending
+    name: Provider Pending
+    description: Additional provider action needed
+    allowed_transitions: [documentation, in_progress]
+
+  - id: ready_for_checkout
+    name: Ready for Checkout
+    description: Visit complete, patient ready to leave
+    entry_actions:
+      - generate_avs
+      - schedule_follow_up
+    allowed_transitions: [completed]
+
+  - id: completed
+    name: Completed
+    description: Encounter fully completed
+    entry_actions:
+      - finalize_documentation
+      - close_encounter
+      - trigger_billing
+    allowed_transitions: []
+
+  - id: cancelled
+    name: Cancelled
+    description: Appointment cancelled
+    allowed_transitions: []
+
+  - id: no_show
+    name: No Show
+    description: Patient did not arrive
+    allowed_transitions: []
+
+# =============================================================================
+# WORKFLOW STEPS - OUTPATIENT
+# =============================================================================
+outpatient_steps:
+  # Pre-Visit
+  - id: PRE-001
+    name: Pre-Visit Preparation
+    description: Review patient information before visit
+    order: 1
+    timing: before_visit
+    actors: [provider, ma, nurse]
+    actions:
+      - action: review_chart
+        description: Review recent notes, results, problems
+      - action: review_care_gaps
+        description: Identify health maintenance needs
+      - action: prepare_orders
+        description: Pre-order anticipated tests
+      - action: reconcile_medications
+        description: Update medication list
+
+  # Intake
+  - id: INTAKE-001
+    name: Nursing Intake
+    description: Initial nursing assessment and vitals
+    order: 2
+    timing: at_rooming
+    actors: [ma, lpn, rn]
+    actions:
+      - action: obtain_vitals
+        description: Record vital signs
+        elements:
+          - blood_pressure
+          - heart_rate
+          - temperature
+          - respiratory_rate
+          - oxygen_saturation
+          - height_weight
+          - pain_score
+      - action: verify_medications
+        description: Confirm current medications
+      - action: verify_allergies
+        description: Confirm allergies
+      - action: chief_complaint
+        description: Document reason for visit
+      - action: screening_questionnaires
+        description: Administer applicable screenings
+        examples:
+          - phq2_phq9_depression
+          - gad7_anxiety
+          - audit_alcohol
+          - fall_risk
+
+  # Provider Evaluation
+  - id: EVAL-001
+    name: Provider Evaluation
+    description: History, physical exam, and assessment
+    order: 3
+    timing: during_visit
+    actors: [physician, np, pa]
+    actions:
+      - action: history
+        description: Obtain history of present illness
+        documentation:
+          - chief_complaint
+          - hpi_elements
+          - ros_review
+          - pmh_review
+          - social_history_update
+          - family_history_update
+      - action: physical_exam
+        description: Perform physical examination
+        documentation:
+          - exam_systems
+          - abnormal_findings
+          - pertinent_negatives
+      - action: review_data
+        description: Review results and imaging
+      - action: assessment
+        description: Formulate diagnoses
+        documentation:
+          - problem_list_updates
+          - diagnosis_codes
+      - action: plan
+        description: Develop treatment plan
+        documentation:
+          - treatment_plan
+          - patient_education
+          - follow_up_instructions
+
+  # Order Entry
+  - id: ORDERS-001
+    name: Order Entry
+    description: Place orders for medications, tests, referrals
+    order: 4
+    timing: during_or_after_evaluation
+    actors: [provider, designated_staff]
+    actions:
+      - action: medication_orders
+        description: Prescribe or refill medications
+        includes:
+          - new_prescriptions
+          - refill_requests
+          - dose_adjustments
+          - discontinuations
+      - action: lab_orders
+        description: Order laboratory tests
+        includes:
+          - stat_labs
+          - routine_labs
+          - future_labs
+      - action: imaging_orders
+        description: Order diagnostic imaging
+      - action: referral_orders
+        description: Refer to specialists
+      - action: procedure_orders
+        description: Schedule procedures
+
+  # Patient Education
+  - id: EDUCATE-001
+    name: Patient Education
+    description: Educate patient on conditions and treatment
+    order: 5
+    timing: during_or_after_visit
+    actors: [provider, nurse, health_educator]
+    actions:
+      - action: explain_diagnosis
+        description: Explain condition to patient
+      - action: review_treatment
+        description: Explain treatment plan
+      - action: provide_materials
+        description: Give educational handouts
+      - action: answer_questions
+        description: Address patient questions
+      - action: confirm_understanding
+        description: Use teach-back method
+
+  # Checkout
+  - id: CHECKOUT-001
+    name: Visit Checkout
+    description: Complete visit and schedule follow-up
+    order: 6
+    timing: end_of_visit
+    actors: [checkout_staff, ma]
+    actions:
+      - action: after_visit_summary
+        description: Generate and provide AVS
+        includes:
+          - diagnoses_discussed
+          - medications_prescribed
+          - test_orders
+          - instructions
+          - follow_up_appointments
+      - action: schedule_follow_up
+        description: Book next appointment
+      - action: schedule_tests
+        description: Schedule ordered tests
+      - action: collect_copay
+        description: Collect outstanding payments
+
+  # Post-Visit
+  - id: POST-001
+    name: Post-Visit Activities
+    description: Complete documentation and care coordination
+    order: 7
+    timing: after_visit
+    actors: [provider, staff]
+    actions:
+      - action: complete_documentation
+        description: Finalize visit note
+        deadline: 72_hours
+      - action: sign_orders
+        description: Sign pending orders
+      - action: result_follow_up
+        description: Review and communicate results
+      - action: care_coordination
+        description: Coordinate with care team
+
+# =============================================================================
+# WORKFLOW STEPS - INPATIENT
+# =============================================================================
+inpatient_steps:
+  # Morning Rounds
+  - id: ROUND-001
+    name: Morning Rounds
+    description: Daily patient evaluation
+    timing: morning
+    actors: [attending, resident, intern, student, nurse, pharmacist]
+    actions:
+      - action: overnight_review
+        description: Review overnight events
+        elements:
+          - vital_sign_trends
+          - i_and_o
+          - nurse_notes
+          - overnight_events
+      - action: patient_interview
+        description: Speak with patient
+      - action: physical_exam
+        description: Targeted examination
+      - action: plan_discussion
+        description: Discuss plan with team
+      - action: order_updates
+        description: Update orders as needed
+      - action: progress_note
+        description: Document daily progress
+        deadline: end_of_day
+
+  # Discharge Planning
+  - id: DISCH-001
+    name: Discharge Planning
+    description: Prepare for discharge
+    timing: throughout_stay
+    actors: [provider, nurse, case_manager, social_worker]
+    actions:
+      - action: identify_discharge_needs
+        description: Assess post-discharge needs
+      - action: coordinate_services
+        description: Arrange home health, DME
+      - action: medication_reconciliation
+        description: Prepare discharge medications
+      - action: education
+        description: Teach patient about discharge care
+      - action: follow_up_appointments
+        description: Schedule follow-up care
+      - action: discharge_summary
+        description: Complete discharge documentation
+        deadline: 48_hours
+
+# =============================================================================
+# CLINICAL DECISION SUPPORT
+# =============================================================================
+clinical_decision_support:
+  - id: CDS-001
+    name: Drug-Drug Interaction Alert
+    trigger: medication_order
+    description: Alert for drug interactions
+    action: display_alert_require_acknowledgment
+
+  - id: CDS-002
+    name: Drug-Allergy Alert
+    trigger: medication_order
+    description: Alert for allergy match
+    action: hard_stop_or_override_with_reason
+
+  - id: CDS-003
+    name: Duplicate Order Alert
+    trigger: any_order
+    description: Alert for duplicate orders
+    action: display_alert_allow_override
+
+  - id: CDS-004
+    name: Care Gap Alert
+    trigger: encounter_open
+    description: Alert for overdue preventive care
+    action: display_reminder
+
+  - id: CDS-005
+    name: Critical Result Alert
+    trigger: result_filed
+    condition: critical_value
+    description: Alert for critical lab or imaging results
+    action: interruptive_alert_require_acknowledgment
+
+  - id: CDS-006
+    name: Sepsis Screening
+    trigger: vital_signs_entry
+    condition: sepsis_criteria_met
+    description: Alert for possible sepsis
+    action: best_practice_alert_sepsis_bundle
+
+  - id: CDS-007
+    name: Venous Thromboembolism Prophylaxis
+    trigger: admission
+    description: Prompt for VTE prophylaxis
+    action: order_set_recommendation
+
+# =============================================================================
+# DOCUMENTATION REQUIREMENTS
+# =============================================================================
+documentation_requirements:
+  visit_note:
+    required_elements:
+      - date_of_service
+      - chief_complaint
+      - hpi
+      - exam
+      - assessment
+      - plan
+      - author_signature
+    optional_elements:
+      - ros
+      - pfsh
+      - data_reviewed
+      - time_spent
+    signing_requirements:
+      - author_signature: required
+      - cosignature: if_trainee
+
+  progress_note:
+    required_elements:
+      - date_of_service
+      - subjective
+      - objective
+      - assessment
+      - plan
+      - author_signature
+    timing:
+      deadline: end_of_day
+      late_entry_threshold: 24_hours
+
+  procedure_note:
+    required_elements:
+      - procedure_name
+      - indication
+      - consent_reference
+      - technique
+      - findings
+      - complications
+      - specimens
+    timing:
+      deadline: immediately_post_procedure
+      full_note: 24_hours
+
+# =============================================================================
+# HANDOFF COMMUNICATION
+# =============================================================================
+handoff_communication:
+  - id: HANDOFF-001
+    name: Shift Handoff
+    description: Nurse-to-nurse shift change
+    method: sbar
+    elements:
+      - situation: current_status
+      - background: relevant_history
+      - assessment: current_concerns
+      - recommendation: pending_tasks
+
+  - id: HANDOFF-002
+    name: Provider Signout
+    description: Provider-to-provider handoff
+    method: ipass
+    elements:
+      - illness_severity
+      - patient_summary
+      - action_list
+      - situation_awareness
+      - synthesis_by_receiver
+
+  - id: HANDOFF-003
+    name: Care Transition
+    description: Transition between care settings
+    documentation:
+      - transition_of_care_summary
+      - medication_reconciliation
+      - pending_results
+      - follow_up_needed
+
+# =============================================================================
+# METRICS AND QUALITY
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: Door to Provider Time
+    description: Time from check-in to provider
+    target: "< 20 minutes"
+    applies_to: outpatient
+
+  - id: MET-002
+    name: Cycle Time
+    description: Total time in clinic
+    target: "< 60 minutes for routine visits"
+    applies_to: outpatient
+
+  - id: MET-003
+    name: Note Completion Rate
+    description: Notes completed within 72 hours
+    target: "> 95%"
+    applies_to: all
+
+  - id: MET-004
+    name: Medication Reconciliation Rate
+    description: Med rec completed at transition
+    target: "100%"
+    applies_to: all
+
+  - id: MET-005
+    name: AVS Provided Rate
+    description: After visit summary given
+    target: "100%"
+    applies_to: outpatient
+
+# =============================================================================
+# ERROR PREVENTION
+# =============================================================================
+error_prevention:
+  - id: ERR-001
+    name: Patient Identification
+    description: Verify patient identity before care
+    method: two_identifiers
+    identifiers:
+      - full_name
+      - date_of_birth
+      - mrn
+    timing: before_each_intervention
+
+  - id: ERR-002
+    name: Time-Out Procedure
+    description: Verification before procedures
+    elements:
+      - correct_patient
+      - correct_procedure
+      - correct_site
+      - correct_position
+      - correct_implants
+    participants: entire_team
+
+  - id: ERR-003
+    name: Verbal Order Read-Back
+    description: Read back verbal orders
+    process:
+      - write_order
+      - read_back_to_provider
+      - receive_confirmation
+      - document_read_back

@@ -1,0 +1,814 @@
+name: ncr-workflow
+display_name: Non-Conformance Report Workflow
+display_name_vi: Quy trình Báo cáo không phù hợp
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: workflow
+
+description: |
+  Complete workflow for managing Non-Conformance Reports (NCRs) from
+  detection through investigation, disposition, and closure with
+  linkage to CAPA when required.
+
+description_vi: |
+  Quy trình hoàn chỉnh để quản lý Báo cáo không phù hợp (NCR) từ
+  phát hiện qua điều tra, xử lý và đóng với
+  liên kết đến CAPA khi cần thiết.
+
+workflow_metadata:
+  category: quality_management
+  complexity: high
+  estimated_duration: "1-45 days"
+  automation_level: semi-automated
+  compliance:
+    - ISO 9001:2015
+    - IATF 16949
+    - FDA 21 CFR Part 820
+    - AS9100D
+
+actors:
+  - id: originator
+    name: NCR Originator
+    name_vi: Người tạo NCR
+    responsibilities:
+      - Detect and document non-conformance
+      - Initiate containment actions
+      - Provide initial information
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Verify non-conformance
+      - Document defect details
+      - Execute containment
+      - Perform sorting if required
+
+  - id: quality_engineer
+    name: Quality Engineer
+    name_vi: Kỹ sư chất lượng
+    responsibilities:
+      - Investigate root cause
+      - Determine disposition
+      - Coordinate CAPA if needed
+      - Verify effectiveness
+
+  - id: quality_manager
+    name: Quality Manager
+    name_vi: Quản lý chất lượng
+    responsibilities:
+      - Approve critical dispositions
+      - Review escalated NCRs
+      - Authorize closure
+      - Monitor metrics
+
+  - id: production_supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Execute containment in production
+      - Manage rework activities
+      - Support investigation
+
+  - id: supplier_quality
+    name: Supplier Quality Engineer
+    name_vi: Kỹ sư chất lượng nhà cung cấp
+    responsibilities:
+      - Manage supplier NCRs
+      - Coordinate supplier response
+      - Track corrective actions
+
+triggers:
+  - id: inspection_failure
+    name: Inspection Failure
+    type: automatic
+    source: inspection_system
+    condition: "inspection.result = 'fail'"
+
+  - id: manual_detection
+    name: Manual Detection
+    type: manual
+    source: any_employee
+
+  - id: customer_complaint
+    name: Customer Complaint
+    type: event
+    source: customer_service
+    condition: "complaint.type = 'quality'"
+
+  - id: audit_finding
+    name: Audit Finding
+    type: event
+    source: audit_system
+    condition: "finding.severity IN ('major', 'critical')"
+
+  - id: supplier_notification
+    name: Supplier Quality Issue
+    type: event
+    source: supplier_portal
+
+states:
+  - id: draft
+    name: Draft
+    name_vi: Bản nháp
+    type: initial
+    description: NCR being created
+
+  - id: submitted
+    name: Submitted
+    name_vi: Đã gửi
+    type: intermediate
+    description: NCR submitted for review
+
+  - id: under_investigation
+    name: Under Investigation
+    name_vi: Đang điều tra
+    type: intermediate
+    description: Root cause investigation in progress
+
+  - id: pending_disposition
+    name: Pending Disposition
+    name_vi: Chờ xử lý
+    type: intermediate
+    description: Investigation complete, disposition needed
+
+  - id: disposition_in_progress
+    name: Disposition In Progress
+    name_vi: Đang thực hiện xử lý
+    type: intermediate
+    description: Disposition being executed
+
+  - id: pending_verification
+    name: Pending Verification
+    name_vi: Chờ xác minh
+    type: intermediate
+    description: Disposition complete, verification needed
+
+  - id: pending_closure
+    name: Pending Closure
+    name_vi: Chờ đóng
+    type: intermediate
+    description: Verified, awaiting closure approval
+
+  - id: closed
+    name: Closed
+    name_vi: Đã đóng
+    type: final
+    description: NCR closed
+
+  - id: cancelled
+    name: Cancelled
+    name_vi: Đã hủy
+    type: final
+    description: NCR cancelled (invalid/duplicate)
+
+steps:
+  # NCR Creation Phase
+  - id: create_ncr
+    name: Create NCR
+    name_vi: Tạo NCR
+    sequence: 1
+    actor: originator
+    description: Create and document non-conformance
+    from_state: null
+    to_state: draft
+    actions:
+      - Identify non-conforming material
+      - Document what, where, when, how much
+      - Take photos if applicable
+      - Apply quarantine label
+      - Enter initial NCR data
+    inputs:
+      - name: non_conforming_material
+        type: material
+        required: true
+    outputs:
+      - name: ncr_record
+        type: record
+      - name: quarantine_label
+        type: label
+      - name: photos
+        type: attachment
+    required_fields:
+      - ncr_type
+      - description
+      - detected_at
+      - detected_by
+      - detection_point
+      - affected_quantity
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: classify_severity
+    name: Classify Severity
+    name_vi: Phân loại mức độ nghiêm trọng
+    sequence: 2
+    actor: quality_inspector
+    description: Determine severity classification
+    from_state: draft
+    to_state: draft
+    actions:
+      - Evaluate defect impact
+      - Determine severity level
+      - Set response timeline
+      - Identify notification requirements
+    outputs:
+      - name: severity_classification
+        type: classification
+        values: [critical, major, minor]
+    severity_criteria:
+      critical:
+        conditions:
+          - Safety hazard to user
+          - Regulatory non-compliance
+          - Customer shipment stop
+          - Legal/liability exposure
+        response_time: 4 hours
+        notifications: [quality_manager, plant_manager, director]
+      major:
+        conditions:
+          - Significant quality impact
+          - Customer specification violation
+          - Repeated occurrence
+          - High cost impact
+        response_time: 24 hours
+        notifications: [quality_manager]
+      minor:
+        conditions:
+          - Cosmetic issues
+          - Documentation gaps
+          - First occurrence, limited impact
+        response_time: 72 hours
+        notifications: []
+
+  - id: initiate_containment
+    name: Initiate Containment
+    name_vi: Khởi tạo ngăn chặn
+    sequence: 3
+    actor: quality_inspector
+    description: Execute immediate containment actions
+    from_state: draft
+    to_state: submitted
+    actions:
+      - Quarantine all suspect material
+      - Stop production if in-process
+      - Identify lot boundaries
+      - Check inventory for suspect
+      - Check products in transit
+      - Notify customers if shipped
+    outputs:
+      - name: containment_record
+        type: record
+      - name: containment_verification
+        type: checklist
+    containment_checklist:
+      - item: Production area checked
+        required: true
+      - item: Warehouse inventory checked
+        required: true
+      - item: In-transit products identified
+        required: true
+      - item: Customer site products identified
+        required: "if_shipped"
+      - item: All suspect material quarantined
+        required: true
+    sla:
+      critical: 4 hours
+      major: 24 hours
+      minor: 48 hours
+
+  - id: verify_containment
+    name: Verify Containment
+    name_vi: Xác minh ngăn chặn
+    sequence: 4
+    actor: quality_engineer
+    description: Verify containment is complete and effective
+    from_state: submitted
+    to_state: submitted
+    actions:
+      - Verify all locations checked
+      - Confirm quantities quarantined
+      - Validate containment effectiveness
+      - Document verification results
+    outputs:
+      - name: containment_verification_record
+        type: record
+    approval_required:
+      approver: quality_engineer
+      critical_ncr: quality_manager
+
+  # Investigation Phase
+  - id: assign_investigation
+    name: Assign Investigation
+    name_vi: Giao điều tra
+    sequence: 5
+    actor: quality_engineer
+    description: Assign NCR for root cause investigation
+    from_state: submitted
+    to_state: under_investigation
+    actions:
+      - Assign investigator
+      - Set investigation deadline
+      - Determine investigation scope
+      - Identify team members if needed
+    outputs:
+      - name: investigation_assignment
+        type: record
+    timelines:
+      critical: 48 hours
+      major: 5 business days
+      minor: 10 business days
+
+  - id: investigate_scope
+    name: Investigate Scope
+    name_vi: Điều tra phạm vi
+    sequence: 6
+    actor: quality_engineer
+    description: Determine full scope of non-conformance
+    from_state: under_investigation
+    to_state: under_investigation
+    actions:
+      - Review all related lots
+      - Check same supplier lots
+      - Check same material lots
+      - Review production history
+      - Quantify total affected
+    outputs:
+      - name: scope_investigation
+        type: record
+      - name: affected_lots_list
+        type: record
+    investigation_areas:
+      - Same production run
+      - Same raw material lot
+      - Same supplier deliveries
+      - Same equipment/tooling
+      - Same operator/shift
+      - Products at customer sites
+      - Products in transit
+      - Warehouse inventory
+
+  - id: perform_root_cause_analysis
+    name: Perform Root Cause Analysis
+    name_vi: Thực hiện phân tích nguyên nhân gốc
+    sequence: 7
+    actor: quality_engineer
+    description: Analyze and determine root cause
+    from_state: under_investigation
+    to_state: pending_disposition
+    condition: "severity IN ('critical', 'major')"
+    actions:
+      - Select analysis methodology
+      - Gather evidence and data
+      - Conduct analysis
+      - Identify root cause
+      - Document findings
+    inputs:
+      - name: defect_data
+        type: record
+        required: true
+      - name: process_data
+        type: record
+        required: false
+    outputs:
+      - name: root_cause_analysis
+        type: record
+      - name: evidence_documentation
+        type: attachment
+    methodologies:
+      - name: five_why
+        use_for: Simple cause chains
+        minimum_depth: 5
+      - name: fishbone
+        use_for: Multiple potential causes
+        categories: [man, machine, method, material, measurement, environment]
+      - name: eight_d
+        use_for: Customer complaints
+        required_for: customer_complaints
+      - name: fault_tree
+        use_for: Safety-critical issues
+    validation:
+      - Root cause explains all instances
+      - Removing cause would prevent recurrence
+      - Evidence supports conclusion
+    sla:
+      critical: 48 hours
+      major: 5 days
+
+  - id: skip_rca_minor
+    name: Skip RCA for Minor
+    name_vi: Bỏ qua RCA cho nhỏ
+    sequence: 7
+    actor: quality_inspector
+    description: Document issue without formal RCA for minor NCRs
+    from_state: under_investigation
+    to_state: pending_disposition
+    condition: "severity = 'minor' AND not_recurring"
+    actions:
+      - Document likely cause
+      - Verify not recurring issue
+      - Proceed to disposition
+    outputs:
+      - name: simplified_analysis
+        type: record
+
+  # Disposition Phase
+  - id: determine_disposition
+    name: Determine Disposition
+    name_vi: Xác định xử lý
+    sequence: 8
+    actor: quality_engineer
+    description: Decide appropriate disposition for non-conforming material
+    from_state: pending_disposition
+    to_state: pending_disposition
+    actions:
+      - Review investigation results
+      - Evaluate disposition options
+      - Calculate cost impact
+      - Consider customer requirements
+      - Select and justify disposition
+    outputs:
+      - name: disposition_decision
+        type: decision
+        values: [use_as_is, rework, repair, scrap, return_to_vendor, sort_and_use, downgrade]
+      - name: cost_analysis
+        type: record
+    disposition_options:
+      use_as_is:
+        description: Accept as-is with documented deviation
+        requires: [engineering_approval]
+        customer_impact: requires_customer_approval_if_spec_affected
+      rework:
+        description: Correct to meet original specification
+        requires: [rework_procedure]
+      repair:
+        description: Correct to meet reduced specification
+        requires: [engineering_approval, repair_procedure]
+      scrap:
+        description: Material cannot be used
+        requires: [scrap_authorization]
+      return_to_vendor:
+        description: Return supplier-caused non-conformance
+        requires: [supplier_notification, rtv_documentation]
+      sort_and_use:
+        description: 100% inspect to separate conforming
+        requires: [sort_procedure]
+      downgrade:
+        description: Use for less critical application
+        requires: [engineering_approval]
+
+  - id: approve_disposition
+    name: Approve Disposition
+    name_vi: Phê duyệt xử lý
+    sequence: 9
+    actor: quality_manager
+    description: Approve disposition decision
+    from_state: pending_disposition
+    to_state: disposition_in_progress
+    actions:
+      - Review disposition recommendation
+      - Validate cost analysis
+      - Approve or reject
+      - Document approval
+    approval_matrix:
+      scrap:
+        minor: quality_engineer
+        major: quality_manager
+        critical: director_quality
+      use_as_is:
+        minor: quality_engineer
+        major: quality_manager + engineering
+        critical: quality_manager + engineering + customer
+      rework:
+        all: quality_engineer
+      return_to_vendor:
+        all: quality_engineer
+    outputs:
+      - name: disposition_approval
+        type: approval
+
+  - id: execute_disposition
+    name: Execute Disposition
+    name_vi: Thực hiện xử lý
+    sequence: 10
+    actor: production_supervisor
+    description: Execute approved disposition
+    from_state: disposition_in_progress
+    to_state: pending_verification
+    actions:
+      - Execute per disposition type
+      - Track material through process
+      - Document completion
+      - Update inventory status
+    outputs:
+      - name: disposition_execution_record
+        type: record
+    execution_by_type:
+      scrap:
+        actions: [remove_from_inventory, document_scrap, update_cost]
+      rework:
+        actions: [create_rework_order, execute_rework, reinspect]
+      return_to_vendor:
+        actions: [create_rtv, ship_to_vendor, issue_debit_memo]
+      sort_and_use:
+        actions: [100_percent_inspect, segregate_conforming, disposition_nonconforming]
+    sla:
+      critical: 24 hours
+      major: 5 days
+      minor: 10 days
+
+  - id: reinspect_after_rework
+    name: Reinspect After Rework
+    name_vi: Kiểm tra lại sau làm lại
+    sequence: 11
+    actor: quality_inspector
+    description: Inspect reworked product
+    from_state: disposition_in_progress
+    to_state: pending_verification
+    condition: "disposition IN ('rework', 'repair')"
+    actions:
+      - Perform inspection per original spec
+      - Record all measurements
+      - Determine pass/fail
+      - Document reinspection results
+    outputs:
+      - name: reinspection_record
+        type: record
+    decision_points:
+      - condition: "reinspection.result = 'pass'"
+        action: "Release material"
+      - condition: "reinspection.result = 'fail'"
+        action: "Return to disposition decision"
+        next_step: determine_disposition
+
+  # Verification and Closure Phase
+  - id: verify_disposition_complete
+    name: Verify Disposition Complete
+    name_vi: Xác minh xử lý hoàn thành
+    sequence: 12
+    actor: quality_engineer
+    description: Verify all disposition activities completed
+    from_state: pending_verification
+    to_state: pending_closure
+    actions:
+      - Verify all material dispositioned
+      - Confirm quantities reconcile
+      - Check all documentation complete
+      - Verify costs recorded
+    outputs:
+      - name: disposition_verification
+        type: record
+    validations:
+      - All material accounted for
+      - Quantities match records
+      - Documentation complete
+      - Costs captured
+
+  - id: evaluate_capa_required
+    name: Evaluate CAPA Required
+    name_vi: Đánh giá yêu cầu CAPA
+    sequence: 13
+    actor: quality_engineer
+    description: Determine if CAPA is required
+    from_state: pending_closure
+    to_state: pending_closure
+    actions:
+      - Evaluate CAPA criteria
+      - Check for recurring issues
+      - Assess systemic nature
+      - Create CAPA if required
+    outputs:
+      - name: capa_evaluation
+        type: record
+      - name: capa_record
+        type: record
+        conditional: true
+    capa_triggers:
+      mandatory:
+        - severity = 'critical'
+        - customer_complaint_related
+        - audit_finding_related
+        - recurring_same_root_cause > 1
+      recommended:
+        - severity = 'major' AND systemic
+        - high_cost_impact
+        - potential_recurrence
+    next_workflow:
+      condition: "capa_required = true"
+      workflow: capa-workflow
+
+  - id: update_supplier_record
+    name: Update Supplier Record
+    name_vi: Cập nhật hồ sơ nhà cung cấp
+    sequence: 14
+    actor: supplier_quality
+    description: Update supplier quality records for supplier NCRs
+    from_state: pending_closure
+    to_state: pending_closure
+    condition: "ncr_type = 'supplier'"
+    actions:
+      - Update supplier quality history
+      - Record defect and disposition
+      - Calculate cost impact
+      - Update supplier scorecard
+      - Trigger inspection level review
+    outputs:
+      - name: supplier_quality_update
+        type: record
+      - name: cost_recovery_record
+        type: record
+    integrations:
+      - system: supplier_portal
+        action: Send NCR notification and 8D request
+
+  - id: close_ncr
+    name: Close NCR
+    name_vi: Đóng NCR
+    sequence: 15
+    actor: quality_manager
+    description: Final review and closure of NCR
+    from_state: pending_closure
+    to_state: closed
+    actions:
+      - Review all documentation
+      - Verify all actions complete
+      - Approve closure
+      - Archive NCR record
+    inputs:
+      - name: ncr_record_complete
+        type: record
+        required: true
+    outputs:
+      - name: ncr_closure
+        type: approval
+    validations:
+      - Disposition completed
+      - Material accounted for
+      - Root cause documented (if required)
+      - CAPA linked (if required)
+      - Costs recorded
+      - Documentation complete
+    approval_required:
+      minor: quality_engineer
+      major: quality_manager
+      critical: director_quality
+    sla:
+      critical: 30 days
+      major: 45 days
+      minor: 60 days
+
+  - id: cancel_ncr
+    name: Cancel NCR
+    name_vi: Hủy NCR
+    sequence: 16
+    actor: quality_engineer
+    description: Cancel NCR if determined invalid
+    from_state: any
+    to_state: cancelled
+    condition: "investigation determines NCR invalid"
+    actions:
+      - Document cancellation reason
+      - Release quarantined material
+      - Remove quarantine labels
+      - Update records
+    outputs:
+      - name: cancellation_record
+        type: record
+    valid_cancellation_reasons:
+      - Duplicate NCR
+      - Not actually non-conforming
+      - Measurement error confirmed
+      - Specification clarification
+    approval_required:
+      approver: quality_manager
+
+exceptions:
+  - id: severity_upgrade
+    name: Severity Upgrade
+    description: Additional impact discovered during investigation
+    handling:
+      - Reassess severity classification
+      - Expand containment if needed
+      - Restart notification process
+      - Reset timeline per new severity
+
+  - id: customer_notification_required
+    name: Customer Already Received Product
+    description: Non-conforming product shipped to customer
+    handling:
+      - Immediate customer notification
+      - Evaluate field action need
+      - Coordinate retrieval if needed
+      - Expedite investigation
+
+  - id: recurring_ncr
+    name: Recurring Issue Detected
+    description: Same root cause found multiple times
+    handling:
+      - Mandatory CAPA creation
+      - Escalate to management
+      - Review corrective action effectiveness
+      - Consider systemic changes
+
+escalation:
+  critical:
+    - day_0: quality_manager + plant_manager
+    - day_3: director_quality
+    - day_7: vp_operations
+  major:
+    - day_5: quality_manager
+    - day_10: director_quality
+  overdue:
+    - day_1: ncr_owner + quality_manager
+    - day_3: plant_manager
+
+notifications:
+  - trigger: ncr_created_critical
+    recipients: [quality_manager, plant_manager, director_quality]
+    message: "CRITICAL NCR created: {{ncr_number}}"
+    priority: urgent
+
+  - trigger: ncr_created_supplier
+    recipients: [supplier_quality, procurement]
+    message: "Supplier NCR: {{ncr_number}} for {{supplier_name}}"
+
+  - trigger: containment_overdue
+    recipients: [quality_manager, ncr_owner]
+    message: "Containment overdue for {{ncr_number}}"
+    priority: high
+
+  - trigger: ncr_closure_approaching
+    recipients: [ncr_owner]
+    message: "NCR {{ncr_number}} closure deadline in 3 days"
+
+integrations:
+  - system: erp
+    events:
+      - inventory_quarantine
+      - inventory_scrap
+      - inventory_release
+    data_exchange:
+      - inventory_transactions
+      - cost_data
+
+  - system: supplier_portal
+    events:
+      - ncr_notification
+      - 8d_request
+      - debit_memo
+    data_exchange:
+      - ncr_details
+      - corrective_action_request
+
+  - system: capa_system
+    events:
+      - capa_link_created
+    data_exchange:
+      - ncr_details
+      - root_cause
+
+  - system: document_management
+    events:
+      - ncr_created
+      - ncr_closed
+    data_exchange:
+      - ncr_documents
+      - evidence_files
+
+metrics:
+  - name: ncr_closure_time
+    description: Average days to close NCR
+    target:
+      critical: "< 30 days"
+      major: "< 45 days"
+      minor: "< 60 days"
+
+  - name: ncr_count_by_type
+    description: NCR count by type and severity
+    track_trend: true
+
+  - name: recurrence_rate
+    description: NCRs with same root cause
+    target: "< 5%"
+
+  - name: containment_effectiveness
+    description: No additional escapes after containment
+    target: "100%"
+
+  - name: cost_of_nonconformance
+    description: Total cost of NCRs
+    track_trend: true
+
+audit_trail:
+  enabled: true
+  events:
+    - ncr_creation
+    - severity_classification
+    - containment_actions
+    - investigation_findings
+    - disposition_decisions
+    - approvals
+    - closure
+  retention_years: 10

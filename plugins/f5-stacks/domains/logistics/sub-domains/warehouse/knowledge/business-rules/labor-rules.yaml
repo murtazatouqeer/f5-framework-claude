@@ -1,0 +1,291 @@
+name: LaborRules
+display_name: Labor Management Business Rules
+description: |
+  Business rules governing workforce management, task assignment,
+  performance standards, and labor compliance.
+
+domain: logistics
+subdomain: warehouse
+category: business-rules
+
+rules:
+  # Task Assignment
+  - id: BR-LAB-001
+    name: Skill-Based Assignment
+    description: |
+      Tasks assigned based on worker skills and certifications.
+      Complex tasks require appropriate training completion.
+    severity: high
+    entities: [WarehouseWorker, PickTask, PutawayTask, PackTask]
+    conditions:
+      - worker.skills includes required_skill
+      - worker.training_completed includes required_training
+    actions:
+      - match_task_to_qualified_workers
+      - reject_unqualified_assignment
+      - suggest_training_for_skill_gaps
+
+  - id: BR-LAB-002
+    name: Zone Authorization
+    description: |
+      Workers only assigned tasks in their authorized zones.
+      Cross-zone work requires supervisor approval.
+    severity: medium
+    entities: [WarehouseWorker, Zone, PickTask, PutawayTask]
+    conditions:
+      - task.zone IN worker.assigned_zones
+    actions:
+      - filter_tasks_by_zone_auth
+      - allow_cross_zone_with_approval
+
+  - id: BR-LAB-003
+    name: Workload Balancing
+    description: |
+      Tasks distributed evenly among available workers.
+      No worker significantly overloaded vs. others.
+    severity: low
+    entities: [WarehouseWorker, PickTask, PutawayTask, PackTask]
+    conditions:
+      - worker.task_count within standard_deviation_limit
+    actions:
+      - balance_assignment_across_workers
+      - consider_task_complexity_weighting
+
+  # Certification Requirements
+  - id: BR-LAB-004
+    name: Forklift Certification Required
+    description: |
+      Only certified operators can operate forklifts.
+      Certification must be current (not expired).
+    severity: critical
+    entities: [WarehouseWorker, PutawayTask, PickTask]
+    conditions:
+      - equipment == 'forklift'
+      - worker.certifications.forklift.status == 'active'
+      - worker.certifications.forklift.expiry_date > today
+    actions:
+      - prevent_forklift_task_assignment
+      - alert_expiring_certifications
+      - schedule_recertification_training
+    compliance: [OSHA]
+
+  - id: BR-LAB-005
+    name: Hazmat Handling Certification
+    description: |
+      Hazmat items only handled by certified workers.
+      Annual recertification required.
+    severity: critical
+    entities: [WarehouseWorker, Item, PutawayTask, PickTask]
+    conditions:
+      - item.hazmat == true
+      - worker.certifications.hazmat.status == 'active'
+    actions:
+      - restrict_hazmat_task_assignment
+      - require_annual_recertification
+    compliance: [OSHA, DOT]
+
+  - id: BR-LAB-006
+    name: Certification Expiry Warning
+    description: |
+      Alert workers and supervisors 30 days before certification expiry.
+      Block expired certification from task assignment.
+    severity: high
+    entities: [WarehouseWorker]
+    conditions:
+      - certification.expiry_date - today <= 30
+    actions:
+      - send_expiry_warning
+      - schedule_recertification
+      - block_if_expired
+
+  # Performance Standards
+  - id: BR-LAB-007
+    name: Pick Rate Standards
+    description: |
+      Pickers expected to meet minimum picks per hour.
+      Standards vary by pick type and zone.
+    severity: medium
+    entities: [WarehouseWorker, PickTask]
+    conditions:
+      - each_pick_rate >= 100 UPH
+      - case_pick_rate >= 60 UPH
+      - pallet_pick_rate >= 20 UPH
+    actions:
+      - track_pick_rate_by_worker
+      - coach_below_standard_performers
+      - recognize_high_performers
+
+  - id: BR-LAB-008
+    name: Pack Rate Standards
+    description: |
+      Packers expected to meet minimum packs per hour.
+      Adjusted for order complexity.
+    severity: medium
+    entities: [WarehouseWorker, PackTask]
+    conditions:
+      - single_item_pack_rate >= 80 UPH
+      - multi_item_pack_rate >= 40 UPH
+    actions:
+      - track_pack_rate_by_worker
+      - adjust_for_order_complexity
+
+  - id: BR-LAB-009
+    name: Accuracy Standards
+    description: |
+      Workers must maintain minimum accuracy rates.
+      Errors tracked and addressed through coaching.
+    severity: high
+    entities: [WarehouseWorker, PickTask, PackTask]
+    conditions:
+      - pick_accuracy >= 99.5%
+      - pack_accuracy >= 99.8%
+    actions:
+      - track_accuracy_by_worker
+      - investigate_error_patterns
+      - require_retraining_if_below_standard
+
+  # Time and Attendance
+  - id: BR-LAB-010
+    name: Clock In/Out Requirement
+    description: |
+      Workers must clock in before starting tasks.
+      No task assignment without active clock-in.
+    severity: high
+    entities: [WarehouseWorker]
+    conditions:
+      - worker.is_clocked_in == true
+    actions:
+      - prevent_task_assignment_if_not_clocked_in
+      - require_clock_in_before_work
+
+  - id: BR-LAB-011
+    name: Break Time Compliance
+    description: |
+      Workers must take required breaks per labor law.
+      System tracks break time and alerts non-compliance.
+    severity: critical
+    entities: [WarehouseWorker]
+    conditions:
+      - break_taken within required_timeframe
+      - break_duration >= minimum_required
+    actions:
+      - prompt_break_reminder
+      - log_break_compliance
+      - escalate_non_compliance
+    compliance: [DOL, State Labor Laws]
+
+  - id: BR-LAB-012
+    name: Overtime Management
+    description: |
+      Overtime requires pre-approval.
+      Track approaching overtime for cost management.
+    severity: medium
+    entities: [WarehouseWorker]
+    conditions:
+      - weekly_hours > 40 requires overtime_approval
+      - alert_at_38_hours
+    actions:
+      - require_overtime_approval
+      - send_approaching_overtime_alert
+      - log_overtime_hours
+
+  # Safety Rules
+  - id: BR-LAB-013
+    name: PPE Requirements
+    description: |
+      Appropriate PPE required for zone entry.
+      Cold storage requires thermal gear; hazmat requires protective equipment.
+    severity: critical
+    entities: [WarehouseWorker, Zone]
+    conditions:
+      - zone.ppe_required checked at entry
+    actions:
+      - display_ppe_requirements
+      - require_ppe_confirmation
+      - prevent_entry_without_ppe
+    compliance: [OSHA]
+
+  - id: BR-LAB-014
+    name: Maximum Lift Weight
+    description: |
+      Single-person lift limited to 50 lbs.
+      Team lift required for heavier items.
+    severity: high
+    entities: [WarehouseWorker, Item, PickTask, PutawayTask]
+    conditions:
+      - item.weight_kg <= 23 for single_person_lift
+    actions:
+      - flag_heavy_items
+      - require_team_lift_or_equipment
+      - provide_safety_reminder
+    compliance: [OSHA]
+
+  - id: BR-LAB-015
+    name: Fatigue Management
+    description: |
+      Monitor continuous work hours without break.
+      Prevent excessive consecutive shifts.
+    severity: high
+    entities: [WarehouseWorker]
+    conditions:
+      - continuous_work_hours <= 4 without_break
+      - consecutive_shifts <= 6 per_week
+    actions:
+      - enforce_break_requirements
+      - limit_consecutive_shifts
+      - monitor_fatigue_indicators
+
+  # Training
+  - id: BR-LAB-016
+    name: New Hire Training
+    description: |
+      New workers complete required training before solo work.
+      Training includes safety, systems, and role-specific skills.
+    severity: critical
+    entities: [WarehouseWorker]
+    conditions:
+      - new_hire_training_completed
+      - safety_training_completed
+      - system_training_completed
+    actions:
+      - require_training_before_task_assignment
+      - pair_with_mentor_initially
+      - validate_training_completion
+
+  - id: BR-LAB-017
+    name: Ongoing Training
+    description: |
+      Regular refresher training required.
+      Track training completion and schedule renewals.
+    severity: medium
+    entities: [WarehouseWorker]
+    conditions:
+      - annual_safety_training_completed
+      - equipment_recertification_current
+    actions:
+      - schedule_training_renewals
+      - track_completion_rates
+      - restrict_if_training_overdue
+
+validation_triggers:
+  - on_task_assignment
+  - on_clock_in
+  - on_certification_change
+  - daily_compliance_check
+
+metrics:
+  - name: labor_productivity
+    formula: total_units_processed / total_labor_hours
+    target: "> 120 UPH"
+  - name: certification_compliance
+    formula: (valid_certifications / required_certifications) * 100
+    target: "100%"
+  - name: training_completion
+    formula: (completed_training / required_training) * 100
+    target: "> 95%"
+  - name: safety_incident_rate
+    formula: incidents / 100_workers / year
+    target: "< 3"
+  - name: overtime_percent
+    formula: (overtime_hours / total_hours) * 100
+    target: "< 10%"

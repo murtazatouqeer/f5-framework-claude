@@ -1,0 +1,333 @@
+name: sample
+display_name: Inspection Sample
+display_name_vi: Mẫu kiểm tra
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: entity
+
+description: |
+  Physical sample taken during quality inspection for measurement
+  and verification against specifications.
+
+description_vi: |
+  Mẫu vật lý được lấy trong quá trình kiểm tra chất lượng để đo lường
+  và xác minh so với thông số kỹ thuật.
+
+attributes:
+  - name: sample_id
+    type: string
+    format: "SMP-YYYYMMDD-XXXX"
+    primary_key: true
+    description: Unique sample identifier
+
+  - name: sample_number
+    type: string
+    required: true
+    description: Sequential sample number
+
+  - name: inspection_id
+    type: reference
+    references: inspection
+    required: true
+    description: Parent inspection
+
+  - name: sample_type
+    type: enum
+    values:
+      - random
+      - consecutive
+      - stratified
+      - systematic
+      - first_off
+      - last_off
+    required: true
+    default: random
+    description: Sampling method used
+
+  - name: status
+    type: enum
+    values:
+      - collected
+      - in_testing
+      - tested
+      - retained
+      - destroyed
+      - returned
+    required: true
+    default: collected
+    description: Current sample status
+
+  - name: sequence_in_inspection
+    type: integer
+    required: true
+    description: Sample sequence within inspection
+
+  - name: lot_number
+    type: string
+    description: Source lot number
+
+  - name: batch_number
+    type: string
+    description: Source batch number
+
+  - name: serial_number
+    type: string
+    description: Individual serial number if applicable
+
+  - name: collected_from
+    type: string
+    description: Location/position sample taken from
+
+  - name: collected_at
+    type: datetime
+    required: true
+    auto: true
+    description: Collection timestamp
+
+  - name: collected_by
+    type: reference
+    references: employee
+    required: true
+    description: Person who collected sample
+
+  - name: quantity
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 1
+    description: Sample quantity
+
+  - name: unit_of_measure
+    type: string
+    description: Unit of measure
+
+  - name: sample_condition
+    type: enum
+    values:
+      - good
+      - damaged
+      - partial
+      - contaminated
+    default: good
+    description: Physical condition of sample
+
+  - name: condition_notes
+    type: text
+    description: Notes about sample condition
+
+  - name: storage_location
+    type: string
+    description: Where sample is stored
+
+  - name: storage_conditions
+    type: json
+    description: Temperature, humidity requirements
+
+  - name: retention_required
+    type: boolean
+    default: false
+    description: Whether sample must be retained
+
+  - name: retention_period_days
+    type: integer
+    description: How long to retain sample
+
+  - name: retention_until
+    type: date
+    description: Retain until date
+
+  - name: destruction_date
+    type: date
+    description: Scheduled destruction date
+
+  - name: destruction_method
+    type: string
+    description: How sample should be destroyed
+
+  - name: destroyed_at
+    type: datetime
+    description: Actual destruction timestamp
+
+  - name: destroyed_by
+    type: reference
+    references: employee
+    description: Person who destroyed sample
+
+  - name: chain_of_custody
+    type: json
+    description: Custody transfer log
+
+  - name: test_result
+    type: enum
+    values:
+      - pass
+      - fail
+      - inconclusive
+      - pending
+    description: Overall test result
+
+  - name: tested_at
+    type: datetime
+    description: When testing completed
+
+  - name: tested_by
+    type: reference
+    references: employee
+    description: Person who performed testing
+
+  - name: parent_sample_id
+    type: reference
+    references: sample
+    description: Parent sample if sub-sample
+
+  - name: is_reference_sample
+    type: boolean
+    default: false
+    description: Is this a reference/retain sample
+
+  - name: reference_purpose
+    type: string
+    description: Purpose of reference sample
+
+  - name: photos
+    type: json
+    description: Sample photographs
+
+  - name: barcode
+    type: string
+    description: Sample barcode/QR code
+
+  - name: notes
+    type: text
+    description: Additional notes
+
+  - name: created_at
+    type: datetime
+    auto: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: datetime
+    auto: true
+    description: Last update timestamp
+
+relationships:
+  - name: inspection
+    type: many_to_one
+    target: inspection
+    foreign_key: inspection_id
+    description: Parent inspection
+
+  - name: measurements
+    type: one_to_many
+    target: measurement
+    inverse: sample_id
+    description: Measurements taken on this sample
+
+  - name: collector
+    type: many_to_one
+    target: employee
+    foreign_key: collected_by
+    description: Person who collected
+
+  - name: tester
+    type: many_to_one
+    target: employee
+    foreign_key: tested_by
+    description: Person who tested
+
+  - name: parent_sample
+    type: many_to_one
+    target: sample
+    foreign_key: parent_sample_id
+    description: Parent sample for sub-samples
+
+  - name: sub_samples
+    type: one_to_many
+    target: sample
+    inverse: parent_sample_id
+    description: Sub-samples from this sample
+
+state_machine:
+  initial: collected
+  states:
+    collected:
+      description: Sample collected, awaiting testing
+      transitions:
+        - to: in_testing
+          trigger: start_testing
+
+    in_testing:
+      description: Testing in progress
+      transitions:
+        - to: tested
+          trigger: complete_testing
+          conditions:
+            - all_measurements_recorded
+
+    tested:
+      description: Testing complete
+      transitions:
+        - to: retained
+          trigger: retain
+          conditions:
+            - retention_required
+        - to: destroyed
+          trigger: destroy
+          conditions:
+            - not_retention_required
+        - to: returned
+          trigger: return
+          conditions:
+            - return_requested
+
+    retained:
+      description: Sample retained for reference
+      transitions:
+        - to: destroyed
+          trigger: destroy
+          conditions:
+            - retention_period_expired
+
+    destroyed:
+      description: Sample destroyed
+      final: true
+
+    returned:
+      description: Sample returned to source
+      final: true
+
+business_rules:
+  - rule: sample_tracking
+    description: All samples must be traceable
+    validation: lot_number or serial_number required
+
+  - rule: chain_of_custody
+    description: Custody transfers must be logged
+    validation: chain_of_custody updated on transfer
+
+  - rule: retention_compliance
+    description: Retention samples must be kept per policy
+    validation: retention_until > current_date for retained samples
+
+  - rule: destruction_authorization
+    description: Sample destruction requires authorization
+    validation: destroyed_by has destruction authority
+
+indexes:
+  - columns: [inspection_id, sequence_in_inspection]
+  - columns: [lot_number]
+  - columns: [serial_number]
+  - columns: [status]
+  - columns: [retention_until]
+  - columns: [barcode]
+    unique: true
+
+audit:
+  enabled: true
+  retention_years: 7
+  track_fields:
+    - status
+    - test_result
+    - storage_location

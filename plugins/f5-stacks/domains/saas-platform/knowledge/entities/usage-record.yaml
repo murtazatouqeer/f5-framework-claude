@@ -1,0 +1,356 @@
+name: UsageRecord
+display_name: Usage Record / Bản ghi sử dụng
+description: |
+  Tracks resource usage for metered billing including API calls,
+  storage, bandwidth, and other measurable metrics.
+
+domain: saas-platform
+entity_type: transaction
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    required: true
+    description: Tenant this usage belongs to
+    description_vi: Khách thuê mà sử dụng này thuộc về
+
+  - name: subscription_id
+    type: uuid
+    foreign_key: subscription.id
+    description: Associated subscription
+    description_vi: Đăng ký liên quan
+
+  # Metric
+  - name: metric
+    type: enum
+    values: [api_calls, storage_gb, bandwidth_gb, seats, compute_hours, messages, emails, requests, transactions]
+    required: true
+    description: Usage metric being tracked
+    description_vi: Chỉ số sử dụng đang theo dõi
+
+  - name: metric_key
+    type: string
+    max_length: 100
+    description: Custom metric key for custom metrics
+    description_vi: Khóa chỉ số tùy chỉnh
+
+  # Quantity
+  - name: quantity
+    type: decimal
+    precision: 18
+    scale: 6
+    required: true
+    description: Usage quantity
+    description_vi: Số lượng sử dụng
+
+  - name: unit
+    type: string
+    max_length: 20
+    description: Unit of measurement
+    description_vi: Đơn vị đo lường
+    examples: [calls, GB, hours, messages]
+
+  # Aggregation
+  - name: aggregation_type
+    type: enum
+    values: [sum, max, last, average]
+    default: sum
+    description: How this metric is aggregated
+    description_vi: Cách chỉ số này được tổng hợp
+
+  # Time Period
+  - name: timestamp
+    type: timestamp
+    required: true
+    description: When usage occurred
+    description_vi: Thời điểm sử dụng xảy ra
+
+  - name: period_start
+    type: timestamp
+    description: Start of aggregation period
+    description_vi: Bắt đầu kỳ tổng hợp
+
+  - name: period_end
+    type: timestamp
+    description: End of aggregation period
+    description_vi: Kết thúc kỳ tổng hợp
+
+  - name: billing_period
+    type: string
+    max_length: 7
+    description: Billing period (YYYY-MM format)
+    description_vi: Kỳ thanh toán
+    pattern: "^\\d{4}-\\d{2}$"
+    example: "2024-01"
+
+  # Source
+  - name: source
+    type: string
+    max_length: 100
+    description: Source of the usage (endpoint, service, etc.)
+    description_vi: Nguồn sử dụng
+    examples: [api_gateway, background_worker, webhook_handler]
+
+  - name: resource_id
+    type: string
+    max_length: 255
+    description: Specific resource generating usage
+    description_vi: Tài nguyên cụ thể tạo ra sử dụng
+
+  # Billing
+  - name: is_billable
+    type: boolean
+    default: true
+    description: Whether this usage is billable
+    description_vi: Sử dụng này có tính phí không
+
+  - name: is_billed
+    type: boolean
+    default: false
+    description: Whether this has been billed
+    description_vi: Đã được tính phí chưa
+
+  - name: invoice_id
+    type: uuid
+    foreign_key: invoice.id
+    description: Invoice this usage was billed on
+    description_vi: Hóa đơn mà sử dụng này được tính
+
+  - name: unit_price
+    type: decimal
+    precision: 10
+    scale: 6
+    description: Price per unit at time of recording
+    description_vi: Giá mỗi đơn vị tại thời điểm ghi nhận
+
+  - name: amount
+    type: decimal
+    precision: 10
+    scale: 2
+    description: Calculated billing amount
+    description_vi: Số tiền tính phí đã tính
+    formula: "quantity * unit_price"
+
+  # Context
+  - name: user_id
+    type: uuid
+    foreign_key: user.id
+    description: User who generated this usage
+    description_vi: Người dùng đã tạo ra sử dụng này
+
+  - name: api_key_id
+    type: uuid
+    description: API key used (if applicable)
+    description_vi: Khóa API đã sử dụng
+
+  - name: request_id
+    type: string
+    max_length: 100
+    description: Request/correlation ID for tracing
+    description_vi: ID yêu cầu/tương quan để theo dõi
+
+  - name: ip_address
+    type: string
+    max_length: 45
+    description: IP address of request
+    description_vi: Địa chỉ IP của yêu cầu
+
+  # Metadata
+  - name: metadata
+    type: json
+    description: Additional context about the usage
+    description_vi: Ngữ cảnh bổ sung về sử dụng
+    schema:
+      endpoint: string
+      method: string
+      response_status: integer
+      duration_ms: integer
+      error: boolean
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: processed_at
+    type: timestamp
+    description: When usage was processed for billing
+    description_vi: Thời điểm sử dụng được xử lý để tính phí
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Tenant this usage belongs to
+
+  - name: subscription
+    type: belongs_to
+    target: Subscription
+    foreign_key: subscription_id
+    description: Subscription for this usage
+
+  - name: user
+    type: belongs_to
+    target: User
+    foreign_key: user_id
+    description: User who generated usage
+
+  - name: invoice
+    type: belongs_to
+    target: Invoice
+    foreign_key: invoice_id
+    description: Invoice this usage appears on
+
+indexes:
+  - name: idx_usage_tenant_metric_period
+    columns: [tenant_id, metric, billing_period]
+    description: Primary aggregation query
+
+  - name: idx_usage_tenant_timestamp
+    columns: [tenant_id, timestamp]
+    description: Time-series queries
+
+  - name: idx_usage_subscription_period
+    columns: [subscription_id, billing_period]
+    description: Subscription usage summary
+
+  - name: idx_usage_unbilled
+    columns: [tenant_id, is_billed]
+    where: "is_billed = false AND is_billable = true"
+    description: Find unbilled usage
+
+  - name: idx_usage_timestamp
+    columns: [timestamp]
+    description: Time-based retention queries
+
+business_rules:
+  - id: BR-USG-001
+    name: Real-time API Tracking
+    description: API calls tracked in real-time
+    description_vi: Cuộc gọi API được theo dõi thời gian thực
+    latency: "<100ms"
+
+  - name: BR-USG-002
+    name: Daily Storage Snapshot
+    description: Storage usage captured daily at midnight UTC
+    description_vi: Sử dụng lưu trữ được ghi nhận hàng ngày lúc nửa đêm UTC
+    schedule: "0 0 * * *"
+
+  - id: BR-USG-003
+    name: Peak Seat Tracking
+    description: Seat usage tracked as maximum active in period
+    description_vi: Sử dụng chỗ ngồi được theo dõi là tối đa hoạt động trong kỳ
+    aggregation: max
+
+  - id: BR-USG-010
+    name: Alert at 50%
+    description: Alert when usage reaches 50% of included amount
+    description_vi: Cảnh báo khi sử dụng đạt 50% số lượng bao gồm
+
+  - id: BR-USG-011
+    name: Alert at 80%
+    description: Alert when usage reaches 80% of included amount
+    description_vi: Cảnh báo khi sử dụng đạt 80% số lượng bao gồm
+
+  - id: BR-USG-012
+    name: Alert at 100%
+    description: Alert when usage reaches 100% of included amount
+    description_vi: Cảnh báo khi sử dụng đạt 100% số lượng bao gồm
+
+  - id: BR-USG-013
+    name: Rate Limit at 110%
+    description: Rate limit when usage exceeds 110% of included
+    description_vi: Giới hạn tốc độ khi sử dụng vượt 110% số lượng bao gồm
+
+  - id: BR-USG-020
+    name: Overage Billing
+    description: Overage billed at end of billing period
+    description_vi: Vượt quá được tính phí vào cuối kỳ thanh toán
+
+  - id: BR-USG-021
+    name: Usage Retention
+    description: Detailed usage records retained for 90 days
+    description_vi: Bản ghi sử dụng chi tiết giữ lại 90 ngày
+    parameters:
+      retention_days: 90
+
+computed_fields:
+  - name: is_overage
+    formula: "quantity > included_amount"
+    description: Whether this is overage usage
+
+events:
+  - name: usage.recorded
+    payload: [tenant_id, metric, quantity, timestamp]
+    note: "High-frequency event, batch for processing"
+
+  - name: usage.threshold_reached
+    payload: [tenant_id, metric, threshold_percent, current_usage, limit]
+    triggers: [send_usage_alert]
+
+  - name: usage.limit_exceeded
+    payload: [tenant_id, metric, current_usage, limit]
+    triggers: [apply_rate_limit, send_limit_notification]
+
+  - name: usage.aggregated
+    payload: [tenant_id, metric, billing_period, total_quantity]
+
+  - name: usage.billed
+    payload: [tenant_id, invoice_id, metric, quantity, amount]
+
+aggregation_patterns:
+  # API Calls - Sum of all calls
+  api_calls:
+    type: sum
+    reset: period_end
+    track_per: [tenant, user, api_key, endpoint]
+    alerts: [50%, 80%, 100%, 110%]
+
+  # Storage - Maximum at any point in period
+  storage_gb:
+    type: max
+    snapshot: daily
+    track_per: [tenant]
+    alerts: [80%, 90%, 100%]
+
+  # Bandwidth - Sum of all data transfer
+  bandwidth_gb:
+    type: sum
+    reset: period_end
+    track_per: [tenant, direction]
+    alerts: [80%, 100%]
+
+  # Seats - Maximum concurrent users
+  seats:
+    type: max
+    snapshot: daily
+    track_per: [tenant]
+    alerts: [100%]
+
+  # Compute Hours - Sum of compute time
+  compute_hours:
+    type: sum
+    reset: period_end
+    track_per: [tenant, resource_type]
+    alerts: [80%, 100%]
+
+usage_summary_view:
+  description: Aggregated view for billing dashboard
+  columns:
+    - tenant_id
+    - metric
+    - billing_period
+    - total_quantity: "SUM(quantity)"
+    - included_amount: "from subscription plan"
+    - overage_quantity: "MAX(0, total_quantity - included_amount)"
+    - overage_amount: "overage_quantity * overage_rate"
+    - usage_percent: "total_quantity / included_amount * 100"

@@ -1,0 +1,369 @@
+# Offer Business Rules
+# F5 Framework v2.0 - Real Estate/Transaction
+# Rules governing purchase offers and negotiations
+
+business_rules:
+  name: OfferRules
+  name_vi: Quy tắc đề nghị mua
+  name_ja: オファー規則
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Business rules governing the creation, submission, acceptance,
+    and expiration of purchase offers in real estate transactions.
+
+  # Offer Creation Rules
+  offer_creation:
+    - rule_id: BR-OFF-001
+      name: Minimum Earnest Money
+      name_vi: Tiền cọc tối thiểu
+      description: |
+        Offers must include earnest money deposit of at least 1% of offer price
+        to demonstrate buyer's serious intent.
+      condition: offer.earnest_money_amount >= offer.offer_price * 0.01
+      exception:
+        - Cash purchases over 10 billion VND (negotiable)
+        - Repeat buyers with established relationship
+      enforcement: required
+      severity: error
+      message: "Earnest money must be at least 1% of offer price"
+
+    - rule_id: BR-OFF-002
+      name: Offer Price Reasonableness
+      name_vi: Giá đề nghị hợp lý
+      description: |
+        Offer price should be within reasonable range of listing price
+        (typically 70-120%) unless justified.
+      condition: |
+        offer.offer_price >= listing.price * 0.70 AND
+        offer.offer_price <= listing.price * 1.20
+      exception:
+        - Short sale properties
+        - Auction properties
+        - Distressed sales
+        - Written justification provided
+      enforcement: warning
+      severity: warning
+      message: "Offer price is outside typical range. Review required."
+
+    - rule_id: BR-OFF-003
+      name: Buyer Identification Required
+      name_vi: Yêu cầu xác định người mua
+      description: |
+        All offers must include verified buyer identification
+        (CMND/CCCD or Passport for foreigners).
+      condition: offer.buyer_id_verified == true
+      exception: none
+      enforcement: required
+      severity: error
+      message: "Buyer identification must be verified before offer submission"
+
+    - rule_id: BR-OFF-004
+      name: Financing Pre-Qualification
+      name_vi: Xác nhận trước khả năng tài chính
+      description: |
+        Financed offers must include pre-qualification or pre-approval letter
+        from recognized financial institution.
+      condition: |
+        offer.financing_type == 'cash' OR
+        (offer.financing_type IN ['bank_loan', 'mortgage'] AND
+         offer.pre_approval_attached == true)
+      exception:
+        - Cash purchases
+        - Seller financing arrangements
+      enforcement: required
+      severity: error
+      message: "Financing pre-approval required for loan-based offers"
+
+  # Offer Expiration Rules
+  offer_expiration:
+    - rule_id: BR-OFF-010
+      name: Default Expiration Period
+      name_vi: Thời hạn hết hạn mặc định
+      description: |
+        Offers expire after 3 business days if no response received.
+        Can be customized by buyer up to 7 business days.
+      default_period: 3
+      max_period: 7
+      unit: business_days
+      calculation: |
+        expiration_date = offer.submitted_at +
+                         (offer.expiration_days OR 3) business_days
+
+    - rule_id: BR-OFF-011
+      name: Weekend/Holiday Handling
+      name_vi: Xử lý cuối tuần/ngày lễ
+      description: |
+        Expiration dates falling on weekends or Vietnamese holidays
+        are extended to the next business day.
+      holidays:
+        - New Year (Tết Dương lịch)
+        - Lunar New Year (Tết Nguyên đán) - 5 days
+        - Hung Kings Day (Giỗ Tổ Hùng Vương)
+        - Liberation Day (Ngày Giải phóng miền Nam)
+        - Labor Day (Ngày Quốc tế Lao động)
+        - National Day (Quốc khánh)
+      extension_rule: next_business_day
+
+    - rule_id: BR-OFF-012
+      name: Expired Offer Cannot Be Accepted
+      name_vi: Không thể chấp nhận đề nghị hết hạn
+      description: |
+        Once an offer expires, it cannot be accepted. Seller must
+        request new offer or buyer must resubmit.
+      condition: CURRENT_TIMESTAMP <= offer.expires_at
+      enforcement: required
+      severity: error
+      message: "Cannot accept expired offer. Request new offer from buyer."
+
+  # Counter Offer Rules
+  counter_offer:
+    - rule_id: BR-OFF-020
+      name: Counter Offer Terminates Original
+      name_vi: Đề nghị ngược hủy đề nghị gốc
+      description: |
+        Submitting a counter offer automatically terminates the original
+        offer. The original cannot be accepted after counter.
+      effect: original_offer.status = 'countered'
+      reversible: false
+
+    - rule_id: BR-OFF-021
+      name: Counter Offer Chain Limit
+      name_vi: Giới hạn chuỗi đề nghị ngược
+      description: |
+        Maximum 5 counter offers in a negotiation chain before
+        system requires escalation or fresh start.
+      max_chain_length: 5
+      on_exceed:
+        - notification: "Negotiation exceeds 5 rounds"
+        - action: require_escalation
+        - options: [start_fresh, manual_negotiation, withdraw]
+
+    - rule_id: BR-OFF-022
+      name: Counter Must Change Terms
+      name_vi: Đề nghị ngược phải thay đổi điều khoản
+      description: |
+        Counter offers must modify at least one material term from
+        the previous offer (price, closing date, contingencies).
+      condition: |
+        counter.price != previous.price OR
+        counter.closing_date != previous.closing_date OR
+        counter.contingencies != previous.contingencies OR
+        counter.earnest_money != previous.earnest_money
+      enforcement: required
+      severity: error
+      message: "Counter offer must change at least one material term"
+
+  # Contingency Rules
+  contingencies:
+    - rule_id: BR-OFF-030
+      name: Financing Contingency Period
+      name_vi: Thời hạn điều kiện tài chính
+      description: |
+        Financing contingency must allow minimum 14 days for
+        loan approval process.
+      min_period: 14
+      max_period: 45
+      unit: calendar_days
+      default: 30
+
+    - rule_id: BR-OFF-031
+      name: Inspection Contingency Period
+      name_vi: Thời hạn điều kiện kiểm tra
+      description: |
+        Inspection contingency allows 7-14 days for property
+        inspection and report review.
+      min_period: 7
+      max_period: 14
+      unit: calendar_days
+      default: 10
+
+    - rule_id: BR-OFF-032
+      name: Appraisal Contingency
+      name_vi: Điều kiện định giá
+      description: |
+        If included, appraisal must come within specified percentage
+        of purchase price or buyer can renegotiate or withdraw.
+      typical_threshold: 0.95
+      buyer_options:
+        below_threshold:
+          - renegotiate_price
+          - pay_difference
+          - withdraw_with_deposit_return
+
+    - rule_id: BR-OFF-033
+      name: Contingency Waiver Documentation
+      name_vi: Tài liệu từ bỏ điều kiện
+      description: |
+        Waiving any contingency requires written acknowledgment
+        and signature from buyer documenting understanding of risks.
+      required_elements:
+        - signed_waiver_form
+        - acknowledgment_of_risks
+        - date_and_time
+      enforcement: required
+
+  # Acceptance Rules
+  acceptance:
+    - rule_id: BR-OFF-040
+      name: Acceptance Must Be Communicated
+      name_vi: Chấp nhận phải được thông báo
+      description: |
+        Acceptance is only effective when communicated to the buyer
+        or buyer's agent before offer expiration.
+      communication_methods:
+        - signed_acceptance_on_offer
+        - written_notification
+        - email_with_confirmation
+      condition: acceptance.communicated_at <= offer.expires_at
+      enforcement: required
+
+    - rule_id: BR-OFF-041
+      name: Acceptance Must Be Unconditional
+      name_vi: Chấp nhận phải vô điều kiện
+      description: |
+        Acceptance with modifications constitutes a counter offer,
+        not an acceptance of the original terms.
+      condition: |
+        acceptance.modifications IS NULL OR
+        acceptance.modifications == []
+      effect_if_false: create_counter_offer
+
+    - rule_id: BR-OFF-042
+      name: Multi-Buyer Scenario
+      name_vi: Kịch bản nhiều người mua
+      description: |
+        When multiple offers received, seller must formally reject
+        or counter non-selected offers. Backup offer system available.
+      handling:
+        multiple_offers:
+          - review_all_before_response
+          - notify_all_parties_of_multiple_offers
+          - accept_only_one
+          - formally_reject_or_backup_others
+        backup_offer:
+          position: 1-3
+          duration: until_primary_closes_or_fails
+
+  # Withdrawal Rules
+  withdrawal:
+    - rule_id: BR-OFF-050
+      name: Buyer Withdrawal Before Acceptance
+      name_vi: Người mua rút trước khi chấp nhận
+      description: |
+        Buyer may withdraw offer at any time before seller's
+        acceptance is communicated, without penalty.
+      condition: offer.status == 'submitted'
+      penalty: none
+      earnest_money: refundable
+
+    - rule_id: BR-OFF-051
+      name: Withdrawal After Acceptance
+      name_vi: Rút sau khi chấp nhận
+      description: |
+        After acceptance, withdrawal is governed by contract terms
+        and may result in earnest money forfeiture.
+      condition: offer.status == 'accepted'
+      penalty: per_contract_terms
+      earnest_money: subject_to_contract
+
+  # Documentation Rules
+  documentation:
+    - rule_id: BR-OFF-060
+      name: Offer Documentation Requirements
+      name_vi: Yêu cầu tài liệu đề nghị
+      description: |
+        Complete offers must include all required documentation
+        for valid submission.
+      required_documents:
+        - signed_offer_form
+        - buyer_id_copy
+        - earnest_money_proof
+        - financing_pre_approval  # if applicable
+        - property_tour_confirmation
+        - agency_agreement_copy  # if represented
+
+    - rule_id: BR-OFF-061
+      name: Electronic Signatures Accepted
+      name_vi: Chấp nhận chữ ký điện tử
+      description: |
+        Electronic signatures are accepted per Vietnam E-Transactions
+        Law, but notarization requires physical signatures.
+      electronic_allowed:
+        - offer_submission
+        - counter_offers
+        - acceptance
+        - amendments
+      physical_required:
+        - notarized_contract
+        - land_transfer_documents
+        - official_registrations
+
+  # Notification Rules
+  notifications:
+    - rule_id: BR-OFF-070
+      name: Immediate Response Notification
+      name_vi: Thông báo phản hồi ngay lập tức
+      description: |
+        All parties must be notified within 2 hours of any
+        offer response (acceptance, counter, rejection).
+      timing: within_2_hours
+      channels:
+        - app_notification
+        - email
+        - sms
+      recipients:
+        - buyer
+        - seller
+        - buyer_agent
+        - seller_agent
+
+    - rule_id: BR-OFF-071
+      name: Expiration Warning
+      name_vi: Cảnh báo hết hạn
+      description: |
+        System sends warnings at 24 hours and 4 hours before
+        offer expiration to all relevant parties.
+      warnings:
+        - timing: 24_hours_before
+          recipients: [seller, seller_agent]
+        - timing: 4_hours_before
+          recipients: [seller, seller_agent, buyer_agent]
+
+  # Validation Functions
+  validation_functions:
+    calculate_expiration_date:
+      input: [submitted_at, expiration_days, holidays]
+      output: expires_at
+      logic: |
+        Add expiration_days business days to submitted_at,
+        skipping weekends and holidays defined in system
+
+    validate_earnest_money:
+      input: [earnest_money_amount, offer_price]
+      output: is_valid
+      logic: earnest_money_amount >= offer_price * 0.01
+
+    can_accept_offer:
+      input: [offer_status, expires_at, current_time]
+      output: can_accept
+      logic: |
+        offer_status == 'submitted' AND
+        current_time <= expires_at
+
+    is_valid_counter:
+      input: [counter_offer, previous_offer]
+      output: is_valid
+      logic: |
+        At least one material term differs between
+        counter_offer and previous_offer
+
+  # Audit Requirements
+  audit:
+    - All offer submissions logged with timestamp
+    - All responses logged with timestamp and responder
+    - Counter offer chain fully traceable
+    - Document attachments versioned and preserved
+    - Notification delivery confirmation recorded

@@ -1,0 +1,225 @@
+name: Booking Rules
+display_name: Tour Booking Rules / Quy tắc đặt tour
+description: |
+  Rules governing tour booking process, validation, confirmation,
+  and booking lifecycle management.
+
+domain: travel-hospitality
+subdomain: tour
+category: booking
+
+rules:
+  # Booking Creation
+  - id: BR-BKG-001
+    name: Booking Cutoff Time
+    description: Bookings must be made before the cutoff time
+    priority: critical
+    condition: |
+      NOW() < schedule.cutoff_datetime
+    action: reject_if_violated
+    message: "Booking is closed for this date/time. Cutoff was {cutoff_datetime}"
+    applies_to: [TourBooking, TourSchedule]
+
+  - id: BR-BKG-002
+    name: Availability Check
+    description: Total participants must not exceed available spots
+    priority: critical
+    condition: |
+      booking.total_participants <= availability.available_spots
+    action: reject_if_violated
+    message: "Only {available_spots} spots remaining for this tour"
+    applies_to: [TourBooking, TourAvailability]
+
+  - id: BR-BKG-003
+    name: Minimum Participants
+    description: Must meet minimum participant requirement
+    priority: high
+    condition: |
+      booking.total_participants >= tour.min_participants OR
+      booking.booking_type = 'private'
+    action: reject_if_violated
+    message: "Minimum {min_participants} participants required"
+    applies_to: [TourBooking, Tour]
+
+  - id: BR-BKG-004
+    name: Age Restriction Validation
+    description: All participants must meet age requirements
+    priority: high
+    condition: |
+      ALL participants.age >= activity.min_age AND
+      ALL participants.age <= activity.max_age
+    action: reject_if_violated
+    message: "Age requirement: {min_age}-{max_age} years"
+    applies_to: [TourBooking, Participant, Activity]
+
+  - id: BR-BKG-005
+    name: Children Require Adult
+    description: Children and infants must be accompanied by an adult
+    priority: critical
+    condition: |
+      booking.adults >= 1 OR
+      (booking.children = 0 AND booking.infants = 0)
+    action: reject_if_violated
+    message: "At least one adult required when booking with children"
+    applies_to: [TourBooking]
+
+  # Booking Confirmation
+  - id: BR-BKG-010
+    name: Instant Confirmation
+    description: Instantly confirm if tour has instant confirmation enabled
+    priority: high
+    condition: |
+      tour.instant_confirmation = true AND
+      booking.payment_status = 'paid'
+    action: |
+      booking.status = 'confirmed'
+      TRIGGER booking.confirmed
+      generate_voucher()
+    applies_to: [TourBooking, Tour]
+
+  - id: BR-BKG-011
+    name: Request-Based Confirmation
+    description: Await operator confirmation for non-instant tours
+    priority: high
+    condition: |
+      tour.instant_confirmation = false
+    action: |
+      booking.status = 'pending'
+      notify_operator()
+      set_confirmation_deadline(24_hours)
+    applies_to: [TourBooking, Tour]
+
+  - id: BR-BKG-012
+    name: Confirmation Deadline
+    description: Auto-cancel if not confirmed within 24 hours
+    priority: high
+    condition: |
+      booking.status = 'pending' AND
+      NOW() - booking.created_at > INTERVAL '24 hours'
+    action: |
+      booking.status = 'cancelled'
+      booking.cancellation_reason = 'Operator did not confirm'
+      process_full_refund()
+      notify_customer()
+    applies_to: [TourBooking]
+
+  # Payment Rules
+  - id: BR-BKG-020
+    name: Payment Deadline
+    description: Pending bookings must be paid within 30 minutes
+    priority: high
+    condition: |
+      booking.status = 'pending' AND
+      booking.payment_status = 'pending' AND
+      NOW() - booking.created_at > INTERVAL '30 minutes'
+    action: |
+      booking.status = 'cancelled'
+      release_held_spots()
+    applies_to: [TourBooking]
+
+  - id: BR-BKG-021
+    name: Deposit for Multi-Day Tours
+    description: Multi-day tours require deposit payment
+    priority: high
+    condition: |
+      tour.duration_type = 'days' AND
+      tour.duration_value > 1
+    action: |
+      booking.deposit_required = true
+      booking.deposit_amount = booking.total_amount * 0.30
+      booking.balance_due_date = booking.tour_date - 7 days
+    applies_to: [TourBooking, Tour]
+
+  # Voucher Rules
+  - id: BR-BKG-030
+    name: Voucher Generation
+    description: Generate voucher only after full payment
+    priority: critical
+    condition: |
+      booking.payment_status = 'paid' AND
+      booking.status = 'confirmed'
+    action: |
+      generate_voucher()
+      send_voucher_email()
+      booking.voucher_sent = true
+    applies_to: [TourBooking, TourVoucher]
+
+  - id: BR-BKG-031
+    name: Voucher Resend Limit
+    description: Limit voucher resend to 5 times
+    priority: medium
+    condition: |
+      voucher.resend_count < 5
+    action: allow_resend
+    message: "Maximum resend limit reached"
+    applies_to: [TourVoucher]
+
+  # Modification Rules
+  - id: BR-BKG-040
+    name: Booking Modification Cutoff
+    description: Modifications allowed until 48 hours before tour
+    priority: high
+    condition: |
+      booking.tour_date - NOW() >= INTERVAL '48 hours'
+    action: allow_modification
+    message: "Modifications not allowed within 48 hours of tour"
+    applies_to: [TourBooking]
+
+  - id: BR-BKG-041
+    name: Date Change
+    description: Date change subject to availability
+    priority: high
+    condition: |
+      new_date.available_spots >= booking.total_participants
+    action: |
+      update_booking_date()
+      recalculate_pricing()
+      update_voucher()
+    applies_to: [TourBooking]
+
+  - id: BR-BKG-042
+    name: Participant Count Change
+    description: Participant increase subject to availability
+    priority: high
+    condition: |
+      (new_count - old_count) <= availability.available_spots
+    action: |
+      update_participant_count()
+      recalculate_pricing()
+      process_additional_payment()
+    applies_to: [TourBooking]
+
+  # Reminder Rules
+  - id: BR-BKG-050
+    name: Booking Reminder
+    description: Send reminder 24 hours before tour
+    priority: medium
+    condition: |
+      booking.status = 'confirmed' AND
+      booking.reminder_sent = false AND
+      booking.tour_date - NOW() <= INTERVAL '24 hours'
+    action: |
+      send_reminder_email()
+      send_reminder_sms()
+      booking.reminder_sent = true
+    applies_to: [TourBooking]
+
+  - id: BR-BKG-051
+    name: Guide Assignment Reminder
+    description: Alert operator if no guide assigned 24h before
+    priority: high
+    condition: |
+      schedule.guide_id IS NULL AND
+      schedule.tour_date - NOW() <= INTERVAL '24 hours'
+    action: |
+      alert_operator()
+      escalate_if_not_resolved(12_hours)
+    applies_to: [TourSchedule]
+
+validation_order:
+  - BR-BKG-001
+  - BR-BKG-002
+  - BR-BKG-003
+  - BR-BKG-004
+  - BR-BKG-005
+  - BR-BKG-020

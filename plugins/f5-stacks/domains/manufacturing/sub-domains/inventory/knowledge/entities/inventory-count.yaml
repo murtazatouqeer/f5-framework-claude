@@ -1,0 +1,525 @@
+name: InventoryCount
+display_name: Inventory Count / Kiểm kê kho
+description: |
+  Physical inventory count document for verifying stock accuracy.
+  Supports cycle counting, annual counts, and ad-hoc counts
+  with variance analysis and adjustment processing.
+
+domain: manufacturing
+subdomain: inventory
+category: transaction
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: count_number
+    type: string
+    required: true
+    description: Count document number
+    validation:
+      pattern: "^CNT-[0-9]{4}-[0-9]{6}$"
+    example: "CNT-2024-000456"
+
+  - name: status
+    type: enum
+    required: true
+    description: Count status
+    validation:
+      values: [planned, in_progress, counting, pending_review,
+               pending_approval, approved, posted, cancelled]
+    default: planned
+
+  - name: count_type
+    type: enum
+    required: true
+    description: Type of inventory count
+    validation:
+      values:
+        - annual           # Full annual inventory
+        - cycle            # Cycle count
+        - spot             # Spot/ad-hoc count
+        - perpetual        # Continuous counting
+        - abc_cycle        # ABC-based cycle count
+        - blind            # Blind count (no system qty shown)
+    default: cycle
+
+  # Scope
+  - name: scope_type
+    type: enum
+    required: true
+    description: Scope of count
+    validation:
+      values:
+        - full_warehouse   # Entire warehouse
+        - zone             # Specific zone
+        - aisle            # Specific aisle
+        - location         # Specific locations
+        - material         # Specific materials
+        - material_group   # Material group
+        - abc_class        # ABC classification
+    default: location
+
+  - name: plant_id
+    type: uuid
+    required: true
+    description: Plant
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+    description: Warehouse
+
+  - name: zone_id
+    type: uuid
+    required: false
+    description: Zone (if scope = zone)
+
+  - name: aisle
+    type: string
+    required: false
+    description: Aisle (if scope = aisle)
+    validation:
+      max_length: 10
+
+  - name: abc_class
+    type: enum
+    required: false
+    description: ABC class (if scope = abc_class)
+    validation:
+      values: [A, B, C]
+
+  - name: material_group
+    type: string
+    required: false
+    description: Material group (if scope = material_group)
+    validation:
+      max_length: 20
+
+  # Dates
+  - name: planned_date
+    type: date
+    required: true
+    description: Planned count date
+
+  - name: start_date
+    type: timestamp
+    required: false
+    description: Actual start time
+
+  - name: end_date
+    type: timestamp
+    required: false
+    description: Actual end time
+
+  - name: posting_date
+    type: date
+    required: false
+    description: Date for adjustment posting
+
+  - name: freeze_date
+    type: timestamp
+    required: false
+    description: Date stock was frozen
+
+  # Count settings
+  - name: freeze_stock
+    type: boolean
+    required: true
+    description: Freeze stock during count
+    default: false
+
+  - name: blind_count
+    type: boolean
+    required: true
+    description: Hide system quantities from counters
+    default: false
+
+  - name: require_recount
+    type: boolean
+    required: true
+    description: Require recount for variances
+    default: true
+
+  - name: recount_threshold_pct
+    type: decimal
+    required: false
+    description: Variance threshold for recount (%)
+    validation:
+      min: 0
+      max: 100
+    default: 5
+
+  - name: recount_threshold_value
+    type: decimal
+    required: false
+    description: Variance threshold for recount (value)
+    validation:
+      min: 0
+
+  - name: auto_adjust
+    type: boolean
+    required: false
+    description: Auto-adjust small variances
+    default: false
+
+  - name: auto_adjust_limit_pct
+    type: decimal
+    required: false
+    description: Auto-adjust limit percentage
+    validation:
+      min: 0
+      max: 5
+    default: 1
+
+  - name: auto_adjust_limit_value
+    type: decimal
+    required: false
+    description: Auto-adjust limit value
+    validation:
+      min: 0
+
+  # Summary
+  - name: total_locations
+    type: integer
+    required: false
+    description: Total locations to count
+    computed: true
+
+  - name: counted_locations
+    type: integer
+    required: false
+    description: Locations counted
+    computed: true
+
+  - name: total_items
+    type: integer
+    required: false
+    description: Total item lines
+    computed: true
+
+  - name: counted_items
+    type: integer
+    required: false
+    description: Items counted
+    computed: true
+
+  - name: items_with_variance
+    type: integer
+    required: false
+    description: Items with variance
+    computed: true
+
+  - name: variance_percentage
+    type: decimal
+    required: false
+    description: Overall variance percentage
+    computed: true
+
+  # Value summary
+  - name: system_value
+    type: decimal
+    required: false
+    description: Total system value
+    validation:
+      precision: 2
+    computed: true
+
+  - name: counted_value
+    type: decimal
+    required: false
+    description: Total counted value
+    validation:
+      precision: 2
+    computed: true
+
+  - name: variance_value
+    type: decimal
+    required: false
+    description: Total variance value
+    validation:
+      precision: 2
+    computed: true
+
+  - name: currency
+    type: string
+    required: true
+    description: Value currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  # Accuracy metrics
+  - name: location_accuracy
+    type: decimal
+    required: false
+    description: Location accuracy percentage
+    validation:
+      min: 0
+      max: 100
+    computed: true
+
+  - name: item_accuracy
+    type: decimal
+    required: false
+    description: Item accuracy percentage
+    validation:
+      min: 0
+      max: 100
+    computed: true
+
+  - name: value_accuracy
+    type: decimal
+    required: false
+    description: Value accuracy percentage
+    validation:
+      min: 0
+      max: 100
+    computed: true
+
+  # Team
+  - name: supervisor_id
+    type: uuid
+    required: true
+    description: Count supervisor
+
+  - name: counters
+    type: array
+    required: false
+    description: Assigned counters
+    items:
+      type: uuid
+
+  - name: verifiers
+    type: array
+    required: false
+    description: Count verifiers
+    items:
+      type: uuid
+
+  # Approval
+  - name: approval_required
+    type: boolean
+    required: true
+    description: Requires approval for adjustments
+    default: true
+
+  - name: approved_by
+    type: uuid
+    required: false
+    description: Approver
+
+  - name: approved_at
+    type: timestamp
+    required: false
+    description: Approval timestamp
+
+  - name: rejection_reason
+    type: string
+    required: false
+    description: Rejection reason
+    validation:
+      max_length: 500
+
+  # Notes
+  - name: instructions
+    type: string
+    required: false
+    description: Count instructions
+    validation:
+      max_length: 2000
+
+  - name: notes
+    type: string
+    required: false
+    description: Count notes
+    validation:
+      max_length: 2000
+
+  - name: findings
+    type: string
+    required: false
+    description: Count findings summary
+    validation:
+      max_length: 2000
+
+  # Audit
+  - name: created_by
+    type: uuid
+    required: true
+    description: User who created
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+  - name: posted_by
+    type: uuid
+    required: false
+    description: User who posted adjustments
+
+  - name: posted_at
+    type: timestamp
+    required: false
+    description: Posting timestamp
+
+  - name: cancelled_by
+    type: uuid
+    required: false
+    description: User who cancelled
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: Cancellation timestamp
+
+  - name: cancellation_reason
+    type: string
+    required: false
+    description: Cancellation reason
+    validation:
+      max_length: 200
+
+relationships:
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+    description: Warehouse being counted
+
+  - name: zone
+    type: belongs_to
+    entity: WarehouseZone
+    required: false
+    description: Zone being counted
+
+  - name: lines
+    type: has_many
+    entity: InventoryCountLine
+    description: Count line items
+
+  - name: adjustments
+    type: has_many
+    entity: InventoryTransaction
+    description: Adjustment transactions
+
+  - name: supervisor
+    type: belongs_to
+    entity: User
+    required: true
+    description: Count supervisor
+
+indexes:
+  - [count_number]
+  - [status]
+  - [count_type]
+  - [plant_id, warehouse_id]
+  - [planned_date]
+  - [supervisor_id]
+  - [abc_class]
+
+state_machine:
+  initial: planned
+  states:
+    planned:
+      description: Count scheduled
+      transitions:
+        - to: in_progress
+          trigger: start
+          action: freeze_stock_if_required
+        - to: cancelled
+          trigger: cancel
+    in_progress:
+      description: Count in progress
+      transitions:
+        - to: counting
+          trigger: begin_counting
+          action: generate_count_sheets
+    counting:
+      description: Physical counting
+      transitions:
+        - to: pending_review
+          trigger: complete_counting
+          condition: all_items_counted
+        - to: cancelled
+          trigger: cancel
+    pending_review:
+      description: Reviewing variances
+      transitions:
+        - to: counting
+          trigger: recount
+        - to: pending_approval
+          trigger: submit_for_approval
+          condition: approval_required
+        - to: approved
+          trigger: approve
+          condition: NOT approval_required
+    pending_approval:
+      description: Awaiting approval
+      transitions:
+        - to: approved
+          trigger: approve
+          action: set_approval_info
+        - to: pending_review
+          trigger: reject
+          action: set_rejection_reason
+    approved:
+      description: Approved for posting
+      transitions:
+        - to: posted
+          trigger: post
+          action: create_adjustment_transactions
+    posted:
+      description: Adjustments posted
+      final: true
+      entry_action: unfreeze_stock
+    cancelled:
+      description: Count cancelled
+      final: true
+      entry_action: unfreeze_stock
+
+business_rules:
+  - BR-CNT-001: Count number auto-generated as CNT-YYYY-NNNNNN
+  - BR-CNT-002: Cannot count during stock freeze from another count
+  - BR-CNT-003: Recount required if variance exceeds threshold
+  - BR-CNT-004: Approval required for adjustments above limit
+  - BR-CNT-005: All locations must be counted before completion
+  - BR-CNT-006: Blind count hides system qty from counters
+  - BR-CNT-007: Posting date cannot be in closed period
+  - BR-CNT-008: ABC-A items require more frequent counting
+  - BR-CNT-009: Supervisor cannot be counter (segregation of duties)
+  - BR-CNT-010: Auto-adjust only for variances within limit
+
+events:
+  - name: count.started
+    payload: [id, count_number, count_type, warehouse_id]
+    description: Count started
+
+  - name: count.completed
+    payload: [id, count_number, total_items, items_with_variance]
+    description: Counting completed
+
+  - name: count.variance_detected
+    payload: [id, count_number, variance_value, variance_percentage]
+    description: Significant variance detected
+
+  - name: count.approved
+    payload: [id, count_number, approved_by, variance_value]
+    description: Count approved
+
+  - name: count.posted
+    payload: [id, count_number, adjustments_count, adjustment_value]
+    description: Adjustments posted
+
+  - name: count.accuracy_report
+    payload: [id, count_number, location_accuracy, item_accuracy, value_accuracy]
+    description: Accuracy metrics calculated

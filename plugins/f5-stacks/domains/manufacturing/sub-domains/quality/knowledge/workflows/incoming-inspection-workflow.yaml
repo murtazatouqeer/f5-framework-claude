@@ -1,0 +1,640 @@
+name: incoming-inspection-workflow
+display_name: Incoming Inspection Workflow
+display_name_vi: Quy trình kiểm tra đầu vào
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: workflow
+
+description: |
+  End-to-end workflow for receiving inspection of purchased materials,
+  components, and supplier deliveries including sampling, testing,
+  disposition, and supplier feedback.
+
+description_vi: |
+  Quy trình đầu cuối cho kiểm tra nhận hàng của vật liệu mua,
+  linh kiện và giao hàng từ nhà cung cấp bao gồm lấy mẫu, kiểm tra,
+  xử lý và phản hồi nhà cung cấp.
+
+workflow_metadata:
+  category: quality_control
+  complexity: medium
+  estimated_duration: "2-8 hours"
+  automation_level: semi-automated
+  compliance:
+    - ISO 9001:2015
+    - ISO/TS 16949
+    - FDA 21 CFR Part 211
+
+actors:
+  - id: receiving_clerk
+    name: Receiving Clerk
+    name_vi: Nhân viên nhận hàng
+    responsibilities:
+      - Receive and verify delivery documents
+      - Create receiving record
+      - Initial quantity verification
+      - Route material for inspection
+
+  - id: quality_inspector
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Perform sampling per inspection plan
+      - Execute inspection procedures
+      - Record measurement data
+      - Determine pass/fail results
+
+  - id: quality_engineer
+    name: Quality Engineer
+    name_vi: Kỹ sư chất lượng
+    responsibilities:
+      - Review inspection results
+      - Approve disposition decisions
+      - Manage NCRs and supplier feedback
+      - Adjust inspection levels
+
+  - id: warehouse_operator
+    name: Warehouse Operator
+    name_vi: Nhân viên kho
+    responsibilities:
+      - Store accepted materials
+      - Manage quarantine area
+      - Handle rejected material returns
+
+triggers:
+  - id: purchase_order_receipt
+    name: Purchase Order Receipt
+    type: event
+    source: receiving_system
+    condition: "delivery.status = 'received'"
+
+  - id: material_arrival
+    name: Material Arrival
+    type: manual
+    source: receiving_dock
+
+  - id: scheduled_delivery
+    name: Scheduled Delivery
+    type: scheduled
+    source: procurement_system
+
+states:
+  - id: pending_receipt
+    name: Pending Receipt
+    name_vi: Chờ nhận hàng
+    type: initial
+    description: Delivery expected but not yet received
+
+  - id: received
+    name: Received
+    name_vi: Đã nhận
+    type: intermediate
+    description: Material physically received, pending inspection
+
+  - id: in_quarantine
+    name: In Quarantine
+    name_vi: Trong khu cách ly
+    type: intermediate
+    description: Material held pending inspection completion
+
+  - id: inspection_in_progress
+    name: Inspection In Progress
+    name_vi: Đang kiểm tra
+    type: intermediate
+    description: Inspection being performed
+
+  - id: pending_disposition
+    name: Pending Disposition
+    name_vi: Chờ xử lý
+    type: intermediate
+    description: Inspection complete, awaiting disposition decision
+
+  - id: accepted
+    name: Accepted
+    name_vi: Chấp nhận
+    type: final
+    description: Material accepted and released to inventory
+
+  - id: rejected
+    name: Rejected
+    name_vi: Từ chối
+    type: final
+    description: Material rejected, pending return or scrap
+
+  - id: conditional_accept
+    name: Conditional Accept
+    name_vi: Chấp nhận có điều kiện
+    type: final
+    description: Accepted with limitations or concession
+
+steps:
+  - id: receive_delivery
+    name: Receive Delivery
+    name_vi: Nhận hàng giao
+    sequence: 1
+    actor: receiving_clerk
+    description: Physically receive delivery and verify documents
+    from_state: pending_receipt
+    to_state: received
+    actions:
+      - Verify delivery against PO
+      - Check packing slip accuracy
+      - Count containers/packages
+      - Note any visible damage
+      - Create receiving record
+    inputs:
+      - name: purchase_order
+        type: document
+        required: true
+      - name: packing_slip
+        type: document
+        required: true
+      - name: delivery_note
+        type: document
+        required: false
+    outputs:
+      - name: receiving_record
+        type: record
+      - name: damage_report
+        type: document
+        conditional: true
+    validations:
+      - PO number matches delivery
+      - Quantity within tolerance
+      - Supplier matches PO
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: quarantine_material
+    name: Quarantine Material
+    name_vi: Cách ly vật liệu
+    sequence: 2
+    actor: receiving_clerk
+    description: Move material to quarantine area pending inspection
+    from_state: received
+    to_state: in_quarantine
+    actions:
+      - Apply quarantine label
+      - Move to designated area
+      - Update inventory status to 'quarantine'
+      - Notify quality department
+    outputs:
+      - name: quarantine_tag
+        type: label
+      - name: inspection_notification
+        type: notification
+    sla:
+      target: 15 minutes
+      maximum: 1 hour
+
+  - id: determine_inspection_plan
+    name: Determine Inspection Plan
+    name_vi: Xác định kế hoạch kiểm tra
+    sequence: 3
+    actor: quality_inspector
+    description: Identify applicable inspection plan and sampling requirements
+    from_state: in_quarantine
+    to_state: in_quarantine
+    actions:
+      - Look up material inspection plan
+      - Determine inspection level (normal/tightened/reduced)
+      - Check supplier history
+      - Calculate sample size per AQL tables
+    business_rules:
+      - Check supplier qualification status
+      - Apply skip-lot rules if eligible
+      - Verify inspection plan is current
+    outputs:
+      - name: sample_requirements
+        type: specification
+      - name: inspection_checklist
+        type: document
+    decision_points:
+      - condition: "supplier.qualification_status = 'preferred' AND supplier.accept_rate_10_lots = 100%"
+        action: "Apply reduced inspection or skip-lot"
+      - condition: "supplier.recent_ncr_count > 0"
+        action: "Apply tightened inspection"
+
+  - id: collect_samples
+    name: Collect Samples
+    name_vi: Thu thập mẫu
+    sequence: 4
+    actor: quality_inspector
+    description: Randomly select samples from lot per sampling plan
+    from_state: in_quarantine
+    to_state: inspection_in_progress
+    actions:
+      - Use random selection method
+      - Collect required sample quantity
+      - Label samples with lot info
+      - Document sample locations in lot
+      - Maintain sample traceability
+    inputs:
+      - name: sample_requirements
+        type: specification
+        required: true
+    outputs:
+      - name: sample_records
+        type: record
+    validations:
+      - Sample size meets plan requirements
+      - Random selection verified
+      - Samples properly identified
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: perform_inspection
+    name: Perform Inspection
+    name_vi: Thực hiện kiểm tra
+    sequence: 5
+    actor: quality_inspector
+    description: Execute inspection per defined procedures
+    from_state: inspection_in_progress
+    to_state: inspection_in_progress
+    actions:
+      - Verify equipment calibration
+      - Follow inspection procedure
+      - Record all measurements
+      - Note any observations
+      - Calculate statistics if required
+    inputs:
+      - name: inspection_procedure
+        type: document
+        required: true
+      - name: samples
+        type: material
+        required: true
+    outputs:
+      - name: measurement_data
+        type: record
+      - name: inspection_photos
+        type: attachment
+        conditional: true
+    validations:
+      - Equipment calibration current
+      - All characteristics inspected
+      - Measurements within capability
+    business_rules:
+      - All critical characteristics must be measured
+      - As-found data required for each sample
+      - Environmental conditions recorded
+    sla:
+      target: 2 hours
+      maximum: 8 hours
+
+  - id: determine_lot_result
+    name: Determine Lot Result
+    name_vi: Xác định kết quả lô
+    sequence: 6
+    actor: quality_inspector
+    description: Evaluate inspection results against acceptance criteria
+    from_state: inspection_in_progress
+    to_state: pending_disposition
+    actions:
+      - Compare results to specifications
+      - Apply acceptance number criteria
+      - Calculate defect counts
+      - Determine pass/fail status
+    inputs:
+      - name: measurement_data
+        type: record
+        required: true
+      - name: acceptance_criteria
+        type: specification
+        required: true
+    outputs:
+      - name: lot_result
+        type: decision
+        values: [accept, reject, pending_review]
+      - name: inspection_summary
+        type: report
+    decision_logic:
+      accept:
+        condition: "defects_found <= accept_number"
+        next_step: release_material
+      reject:
+        condition: "defects_found >= reject_number"
+        next_step: create_ncr
+      pending_review:
+        condition: "accept_number < defects_found < reject_number"
+        next_step: expand_sample
+
+  - id: expand_sample
+    name: Expand Sample
+    name_vi: Mở rộng mẫu
+    sequence: 7
+    actor: quality_inspector
+    description: Take additional samples when initial results inconclusive
+    from_state: pending_disposition
+    to_state: inspection_in_progress
+    condition: "lot_result.status = 'pending_review'"
+    actions:
+      - Calculate expanded sample size
+      - Collect additional samples
+      - Perform inspection on new samples
+      - Combine results with initial sample
+    outputs:
+      - name: expanded_results
+        type: record
+    next_step: determine_lot_result
+
+  - id: create_ncr
+    name: Create NCR
+    name_vi: Tạo NCR
+    sequence: 8
+    actor: quality_inspector
+    description: Document non-conformance for rejected lots
+    from_state: pending_disposition
+    to_state: pending_disposition
+    condition: "lot_result.status = 'reject'"
+    actions:
+      - Create NCR record
+      - Document defects found
+      - Attach evidence photos
+      - Link to inspection record
+      - Classify severity
+    outputs:
+      - name: ncr_record
+        type: record
+      - name: ncr_notification
+        type: notification
+    notifications:
+      - recipient: quality_engineer
+        message: "NCR created for incoming material"
+      - recipient: supplier_quality
+        message: "Supplier quality issue identified"
+    next_step: determine_disposition
+
+  - id: determine_disposition
+    name: Determine Disposition
+    name_vi: Xác định xử lý
+    sequence: 9
+    actor: quality_engineer
+    description: Decide appropriate disposition for non-conforming material
+    from_state: pending_disposition
+    to_state: pending_disposition
+    actions:
+      - Review NCR details
+      - Evaluate disposition options
+      - Consider cost impact
+      - Document decision rationale
+    inputs:
+      - name: ncr_record
+        type: record
+        required: true
+    outputs:
+      - name: disposition_decision
+        type: decision
+        values: [return_to_vendor, use_as_is, rework, scrap, sort]
+    decision_points:
+      - condition: "disposition = 'return_to_vendor'"
+        action: "Process RTV with supplier"
+        next_step: process_return
+      - condition: "disposition = 'use_as_is'"
+        action: "Requires engineering/customer approval"
+        next_step: request_concession
+      - condition: "disposition = 'rework'"
+        action: "Create rework order"
+        next_step: create_rework_order
+      - condition: "disposition = 'scrap'"
+        action: "Process scrap with cost recovery"
+        next_step: process_scrap
+      - condition: "disposition = 'sort'"
+        action: "100% inspection to separate conforming"
+        next_step: perform_sorting
+    approval_required:
+      approver: quality_manager
+      conditions:
+        - "severity = 'critical'"
+        - "cost_impact > threshold"
+
+  - id: process_return
+    name: Process Return to Vendor
+    name_vi: Xử lý trả lại nhà cung cấp
+    sequence: 10
+    actor: quality_engineer
+    description: Coordinate return of rejected material to supplier
+    from_state: pending_disposition
+    to_state: rejected
+    condition: "disposition = 'return_to_vendor'"
+    actions:
+      - Create RTV document
+      - Calculate cost recovery
+      - Update supplier record
+      - Coordinate shipping
+      - Issue debit memo
+    outputs:
+      - name: rtv_document
+        type: document
+      - name: debit_memo
+        type: document
+      - name: supplier_feedback
+        type: notification
+    integrations:
+      - system: supplier_portal
+        action: Send NCR and RTV notification
+      - system: finance
+        action: Process debit memo
+
+  - id: request_concession
+    name: Request Concession
+    name_vi: Yêu cầu nhượng bộ
+    sequence: 10
+    actor: quality_engineer
+    description: Request approval to use non-conforming material
+    from_state: pending_disposition
+    to_state: conditional_accept
+    condition: "disposition = 'use_as_is'"
+    actions:
+      - Document deviation details
+      - Assess risk of use
+      - Obtain engineering approval
+      - Obtain customer approval if required
+      - Document limitations
+    outputs:
+      - name: concession_request
+        type: document
+      - name: approval_record
+        type: record
+    approval_chain:
+      - role: engineering_manager
+        required: true
+      - role: customer
+        required: "affects_customer_specification"
+
+  - id: release_material
+    name: Release Material
+    name_vi: Giải phóng vật liệu
+    sequence: 11
+    actor: quality_inspector
+    description: Release accepted material to inventory
+    from_state: pending_disposition
+    to_state: accepted
+    actions:
+      - Update inspection status to 'approved'
+      - Remove quarantine label
+      - Apply acceptance label
+      - Update inventory status to 'available'
+      - Notify warehouse
+    outputs:
+      - name: release_authorization
+        type: record
+      - name: acceptance_label
+        type: label
+    notifications:
+      - recipient: warehouse_operator
+        message: "Material released for stock"
+
+  - id: update_supplier_quality
+    name: Update Supplier Quality
+    name_vi: Cập nhật chất lượng nhà cung cấp
+    sequence: 12
+    actor: quality_engineer
+    description: Update supplier quality records and metrics
+    from_state: accepted
+    to_state: accepted
+    parallel: true
+    actions:
+      - Update supplier acceptance history
+      - Calculate rolling PPM
+      - Evaluate switching rules
+      - Update supplier scorecard
+    outputs:
+      - name: supplier_quality_update
+        type: record
+    business_rules:
+      - Track last 10 lot accept/reject status
+      - Calculate defects per million
+      - Evaluate inspection level switching
+
+  - id: complete_inspection
+    name: Complete Inspection
+    name_vi: Hoàn thành kiểm tra
+    sequence: 13
+    actor: quality_inspector
+    description: Finalize inspection record and documentation
+    from_state: accepted
+    to_state: accepted
+    actions:
+      - Complete all inspection documentation
+      - Attach certificates and test reports
+      - Archive inspection record
+      - Generate inspection certificate
+    outputs:
+      - name: completed_inspection_record
+        type: record
+      - name: inspection_certificate
+        type: document
+    validations:
+      - All required fields completed
+      - All measurements recorded
+      - Proper approvals obtained
+      - Electronic signatures applied
+
+exceptions:
+  - id: urgent_material
+    name: Urgent Material Required
+    description: Production urgently needs material
+    handling:
+      - Expedite inspection process
+      - Consider risk-based sampling
+      - Obtain quality manager approval for conditional release
+      - Document urgency justification
+
+  - id: no_inspection_plan
+    name: No Inspection Plan Exists
+    description: Inspection plan not defined for material
+    handling:
+      - Hold material in quarantine
+      - Create temporary inspection plan
+      - Route to quality engineer for plan creation
+      - Notify procurement of delay
+
+  - id: equipment_unavailable
+    name: Inspection Equipment Unavailable
+    description: Required equipment out of calibration or unavailable
+    handling:
+      - Check alternative equipment
+      - Expedite calibration if possible
+      - Consider external lab
+      - Hold material until equipment available
+
+  - id: insufficient_quantity
+    name: Insufficient Quantity for Sampling
+    description: Delivered quantity less than sample size
+    handling:
+      - Apply small lot sampling rules
+      - Consider 100% inspection
+      - Document deviation from plan
+      - Adjust sample size per standards
+
+notifications:
+  - trigger: inspection_complete
+    recipients: [warehouse, procurement]
+    message: "Inspection complete for PO {{po_number}}"
+
+  - trigger: lot_rejected
+    recipients: [quality_engineer, supplier_quality, procurement]
+    message: "Material rejected: {{material_code}} from {{supplier_name}}"
+    priority: high
+
+  - trigger: tightened_inspection_triggered
+    recipients: [quality_engineer, supplier_quality]
+    message: "Switching to tightened inspection for {{supplier_name}} - {{material_code}}"
+
+integrations:
+  - system: erp
+    events:
+      - receiving_created
+      - inspection_complete
+      - material_released
+      - material_rejected
+    data_exchange:
+      - inventory_status
+      - po_status
+      - supplier_data
+
+  - system: supplier_portal
+    events:
+      - ncr_created
+      - rtv_initiated
+    data_exchange:
+      - ncr_details
+      - quality_feedback
+
+  - system: document_management
+    events:
+      - inspection_record_created
+    data_exchange:
+      - inspection_documents
+      - certificates
+
+metrics:
+  - name: inspection_lead_time
+    description: Time from receipt to release
+    target: "< 24 hours"
+
+  - name: first_pass_accept_rate
+    description: Percentage of lots accepted on first inspection
+    target: "> 95%"
+
+  - name: supplier_ppm
+    description: Defects per million by supplier
+    target: "< 500 PPM"
+
+  - name: inspection_accuracy
+    description: Inspector accuracy rate
+    target: "> 99%"
+
+audit_trail:
+  enabled: true
+  events:
+    - state_changes
+    - disposition_decisions
+    - approval_actions
+    - sample_collection
+    - measurement_entry
+  retention_years: 7

@@ -1,0 +1,330 @@
+name: Cart
+display_name: Cart / Giỏ hàng
+description: |
+  Shopping cart for collecting items before checkout.
+  Supports both guest carts (session-based) and customer carts (account-based).
+  Tracks cart lifecycle from active shopping through conversion or abandonment.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the cart
+
+  - name: session_id
+    type: string
+    required: false
+    description: Session ID for guest carts
+    validation:
+      max_length: 128
+
+  - name: customer_id
+    type: uuid
+    required: false
+    description: Customer ID for logged-in users
+
+  - name: status
+    type: enum
+    required: true
+    description: Cart lifecycle status
+    validation:
+      values: [active, abandoned, converted, merged, expired]
+    default: active
+
+  - name: currency
+    type: string
+    required: true
+    description: Cart currency (ISO 4217)
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: item_count
+    type: integer
+    required: true
+    description: Total number of items in cart
+    validation:
+      min: 0
+    default: 0
+
+  - name: subtotal
+    type: decimal
+    required: true
+    description: Sum of item prices before discounts
+    validation:
+      min: 0
+    default: 0
+
+  - name: discount_amount
+    type: decimal
+    required: true
+    description: Total discount applied
+    validation:
+      min: 0
+    default: 0
+
+  - name: tax_amount
+    type: decimal
+    required: true
+    description: Calculated tax amount
+    validation:
+      min: 0
+    default: 0
+
+  - name: shipping_estimate
+    type: decimal
+    required: false
+    description: Estimated shipping cost (before address confirmed)
+    validation:
+      min: 0
+
+  - name: total
+    type: decimal
+    required: true
+    description: Grand total (subtotal - discount + tax + shipping)
+    validation:
+      min: 0
+    default: 0
+
+  - name: coupon_code
+    type: string
+    required: false
+    description: Applied coupon code
+    validation:
+      max_length: 50
+
+  - name: coupon_id
+    type: uuid
+    required: false
+    description: Reference to applied coupon
+
+  - name: shipping_address_id
+    type: uuid
+    required: false
+    description: Selected shipping address
+
+  - name: billing_address_id
+    type: uuid
+    required: false
+    description: Selected billing address
+
+  - name: shipping_method
+    type: string
+    required: false
+    description: Selected shipping method code
+    validation:
+      max_length: 50
+
+  - name: notes
+    type: string
+    required: false
+    description: Customer notes/instructions
+    validation:
+      max_length: 1000
+
+  - name: source
+    type: enum
+    required: true
+    description: Where the cart was created
+    validation:
+      values: [web, mobile_app, api]
+    default: web
+
+  - name: ip_address
+    type: string
+    required: false
+    description: Client IP address
+    validation:
+      max_length: 45
+
+  - name: user_agent
+    type: string
+    required: false
+    description: Client user agent
+    validation:
+      max_length: 500
+
+  - name: last_activity_at
+    type: timestamp
+    required: true
+    description: Last cart interaction timestamp
+
+  - name: abandoned_at
+    type: timestamp
+    required: false
+    description: When cart was marked abandoned
+
+  - name: converted_at
+    type: timestamp
+    required: false
+    description: When cart was converted to order
+
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Cart expiration timestamp
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: false
+    description: Cart owner (if logged in)
+
+  - name: items
+    type: has_many
+    entity: CartItem
+    required: false
+    description: Items in the cart
+
+  - name: coupon
+    type: belongs_to
+    entity: Coupon
+    required: false
+    description: Applied coupon
+
+  - name: shipping_address
+    type: belongs_to
+    entity: Address
+    required: false
+    description: Selected shipping address
+
+  - name: billing_address
+    type: belongs_to
+    entity: Address
+    required: false
+    description: Selected billing address
+
+  - name: order
+    type: has_one
+    entity: Order
+    required: false
+    description: Resulting order after conversion
+
+state_machine:
+  initial: active
+  states:
+    - name: active
+      description: Cart is in use, customer is shopping
+    - name: abandoned
+      description: Cart abandoned after inactivity period
+    - name: converted
+      description: Cart successfully converted to order
+    - name: merged
+      description: Guest cart merged into customer cart
+    - name: expired
+      description: Cart expired after maximum lifetime
+  transitions:
+    - from: active
+      to: abandoned
+      trigger: mark_abandoned
+      conditions: [inactivity_threshold_reached]
+      description: Mark as abandoned after 24h inactivity
+    - from: active
+      to: converted
+      trigger: convert_to_order
+      conditions: [has_items, valid_address]
+      actions: [create_order, clear_items]
+      description: Convert cart to order at checkout
+    - from: active
+      to: merged
+      trigger: merge
+      conditions: [guest_cart, customer_logged_in]
+      actions: [transfer_items_to_customer_cart]
+      description: Merge guest cart into customer cart
+    - from: active
+      to: expired
+      trigger: expire
+      conditions: [max_lifetime_reached]
+      description: Expire cart after 30 days
+    - from: abandoned
+      to: active
+      trigger: reactivate
+      conditions: [customer_returns]
+      description: Reactivate when customer returns
+    - from: abandoned
+      to: converted
+      trigger: convert_to_order
+      description: Convert abandoned cart (recovery flow)
+    - from: abandoned
+      to: expired
+      trigger: expire
+      description: Expire old abandoned cart
+
+indexes:
+  - [session_id]
+  - [customer_id]
+  - [status]
+  - [coupon_code]
+  - [last_activity_at]
+  - [abandoned_at]
+  - [created_at]
+
+business_rules:
+  - BR-CRT-001: Guest cart identified by session_id, customer cart by customer_id
+  - BR-CRT-002: When guest logs in, merge guest cart into customer cart
+  - BR-CRT-003: Cart marked abandoned after 24 hours of inactivity
+  - BR-CRT-004: Cart expires after 30 days regardless of activity
+  - BR-CRT-005: Only one active cart per customer
+  - BR-CRT-006: Only one coupon can be applied per cart
+  - BR-CRT-007: total = subtotal - discount_amount + tax_amount + shipping_estimate
+  - BR-CRT-008: item_count = SUM(cart_items.quantity)
+  - BR-CRT-009: subtotal = SUM(cart_items.line_total)
+  - BR-CRT-010: Cart conversion creates order and clears cart items
+  - BR-CRT-011: Cannot add items to converted/expired cart
+  - BR-CRT-012: Inventory reservation on add to cart (optional, 30 min timeout)
+
+computed_fields:
+  - name: total
+    formula: subtotal - discount_amount + tax_amount + (shipping_estimate ?? 0)
+    description: Grand total
+
+  - name: is_guest
+    formula: session_id IS NOT NULL AND customer_id IS NULL
+    description: Whether this is a guest cart
+
+  - name: is_empty
+    formula: item_count == 0
+    description: Whether cart has no items
+
+events:
+  - name: cart.created
+    payload: [id, customer_id, session_id, source]
+    description: Fired when a new cart is created
+
+  - name: cart.item_added
+    payload: [id, product_id, variant_id, quantity]
+    description: Fired when item added to cart
+
+  - name: cart.item_removed
+    payload: [id, product_id, variant_id]
+    description: Fired when item removed from cart
+
+  - name: cart.coupon_applied
+    payload: [id, coupon_code, discount_amount]
+    description: Fired when coupon is applied
+
+  - name: cart.abandoned
+    payload: [id, customer_id, total, item_count]
+    description: Fired when cart is marked abandoned
+
+  - name: cart.converted
+    payload: [id, order_id, total]
+    description: Fired when cart converts to order
+
+  - name: cart.merged
+    payload: [guest_cart_id, customer_cart_id, items_transferred]
+    description: Fired when guest cart merged into customer cart

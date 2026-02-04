@@ -1,0 +1,407 @@
+name: order-validation-rules
+display_name: Order Validation Rules
+description: |
+  Collection of business rules to validate buy/sell orders
+  before sending to the Exchange. Includes validation for price, quantity,
+  buying power, and trading conditions.
+
+domain: fintech/stock-trading
+version: "1.0"
+effective_date: "2024-01-01"
+
+references:
+  - HOSE Trading Regulations
+  - HNX Trading Regulations
+  - Brokerage Margin Regulations
+
+rules:
+  # ===== PRICE VALIDATION =====
+  - id: BR-ORD-001
+    name: Price within limit
+    description: |
+      Order price must be within the allowed price range of the trading session:
+      - HOSE: ±7% from reference price
+      - HNX: ±10% from reference price
+      - UPCoM: ±15% from reference price
+    category: validation
+    severity: error
+    condition: |
+      quote.floor_price <= order.price <= quote.ceiling_price
+    parameters:
+      hose_limit: 0.07
+      hnx_limit: 0.10
+      upcom_limit: 0.15
+    message: "Order price {price} is outside the allowed range ({floor} - {ceiling})"
+    applies_to: [Order]
+
+  - id: BR-ORD-002
+    name: Price follows tick size
+    description: |
+      Order price must be a multiple of the specified tick size:
+      HOSE: 10đ (< 10k), 50đ (10k-50k), 100đ (> 50k)
+      HNX/UPCoM: 100đ
+    category: validation
+    severity: error
+    condition: |
+      CASE order.exchange
+        WHEN 'HOSE' THEN
+          (order.price < 10000 AND order.price % 10 == 0) OR
+          (order.price >= 10000 AND order.price < 50000 AND order.price % 50 == 0) OR
+          (order.price >= 50000 AND order.price % 100 == 0)
+        ELSE
+          order.price % 100 == 0
+      END
+    message: "Order price does not follow the specified tick size"
+    applies_to: [Order]
+
+  - id: BR-ORD-003
+    name: Price required for LO orders
+    description: |
+      Limit orders (LO) must have a price.
+      Market orders (MP, ATO, ATC) do not require a price.
+    category: validation
+    severity: error
+    condition: |
+      IF order.order_type == 'LO' THEN
+        order.price IS NOT NULL AND order.price > 0
+      ELSE
+        TRUE
+      END IF
+    message: "Limit order must have a price"
+    applies_to: [Order]
+
+  # ===== QUANTITY VALIDATION =====
+  - id: BR-ORD-010
+    name: Quantity follows lot size
+    description: |
+      Order quantity must be a multiple of the lot size:
+      - HOSE/HNX: 100 shares
+      - UPCoM: 1 share (odd lot)
+    category: validation
+    severity: error
+    condition: |
+      CASE order.exchange
+        WHEN 'UPCOM' THEN TRUE
+        ELSE order.quantity % 100 == 0
+      END
+    parameters:
+      hose_lot: 100
+      hnx_lot: 100
+      upcom_lot: 1
+    message: "Quantity must be a multiple of 100 shares"
+    applies_to: [Order]
+
+  - id: BR-ORD-011
+    name: Minimum quantity
+    description: |
+      Order quantity must be >= minimum lot size (100 shares for HOSE/HNX).
+    category: validation
+    severity: error
+    condition: |
+      CASE order.exchange
+        WHEN 'UPCOM' THEN order.quantity >= 1
+        ELSE order.quantity >= 100
+      END
+    message: "Minimum quantity is 100 shares"
+    applies_to: [Order]
+
+  - id: BR-ORD-012
+    name: Maximum quantity
+    description: |
+      Order quantity must not exceed the maximum limit
+      (typically % of total listed quantity or system limit).
+    category: validation
+    severity: error
+    condition: |
+      order.quantity <= security.max_order_quantity
+      AND order.quantity <= 500000  # System limit
+    parameters:
+      max_order_quantity: 500000
+    message: "Quantity exceeds the maximum allowed limit"
+    applies_to: [Order]
+
+  # ===== BALANCE & BUYING POWER =====
+  - id: BR-ORD-020
+    name: Sufficient buying power for buy orders
+    description: |
+      Account must have sufficient cash or margin to buy.
+      Buying power = Available cash + Available margin.
+    category: validation
+    severity: error
+    condition: |
+      IF order.side == 'buy' THEN
+        portfolio.buying_power >= (order.price × order.quantity) × 1.003
+        -- 1.003 = 1 + estimated fee
+      ELSE
+        TRUE
+      END IF
+    message: "Insufficient buying power. Required {required}, Available {available}"
+    applies_to: [Order, Portfolio]
+
+  - id: BR-ORD-021
+    name: Sufficient securities for sell orders
+    description: |
+      Account must have sufficient available securities to sell.
+      Available = Total - Pending sell - Blocked.
+    category: validation
+    severity: error
+    condition: |
+      IF order.side == 'sell' THEN
+        position.available_quantity >= order.quantity
+      ELSE
+        TRUE
+      END IF
+    message: "Insufficient securities. Required {required}, Available {available}"
+    applies_to: [Order, Position]
+
+  - id: BR-ORD-022
+    name: Cannot sell unsettled T+2 securities
+    description: |
+      Cannot sell securities that are still in settlement period (T+2 not yet settled).
+    category: validation
+    severity: error
+    condition: |
+      IF order.side == 'sell' THEN
+        position.available_quantity >= order.quantity
+        -- available_quantity already excludes pending_buy_quantity
+      ELSE
+        TRUE
+      END IF
+    message: "Securities are awaiting T+2 settlement, cannot sell yet"
+    applies_to: [Order, Position]
+
+  # ===== ORDER TYPE & SESSION =====
+  - id: BR-ORD-030
+    name: ATO orders only in ATO session
+    description: |
+      ATO (At The Open) orders can only be placed during the
+      opening call auction session (9:00 - 9:15).
+    category: validation
+    severity: error
+    condition: |
+      IF order.order_type == 'ATO' THEN
+        quote.trading_session == 'ato'
+      ELSE
+        TRUE
+      END IF
+    parameters:
+      ato_start: "09:00:00"
+      ato_end: "09:15:00"
+    message: "ATO orders can only be placed during opening session (9:00-9:15)"
+    applies_to: [Order]
+
+  - id: BR-ORD-031
+    name: ATC orders only in ATC session
+    description: |
+      ATC (At The Close) orders can only be placed during the
+      closing call auction session (14:30 - 14:45).
+    category: validation
+    severity: error
+    condition: |
+      IF order.order_type == 'ATC' THEN
+        quote.trading_session == 'atc'
+      ELSE
+        TRUE
+      END IF
+    parameters:
+      atc_start: "14:30:00"
+      atc_end: "14:45:00"
+    message: "ATC orders can only be placed during closing session (14:30-14:45)"
+    applies_to: [Order]
+
+  - id: BR-ORD-032
+    name: MP orders in continuous session
+    description: |
+      Market orders (MP) can only be placed during continuous
+      trading sessions (9:15-11:30 and 13:00-14:30).
+    category: validation
+    severity: error
+    condition: |
+      IF order.order_type == 'MP' THEN
+        quote.trading_session IN ('continuous_am', 'continuous_pm')
+      ELSE
+        TRUE
+      END IF
+    message: "Market orders can only be placed during continuous sessions"
+    applies_to: [Order]
+
+  - id: BR-ORD-033
+    name: PLO orders in PLO session
+    description: |
+      Post-hours orders (PLO - Post Limit Order) can only be placed
+      during 14:45 - 15:00.
+    category: validation
+    severity: error
+    condition: |
+      IF order.order_type == 'PLO' THEN
+        quote.trading_session == 'plo'
+      ELSE
+        TRUE
+      END IF
+    message: "PLO orders can only be placed during 14:45-15:00"
+    applies_to: [Order]
+
+  # ===== TRADING STATUS =====
+  - id: BR-ORD-040
+    name: Security is trading
+    description: |
+      Can only place orders for securities in normal trading status.
+      Cannot place orders when halted, suspended, or delisted.
+    category: validation
+    severity: error
+    condition: |
+      quote.status == 'trading'
+    message: "Symbol {symbol} is currently suspended from trading"
+    applies_to: [Order, Quote]
+
+  - id: BR-ORD-041
+    name: Within trading hours
+    description: |
+      Orders can only be placed during Exchange trading hours.
+      HOSE: 9:00-11:30, 13:00-15:00.
+    category: validation
+    severity: error
+    condition: |
+      quote.trading_session NOT IN ('pre_open', 'lunch_break', 'closed')
+    parameters:
+      trading_hours:
+        morning_start: "09:00:00"
+        morning_end: "11:30:00"
+        afternoon_start: "13:00:00"
+        afternoon_end: "15:00:00"
+    message: "Outside trading hours. Please place order during trading session"
+    applies_to: [Order]
+
+  # ===== MARGIN RULES =====
+  - id: BR-ORD-050
+    name: Symbol is marginable
+    description: |
+      Can only use margin for securities in the brokerage's
+      approved list for margin trading.
+    category: validation
+    severity: error
+    condition: |
+      IF order.is_margin == TRUE THEN
+        security.is_marginable == TRUE
+      ELSE
+        TRUE
+      END IF
+    message: "Symbol {symbol} is not marginable"
+    applies_to: [Order]
+
+  - id: BR-ORD-051
+    name: Margin ratio within limit
+    description: |
+      Margin ratio used must not exceed the allowed limit for the
+      security and account.
+    category: validation
+    severity: error
+    condition: |
+      IF order.is_margin == TRUE THEN
+        order.margin_ratio <= security.max_margin_ratio
+        AND order.margin_ratio <= account.max_margin_ratio
+      ELSE
+        TRUE
+      END IF
+    parameters:
+      max_margin_ratio: 50  # Typically 50%
+    message: "Margin ratio exceeds the allowed limit ({max}%)"
+    applies_to: [Order]
+
+  - id: BR-ORD-052
+    name: No margin when margin called
+    description: |
+      Cannot place margin buy orders when account is under
+      margin call.
+    category: validation
+    severity: error
+    condition: |
+      IF order.is_margin == TRUE AND order.side == 'buy' THEN
+        portfolio.is_margin_call == FALSE
+      ELSE
+        TRUE
+      END IF
+    message: "Account is under margin call, cannot buy more on margin"
+    applies_to: [Order, Portfolio]
+
+  # ===== FOREIGN INVESTOR RULES =====
+  - id: BR-ORD-060
+    name: Foreign room available
+    description: |
+      Foreign investors can only buy when foreign room is available.
+    category: validation
+    severity: error
+    condition: |
+      IF account.investor_type == 'foreign' AND order.side == 'buy' THEN
+        quote.foreign_room_remaining >= order.quantity
+      ELSE
+        TRUE
+      END IF
+    message: "Foreign room exhausted. Remaining: {remaining} shares"
+    applies_to: [Order, Quote]
+
+  # ===== ORDER MODIFICATION =====
+  - id: BR-ORD-070
+    name: Only modify pending orders
+    description: |
+      Can only modify orders in confirmed or partial_filled status.
+      Cannot modify filled, cancelled, or rejected orders.
+    category: validation
+    severity: error
+    condition: |
+      order.status IN ('confirmed', 'partial_filled')
+    message: "Cannot modify order in {status} status"
+    applies_to: [Order]
+
+  - id: BR-ORD-071
+    name: Limit modification content
+    description: |
+      Can only modify price and quantity.
+      Cannot modify side (buy/sell), symbol, or order type.
+    category: validation
+    severity: error
+    condition: |
+      modify_request.symbol == original_order.symbol
+      AND modify_request.side == original_order.side
+      AND modify_request.order_type == original_order.order_type
+    message: "Can only modify price and quantity, cannot modify {field}"
+    applies_to: [Order]
+
+  - id: BR-ORD-072
+    name: Valid modification quantity
+    description: |
+      New quantity must be >= filled quantity.
+      Cannot reduce quantity below what has been filled.
+    category: validation
+    severity: error
+    condition: |
+      modify_request.quantity >= original_order.filled_quantity
+    message: "New quantity must be >= filled quantity ({filled})"
+    applies_to: [Order]
+
+  # ===== ORDER CANCELLATION =====
+  - id: BR-ORD-080
+    name: Only cancel pending orders
+    description: |
+      Can only cancel orders in confirmed or partial_filled status.
+    category: validation
+    severity: error
+    condition: |
+      order.status IN ('confirmed', 'partial_filled')
+    message: "Cannot cancel order in {status} status"
+    applies_to: [Order]
+
+  - id: BR-ORD-081
+    name: Cannot cancel during call auction
+    description: |
+      Cannot cancel ATO orders during ATO session and ATC orders during ATC session
+      (orders already in Exchange order book).
+    category: validation
+    severity: warning
+    condition: |
+      NOT (
+        (order.order_type == 'ATO' AND quote.trading_session == 'ato') OR
+        (order.order_type == 'ATC' AND quote.trading_session == 'atc')
+      )
+    message: "Cannot cancel order during call auction session"
+    applies_to: [Order]

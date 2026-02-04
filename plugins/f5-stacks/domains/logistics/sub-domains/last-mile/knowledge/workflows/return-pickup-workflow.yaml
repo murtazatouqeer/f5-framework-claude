@@ -1,0 +1,484 @@
+name: ReturnPickupWorkflow
+display_name: Return Pickup Workflow
+description: |
+  Workflow for reverse logistics - picking up returns from customers.
+  Covers return request, scheduling, pickup, and processing.
+
+domain: logistics
+subdomain: last-mile
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_type: reverse_logistics
+trigger: return.requested
+
+participants:
+  - role: customer
+    description: Customer returning the item
+  - role: system
+    description: Return Management System
+  - role: agent
+    description: Pickup agent collecting the return
+  - role: hub
+    description: Processing hub receiving returns
+  - role: qc_team
+    description: Quality control team
+  - role: merchant
+    description: Original seller/sender
+
+states:
+  - id: requested
+    name: Requested
+    description: Return pickup requested by customer
+    type: initial
+
+  - id: validated
+    name: Validated
+    description: Return request validated and approved
+    type: intermediate
+
+  - id: scheduled
+    name: Scheduled
+    description: Pickup date and time scheduled
+    type: intermediate
+
+  - id: assigned
+    name: Assigned
+    description: Pickup agent assigned
+    type: intermediate
+
+  - id: en_route
+    name: En Route
+    description: Agent heading to pickup location
+    type: intermediate
+
+  - id: at_location
+    name: At Location
+    description: Agent at customer location
+    type: intermediate
+
+  - id: picked_up
+    name: Picked Up
+    description: Return item collected from customer
+    type: intermediate
+
+  - id: in_transit
+    name: In Transit
+    description: Return item en route to hub
+    type: intermediate
+
+  - id: received_at_hub
+    name: Received at Hub
+    description: Return item received at processing hub
+    type: intermediate
+
+  - id: qc_in_progress
+    name: QC In Progress
+    description: Quality check being performed
+    type: intermediate
+
+  - id: qc_completed
+    name: QC Completed
+    description: Quality check finished
+    type: intermediate
+
+  - id: processed
+    name: Processed
+    description: Return fully processed
+    type: final_success
+
+  - id: rejected
+    name: Rejected
+    description: Return rejected (policy violation)
+    type: final_failure
+
+  - id: cancelled
+    name: Cancelled
+    description: Return pickup cancelled
+    type: final_cancelled
+
+transitions:
+  - id: T001
+    name: Validate Return
+    from: requested
+    to: validated
+    trigger: system
+    conditions:
+      - return_policy_check_passed = true
+      - item_eligible_for_return = true
+      - within_return_window = true
+    actions:
+      - verify_original_order
+      - check_return_policy
+      - calculate_refund_eligibility
+      - generate_return_id
+      - notify_customer_approval
+
+  - id: T002
+    name: Schedule Pickup
+    from: validated
+    to: scheduled
+    trigger: [customer, system]
+    conditions:
+      - slot_selected = true
+      - address_confirmed = true
+    actions:
+      - book_pickup_slot
+      - confirm_pickup_address
+      - send_confirmation
+      - add_to_pickup_queue
+
+  - id: T003
+    name: Assign Agent
+    from: scheduled
+    to: assigned
+    trigger: system
+    conditions:
+      - pickup_date = TODAY
+      - agents_available = true
+    actions:
+      - select_optimal_agent
+      - notify_agent
+      - provide_pickup_details
+      - update_route
+
+  - id: T004
+    name: Dispatch Agent
+    from: assigned
+    to: en_route
+    trigger: agent
+    conditions:
+      - agent.confirmed = true
+    actions:
+      - start_pickup_tracking
+      - notify_customer_eta
+      - update_status
+
+  - id: T005
+    name: Arrive at Location
+    from: en_route
+    to: at_location
+    trigger: geofence
+    conditions:
+      - agent.location WITHIN pickup_geofence
+    actions:
+      - notify_customer_arrived
+      - start_waiting_timer
+      - initiate_contact
+
+  - id: T006
+    name: Collect Return
+    from: at_location
+    to: picked_up
+    trigger: agent
+    conditions:
+      - item_received = true
+      - item_verified = true
+    actions:
+      - verify_item_condition
+      - capture_photos
+      - scan_item_barcode
+      - get_customer_confirmation
+      - update_return_status
+
+  - id: T007
+    name: Depart for Hub
+    from: picked_up
+    to: in_transit
+    trigger: agent
+    actions:
+      - start_transit_tracking
+      - notify_hub_incoming
+      - calculate_hub_eta
+
+  - id: T008
+    name: Arrive at Hub
+    from: in_transit
+    to: received_at_hub
+    trigger: agent
+    conditions:
+      - agent.location AT hub
+    actions:
+      - scan_in_at_hub
+      - handover_to_hub_staff
+      - get_receipt
+      - update_status
+
+  - id: T009
+    name: Start QC
+    from: received_at_hub
+    to: qc_in_progress
+    trigger: hub
+    actions:
+      - assign_qc_staff
+      - start_qc_timer
+      - prepare_qc_checklist
+
+  - id: T010
+    name: Complete QC
+    from: qc_in_progress
+    to: qc_completed
+    trigger: qc_team
+    conditions:
+      - qc_checklist_complete = true
+    actions:
+      - record_qc_results
+      - document_findings
+      - determine_restockability
+      - calculate_refund_amount
+
+  - id: T011
+    name: Process Approved Return
+    from: qc_completed
+    to: processed
+    trigger: system
+    conditions:
+      - qc_result IN ['passed', 'partial']
+    actions:
+      - process_refund
+      - notify_customer
+      - update_inventory
+      - notify_merchant
+      - close_return_case
+
+  - id: T012
+    name: Reject Return
+    from: [validated, qc_completed]
+    to: rejected
+    trigger: [system, qc_team]
+    conditions:
+      - policy_violation = true OR
+      - qc_result = 'failed'
+    actions:
+      - document_rejection_reason
+      - notify_customer
+      - offer_return_to_customer
+      - close_case
+
+  - id: T013
+    name: Cancel Return
+    from: [requested, validated, scheduled, assigned]
+    to: cancelled
+    trigger: [customer, system]
+    conditions:
+      - cancellation_allowed = true
+      - item_not_picked_up = true
+    actions:
+      - process_cancellation
+      - release_agent
+      - notify_customer
+      - close_case
+
+activities:
+  - id: A001
+    name: Return Request Processing
+    state: requested
+    actor: system
+    steps:
+      - receive_return_request
+      - validate_order_exists
+      - check_return_eligibility
+      - verify_return_window
+      - assess_return_reason
+      - determine_pickup_vs_dropoff
+
+  - id: A002
+    name: Pickup Verification
+    state: at_location
+    actor: agent
+    steps:
+      - contact_customer
+      - collect_item
+      - verify_item_matches_order
+      - check_item_condition
+      - photograph_all_sides
+      - photograph_labels
+      - scan_barcode_if_present
+      - record_initial_assessment
+      - get_customer_signature
+
+  - id: A003
+    name: Quality Control
+    state: qc_in_progress
+    actor: qc_team
+    steps:
+      - unpack_item
+      - check_physical_condition
+      - verify_completeness
+      - check_original_packaging
+      - verify_accessories_included
+      - check_functionality
+      - photograph_findings
+      - complete_qc_form
+      - determine_disposition
+
+return_reasons:
+  - code: CHANGED_MIND
+    description: Customer changed their mind
+    restocking_fee: 10%
+    full_refund: false
+
+  - code: WRONG_ITEM
+    description: Wrong item received
+    restocking_fee: 0%
+    full_refund: true
+    merchant_fault: true
+
+  - code: DAMAGED
+    description: Item arrived damaged
+    restocking_fee: 0%
+    full_refund: true
+    merchant_fault: true
+
+  - code: DEFECTIVE
+    description: Item is defective
+    restocking_fee: 0%
+    full_refund: true
+    warranty_claim: optional
+
+  - code: NOT_AS_DESCRIBED
+    description: Item differs from description
+    restocking_fee: 0%
+    full_refund: true
+    merchant_fault: true
+
+  - code: SIZE_ISSUE
+    description: Size/fit not suitable
+    restocking_fee: 5%
+    full_refund: false
+    exchange_offered: true
+
+qc_outcomes:
+  - outcome: passed
+    description: Item in acceptable condition
+    action: process_refund
+    disposition: restock
+
+  - outcome: partial
+    description: Item has minor issues
+    action: partial_refund
+    disposition: refurbish_or_discount
+
+  - outcome: failed
+    description: Item not acceptable for return
+    action: reject_or_negotiate
+    disposition: return_to_customer_or_dispose
+
+  - outcome: disputed
+    description: Condition disputed
+    action: escalate_to_management
+    disposition: pending_review
+
+customer_options:
+  - option: home_pickup
+    description: Agent picks up from home
+    fee: free_or_paid
+    availability: scheduled_slots
+
+  - option: dropoff_point
+    description: Customer drops at pickup point
+    fee: free
+    availability: partner_locations
+
+  - option: dropoff_locker
+    description: Customer drops at locker
+    fee: free
+    availability: locker_locations
+
+  - option: courier_dropoff
+    description: Customer ships via courier
+    fee: prepaid_label
+    availability: always
+
+notifications:
+  - trigger: validated
+    recipient: customer
+    template: return_approved
+    channels: [email, sms]
+
+  - trigger: scheduled
+    recipient: customer
+    template: pickup_scheduled
+    channels: [email, sms]
+
+  - trigger: en_route
+    recipient: customer
+    template: agent_on_way
+    channels: [push, sms]
+
+  - trigger: picked_up
+    recipient: customer
+    template: item_collected
+    channels: [email, sms]
+
+  - trigger: processed
+    recipient: customer
+    template: refund_processed
+    channels: [email, sms]
+
+  - trigger: rejected
+    recipient: customer
+    template: return_rejected
+    channels: [email, sms, call]
+
+sla_targets:
+  - stage: validation
+    target: 4 hours
+    max: 24 hours
+
+  - stage: pickup
+    target: 48 hours
+    max: 72 hours
+
+  - stage: qc_processing
+    target: 24 hours
+    max: 48 hours
+
+  - stage: refund_processing
+    target: 24 hours
+    max: 72 hours
+
+  - stage: total_return_cycle
+    target: 5 days
+    max: 10 days
+
+metrics:
+  - name: return_rate
+    description: Percentage of orders returned
+    benchmark: < 5%
+
+  - name: pickup_success_rate
+    description: Successful pickups on first attempt
+    target: > 85%
+
+  - name: qc_pass_rate
+    description: Returns passing QC
+    benchmark: > 90%
+
+  - name: refund_time
+    description: Time from pickup to refund
+    target: < 5 days
+
+  - name: customer_satisfaction
+    description: Return experience rating
+    target: > 4.0
+
+events:
+  - name: return.requested
+    payload: [return_id, order_id, reason]
+
+  - name: return.scheduled
+    payload: [return_id, pickup_date, slot_id]
+
+  - name: return.picked_up
+    payload: [return_id, agent_id, condition_notes]
+
+  - name: return.qc_completed
+    payload: [return_id, qc_result, refund_amount]
+
+  - name: return.processed
+    payload: [return_id, refund_status, final_amount]
+
+  - name: return.rejected
+    payload: [return_id, rejection_reason]

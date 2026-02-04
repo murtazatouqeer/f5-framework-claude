@@ -1,0 +1,285 @@
+name: PickTask
+display_name: Pick Task
+description: |
+  Task to retrieve items from storage locations for outbound orders.
+  Supports discrete, batch, wave, zone, and cluster picking methods.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: task_number
+    type: string
+    required: true
+    validation:
+      pattern: "^PICK-[0-9]{8}-[0-9]{4}$"
+    example: "PICK-20241201-0001"
+
+  - name: outbound_order_id
+    type: uuid
+    required: true
+
+  - name: wave_id
+    type: uuid
+    required: false
+    description: Wave this task belongs to
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: worker_id
+    type: uuid
+    required: false
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [pending, assigned, in_progress, completed, short_picked, cancelled]
+    default: pending
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, urgent]
+    default: medium
+
+  # Pick Method
+  - name: pick_method
+    type: enum
+    required: true
+    validation:
+      values: [discrete, batch, wave, zone, cluster]
+    default: discrete
+
+  - name: pick_type
+    type: enum
+    required: true
+    validation:
+      values: [full_case, split_case, pallet, each]
+    default: each
+
+  # Location & Item
+  - name: from_location_id
+    type: uuid
+    required: true
+
+  - name: item_id
+    type: uuid
+    required: true
+
+  - name: quantity_requested
+    type: integer
+    required: true
+
+  - name: quantity_picked
+    type: integer
+    required: true
+    default: 0
+
+  - name: lpn
+    type: string
+    required: false
+    description: Source LPN
+
+  - name: lot_number
+    type: string
+    required: false
+
+  - name: to_lpn
+    type: string
+    required: false
+    description: Destination container/tote
+
+  # Staging
+  - name: staging_location_id
+    type: uuid
+    required: false
+    description: Where to stage after picking
+
+  # Equipment
+  - name: equipment_required
+    type: enum
+    required: false
+    validation:
+      values: [none, rf_gun, cart, pallet_jack, forklift, order_picker]
+
+  # Pick Path
+  - name: pick_sequence
+    type: integer
+    required: false
+    description: Order in pick path
+
+  - name: zone_id
+    type: uuid
+    required: false
+
+  # Execution
+  - name: assigned_at
+    type: timestamp
+    required: false
+
+  - name: started_at
+    type: timestamp
+    required: false
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  # Short Pick
+  - name: short_quantity
+    type: integer
+    required: true
+    default: 0
+
+  - name: short_reason
+    type: enum
+    required: false
+    validation:
+      values: [not_found, damaged, expired, insufficient, location_error]
+
+  # Substitution
+  - name: substituted
+    type: boolean
+    required: true
+    default: false
+
+  - name: substitute_item_id
+    type: uuid
+    required: false
+
+  # Performance
+  - name: travel_distance_m
+    type: decimal
+    required: false
+
+  - name: task_time_seconds
+    type: integer
+    required: false
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: outbound_order
+    type: belongs_to
+    entity: OutboundOrder
+    required: true
+
+  - name: wave
+    type: belongs_to
+    entity: Wave
+    required: false
+
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: worker
+    type: belongs_to
+    entity: WarehouseWorker
+    required: false
+
+  - name: from_location
+    type: belongs_to
+    entity: Location
+    required: true
+
+  - name: staging_location
+    type: belongs_to
+    entity: Location
+    required: false
+
+  - name: item
+    type: belongs_to
+    entity: Item
+    required: true
+
+  - name: zone
+    type: belongs_to
+    entity: Zone
+    required: false
+
+indexes:
+  - [task_number]
+  - [warehouse_id, status]
+  - [worker_id, status]
+  - [outbound_order_id]
+  - [wave_id]
+  - [pick_sequence]
+
+computed_fields:
+  - name: pick_accuracy
+    formula: (quantity_picked / quantity_requested) * 100
+  - name: is_short
+    formula: quantity_picked < quantity_requested
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Task created, not assigned
+    - name: assigned
+      description: Assigned to worker
+    - name: in_progress
+      description: Worker executing pick
+    - name: completed
+      description: All items picked
+    - name: short_picked
+      description: Partial pick due to shortage
+    - name: cancelled
+      description: Task cancelled
+  transitions:
+    - from: pending
+      to: assigned
+      trigger: assign
+    - from: assigned
+      to: in_progress
+      trigger: start
+    - from: in_progress
+      to: completed
+      trigger: complete
+      conditions: [quantity_picked == quantity_requested]
+      actions: [decrement_inventory]
+    - from: in_progress
+      to: short_picked
+      trigger: short_pick
+      conditions: [quantity_picked < quantity_requested]
+      actions: [decrement_inventory, create_backorder]
+    - from: [pending, assigned]
+      to: cancelled
+      trigger: cancel
+
+business_rules:
+  - BR-PICK-001: Pick from oldest lot first (FEFO for expiry items)
+  - BR-PICK-002: Confirm location barcode before picking
+  - BR-PICK-003: Cannot pick more than available quantity
+  - BR-PICK-004: Short picks require supervisor approval if > 10%
+
+events:
+  - name: pick.assigned
+    payload: [id, worker_id, from_location_id]
+  - name: pick.completed
+    payload: [id, quantity_picked, task_time_seconds]
+  - name: pick.short
+    payload: [id, quantity_requested, quantity_picked, short_reason]

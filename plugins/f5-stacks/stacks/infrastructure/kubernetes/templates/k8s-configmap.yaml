@@ -1,0 +1,188 @@
+# Kubernetes ConfigMap Template
+# F5 Framework - Infrastructure Stack
+#
+# Variables:
+#   {{app_name}}     - Application name
+#   {{namespace}}    - Kubernetes namespace
+#   {{config_data}}  - Configuration key-value pairs
+#   {{labels}}       - Additional labels
+#   {{annotations}}  - Additional annotations
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{app_name}}-config
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/instance: {{app_name}}
+    app.kubernetes.io/component: config
+    app.kubernetes.io/managed-by: f5-framework
+    {{labels}}
+  annotations:
+    f5.io/template: "k8s-configmap"
+    f5.io/version: "1.0.0"
+    {{annotations}}
+data:
+  # Application settings
+  APP_NAME: "{{app_name}}"
+  APP_ENV: "{{environment | default: production}}"
+  LOG_LEVEL: "{{log_level | default: info}}"
+  LOG_FORMAT: "{{log_format | default: json}}"
+
+  # Server configuration
+  SERVER_HOST: "0.0.0.0"
+  SERVER_PORT: "{{port | default: 8080}}"
+  METRICS_PORT: "{{metrics_port | default: 9090}}"
+
+  # Feature flags
+  ENABLE_METRICS: "{{enable_metrics | default: true}}"
+  ENABLE_TRACING: "{{enable_tracing | default: true}}"
+  ENABLE_PROFILING: "{{enable_profiling | default: false}}"
+
+  # Timeouts (seconds)
+  REQUEST_TIMEOUT: "{{request_timeout | default: 30}}"
+  SHUTDOWN_TIMEOUT: "{{shutdown_timeout | default: 30}}"
+
+  # Cache settings
+  CACHE_ENABLED: "{{cache_enabled | default: true}}"
+  CACHE_TTL: "{{cache_ttl | default: 3600}}"
+
+  # Custom configuration
+  {{config_data}}
+
+---
+# Environment-specific ConfigMap
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{app_name}}-env-config
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: env-config
+data:
+  # Development
+  {{#if is_development}}
+  DEBUG: "true"
+  LOG_LEVEL: "debug"
+  CORS_ENABLED: "true"
+  CORS_ORIGINS: "*"
+  {{/if}}
+
+  # Staging
+  {{#if is_staging}}
+  DEBUG: "false"
+  LOG_LEVEL: "info"
+  CORS_ENABLED: "true"
+  CORS_ORIGINS: "https://staging.example.com"
+  {{/if}}
+
+  # Production
+  {{#if is_production}}
+  DEBUG: "false"
+  LOG_LEVEL: "warn"
+  CORS_ENABLED: "true"
+  CORS_ORIGINS: "https://example.com"
+  {{/if}}
+
+---
+# File-based ConfigMap (for config files)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{app_name}}-files
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: config-files
+data:
+  # JSON configuration file
+  config.json: |
+    {
+      "app": {
+        "name": "{{app_name}}",
+        "version": "{{app_version | default: 1.0.0}}",
+        "environment": "{{environment | default: production}}"
+      },
+      "server": {
+        "host": "0.0.0.0",
+        "port": {{port | default: 8080}},
+        "gracefulShutdown": {{shutdown_timeout | default: 30}}
+      },
+      "logging": {
+        "level": "{{log_level | default: info}}",
+        "format": "{{log_format | default: json}}"
+      },
+      "metrics": {
+        "enabled": {{enable_metrics | default: true}},
+        "port": {{metrics_port | default: 9090}},
+        "path": "/metrics"
+      },
+      "health": {
+        "liveness": "/health/live",
+        "readiness": "/health/ready"
+      }
+    }
+
+  # YAML configuration file
+  config.yaml: |
+    app:
+      name: {{app_name}}
+      version: {{app_version | default: "1.0.0"}}
+      environment: {{environment | default: production}}
+
+    server:
+      host: 0.0.0.0
+      port: {{port | default: 8080}}
+      gracefulShutdown: {{shutdown_timeout | default: 30}}
+
+    logging:
+      level: {{log_level | default: info}}
+      format: {{log_format | default: json}}
+
+    metrics:
+      enabled: {{enable_metrics | default: true}}
+      port: {{metrics_port | default: 9090}}
+      path: /metrics
+
+  # Nginx configuration (if needed)
+  nginx.conf: |
+    server {
+        listen {{port | default: 8080}};
+        server_name _;
+
+        location / {
+            root /usr/share/nginx/html;
+            index index.html;
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /health {
+            access_log off;
+            return 200 "OK";
+            add_header Content-Type text/plain;
+        }
+
+        location /metrics {
+            stub_status on;
+            access_log off;
+        }
+    }
+
+---
+# Immutable ConfigMap (for stable configurations)
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{app_name}}-immutable
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: immutable-config
+immutable: true
+data:
+  # These values should never change
+  API_VERSION: "v1"
+  SCHEMA_VERSION: "{{schema_version | default: 1}}"
+  {{immutable_config}}

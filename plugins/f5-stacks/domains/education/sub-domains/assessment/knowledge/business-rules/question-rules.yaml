@@ -1,0 +1,489 @@
+# Question Business Rules
+# F5 Framework v2.0 - Education/Assessment
+# Rules governing question management
+
+business_rules:
+  domain: education
+  subdomain: assessment
+  category: question_management
+  version: "1.0.0"
+
+  rules:
+    # ==========================================
+    # Question Creation Rules
+    # ==========================================
+    
+    - id: QSR-001
+      name: Multiple Choice Option Minimum
+      name_ja: 選択肢最小数
+      description: Multiple choice questions must have at least 2 options
+      category: creation
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "question_type != 'multiple_choice' OR options.length >= 2"
+        
+      action:
+        type: block
+        message: "Multiple choice questions must have at least 2 options"
+        message_ja: "選択問題には少なくとも2つの選択肢が必要です"
+        
+    - id: QSR-002
+      name: Multiple Choice Option Maximum
+      name_ja: 選択肢最大数
+      description: Multiple choice questions should not exceed 6 options
+      category: creation
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "question_type != 'multiple_choice' OR options.length <= 6"
+        
+      action:
+        type: warn
+        message: "Consider limiting to 6 or fewer options for better discrimination"
+        
+    - id: QSR-003
+      name: Correct Answer Required
+      name_ja: 正解必須
+      description: Auto-gradable questions must have a correct answer defined
+      category: creation
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update, activate]
+        expression: |
+          question_type IN ('essay', 'short_answer')
+          OR correct_option_ids.length > 0
+          OR correct_matches.length > 0
+          OR correct_order.length > 0
+          OR numeric_answer IS NOT NULL
+          OR blanks.length > 0
+          OR hotspot_regions.any(r => r.is_correct)
+          
+      action:
+        type: block
+        message: "Question must have a correct answer defined"
+        message_ja: "正解を定義する必要があります"
+        
+    - id: QSR-004
+      name: Single Correct for Multiple Choice
+      name_ja: 単一選択問題は1つの正解
+      description: Multiple choice must have exactly one correct option
+      category: creation
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type != 'multiple_choice' 
+          OR options.filter(o => o.is_correct).length = 1
+          
+      action:
+        type: block
+        message: "Multiple choice must have exactly one correct answer"
+        message_ja: "選択問題には正解が1つだけ必要です"
+        
+    - id: QSR-005
+      name: Multiple Select Min Correct
+      name_ja: 複数選択最小正解数
+      description: Multiple select must have at least 2 correct options
+      category: creation
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type != 'multiple_select' 
+          OR options.filter(o => o.is_correct).length >= 2
+          
+      action:
+        type: block
+        message: "Multiple select must have at least 2 correct answers"
+
+    # ==========================================
+    # Matching Question Rules
+    # ==========================================
+    
+    - id: QSR-010
+      name: Matching Premises Required
+      name_ja: マッチング前提必須
+      description: Matching questions must have premises
+      category: matching
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "question_type != 'matching' OR premises.length >= 2"
+        
+      action:
+        type: block
+        message: "Matching questions must have at least 2 premises"
+        
+    - id: QSR-011
+      name: Matching Responses Required
+      name_ja: マッチング応答必須
+      description: Matching questions must have responses
+      category: matching
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "question_type != 'matching' OR responses.length >= 2"
+        
+      action:
+        type: block
+        message: "Matching questions must have at least 2 responses"
+        
+    - id: QSR-012
+      name: Valid Correct Matches
+      name_ja: 有効な正解マッチング
+      description: All correct matches must reference valid premises and responses
+      category: matching
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type != 'matching'
+          OR correct_matches.all(m => 
+            premises.any(p => p.id = m.premise_id) 
+            AND responses.any(r => r.id = m.response_id)
+          )
+          
+      action:
+        type: block
+        message: "All correct matches must reference valid premises and responses"
+
+    # ==========================================
+    # Numeric Question Rules
+    # ==========================================
+    
+    - id: QSR-020
+      name: Numeric Answer Required
+      name_ja: 数値回答必須
+      description: Numeric questions must have a numeric answer
+      category: numeric
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "question_type != 'numeric' OR numeric_answer IS NOT NULL"
+        
+      action:
+        type: block
+        message: "Numeric questions must have a numeric answer defined"
+        
+    - id: QSR-021
+      name: Tolerance Recommended
+      name_ja: 許容誤差推奨
+      description: Numeric questions should have tolerance defined
+      category: numeric
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type != 'numeric' 
+          OR numeric_tolerance IS NOT NULL 
+          OR tolerance_type = 'exact'
+          
+      action:
+        type: warn
+        message: "Consider defining tolerance for numeric answers"
+
+    # ==========================================
+    # Essay/Short Answer Rules
+    # ==========================================
+    
+    - id: QSR-030
+      name: Rubric for Essay
+      name_ja: エッセイには採点基準必須
+      description: Essay questions should have a grading rubric
+      category: essay
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update, activate]
+        expression: "question_type != 'essay' OR rubric_id IS NOT NULL"
+        
+      action:
+        type: warn
+        message: "Consider attaching a grading rubric to essay questions"
+        
+    - id: QSR-031
+      name: Word Limit for Essay
+      name_ja: エッセイ文字数制限
+      description: Essay questions should have word limits
+      category: essay
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type NOT IN ('essay', 'short_answer')
+          OR word_limit_max IS NOT NULL
+          
+      action:
+        type: warn
+        message: "Consider setting word limits for essay questions"
+
+    # ==========================================
+    # Points & Scoring Rules
+    # ==========================================
+    
+    - id: QSR-040
+      name: Positive Points Required
+      name_ja: 正のポイント必須
+      description: Question points must be positive
+      category: scoring
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "points > 0"
+        
+      action:
+        type: block
+        message: "Question points must be greater than zero"
+        
+    - id: QSR-041
+      name: Max Points Consistency
+      name_ja: 最大ポイント整合性
+      description: Max points must be >= points
+      category: scoring
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "max_points IS NULL OR max_points >= points"
+        
+      action:
+        type: block
+        message: "Maximum points must be greater than or equal to default points"
+        
+    - id: QSR-042
+      name: Partial Credit Option Points
+      name_ja: 部分点設定
+      description: If partial credit enabled, options should have point values
+      category: scoring
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          partial_credit_enabled = false
+          OR question_type NOT IN ('multiple_choice', 'multiple_select')
+          OR options.all(o => o.points IS NOT NULL)
+          
+      action:
+        type: warn
+        message: "Define point values for options when partial credit is enabled"
+
+    # ==========================================
+    # Quality Rules
+    # ==========================================
+    
+    - id: QSR-050
+      name: Question Text Length
+      name_ja: 問題文の長さ
+      description: Question text should not be too short
+      category: quality
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: "LENGTH(question_text) >= 10"
+        
+      action:
+        type: warn
+        message: "Question text appears too short"
+        
+    - id: QSR-051
+      name: Unique Options
+      name_ja: ユニークな選択肢
+      description: Multiple choice options should be unique
+      category: quality
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type NOT IN ('multiple_choice', 'multiple_select')
+          OR options.map(o => o.text).unique().length = options.length
+          
+      action:
+        type: block
+        message: "All options must have unique text"
+        
+    - id: QSR-052
+      name: Distractor Quality
+      name_ja: ディストラクター品質
+      description: Warn about "All of the above" type options
+      category: quality
+      severity: warning
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          question_type NOT IN ('multiple_choice', 'multiple_select')
+          OR NOT options.any(o => 
+            LOWER(o.text) MATCHES '.*(all of the above|none of the above|both a and b).*'
+          )
+          
+      action:
+        type: warn
+        message: "Consider avoiding 'All/None of the above' options for better discrimination"
+
+    # ==========================================
+    # Status Transition Rules
+    # ==========================================
+    
+    - id: QSR-060
+      name: Draft to Active Validation
+      name_ja: 下書きから有効化検証
+      description: Questions must pass all validation before activation
+      category: lifecycle
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [activate]
+        expression: |
+          question_text IS NOT NULL
+          AND question_text != ''
+          AND (
+            question_type IN ('essay', 'short_answer')
+            OR correct_option_ids.length > 0
+            OR correct_matches.length > 0
+            OR correct_order.length > 0
+            OR numeric_answer IS NOT NULL
+            OR blanks.length > 0
+          )
+          
+      action:
+        type: block
+        message: "Question must have text and correct answer before activation"
+        
+    - id: QSR-061
+      name: Cannot Modify Used Question
+      name_ja: 使用済み問題の変更禁止
+      description: Questions used in active exams cannot have answers modified
+      category: lifecycle
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [update]
+        fields: [correct_option_ids, correct_matches, correct_order, numeric_answer, options.is_correct]
+        expression: |
+          usage_count = 0
+          OR NOT EXISTS (
+            SELECT 1 FROM exam_questions eq
+            JOIN exams e ON eq.exam_id = e.id
+            WHERE eq.question_id = :id
+            AND e.status = 'active'
+          )
+          
+      action:
+        type: block
+        message: "Cannot modify correct answers for questions in active exams"
+        exception_roles: [admin]
+
+    # ==========================================
+    # Bank Organization Rules
+    # ==========================================
+    
+    - id: QSR-070
+      name: Question Bank Required
+      name_ja: 問題バンク必須
+      description: Questions must belong to a question bank
+      category: organization
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create]
+        expression: "question_bank_id IS NOT NULL"
+        
+      action:
+        type: block
+        message: "Question must be assigned to a question bank"
+        
+    - id: QSR-071
+      name: Category Within Bank
+      name_ja: バンク内カテゴリ
+      description: Question category must belong to the same bank
+      category: organization
+      severity: error
+      
+      condition:
+        entity: question
+        trigger: [create, update]
+        expression: |
+          category_id IS NULL
+          OR (
+            SELECT question_bank_id FROM question_categories WHERE id = :category_id
+          ) = question_bank_id
+          
+      action:
+        type: block
+        message: "Question category must belong to the same question bank"
+
+  rule_groups:
+    creation_validation:
+      rules: [QSR-001, QSR-002, QSR-003, QSR-004, QSR-005]
+      description: Rules for question creation
+      
+    matching_validation:
+      rules: [QSR-010, QSR-011, QSR-012]
+      description: Rules for matching questions
+      
+    numeric_validation:
+      rules: [QSR-020, QSR-021]
+      description: Rules for numeric questions
+      
+    essay_validation:
+      rules: [QSR-030, QSR-031]
+      description: Rules for essay questions
+      
+    scoring_validation:
+      rules: [QSR-040, QSR-041, QSR-042]
+      description: Rules for scoring configuration
+      
+    quality_checks:
+      rules: [QSR-050, QSR-051, QSR-052]
+      description: Quality improvement suggestions
+      
+    lifecycle_rules:
+      rules: [QSR-060, QSR-061]
+      description: Rules for question status transitions
+      
+    organization_rules:
+      rules: [QSR-070, QSR-071]
+      description: Rules for question organization
+
+  exceptions:
+    - role: admin
+      bypasses: [QSR-061]
+      requires_justification: true
+      audit_required: true

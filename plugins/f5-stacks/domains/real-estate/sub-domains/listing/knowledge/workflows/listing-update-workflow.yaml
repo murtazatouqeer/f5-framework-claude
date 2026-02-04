@@ -1,0 +1,391 @@
+# Listing Update Workflow
+# F5 Framework v2.0 - Real Estate/Listing
+# Workflow for updating existing listings
+
+workflow:
+  id: listing_update
+  name: Listing Update Workflow
+  name_ja: 物件掲載更新ワークフロー
+  name_vi: Quy trình cập nhật tin đăng
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Workflow for managing updates to existing property listings
+    including price changes, content updates, media changes, and
+    status transitions.
+
+  actors:
+    - id: agent
+      name: Real Estate Agent
+      permissions: [update_own_listings, request_price_change]
+    - id: owner
+      name: Property Owner
+      permissions: [update_own_properties, approve_price_changes]
+    - id: moderator
+      name: Content Moderator
+      permissions: [approve_updates, reject_updates]
+    - id: system
+      name: Automated System
+      permissions: [validate, notify, track]
+
+  triggers:
+    - type: user_action
+      action: edit_listing
+    - type: api_call
+      endpoint: PUT /api/listings/{id}
+    - type: scheduled
+      action: refresh_listing
+
+  # Update Categories
+  update_categories:
+    - id: price_update
+      name: Price Update
+      fields: [asking_price, price_display, price_negotiable]
+      requires_approval: conditional
+      notification: price_change_alert
+
+    - id: content_update
+      name: Content Update
+      fields: [title, description, highlights, tags]
+      requires_approval: if_significant
+
+    - id: media_update
+      name: Media Update
+      fields: [photos, videos, virtual_tour]
+      requires_approval: if_primary_changed
+
+    - id: availability_update
+      name: Availability Update
+      fields: [available_from, move_in_ready]
+      requires_approval: false
+
+    - id: status_update
+      name: Status Update
+      fields: [status, visibility]
+      requires_approval: conditional
+
+    - id: property_update
+      name: Property Details Update
+      fields: [amenities, interior_status, specifications]
+      requires_approval: true
+
+  # Workflow States
+  states:
+    - id: editing
+      name: Editing
+      type: start
+
+    - id: validating
+      name: Validating
+      description: System validation
+
+    - id: pending_approval
+      name: Pending Approval
+      description: Awaiting moderator/owner approval
+
+    - id: approved
+      name: Approved
+
+    - id: applying_changes
+      name: Applying Changes
+
+    - id: notifying
+      name: Notifying Stakeholders
+
+    - id: completed
+      name: Completed
+      type: end
+
+    - id: rejected
+      name: Rejected
+      type: end
+
+  # Workflow Steps
+  steps:
+    - id: step_1
+      name: Edit Listing
+      state: editing
+      actor: [agent, owner]
+      actions:
+        - action: load_current_listing
+        - action: make_changes
+        - action: preview_changes
+        - action: submit_changes
+      ui:
+        screen: listing_edit
+        components:
+          - editable_form
+          - change_diff_preview
+          - submit_button
+        layout: side_by_side_comparison
+      change_tracking:
+        - track_all_field_changes
+        - calculate_change_significance
+        - identify_update_category
+      transitions:
+        - to: validating
+          condition: changes_submitted
+
+    - id: step_2
+      name: Validate Changes
+      state: validating
+      actor: system
+      actions:
+        - action: validate_changes
+          validations:
+            - field_format_validation
+            - business_rule_validation
+            - content_policy_check
+            - price_sanity_check
+            - fair_housing_compliance
+        - action: determine_approval_requirement
+          logic: |
+            requires_approval = FALSE
+
+            -- Price changes > 10% need approval
+            IF 'price_update' IN categories AND
+               ABS(price_change_percent) > 10 THEN
+              requires_approval = TRUE
+              approval_type = 'price_change'
+            END
+
+            -- Significant content changes need review
+            IF 'content_update' IN categories AND
+               content_similarity < 0.7 THEN
+              requires_approval = TRUE
+              approval_type = 'content_change'
+            END
+
+            -- Primary photo change needs review
+            IF 'media_update' IN categories AND
+               primary_photo_changed THEN
+              requires_approval = TRUE
+              approval_type = 'media_change'
+            END
+
+            -- Status changes may need approval
+            IF 'status_update' IN categories AND
+               new_status IN ('active', 'under_offer', 'closed') THEN
+              requires_approval = context_dependent
+            END
+      auto_transition: true
+      transitions:
+        - to: pending_approval
+          condition: requires_approval
+        - to: applying_changes
+          condition: NOT requires_approval AND validation_passed
+        - to: editing
+          condition: validation_failed
+          action: show_validation_errors
+
+    - id: step_3
+      name: Approval Review
+      state: pending_approval
+      actor: [moderator, owner]
+      sla:
+        price_change: 4 hours
+        content_change: 8 hours
+        media_change: 4 hours
+      actions:
+        - action: review_changes
+          ui:
+            component: change_diff_viewer
+        - action: approve
+          next: approved
+        - action: reject
+          next: rejected
+          requires: rejection_reason
+        - action: request_modification
+          next: editing
+      ui:
+        screen: update_approval
+        components:
+          - original_vs_updated_comparison
+          - change_summary
+          - approval_buttons
+          - rejection_form
+      notifications:
+        on_enter:
+          - recipient: moderator
+            template: update_pending_approval
+      transitions:
+        - to: approved
+          condition: approved
+        - to: rejected
+          condition: rejected
+        - to: editing
+          condition: modification_requested
+
+    - id: step_4
+      name: Apply Changes
+      state: applying_changes
+      actor: system
+      actions:
+        - action: create_history_snapshot
+          before: true
+        - action: apply_field_changes
+        - action: update_search_index
+        - action: update_syndication
+          condition: listing.syndicated_to IS NOT NULL
+        - action: record_change_history
+          data:
+            - changed_fields
+            - old_values
+            - new_values
+            - changed_by
+            - changed_at
+        - action: update_timestamps
+      auto_transition: true
+      transitions:
+        - to: notifying
+          condition: changes_applied
+
+    - id: step_5
+      name: Notify Stakeholders
+      state: notifying
+      actor: system
+      actions:
+        - action: notify_relevant_parties
+          notifications:
+            price_reduced:
+              recipients: [favorited_users, saved_search_matches]
+              template: price_drop_alert
+              channels: [push, email]
+            price_increased:
+              recipients: [inquiring_users]
+              template: price_increase_notice
+              channels: [email]
+            content_updated:
+              recipients: [favorited_users]
+              template: listing_updated
+              channels: [push]
+            status_changed:
+              recipients: [inquiring_users, favorited_users]
+              template: listing_status_change
+              channels: [push, email]
+        - action: sync_to_syndication_platforms
+          condition: syndication_enabled
+      auto_transition: true
+      transitions:
+        - to: completed
+          condition: notifications_sent
+
+    - id: step_6
+      name: Update Complete
+      state: completed
+      actor: system
+      actions:
+        - action: log_completion
+        - action: update_metrics
+        - action: confirm_to_user
+          template: update_successful
+
+  # Price Update Sub-workflow
+  price_update_flow:
+    triggers:
+      - field: asking_price
+        changed: true
+
+    validations:
+      - rule: price_positive
+        condition: new_price > 0
+      - rule: price_change_limit
+        condition: ABS(change_percent) <= 50
+        message: "Price change exceeds 50%. Please contact support."
+      - rule: price_sanity
+        condition: new_price_per_sqm BETWEEN market_range
+
+    approval_rules:
+      - condition: change_percent > 20
+        requires: moderator_approval
+      - condition: change_percent > 10
+        requires: owner_notification
+      - condition: change_percent <= 10
+        requires: none
+
+    side_effects:
+      - action: record_price_history
+      - action: update_price_reduced_flag
+        if: new_price < original_price
+      - action: recalculate_price_per_sqm
+      - action: notify_interested_users
+
+  # Bulk Update Support
+  bulk_update:
+    enabled: true
+    max_listings: 50
+    allowed_fields:
+      - price_adjustment_percent
+      - availability_update
+      - status_change
+      - tag_addition
+    requires_confirmation: true
+    actions:
+      - action: preview_bulk_changes
+      - action: validate_all
+      - action: apply_in_batches
+        batch_size: 10
+      - action: generate_report
+
+  # Scheduled Refresh
+  scheduled_refresh:
+    description: Periodic listing refresh to maintain visibility
+    trigger: scheduled
+    schedule: "0 0 * * 0"  # Weekly
+    condition: |
+      listing.status = 'active' AND
+      listing.updated_at < NOW() - INTERVAL '7 days' AND
+      listing.auto_renew = true
+    actions:
+      - action: bump_listing
+        effect: update_timestamp
+        maintains_position: true
+      - action: notify_agent
+        template: listing_refreshed
+
+  # Version History
+  version_history:
+    enabled: true
+    retention_days: 365
+    tracked_fields: all
+    queryable: true
+    restore_enabled: true
+
+  # Notifications
+  notifications:
+    - event: update_submitted
+      recipients: [agent]
+      template: update_submitted
+
+    - event: update_approved
+      recipients: [agent]
+      template: update_approved
+
+    - event: update_rejected
+      recipients: [agent]
+      template: update_rejected
+      include: rejection_reason
+
+    - event: price_changed
+      recipients: [interested_users]
+      template: price_change_alert
+
+  # Audit Trail
+  audit:
+    enabled: true
+    track:
+      - all_changes
+      - approval_decisions
+      - user_actions
+    retention: 2_years
+
+  # Metrics
+  metrics:
+    track:
+      - update_frequency
+      - approval_rate
+      - time_to_approval
+      - price_change_patterns
+      - content_change_frequency

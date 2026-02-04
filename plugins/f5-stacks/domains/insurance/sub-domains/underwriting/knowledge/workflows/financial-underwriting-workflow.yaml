@@ -1,0 +1,614 @@
+name: financial_underwriting_workflow
+display_name: Financial Underwriting Workflow
+description: |
+  Workflow for financial underwriting including income verification,
+  sum justification, and financial risk assessment.
+
+domain: insurance
+subdomain: underwriting
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-UW-003
+trigger:
+  event: financial_underwriting_required
+  source: underwriting_case
+  conditions:
+    - sum_exceeds_threshold: true
+    - or_business_coverage: true
+    - or_high_value: true
+
+participants:
+  roles:
+    - underwriter
+    - financial_underwriter
+    - compliance_officer
+    - senior_underwriter
+
+  systems:
+    - underwriting_system
+    - financial_verification_system
+    - sanctions_screening
+    - document_management
+
+stages:
+  - id: FU-001
+    name: Financial Underwriting Triage
+    description: Determine level of financial underwriting required
+    actor: system
+
+    inputs:
+      - sum_insured
+      - applicant_income
+      - coverage_purpose
+      - applicant_profile
+
+    activities:
+      - id: FU-001-A
+        name: Calculate Income Multiple
+        type: automated
+        action: Compute sum as multiple of income
+        formula: |
+          Income_Multiple = Sum_Insured / Annual_Income
+        output: income_multiple
+
+      - id: FU-001-B
+        name: Check Against Guidelines
+        type: automated
+        action: Compare to age-based guidelines
+        guidelines:
+          age_25_35:
+            typical_multiple: 20
+            maximum: 25
+          age_36_45:
+            typical_multiple: 15
+            maximum: 20
+          age_46_55:
+            typical_multiple: 10
+            maximum: 15
+          age_56_60:
+            typical_multiple: 8
+            maximum: 10
+          age_61_plus:
+            typical_multiple: 5
+            maximum: 8
+        output: multiple_assessment
+
+      - id: FU-001-C
+        name: Determine Verification Level
+        type: automated
+        action: Set required verification depth
+        levels:
+          basic:
+            conditions:
+              - within_typical_multiple
+              - salaried_employment
+              - sum_below_2B
+            requirements:
+              - income_declaration
+              - employer_verification
+
+          standard:
+            conditions:
+              - above_typical_within_maximum
+              - or_self_employed
+              - sum_2B_to_5B
+            requirements:
+              - income_documentation
+              - tax_returns
+              - financial_justification
+
+          enhanced:
+            conditions:
+              - above_maximum_multiple
+              - or_business_coverage
+              - sum_above_5B
+            requirements:
+              - comprehensive_income_verification
+              - asset_verification
+              - detailed_justification
+              - third_party_verification
+
+    outputs:
+      - income_multiple
+      - verification_level
+      - required_documents
+
+    sla: 15_minutes
+    next_stage: FU-002
+
+  - id: FU-002
+    name: Document Collection
+    description: Collect required financial documentation
+    actor: underwriter
+
+    inputs:
+      - required_documents
+      - applicant_contact
+
+    activities:
+      - id: FU-002-A
+        name: Generate Document Request
+        type: automated
+        action: Create document request list
+        by_verification_level:
+          basic:
+            - latest_salary_slip
+            - employer_letter
+          standard:
+            - 3_months_salary_slips
+            - bank_statements_3_months
+            - tax_return_latest
+            - employment_contract
+          enhanced:
+            - 6_months_salary_slips
+            - bank_statements_6_months
+            - tax_returns_2_years
+            - business_financials
+            - asset_documentation
+            - valuation_reports
+
+      - id: FU-002-B
+        name: Send Request to Applicant
+        type: automated
+        action: Notify applicant of requirements
+        channels:
+          - email
+          - sms
+          - agent
+        include:
+          - document_list
+          - submission_instructions
+          - deadline
+
+      - id: FU-002-C
+        name: Track Document Receipt
+        type: manual
+        action: Monitor document submission
+        tracking:
+          - document_checklist
+          - submission_dates
+          - quality_notes
+        reminders:
+          - 50_percent_deadline
+          - 80_percent_deadline
+
+      - id: FU-002-D
+        name: Validate Documents
+        type: manual
+        action: Check document quality and authenticity
+        checks:
+          - legibility
+          - completeness
+          - consistency
+          - authenticity_indicators
+        output: validation_status
+
+    outputs:
+      - collected_documents
+      - validation_status
+      - outstanding_items
+
+    sla: 14_days
+    next_stage: FU-003
+
+  - id: FU-003
+    name: Income Verification
+    description: Verify declared income against documentation
+    actor: financial_underwriter
+
+    inputs:
+      - collected_documents
+      - declared_income
+
+    activities:
+      - id: FU-003-A
+        name: Analyze Salary Documentation
+        type: manual
+        action: Review salary slips and bank credits
+        verification:
+          - salary_consistency
+          - employer_match
+          - deductions_reasonable
+          - bank_credit_match
+
+      - id: FU-003-B
+        name: Verify with Employer
+        type: manual
+        action: Confirm employment and income
+        method:
+          - employer_letter_verification
+          - phone_verification_optional
+        documentation: employer_confirmation
+
+      - id: FU-003-C
+        name: Analyze Tax Returns
+        type: manual
+        action: Review tax documentation
+        verification:
+          - income_declaration_match
+          - business_income_if_applicable
+          - consistency_over_years
+
+      - id: FU-003-D
+        name: Assess Other Income
+        type: manual
+        action: Verify additional income sources
+        sources:
+          - rental_income
+          - investment_income
+          - business_income
+          - spouse_income_if_relevant
+
+      - id: FU-003-E
+        name: Calculate Verified Income
+        type: manual
+        action: Determine accepted income level
+        output: verified_annual_income
+
+    outputs:
+      - verified_income
+      - income_breakdown
+      - verification_confidence
+      - discrepancies_noted
+
+    sla: 3_days
+    next_stage: FU-004
+
+  - id: FU-004
+    name: Sum Justification Analysis
+    description: Assess reasonableness of coverage amount
+    actor: financial_underwriter
+
+    inputs:
+      - verified_income
+      - sum_insured
+      - coverage_purpose
+      - family_details
+
+    activities:
+      - id: FU-004-A
+        name: Analyze Coverage Purpose
+        type: manual
+        action: Evaluate stated need for coverage
+        purposes:
+          income_replacement:
+            typical: 10_to_15_years_income
+            maximum: 20_years
+          debt_coverage:
+            typical: outstanding_debt
+            maximum: debt_plus_buffer
+          family_protection:
+            consider:
+              - dependents
+              - education_needs
+              - spouse_income
+          estate_planning:
+            consider:
+              - estate_value
+              - tax_liabilities
+              - succession_needs
+          business_keyman:
+            consider:
+              - business_revenue
+              - key_person_contribution
+              - replacement_cost
+
+      - id: FU-004-B
+        name: Calculate Justified Amount
+        type: manual
+        action: Determine reasonable coverage
+        factors:
+          - income_multiple_guideline
+          - specific_needs_analysis
+          - existing_coverage
+          - total_financial_picture
+        output: justified_sum
+
+      - id: FU-004-C
+        name: Compare to Requested
+        type: automated
+        action: Assess request vs justified
+        outcomes:
+          within_justified:
+            action: approve_as_requested
+          slightly_above:
+            action: request_explanation
+          significantly_above:
+            action: recommend_reduction
+
+      - id: FU-004-D
+        name: Document Justification Decision
+        type: manual
+        action: Record justification analysis
+        includes:
+          - calculation_methodology
+          - factors_considered
+          - recommendation
+
+    outputs:
+      - justified_sum
+      - justification_assessment
+      - recommendation
+
+    sla: 1_day
+    next_stage: FU-005
+
+  - id: FU-005
+    name: Red Flag Detection
+    description: Identify potential fraud or adverse selection indicators
+    actor: financial_underwriter
+
+    inputs:
+      - application_data
+      - financial_documents
+      - verification_results
+
+    activities:
+      - id: FU-005-A
+        name: Check Fraud Indicators
+        type: manual_assisted
+        action: Review for fraud red flags
+        indicators:
+          documentation_red_flags:
+            - inconsistent_dates
+            - altered_documents
+            - unverifiable_employer
+            - round_number_income
+          behavioral_red_flags:
+            - urgency_pressure
+            - cash_premium_preference
+            - agent_driven_application
+            - multiple_applications
+          financial_red_flags:
+            - income_lifestyle_mismatch
+            - sudden_income_increase
+            - unexplained_wealth
+            - complex_ownership
+
+      - id: FU-005-B
+        name: Sanctions Screening
+        type: automated
+        action: Screen against sanctions lists
+        databases:
+          - ofac
+          - un_sanctions
+          - local_sanctions
+          - pep_lists
+        output: screening_result
+
+      - id: FU-005-C
+        name: Source of Funds Check
+        type: manual
+        action: Assess premium affordability
+        verification:
+          - premium_vs_income_ratio
+          - reasonable_affordability
+          - source_explanation_if_high
+
+      - id: FU-005-D
+        name: Adverse Selection Check
+        type: manual
+        action: Assess for adverse selection
+        indicators:
+          - recent_diagnosis_knowledge
+          - terminal_illness_awareness
+          - financial_distress
+          - suicide_ideation
+
+    outputs:
+      - red_flag_report
+      - sanctions_status
+      - fraud_risk_score
+      - recommended_actions
+
+    sla: 1_day
+    next_stage: FU-006
+
+  - id: FU-006
+    name: Financial Decision
+    description: Make financial underwriting decision
+    actor: financial_underwriter
+
+    inputs:
+      - verification_results
+      - justification_analysis
+      - red_flag_report
+
+    activities:
+      - id: FU-006-A
+        name: Evaluate Overall Financial Risk
+        type: manual
+        action: Assess combined financial factors
+        considerations:
+          - income_verification_result
+          - sum_justification
+          - red_flag_findings
+          - overall_risk_picture
+
+      - id: FU-006-B
+        name: Determine Financial Terms
+        type: decision
+        options:
+          approve:
+            condition: all_satisfactory
+            action: proceed_with_full_sum
+
+          approve_reduced:
+            condition: partial_justification
+            action: approve_justified_amount
+
+          request_more_info:
+            condition: gaps_in_verification
+            action: specify_requirements
+
+          escalate:
+            condition: red_flags_present
+            action: refer_to_compliance
+
+          decline:
+            condition: unacceptable_risk
+            action: recommend_decline
+
+      - id: FU-006-C
+        name: Document Decision
+        type: manual
+        action: Record financial underwriting decision
+        includes:
+          - income_verified
+          - sum_justified
+          - any_conditions
+          - rationale
+
+    outputs:
+      - financial_decision
+      - approved_sum
+      - conditions
+      - documentation
+
+    sla: 4_hours
+    next_stage: FU-007
+
+  - id: FU-007
+    name: Compliance Review
+    description: Compliance review for flagged cases
+    actor: compliance_officer
+
+    conditions:
+      required_when:
+        - sanctions_hit
+        - pep_identified
+        - red_flags_present
+        - high_risk_jurisdiction
+        - source_of_funds_concern
+
+    inputs:
+      - case_file
+      - red_flag_report
+      - screening_results
+
+    activities:
+      - id: FU-007-A
+        name: Review Case
+        type: manual
+        action: Comprehensive compliance review
+        focus:
+          - aml_concerns
+          - sanctions_compliance
+          - regulatory_requirements
+
+      - id: FU-007-B
+        name: Request Additional Information
+        type: decision
+        action: Specify compliance requirements
+        possible_requests:
+          - source_of_wealth_documentation
+          - enhanced_due_diligence
+          - third_party_verification
+          - management_declaration
+
+      - id: FU-007-C
+        name: Make Compliance Determination
+        type: decision
+        options:
+          approve:
+            condition: compliance_satisfied
+            action: proceed
+          conditional:
+            condition: additional_controls_needed
+            action: approve_with_conditions
+          decline:
+            condition: unacceptable_compliance_risk
+            action: decline_on_compliance_grounds
+
+      - id: FU-007-D
+        name: Document Compliance Decision
+        type: manual
+        action: Record compliance determination
+        includes:
+          - review_findings
+          - decision
+          - conditions_if_any
+          - compliance_sign_off
+
+    outputs:
+      - compliance_decision
+      - conditions
+      - documentation
+
+    sla: 3_days
+    next_stage: FU-008
+
+  - id: FU-008
+    name: Finalize Financial Underwriting
+    description: Complete and integrate financial underwriting
+    actor: underwriter
+
+    inputs:
+      - financial_decision
+      - compliance_decision
+      - case_details
+
+    activities:
+      - id: FU-008-A
+        name: Consolidate Decisions
+        type: manual
+        action: Combine financial and compliance decisions
+        output: consolidated_financial_decision
+
+      - id: FU-008-B
+        name: Update Case
+        type: automated
+        action: Update underwriting case
+        sets:
+          - financial_underwriting_complete: true
+          - approved_sum: determined_value
+          - financial_conditions: if_any
+
+      - id: FU-008-C
+        name: Trigger Notifications
+        type: automated
+        action: Notify relevant parties
+        notifications:
+          - underwriter: decision_ready
+          - applicant_if_reduced: sum_adjustment
+
+    outputs:
+      - financial_underwriting_record
+      - case_update
+      - notifications
+
+    sla: 1_hour
+    next_stage: complete
+
+completion_criteria:
+  - income_verified: true
+  - sum_justified: true
+  - compliance_cleared: if_applicable
+  - documentation_complete: true
+
+exception_handling:
+  documents_not_received:
+    action: final_reminder
+    then: proceed_with_available_or_decline
+
+  verification_failed:
+    action: escalate_to_senior
+    options: reduce_sum_or_decline
+
+  compliance_referral_delayed:
+    action: hold_pending_compliance
+    sla_extension: 5_days
+
+metrics:
+  - verification_success_rate
+  - average_turnaround
+  - reduction_rate
+  - compliance_referral_rate
+  - fraud_detection_rate
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

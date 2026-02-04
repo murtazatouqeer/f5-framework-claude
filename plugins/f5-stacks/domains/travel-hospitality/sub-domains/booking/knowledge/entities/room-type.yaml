@@ -1,0 +1,242 @@
+name: room-type
+display_name: Room Type
+display_name_vi: Loại phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Hotel room type definition including configuration,
+  amenities, and rate plans.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: hotel_id
+    type: uuid
+    foreign_key: hotel.id
+    required: true
+
+  - name: room_type_code
+    type: string
+    required: true
+    description: Supplier room type code
+
+  # Basic Info
+  - name: name
+    type: string
+    required: true
+    description: e.g., "Deluxe Room", "Superior Suite"
+
+  - name: name_local
+    type: string
+    nullable: true
+
+  - name: description
+    type: text
+
+  - name: short_description
+    type: string
+    max_length: 200
+
+  # Status
+  - name: status
+    type: enum
+    values: [active, inactive]
+    default: active
+
+  # Room Configuration
+  - name: room_category
+    type: enum
+    values: [standard, superior, deluxe, suite, family, penthouse, villa]
+    default: standard
+
+  - name: room_view
+    type: enum
+    values: [city, garden, pool, sea, mountain, no_view]
+    nullable: true
+
+  - name: bed_type
+    type: enum
+    values: [single, twin, double, queen, king, sofa_bed]
+
+  - name: bed_configuration
+    type: array
+    items:
+      type: object
+      properties:
+        bed_type:
+          type: string
+        quantity:
+          type: integer
+
+  - name: max_occupancy
+    type: integer
+    required: true
+    description: Maximum guests
+
+  - name: max_adults
+    type: integer
+    required: true
+
+  - name: max_children
+    type: integer
+    default: 0
+
+  - name: standard_occupancy
+    type: integer
+    description: Occupancy for base rate
+
+  # Size
+  - name: room_size_sqm
+    type: decimal
+    nullable: true
+
+  - name: room_size_sqft
+    type: decimal
+    nullable: true
+
+  # Amenities
+  - name: amenities
+    type: array
+    items:
+      type: string
+    description: Room-specific amenities
+
+  - name: has_balcony
+    type: boolean
+    default: false
+
+  - name: has_bathtub
+    type: boolean
+    default: false
+
+  - name: has_kitchen
+    type: boolean
+    default: false
+
+  - name: has_living_room
+    type: boolean
+    default: false
+
+  - name: is_smoking
+    type: boolean
+    default: false
+
+  - name: is_accessible
+    type: boolean
+    default: false
+    description: Wheelchair accessible
+
+  # Images
+  - name: images
+    type: array
+    items:
+      type: object
+      properties:
+        url:
+          type: string
+        caption:
+          type: string
+
+  # Inventory
+  - name: total_rooms
+    type: integer
+    description: Number of rooms of this type
+
+  # Rate Plans
+  - name: rate_plans
+    type: array
+    items:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        meal_plan:
+          type: string
+        cancellation_policy:
+          type: string
+        prepayment:
+          type: boolean
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    auto_set: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: max_occupancy >= 1
+    message: Max occupancy must be at least 1
+
+  - rule: max_adults >= 1
+    message: Max adults must be at least 1
+
+  - rule: max_adults + max_children <= max_occupancy
+    message: Adults plus children cannot exceed max occupancy
+
+  - rule: standard_occupancy <= max_occupancy
+    message: Standard occupancy cannot exceed max occupancy
+
+relationships:
+  - name: hotel
+    type: belongs_to
+    entity: hotel
+    foreign_key: hotel_id
+
+  - name: reservations
+    type: has_many
+    entity: hotel_reservation
+    foreign_key: room_type_id
+
+indexes:
+  - name: idx_room_type_hotel
+    columns: [hotel_id]
+
+  - name: idx_room_type_code
+    columns: [hotel_id, room_type_code]
+    unique: true
+
+  - name: idx_room_type_category
+    columns: [room_category]
+
+computed_fields:
+  - name: bed_description
+    formula: |
+      CONCAT(bed_configuration.bed_type, ' x ', bed_configuration.quantity)
+
+  - name: occupancy_description
+    formula: |
+      CONCAT('Max ', max_adults, ' adults, ', max_children, ' children')
+
+  - name: has_extra_amenities
+    formula: |
+      has_balcony OR has_bathtub OR has_kitchen OR has_living_room
+
+business_rules:
+  - id: BR-RMT-001
+    name: Rate Plan Requirements
+    rule: At least one rate plan must be defined
+
+  - id: BR-RMT-002
+    name: Image Requirements
+    rule: Minimum 3 images per room type
+
+  - id: BR-RMT-003
+    name: Bed Configuration
+    rule: Bed configuration must accommodate max_occupancy
+
+events:
+  - name: room_type.updated
+    payload: [id, hotel_id, updated_fields]
+
+  - name: room_type.availability_changed
+    payload: [id, hotel_id, date, available_rooms]

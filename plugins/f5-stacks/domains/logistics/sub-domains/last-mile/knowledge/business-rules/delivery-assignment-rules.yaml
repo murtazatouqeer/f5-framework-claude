@@ -1,0 +1,335 @@
+name: DeliveryAssignmentRules
+display_name: Delivery Assignment Rules
+description: |
+  Business rules governing how deliveries are assigned to agents.
+  Covers zone-based assignment, capacity, proximity, and skill matching.
+
+domain: logistics
+subdomain: last-mile
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - zone_assignment
+  - capacity_management
+  - proximity_optimization
+  - skill_matching
+  - load_balancing
+  - priority_handling
+
+rules:
+  # Zone-Based Assignment Rules
+  - id: DAR-001
+    name: Zone Primary Assignment
+    category: zone_assignment
+    description: Deliveries must be assigned to agents serving that zone
+    priority: critical
+    condition: |
+      delivery.zone_id IS NOT NULL
+    validation: |
+      agent.assigned_zones CONTAINS delivery.zone_id
+    error_message: Agent is not authorized for this delivery zone
+    enforcement: strict
+
+  - id: DAR-002
+    name: Cross-Zone Assignment
+    category: zone_assignment
+    description: Cross-zone assignments allowed only when primary zone has no capacity
+    priority: high
+    condition: |
+      zone.available_capacity = 0 AND
+      agent.allows_cross_zone = true
+    validation: |
+      agent.adjacent_zones CONTAINS delivery.zone_id OR
+      agent.cross_zone_certified = true
+    constraints:
+      max_cross_zone_deliveries: 3
+      cross_zone_premium: 1.2  # 20% extra pay
+
+  - id: DAR-003
+    name: Zone Capacity Check
+    category: zone_assignment
+    description: Zone must have available capacity before accepting deliveries
+    priority: high
+    condition: |
+      zone.status = 'active'
+    validation: |
+      zone.current_deliveries < zone.max_capacity
+    action_on_fail: queue_or_redirect
+
+  # Capacity Management Rules
+  - id: DAR-010
+    name: Agent Daily Capacity
+    category: capacity_management
+    description: Agents cannot exceed their daily delivery limit
+    priority: critical
+    condition: |
+      agent.status = 'active'
+    validation: |
+      agent.current_deliveries_today < agent.max_daily_deliveries
+    error_message: Agent has reached daily delivery limit
+    enforcement: strict
+
+  - id: DAR-011
+    name: Agent Concurrent Limit
+    category: capacity_management
+    description: Maximum concurrent deliveries per agent
+    priority: high
+    validation: |
+      agent.active_deliveries <= agent.max_concurrent_deliveries
+    defaults:
+      bike: 5
+      motorcycle: 8
+      car: 15
+      van: 25
+
+  - id: DAR-012
+    name: Weight Capacity Check
+    category: capacity_management
+    description: Total weight must not exceed vehicle capacity
+    priority: high
+    validation: |
+      SUM(assigned_deliveries.weight_kg) + delivery.weight_kg <=
+      agent.vehicle_weight_capacity
+    error_message: Adding this delivery would exceed vehicle weight capacity
+
+  - id: DAR-013
+    name: Volume Capacity Check
+    category: capacity_management
+    description: Total volume must not exceed vehicle capacity
+    priority: medium
+    validation: |
+      SUM(assigned_deliveries.volume_cm3) + delivery.volume_cm3 <=
+      agent.vehicle_volume_capacity
+    error_message: Adding this delivery would exceed vehicle volume capacity
+
+  # Proximity Optimization Rules
+  - id: DAR-020
+    name: Nearest Agent Assignment
+    category: proximity_optimization
+    description: Assign to nearest available agent when possible
+    priority: medium
+    condition: |
+      assignment_mode = 'proximity'
+    algorithm: |
+      SELECT agent
+      FROM available_agents
+      WHERE zone_authorized = true
+      ORDER BY distance_to_pickup ASC
+      LIMIT 1
+
+  - id: DAR-021
+    name: Route Optimization
+    category: proximity_optimization
+    description: New deliveries should fit into agent's current route
+    priority: medium
+    condition: |
+      agent.has_active_route = true
+    scoring: |
+      route_deviation_score =
+        CALCULATE_DEVIATION(agent.current_route, new_delivery.location)
+      PREFER agents WHERE route_deviation_score < 2.0 km
+
+  - id: DAR-022
+    name: Pickup-Delivery Clustering
+    category: proximity_optimization
+    description: Cluster pickups and deliveries by geographic proximity
+    priority: medium
+    algorithm: |
+      GROUP deliveries BY geographic_cluster(5km_radius)
+      ASSIGN cluster TO single_agent WHERE possible
+
+  # Skill Matching Rules
+  - id: DAR-030
+    name: Special Handling Certification
+    category: skill_matching
+    description: Special items require certified agents
+    priority: critical
+    condition: |
+      delivery.requires_special_handling = true
+    validation: |
+      agent.certifications CONTAINS delivery.handling_requirement
+    handling_types:
+      fragile: fragile_certified
+      hazmat: hazmat_certified
+      cold_chain: cold_chain_certified
+      high_value: high_value_certified
+      oversized: oversized_certified
+
+  - id: DAR-031
+    name: COD Certification
+    category: skill_matching
+    description: COD deliveries require cash handling certification
+    priority: high
+    condition: |
+      delivery.is_cod = true AND delivery.cod_amount > 0
+    validation: |
+      agent.cod_certified = true AND
+      agent.cod_collection_limit >= delivery.cod_amount
+
+  - id: DAR-032
+    name: Vehicle Type Match
+    category: skill_matching
+    description: Delivery size must match vehicle capability
+    priority: high
+    validation: |
+      delivery.required_vehicle_type IN agent.vehicle_types OR
+      agent.vehicle_type >= delivery.required_vehicle_type
+    vehicle_hierarchy:
+      - bike        # Small parcels only
+      - motorcycle  # Small to medium
+      - car         # Medium parcels
+      - van         # Large items
+      - truck       # Bulk/oversized
+
+  - id: DAR-033
+    name: Language Preference
+    category: skill_matching
+    description: Match agent language to recipient preference
+    priority: low
+    condition: |
+      recipient.preferred_language IS NOT NULL
+    preference: |
+      PREFER agents WHERE agent.languages CONTAINS recipient.preferred_language
+
+  # Load Balancing Rules
+  - id: DAR-040
+    name: Fair Distribution
+    category: load_balancing
+    description: Distribute deliveries fairly among available agents
+    priority: medium
+    algorithm: |
+      distribution_score = agent.deliveries_today / zone.avg_deliveries_per_agent
+      PREFER agents WHERE distribution_score < 1.0
+
+  - id: DAR-041
+    name: Performance-Based Assignment
+    category: load_balancing
+    description: High performers get priority for premium deliveries
+    priority: medium
+    condition: |
+      delivery.is_premium = true OR delivery.tip_expected = true
+    preference: |
+      PREFER agents WHERE agent.performance_score >= 4.5
+
+  - id: DAR-042
+    name: New Agent Onboarding
+    category: load_balancing
+    description: Limit assignments to new agents during onboarding
+    priority: medium
+    condition: |
+      agent.days_since_activation < 14
+    constraints:
+      max_daily_deliveries: 10
+      complex_delivery_allowed: false
+      cod_allowed: false
+
+  # Priority Handling Rules
+  - id: DAR-050
+    name: Express Delivery Priority
+    category: priority_handling
+    description: Express deliveries get immediate assignment
+    priority: critical
+    condition: |
+      delivery.service_level IN ('express', 'same_day', 'instant')
+    action: |
+      ASSIGN immediately
+      SKIP queue
+      ALERT if no agent available within 5 minutes
+
+  - id: DAR-051
+    name: SLA-Critical Assignment
+    category: priority_handling
+    description: Deliveries approaching SLA deadline get priority
+    priority: critical
+    condition: |
+      delivery.sla_deadline - NOW() < 2 hours
+    action: |
+      BOOST priority
+      ALLOW cross_zone
+      NOTIFY operations if unassigned
+
+  - id: DAR-052
+    name: VIP Customer Priority
+    category: priority_handling
+    description: VIP customers get preferred agent assignment
+    priority: high
+    condition: |
+      recipient.is_vip = true OR recipient.tier = 'platinum'
+    preference: |
+      PREFER agents WHERE agent.rating >= 4.8 AND agent.vip_certified = true
+
+  - id: DAR-053
+    name: Reattempt Priority
+    category: priority_handling
+    description: Failed deliveries on reattempt get priority
+    priority: high
+    condition: |
+      delivery.attempt_count > 0
+    action: |
+      PREFER same_agent if available
+      BOOST priority by attempt_count
+      ASSIGN to experienced_agent if attempt_count >= 2
+
+assignment_algorithms:
+  - id: ALGO-001
+    name: Greedy Nearest
+    description: Assign to nearest available agent
+    complexity: O(n)
+    use_case: Low volume, simple zones
+
+  - id: ALGO-002
+    name: Batch Optimization
+    description: Optimize assignments in batch windows
+    complexity: O(n log n)
+    use_case: High volume, route optimization
+    batch_window: 15 minutes
+
+  - id: ALGO-003
+    name: Dynamic Rebalancing
+    description: Continuously rebalance based on real-time conditions
+    complexity: O(n²)
+    use_case: Real-time optimization, dynamic demand
+
+scoring_factors:
+  - factor: distance_to_pickup
+    weight: 0.25
+    normalize: inverse
+
+  - factor: route_fit_score
+    weight: 0.20
+    normalize: direct
+
+  - factor: current_load_percentage
+    weight: 0.15
+    normalize: inverse
+
+  - factor: agent_rating
+    weight: 0.15
+    normalize: direct
+
+  - factor: skill_match_score
+    weight: 0.15
+    normalize: direct
+
+  - factor: time_to_sla_deadline
+    weight: 0.10
+    normalize: inverse
+
+events:
+  - name: assignment.created
+    description: Delivery assigned to agent
+    payload: [delivery_id, agent_id, score]
+
+  - name: assignment.rejected
+    description: Agent rejected assignment
+    payload: [delivery_id, agent_id, reason]
+
+  - name: assignment.timeout
+    description: Assignment not accepted in time
+    payload: [delivery_id, timeout_seconds]
+
+  - name: assignment.rebalanced
+    description: Delivery reassigned due to optimization
+    payload: [delivery_id, old_agent_id, new_agent_id, reason]

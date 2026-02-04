@@ -1,0 +1,496 @@
+name: SpotTradingWorkflow
+display_name: Spot Trading Workflow / Quy trình giao dịch spot
+description: |
+  End-to-end workflow for spot trading from order placement
+  to trade execution and settlement.
+
+domain: fintech
+sub_domain: crypto
+workflow_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: User places a trading order
+  outcome: Order executed (matched) or placed in order book
+  typical_duration: Milliseconds to indefinite (GTC orders)
+  actors:
+    - user
+    - order_gateway
+    - risk_engine
+    - matching_engine
+    - settlement_engine
+    - notification_service
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # Step 1: Order Submission
+  - id: WF-TRD-01
+    name: Submit Order
+    name_vi: Gửi lệnh
+    actor: user
+    trigger: User submits order via UI/API
+    description: |
+      User submits trading order with parameters.
+    inputs:
+      - trading_pair (symbol)
+      - side (buy/sell)
+      - order_type (limit/market/stop_limit/stop_market)
+      - quantity
+      - price (for limit orders)
+      - stop_price (for stop orders)
+      - time_in_force (gtc/ioc/fok/gtd)
+      - client_order_id (optional)
+    validations:
+      - User authenticated
+      - Trading pair active
+      - Order type supported for pair
+      - Price/quantity valid format
+    next_step: WF-TRD-02
+
+  # Step 2: Order Validation
+  - id: WF-TRD-02
+    name: Validate Order
+    name_vi: Xác thực lệnh
+    actor: order_gateway
+    trigger: Order received
+    description: |
+      Validate order parameters against trading rules.
+    validations:
+      quantity:
+        - >= min_order_quantity
+        - <= max_order_quantity
+        - Multiple of lot_size
+      price:
+        - Multiple of tick_size
+        - Within price deviation limit
+      notional:
+        - >= min_notional value
+        - <= max_notional value
+      rate_limit:
+        - Orders per second within limit
+        - Open orders within limit
+    on_success: WF-TRD-03
+    on_failure:
+      action: Reject order
+      response: Error code and message
+      latency_target: < 5ms
+
+  # Step 3: Balance Check & Lock
+  - id: WF-TRD-03
+    name: Check and Lock Balance
+    name_vi: Kiểm tra và khóa số dư
+    actor: risk_engine
+    trigger: Order validated
+    description: |
+      Verify sufficient balance and lock required amount.
+    actions:
+      buy_order:
+        - Check: available_quote >= quantity * price
+        - Lock: Move to in_order balance
+      sell_order:
+        - Check: available_base >= quantity
+        - Lock: Move to in_order balance
+    calculation:
+      limit_buy: quantity * price
+      market_buy: quantity * (best_ask * 1.05)  # Buffer for slippage
+      limit_sell: quantity
+      market_sell: quantity
+    on_success: WF-TRD-04
+    on_failure:
+      action: Reject order
+      reason: Insufficient balance
+      no_partial_lock: true
+
+  # Step 4: Risk Check
+  - id: WF-TRD-04
+    name: Risk Assessment
+    name_vi: Đánh giá rủi ro
+    actor: risk_engine
+    trigger: Balance locked
+    description: |
+      Perform real-time risk checks on the order.
+    checks:
+      position_limit:
+        - Check exposure limits
+        - Check concentration limits
+      market_impact:
+        - Estimate slippage
+        - Warn for large orders
+      velocity:
+        - Check trading frequency
+        - Detect wash trading patterns
+      self_trade:
+        - Check for potential self-trade
+        - Apply STP mode if configured
+    on_success: WF-TRD-05
+    on_failure:
+      action: Reject order
+      unlock_balance: true
+      reason: Risk limit exceeded
+
+  # Step 5: Order Routing
+  - id: WF-TRD-05
+    name: Route to Matching Engine
+    name_vi: Chuyển đến engine khớp lệnh
+    actor: order_gateway
+    trigger: Risk check passed
+    description: |
+      Send validated order to matching engine.
+    actions:
+      - Assign order_id
+      - Add timestamp
+      - Route to appropriate shard
+      - Publish to order stream
+    latency_target: < 1ms
+
+  # Step 6: Order Matching
+  - id: WF-TRD-06
+    name: Match Order
+    name_vi: Khớp lệnh
+    actor: matching_engine
+    trigger: Order received
+    description: |
+      Attempt to match order against order book.
+    algorithm:
+      priority: price-time (FIFO)
+      matching:
+        limit_buy: Match against asks <= price
+        limit_sell: Match against bids >= price
+        market_buy: Match against best asks
+        market_sell: Match against best bids
+    scenarios:
+      full_match:
+        description: Entire order matched
+        result: Order filled
+        next_step: WF-TRD-07
+      partial_match:
+        description: Part of order matched
+        result: Partial fill + remaining to book (if GTC)
+        next_step: WF-TRD-07 (for fills), WF-TRD-08 (for remaining)
+      no_match:
+        description: No matching orders
+        result: Add to order book (limit) or reject (market IOC)
+        next_step: WF-TRD-08 (limit), reject (market)
+    special_handling:
+      ioc: Fill available, cancel remaining
+      fok: Fill all or cancel entirely
+      post_only: Reject if would match immediately
+
+  # Step 7: Trade Execution
+  - id: WF-TRD-07
+    name: Execute Trade
+    name_vi: Thực hiện giao dịch
+    actor: matching_engine
+    trigger: Orders matched
+    description: |
+      Create trade record and update order status.
+    actions:
+      - Create trade record
+      - Update maker order (executed_quantity)
+      - Update taker order (executed_quantity)
+      - Calculate fees for both parties
+      - Publish trade event
+    outputs:
+      - trade_id
+      - price
+      - quantity
+      - maker_fee
+      - taker_fee
+      - trade_time
+    immutable: true
+    next_step: WF-TRD-09
+
+  # Step 8: Add to Order Book
+  - id: WF-TRD-08
+    name: Add to Order Book
+    name_vi: Thêm vào sổ lệnh
+    actor: matching_engine
+    trigger: Order not fully matched
+    description: |
+      Add remaining order quantity to order book.
+    actions:
+      - Update order status to 'open' or 'partially_filled'
+      - Insert into order book at price level
+      - Publish order book update
+    applies_to:
+      - Limit orders
+      - GTC time_in_force
+    order_book_update:
+      - Increment quantity at price level
+      - Increment order count
+    monitoring:
+      - Update best bid/ask if changed
+      - Broadcast to subscribers
+
+  # Step 9: Settlement
+  - id: WF-TRD-09
+    name: Settle Trade
+    name_vi: Thanh toán giao dịch
+    actor: settlement_engine
+    trigger: Trade executed
+    description: |
+      Transfer assets between buyer and seller balances.
+    actions:
+      buyer:
+        - Debit quote asset (from in_order)
+        - Credit base asset (to available)
+        - Debit fee (from credit or in_order)
+      seller:
+        - Debit base asset (from in_order)
+        - Credit quote asset (to available)
+        - Debit fee (from credit or in_order)
+    atomicity: Single database transaction
+    consistency:
+      - Sum of debits = sum of credits
+      - No negative balances
+    latency_target: < 10ms
+
+  # Step 10: Post-Trade Processing
+  - id: WF-TRD-10
+    name: Post-Trade Processing
+    name_vi: Xử lý sau giao dịch
+    actor: system
+    trigger: Settlement complete
+    description: |
+      Update statistics and trigger notifications.
+    actions:
+      market_data:
+        - Update last price
+        - Update 24h volume
+        - Update OHLCV candles
+        - Publish ticker update
+      user_data:
+        - Update trading volume (for fee tier)
+        - Update order history
+        - Calculate realized P&L
+      notifications:
+        - Push notification (if enabled)
+        - WebSocket update
+        - Email for large trades (optional)
+
+# =============================================================================
+# ORDER TYPES DETAIL
+# =============================================================================
+order_types:
+  limit:
+    description: Execute at specified price or better
+    required_fields: [price, quantity]
+    behavior:
+      - Match against orders at price or better
+      - Remaining quantity added to book
+
+  market:
+    description: Execute immediately at best available price
+    required_fields: [quantity]
+    behavior:
+      - Match against best available prices
+      - No price guarantee
+      - Rejected if would cause >5% slippage (configurable)
+
+  stop_limit:
+    description: Place limit order when stop price triggered
+    required_fields: [price, stop_price, quantity]
+    behavior:
+      - Order inactive until stop_price reached
+      - Converts to limit order at price
+      - Then follows limit order behavior
+
+  stop_market:
+    description: Place market order when stop price triggered
+    required_fields: [stop_price, quantity]
+    behavior:
+      - Order inactive until stop_price reached
+      - Converts to market order
+      - Immediate execution at best price
+
+# =============================================================================
+# TIME IN FORCE DETAIL
+# =============================================================================
+time_in_force:
+  gtc:
+    name: Good Till Cancelled
+    description: Remains until filled or cancelled
+    max_duration: 90 days (configurable)
+
+  ioc:
+    name: Immediate Or Cancel
+    description: Fill immediately, cancel unfilled portion
+    use_case: Large orders minimizing book impact
+
+  fok:
+    name: Fill Or Kill
+    description: Fill entire quantity or cancel entirely
+    use_case: All-or-nothing execution
+
+  gtd:
+    name: Good Till Date
+    description: Expires at specified time
+    required_field: expires_at
+
+# =============================================================================
+# STATE TRANSITIONS
+# =============================================================================
+state_machine:
+  initial: new
+  states:
+    new:
+      description: Order created, not yet processed
+      transitions:
+        - to: rejected
+          event: validation_failed
+        - to: pending
+          event: validated
+
+    pending:
+      description: In processing pipeline
+      transitions:
+        - to: rejected
+          event: risk_check_failed
+        - to: open
+          event: added_to_book
+        - to: filled
+          event: fully_matched
+        - to: partially_filled
+          event: partially_matched
+
+    open:
+      description: Resting in order book
+      transitions:
+        - to: partially_filled
+          event: partial_match
+        - to: filled
+          event: full_match
+        - to: cancelled
+          event: user_cancel
+        - to: expired
+          event: time_expired
+
+    partially_filled:
+      description: Partially executed
+      transitions:
+        - to: filled
+          event: remaining_matched
+        - to: cancelled
+          event: user_cancel
+        - to: expired
+          event: time_expired
+
+    filled:
+      description: Fully executed
+      terminal: true
+
+    cancelled:
+      description: Cancelled by user or system
+      terminal: true
+
+    rejected:
+      description: Failed validation
+      terminal: true
+
+    expired:
+      description: Time in force expired
+      terminal: true
+
+# =============================================================================
+# PERFORMANCE REQUIREMENTS
+# =============================================================================
+performance:
+  latency:
+    order_submission: < 10ms (p99)
+    validation: < 5ms
+    matching: < 1ms
+    settlement: < 10ms
+    total_round_trip: < 50ms (p99)
+
+  throughput:
+    orders_per_second: 100,000
+    matches_per_second: 50,000
+    concurrent_users: 100,000
+
+  availability:
+    target: 99.99%
+    planned_downtime: < 4 hours/year
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - name: order_latency_p99
+      target: < 50ms
+      alert: critical at > 100ms
+
+    - name: matching_latency
+      target: < 1ms
+      alert: critical at > 5ms
+
+    - name: order_rejection_rate
+      target: < 5%
+      alert: warning at > 10%
+
+    - name: order_book_depth
+      target: Sufficient liquidity
+      alert: warning at shallow depth
+
+  alerts:
+    - name: High Latency
+      condition: p99_latency > threshold
+      severity: critical
+      action: Page on-call
+
+    - name: Matching Engine Down
+      condition: No matches for 60 seconds
+      severity: critical
+      action: Page on-call, halt trading
+
+    - name: Balance Mismatch
+      condition: Reconciliation failure
+      severity: critical
+      action: Page on-call, investigate
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - order_submitted
+    - order_validated
+    - order_rejected
+    - balance_locked
+    - order_matched
+    - trade_created
+    - settlement_completed
+    - order_cancelled
+    - order_expired
+  retention: 7 years
+  immutable: true
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  - scenario: Matching Engine Failure
+    response:
+      - Halt order acceptance
+      - Queue incoming orders
+      - Recover and replay
+      - Notify users
+
+  - scenario: Balance Lock Failure
+    response:
+      - Reject order immediately
+      - No partial operations
+      - Return clear error
+
+  - scenario: Settlement Failure
+    response:
+      - Rollback entire transaction
+      - Mark trades for retry
+      - Alert operations
+      - Never leave inconsistent state

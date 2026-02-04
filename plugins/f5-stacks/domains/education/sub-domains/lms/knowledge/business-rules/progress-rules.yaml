@@ -1,0 +1,477 @@
+# Progress Business Rules
+# F5 Framework v2.0 - Education/LMS
+# Rules governing learning progress tracking
+
+business_rules:
+  id: progress-rules
+  name: Progress Rules
+  name_ja: 進捗ルール
+  description: Business rules for learning progress tracking and management
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  rules:
+    # Progress Recording
+    - id: BR-PRG-001
+      name: Progress Recording
+      name_ja: 進捗記録
+      description: Record learner progress on content consumption
+      category: tracking
+      priority: critical
+      
+      trigger:
+        event: content_interaction
+        entity: progress
+        
+      conditions:
+        - field: enrollment.status
+          operator: equals
+          value: active
+        - field: content.is_accessible
+          operator: equals
+          value: true
+          
+      actions:
+        on_interaction:
+          - record_interaction:
+              timestamp: "{{current_time}}"
+              interaction_type: "{{interaction.type}}"
+          - update_progress:
+              time_spent: "{{interaction.duration}}"
+              last_position: "{{interaction.position}}"
+              
+      tracking_data:
+        video:
+          - current_position
+          - furthest_position
+          - watch_time
+          - playback_speed
+        article:
+          - scroll_position
+          - read_time
+          - highlights_count
+        quiz:
+          - attempts
+          - scores
+          - time_per_question
+        scorm:
+          - cmi_data
+          - suspend_data
+          - session_time
+          
+      compliance:
+        - standard: SCORM
+          data: cmi.core.lesson_location
+        - standard: xAPI
+          statement_type: progressed
+
+    # Video Progress Calculation
+    - id: BR-PRG-010
+      name: Video Progress Calculation
+      name_ja: 動画進捗計算
+      description: Calculate progress percentage for video content
+      category: calculation
+      priority: high
+      
+      trigger:
+        event: video_position_update
+        entity: progress
+        
+      conditions:
+        - field: content.type
+          operator: equals
+          value: video
+          
+      actions:
+        - calculate_progress:
+            formula: "(furthest_position / video.duration) * 100"
+            min: 0
+            max: 100
+        - update_progress:
+            percentage: "{{calculated_percentage}}"
+            
+      considerations:
+        skip_detection:
+          enabled: true
+          max_skip_ratio: 0.3
+          penalty: reduce_progress_credit
+        rewatch_handling:
+          count_towards_time: true
+          update_position: false
+        buffering_exclusion:
+          enabled: true
+          
+    # Quiz Progress and Scoring
+    - id: BR-PRG-020
+      name: Quiz Progress Tracking
+      name_ja: クイズ進捗追跡
+      description: Track quiz attempts and calculate scores
+      category: assessment
+      priority: critical
+      
+      trigger:
+        event: quiz_submitted
+        entity: progress
+        
+      conditions:
+        - field: content.type
+          operator: in
+          value: [quiz, assessment, exam]
+        - field: quiz.attempts_remaining
+          operator: greater_than
+          value: 0
+          
+      actions:
+        - record_attempt:
+            answers: "{{submitted_answers}}"
+            score: "{{calculated_score}}"
+            time_taken: "{{quiz_duration}}"
+        - update_progress:
+            quiz_score: "{{best_score}}"
+            quiz_attempts: "{{total_attempts}}"
+        - evaluate_passing:
+            threshold: "{{quiz.passing_score}}"
+            
+      scoring_rules:
+        score_calculation: highest | latest | average
+        partial_credit: true
+        negative_marking: false
+        time_bonus: false
+        
+      attempt_management:
+        max_attempts: quiz.max_attempts
+        cooldown_between_attempts: quiz.retry_delay
+        reset_on_request: instructor_approval_required
+        
+      compliance:
+        - standard: QTI
+          requirement: result_reporting
+
+    # Lesson Completion
+    - id: BR-PRG-030
+      name: Lesson Completion
+      name_ja: レッスン完了
+      description: Determine when a lesson is considered complete
+      category: completion
+      priority: high
+      
+      trigger:
+        event: lesson_progress_update
+        entity: progress
+        
+      conditions:
+        - field: lesson.completion_criteria
+          operator: is_defined
+          
+      actions:
+        - evaluate_completion:
+            criteria: lesson.completion_criteria
+        - on_complete:
+            - mark_lesson_complete
+            - award_xp: lesson.xp_reward
+            - update_module_progress
+            - check_unlock_triggers
+            
+      completion_criteria:
+        view_complete:
+          video: progress >= 90%
+          article: scroll_to_end or time >= estimated_read_time
+          
+        quiz_passed:
+          score: ">= passing_score"
+          attempts: ">= 1"
+          
+        assignment_submitted:
+          status: submitted | graded
+          
+        all_content:
+          all_items_completed: true
+          
+        custom:
+          evaluate: lesson.custom_completion_logic
+          
+    # Module Progress Aggregation
+    - id: BR-PRG-040
+      name: Module Progress Aggregation
+      name_ja: モジュール進捗集計
+      description: Aggregate lesson progress to module level
+      category: aggregation
+      priority: high
+      
+      trigger:
+        event: lesson_progress_update
+        entity: progress
+        
+      actions:
+        - calculate_module_progress:
+            formula: "SUM(lesson_progress * lesson_weight) / SUM(lesson_weight)"
+        - update_module:
+            progress_percentage: "{{calculated_progress}}"
+            completed_lessons: "{{count_completed}}"
+            
+      aggregation_rules:
+        weighted: true
+        include_optional: false
+        round_to: 1 decimal
+        
+    # Course Progress Aggregation
+    - id: BR-PRG-050
+      name: Course Progress Aggregation
+      name_ja: コース進捗集計
+      description: Aggregate module progress to course level
+      category: aggregation
+      priority: high
+      
+      trigger:
+        event: module_progress_update
+        entity: enrollment
+        
+      actions:
+        - calculate_course_progress:
+            formula: "SUM(module_progress * module_weight) / SUM(module_weight)"
+        - update_enrollment:
+            progress_percentage: "{{calculated_progress}}"
+            completed_modules: "{{count_completed}}"
+            
+      progress_display:
+        show_modules: true
+        show_lessons: true
+        show_time_spent: true
+        show_estimated_remaining: true
+
+    # Progress Milestones
+    - id: BR-PRG-060
+      name: Progress Milestones
+      name_ja: 進捗マイルストーン
+      description: Trigger actions at progress milestones
+      category: gamification
+      priority: medium
+      
+      trigger:
+        event: course_progress_update
+        entity: enrollment
+        
+      conditions:
+        - field: progress_percentage
+          operator: crosses_threshold
+          values: [25, 50, 75, 100]
+          
+      actions:
+        at_25_percent:
+          - award_badge: "quarter_complete"
+          - send_notification: encouragement_25
+        at_50_percent:
+          - award_badge: "halfway_there"
+          - send_notification: encouragement_50
+        at_75_percent:
+          - award_badge: "almost_done"
+          - send_notification: encouragement_75
+        at_100_percent:
+          - trigger_completion_flow
+          
+    # Learning Streak Tracking
+    - id: BR-PRG-070
+      name: Learning Streak
+      name_ja: 学習ストリーク
+      description: Track consecutive days of learning activity
+      category: gamification
+      priority: medium
+      
+      trigger:
+        event: daily_activity_recorded
+        entity: learner
+        
+      conditions:
+        - field: activity.is_meaningful
+          operator: equals
+          value: true
+          description: Not just login, actual learning activity
+          
+      actions:
+        - check_streak:
+            last_activity_date: learner.last_activity_date
+            current_date: "{{today}}"
+        - on_consecutive:
+            - increment_streak
+            - check_streak_milestones
+        - on_gap:
+            - reset_streak
+            - check_streak_freeze
+            
+      streak_rules:
+        meaningful_activity:
+          - lesson_progress > 0
+          - quiz_attempted
+          - assignment_submitted
+          - discussion_posted
+        timezone: learner.timezone
+        grace_period: 6 hours
+        
+      streak_rewards:
+        7_days: { badge: "week_warrior", xp: 50 }
+        30_days: { badge: "monthly_master", xp: 200 }
+        100_days: { badge: "century_learner", xp: 500 }
+        365_days: { badge: "year_of_learning", xp: 2000 }
+        
+      streak_freeze:
+        available: true
+        max_freezes: 3 per month
+        auto_apply: false
+        
+    # Time-Based Progress Requirements
+    - id: BR-PRG-080
+      name: Minimum Time Requirements
+      name_ja: 最小時間要件
+      description: Enforce minimum time spent on content
+      category: compliance
+      priority: high
+      
+      trigger:
+        event: completion_requested
+        entity: progress
+        
+      conditions:
+        - field: lesson.minimum_time_minutes
+          operator: is_not_null
+        - field: progress.time_spent_minutes
+          operator: greater_than_or_equal
+          value: lesson.minimum_time_minutes
+          
+      actions:
+        on_pass:
+          - allow_completion
+        on_fail:
+          - block_completion
+          - message:
+              key: progress.minimum_time_not_met
+              params:
+                required: "{{lesson.minimum_time_minutes}}"
+                spent: "{{progress.time_spent_minutes}}"
+                
+      compliance:
+        - standard: accreditation
+          requirement: seat_time_tracking
+        - standard: CEU
+          requirement: contact_hours
+          
+    # Progress Sync (Offline Learning)
+    - id: BR-PRG-090
+      name: Offline Progress Sync
+      name_ja: オフライン進捗同期
+      description: Synchronize progress from offline learning sessions
+      category: sync
+      priority: high
+      
+      trigger:
+        event: offline_sync_requested
+        entity: progress
+        
+      conditions:
+        - field: sync_data.integrity
+          operator: verified
+        - field: sync_data.timestamp
+          operator: newer_than
+          value: last_sync_timestamp
+          
+      actions:
+        - validate_sync_data
+        - merge_progress:
+            strategy: latest_wins
+            conflict_resolution: higher_progress
+        - update_timestamps
+        - acknowledge_sync
+        
+      conflict_resolution:
+        progress_percentage: take_higher
+        quiz_scores: take_higher
+        time_spent: sum_unique
+        completion_status: prefer_completed
+        
+    # SCORM Data Processing
+    - id: BR-PRG-100
+      name: SCORM Data Processing
+      name_ja: SCORMデータ処理
+      description: Process and store SCORM tracking data
+      category: standards
+      priority: critical
+      
+      trigger:
+        event: scorm_data_received
+        entity: progress
+        
+      conditions:
+        - field: content.type
+          operator: equals
+          value: scorm
+          
+      actions:
+        - parse_scorm_data:
+            version: content.scorm_version
+        - store_cmi_data:
+            core: true
+            interactions: true
+            objectives: true
+        - calculate_progress:
+            from: cmi.core.lesson_status
+        - persist_suspend_data
+        
+      scorm_mapping:
+        lesson_status:
+          completed: 100%
+          passed: 100%
+          incomplete: from_lesson_location
+          failed: from_lesson_location
+        score:
+          source: cmi.core.score.raw
+          scale: cmi.core.score.max
+          
+      compliance:
+        - standard: SCORM 1.2
+          api: AICC_API
+        - standard: SCORM 2004
+          api: SCORM_API
+
+  calculation_formulas:
+    lesson_progress:
+      video: "(furthest_watched / duration) * 100"
+      article: "(scroll_depth / total_height) * 100"
+      quiz: "passed ? 100 : 0"
+      assignment: "submitted ? 100 : 0"
+      scorm: "from_cmi_data"
+      
+    module_progress:
+      weighted: "SUM(lesson_progress * weight) / SUM(weight)"
+      simple: "completed_lessons / total_lessons * 100"
+      
+    course_progress:
+      weighted: "SUM(module_progress * weight) / SUM(weight)"
+      simple: "completed_modules / total_modules * 100"
+
+  xapi_statements:
+    progressed:
+      verb: "http://adlnet.gov/expapi/verbs/progressed"
+      extensions:
+        - progress_percentage
+        - time_spent
+        
+    completed:
+      verb: "http://adlnet.gov/expapi/verbs/completed"
+      extensions:
+        - score
+        - duration
+        
+    experienced:
+      verb: "http://adlnet.gov/expapi/verbs/experienced"
+      extensions:
+        - content_type
+        - interaction_data
+
+  audit:
+    enabled: true
+    log_events:
+      - progress_recorded
+      - lesson_completed
+      - module_completed
+      - milestone_reached
+      - streak_updated

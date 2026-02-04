@@ -1,0 +1,708 @@
+name: Tenant Isolation Rules
+display_name: Tenant Isolation Rules / Quy tắc cách ly khách thuê
+description: |
+  CRITICAL: Core tenant isolation rules ensuring complete data separation
+  between tenants. These rules form the foundation of multi-tenant security.
+
+domain: saas-platform
+rule_category: security
+version: "1.0"
+severity: critical
+compliance: [SOC2, GDPR, HIPAA, ISO27001]
+
+# =============================================================================
+# DATA ISOLATION RULES
+# =============================================================================
+data_isolation:
+  # ---------------------------------------------------------------------------
+  # Rule: TI-DATA-001 - Mandatory Tenant Context
+  # ---------------------------------------------------------------------------
+  - id: TI-DATA-001
+    name: Mandatory Tenant Context
+    name_vi: Ngữ cảnh khách thuê bắt buộc
+    severity: critical
+    description: |
+      Every database query MUST include tenant_id in WHERE clause.
+      No exceptions for tenant-scoped tables.
+    description_vi: |
+      Mọi truy vấn cơ sở dữ liệu PHẢI bao gồm tenant_id trong mệnh đề WHERE.
+      Không có ngoại lệ cho các bảng phạm vi khách thuê.
+
+    implementation:
+      strategy: row_level_security
+      database: postgresql
+
+      # PostgreSQL RLS Policy
+      rls_policy: |
+        -- Enable RLS on all tenant-scoped tables
+        ALTER TABLE {table_name} ENABLE ROW LEVEL SECURITY;
+
+        -- Create tenant isolation policy
+        CREATE POLICY tenant_isolation_policy ON {table_name}
+          USING (tenant_id = current_setting('app.current_tenant_id')::uuid)
+          WITH CHECK (tenant_id = current_setting('app.current_tenant_id')::uuid);
+
+        -- Force RLS for table owners too
+        ALTER TABLE {table_name} FORCE ROW LEVEL SECURITY;
+
+      # Application middleware
+      middleware_pattern: |
+        // Set tenant context at request start
+        async function setTenantContext(req, res, next) {
+          const tenantId = extractTenantId(req);
+          if (!tenantId) {
+            return res.status(401).json({ error: 'Tenant context required' });
+          }
+
+          // Set PostgreSQL session variable
+          await db.query("SET app.current_tenant_id = $1", [tenantId]);
+          req.tenantId = tenantId;
+          next();
+        }
+
+    validation:
+      automated_checks:
+        - query_interceptor: "Reject queries without tenant_id filter"
+        - code_review: "Static analysis for raw queries"
+        - runtime_audit: "Log and alert on policy violations"
+
+      test_cases:
+        - name: "Cross-tenant query blocked"
+          type: security
+          scenario: "Query with different tenant_id than session"
+          expected: "Query returns empty or error"
+
+        - name: "Missing tenant_id rejected"
+          type: security
+          scenario: "Query without tenant_id filter"
+          expected: "Query blocked by RLS policy"
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-DATA-002 - Tenant-Scoped Tables
+  # ---------------------------------------------------------------------------
+  - id: TI-DATA-002
+    name: Tenant-Scoped Tables
+    name_vi: Bảng phạm vi khách thuê
+    severity: critical
+    description: |
+      All tables containing tenant data MUST have tenant_id column.
+      tenant_id MUST be NOT NULL and indexed.
+    description_vi: |
+      Tất cả các bảng chứa dữ liệu khách thuê PHẢI có cột tenant_id.
+      tenant_id PHẢI là NOT NULL và được đánh index.
+
+    affected_tables:
+      tenant_scoped:
+        - users
+        - subscriptions
+        - invoices
+        - payment_methods
+        - usage_records
+        - audit_logs
+        - organizations
+        - roles
+        - permissions
+        - features
+        - api_keys
+        - webhooks
+        - settings
+
+      global_tables:
+        - tenants
+        - plans
+        - system_features
+        - platform_audit_logs
+
+    schema_requirements:
+      column_definition: |
+        tenant_id UUID NOT NULL REFERENCES tenants(id) ON DELETE CASCADE
+
+      index_definition: |
+        CREATE INDEX idx_{table}_tenant ON {table}(tenant_id);
+        -- Composite indexes for common queries
+        CREATE INDEX idx_{table}_tenant_created ON {table}(tenant_id, created_at DESC);
+
+      foreign_key_cascade: |
+        -- When tenant is deleted, cascade to all tenant data
+        ON DELETE CASCADE
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-DATA-003 - Cross-Tenant Join Prevention
+  # ---------------------------------------------------------------------------
+  - id: TI-DATA-003
+    name: Cross-Tenant Join Prevention
+    name_vi: Ngăn chặn join xuyên khách thuê
+    severity: critical
+    description: |
+      JOINs between tenant-scoped tables MUST verify same tenant_id.
+      No cross-tenant data aggregation allowed.
+    description_vi: |
+      JOIN giữa các bảng phạm vi khách thuê PHẢI xác minh cùng tenant_id.
+      Không cho phép tổng hợp dữ liệu xuyên khách thuê.
+
+    implementation:
+      safe_join_pattern: |
+        -- CORRECT: Same tenant enforced
+        SELECT u.*, s.*
+        FROM users u
+        JOIN subscriptions s ON s.tenant_id = u.tenant_id
+        WHERE u.tenant_id = :tenant_id
+
+      dangerous_pattern: |
+        -- DANGEROUS: Cross-tenant join possible
+        SELECT u.*, s.*
+        FROM users u
+        JOIN subscriptions s ON s.user_id = u.id
+        -- Missing tenant_id verification!
+
+    validation:
+      query_analyzer:
+        detect_patterns:
+          - "JOIN without tenant_id match"
+          - "Subquery without tenant filter"
+          - "UNION across different tenant scopes"
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-DATA-004 - Tenant Data Encryption
+  # ---------------------------------------------------------------------------
+  - id: TI-DATA-004
+    name: Tenant Data Encryption
+    name_vi: Mã hóa dữ liệu khách thuê
+    severity: high
+    description: |
+      Sensitive tenant data MUST be encrypted at rest.
+      Encryption keys MUST be tenant-specific for enterprise tier.
+    description_vi: |
+      Dữ liệu nhạy cảm của khách thuê PHẢI được mã hóa khi lưu trữ.
+      Khóa mã hóa PHẢI riêng cho từng khách thuê ở gói enterprise.
+
+    encryption_tiers:
+      standard:
+        strategy: shared_key
+        algorithm: AES-256-GCM
+        key_rotation: 90_days
+        applies_to: [starter, professional]
+
+      enterprise:
+        strategy: tenant_specific_key
+        algorithm: AES-256-GCM
+        key_rotation: 30_days
+        key_derivation: tenant_id + master_key
+        applies_to: [enterprise]
+
+    encrypted_fields:
+      always_encrypted:
+        - payment_methods.card_last4
+        - payment_methods.bank_last4
+        - api_keys.key_hash
+        - users.password_hash
+        - settings.sensitive_config
+
+      enterprise_encrypted:
+        - audit_logs.changes
+        - users.metadata
+        - organizations.settings
+
+# =============================================================================
+# API ACCESS ISOLATION
+# =============================================================================
+api_isolation:
+  # ---------------------------------------------------------------------------
+  # Rule: TI-API-001 - Tenant Resolution
+  # ---------------------------------------------------------------------------
+  - id: TI-API-001
+    name: Tenant Resolution
+    name_vi: Xác định khách thuê
+    severity: critical
+    description: |
+      Every API request MUST resolve tenant from authenticated context.
+      Multiple resolution strategies supported based on deployment model.
+    description_vi: |
+      Mọi yêu cầu API PHẢI xác định khách thuê từ ngữ cảnh xác thực.
+      Hỗ trợ nhiều chiến lược xác định dựa trên mô hình triển khai.
+
+    resolution_strategies:
+      # Strategy 1: Subdomain-based
+      subdomain:
+        pattern: "{tenant_slug}.app.example.com"
+        extraction: |
+          const subdomain = req.hostname.split('.')[0];
+          const tenant = await Tenant.findOne({ slug: subdomain });
+        priority: 1
+        use_case: "Multi-tenant with custom subdomains"
+
+      # Strategy 2: JWT claim
+      jwt_claim:
+        claim_name: tenant_id
+        extraction: |
+          const tenantId = req.user.tenant_id;
+          const tenant = await Tenant.findById(tenantId);
+        priority: 2
+        use_case: "Standard authentication flow"
+
+      # Strategy 3: API Key
+      api_key:
+        header: "X-API-Key"
+        extraction: |
+          const apiKey = await ApiKey.findOne({
+            key_hash: hash(req.headers['x-api-key'])
+          });
+          const tenant = await Tenant.findById(apiKey.tenant_id);
+        priority: 3
+        use_case: "API integrations"
+
+      # Strategy 4: Request header (internal services)
+      header:
+        header_name: "X-Tenant-ID"
+        extraction: |
+          // Only for internal service-to-service calls
+          if (!isInternalService(req)) throw new Error('Forbidden');
+          const tenantId = req.headers['x-tenant-id'];
+        priority: 4
+        use_case: "Internal microservices"
+
+    validation:
+      required_checks:
+        - "Tenant exists and is active"
+        - "User belongs to tenant"
+        - "Tenant subscription is valid"
+        - "Rate limits not exceeded"
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-API-002 - Resource Authorization
+  # ---------------------------------------------------------------------------
+  - id: TI-API-002
+    name: Resource Authorization
+    name_vi: Phân quyền tài nguyên
+    severity: critical
+    description: |
+      Every resource access MUST verify tenant ownership.
+      Resource IDs alone are NOT sufficient for authorization.
+    description_vi: |
+      Mọi truy cập tài nguyên PHẢI xác minh quyền sở hữu của khách thuê.
+      ID tài nguyên không đủ để phân quyền.
+
+    implementation:
+      authorization_pattern: |
+        async function authorizeResource(req, resourceType, resourceId) {
+          // 1. Get resource with tenant verification
+          const resource = await db.query(
+            `SELECT * FROM ${resourceType}
+             WHERE id = $1 AND tenant_id = $2`,
+            [resourceId, req.tenantId]
+          );
+
+          // 2. Resource not found = unauthorized (don't reveal existence)
+          if (!resource) {
+            throw new NotFoundError('Resource not found');
+          }
+
+          // 3. Check user permissions
+          if (!hasPermission(req.user, resourceType, 'read')) {
+            throw new ForbiddenError('Insufficient permissions');
+          }
+
+          return resource;
+        }
+
+    security_notes:
+      - "Never expose resource existence across tenants"
+      - "Use consistent error messages (404 vs 403)"
+      - "Log authorization failures for security monitoring"
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-API-003 - Rate Limiting Per Tenant
+  # ---------------------------------------------------------------------------
+  - id: TI-API-003
+    name: Rate Limiting Per Tenant
+    name_vi: Giới hạn tốc độ theo khách thuê
+    severity: high
+    description: |
+      Rate limits MUST be enforced per tenant to prevent noisy neighbor.
+      Limits vary by subscription tier.
+    description_vi: |
+      Giới hạn tốc độ PHẢI được thực thi theo khách thuê để ngăn neighbor ồn ào.
+      Giới hạn thay đổi theo cấp đăng ký.
+
+    rate_limits:
+      by_tier:
+        free:
+          requests_per_minute: 60
+          requests_per_hour: 1000
+          requests_per_day: 10000
+          burst_limit: 10
+
+        starter:
+          requests_per_minute: 300
+          requests_per_hour: 10000
+          requests_per_day: 100000
+          burst_limit: 50
+
+        professional:
+          requests_per_minute: 1000
+          requests_per_hour: 50000
+          requests_per_day: 500000
+          burst_limit: 100
+
+        enterprise:
+          requests_per_minute: 5000
+          requests_per_hour: 200000
+          requests_per_day: 2000000
+          burst_limit: 500
+          custom_limits: true
+
+    implementation:
+      algorithm: token_bucket
+      storage: redis
+      key_pattern: "rate_limit:{tenant_id}:{window}"
+      headers:
+        - "X-RateLimit-Limit"
+        - "X-RateLimit-Remaining"
+        - "X-RateLimit-Reset"
+
+# =============================================================================
+# RESOURCE ISOLATION
+# =============================================================================
+resource_isolation:
+  # ---------------------------------------------------------------------------
+  # Rule: TI-RES-001 - Storage Isolation
+  # ---------------------------------------------------------------------------
+  - id: TI-RES-001
+    name: Storage Isolation
+    name_vi: Cách ly lưu trữ
+    severity: high
+    description: |
+      File storage MUST be tenant-isolated.
+      No cross-tenant file access allowed.
+    description_vi: |
+      Lưu trữ file PHẢI được cách ly theo khách thuê.
+      Không cho phép truy cập file xuyên khách thuê.
+
+    storage_patterns:
+      s3_bucket:
+        strategy: prefix_isolation
+        path_pattern: "s3://bucket/{tenant_id}/{resource_type}/{file_id}"
+        policy: |
+          {
+            "Version": "2012-10-17",
+            "Statement": [{
+              "Effect": "Allow",
+              "Action": ["s3:GetObject", "s3:PutObject"],
+              "Resource": "arn:aws:s3:::bucket/${tenant_id}/*",
+              "Condition": {
+                "StringEquals": {
+                  "s3:ExistingObjectTag/tenant_id": "${tenant_id}"
+                }
+              }
+            }]
+          }
+
+      presigned_urls:
+        expiration: 3600
+        validation: |
+          // Validate tenant owns the resource before generating URL
+          const resource = await getResourceWithTenantCheck(resourceId, tenantId);
+          if (!resource) throw new ForbiddenError();
+
+          return generatePresignedUrl(resource.storage_path, expiration);
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-RES-002 - Cache Isolation
+  # ---------------------------------------------------------------------------
+  - id: TI-RES-002
+    name: Cache Isolation
+    name_vi: Cách ly cache
+    severity: high
+    description: |
+      Cache keys MUST include tenant_id as namespace.
+      No shared cache entries across tenants.
+    description_vi: |
+      Khóa cache PHẢI bao gồm tenant_id làm namespace.
+      Không có mục cache chia sẻ giữa các khách thuê.
+
+    implementation:
+      key_pattern: "{tenant_id}:{resource_type}:{resource_id}"
+
+      examples:
+        user_cache: "tenant_123:user:456"
+        settings_cache: "tenant_123:settings:general"
+        feature_flags: "tenant_123:features:all"
+
+      cache_client_wrapper: |
+        class TenantAwareCache {
+          constructor(tenantId, redisClient) {
+            this.tenantId = tenantId;
+            this.redis = redisClient;
+          }
+
+          buildKey(key) {
+            return `${this.tenantId}:${key}`;
+          }
+
+          async get(key) {
+            return this.redis.get(this.buildKey(key));
+          }
+
+          async set(key, value, ttl) {
+            return this.redis.setex(this.buildKey(key), ttl, value);
+          }
+
+          async invalidate(pattern) {
+            const keys = await this.redis.keys(this.buildKey(pattern));
+            if (keys.length > 0) {
+              await this.redis.del(...keys);
+            }
+          }
+        }
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-RES-003 - Queue Isolation
+  # ---------------------------------------------------------------------------
+  - id: TI-RES-003
+    name: Queue Isolation
+    name_vi: Cách ly hàng đợi
+    severity: medium
+    description: |
+      Background jobs MUST include tenant context.
+      Job processors MUST set tenant context before execution.
+    description_vi: |
+      Công việc nền PHẢI bao gồm ngữ cảnh khách thuê.
+      Bộ xử lý công việc PHẢI đặt ngữ cảnh khách thuê trước khi thực thi.
+
+    implementation:
+      job_structure: |
+        {
+          "job_id": "uuid",
+          "tenant_id": "required",
+          "type": "email_notification",
+          "payload": { ... },
+          "metadata": {
+            "created_at": "timestamp",
+            "priority": "normal",
+            "retry_count": 0
+          }
+        }
+
+      processor_pattern: |
+        async function processJob(job) {
+          // 1. Set tenant context
+          await setTenantContext(job.tenant_id);
+
+          try {
+            // 2. Process with tenant isolation
+            await handlers[job.type](job.payload);
+          } finally {
+            // 3. Clear tenant context
+            await clearTenantContext();
+          }
+        }
+
+      queue_strategies:
+        shared_queue:
+          description: "Single queue, tenant in job payload"
+          use_case: "Simple deployments"
+          isolation_level: logical
+
+        tenant_queue:
+          description: "Separate queue per tenant"
+          use_case: "Enterprise with strict isolation"
+          isolation_level: physical
+          pattern: "queue:{tenant_id}:{job_type}"
+
+# =============================================================================
+# AUDIT & COMPLIANCE
+# =============================================================================
+audit_compliance:
+  # ---------------------------------------------------------------------------
+  # Rule: TI-AUD-001 - Cross-Tenant Access Logging
+  # ---------------------------------------------------------------------------
+  - id: TI-AUD-001
+    name: Cross-Tenant Access Logging
+    name_vi: Ghi log truy cập xuyên khách thuê
+    severity: critical
+    description: |
+      All cross-tenant access attempts MUST be logged and alerted.
+      Platform admin access to tenant data MUST have audit trail.
+    description_vi: |
+      Tất cả nỗ lực truy cập xuyên khách thuê PHẢI được ghi log và cảnh báo.
+      Truy cập của admin nền tảng vào dữ liệu khách thuê PHẢI có đường dẫn kiểm toán.
+
+    logging_requirements:
+      cross_tenant_attempt:
+        log_level: critical
+        alert: immediate
+        fields:
+          - timestamp
+          - actor_id
+          - actor_tenant_id
+          - target_tenant_id
+          - resource_type
+          - resource_id
+          - action
+          - ip_address
+          - user_agent
+          - outcome: blocked
+
+      platform_admin_access:
+        log_level: high
+        alert: async
+        require_reason: true
+        fields:
+          - timestamp
+          - admin_id
+          - target_tenant_id
+          - resource_type
+          - action
+          - reason
+          - ticket_id
+          - ip_address
+
+    retention:
+      cross_tenant_attempts: 7_years
+      platform_admin_access: 7_years
+      regular_access: per_tenant_tier
+
+  # ---------------------------------------------------------------------------
+  # Rule: TI-AUD-002 - Tenant Data Export
+  # ---------------------------------------------------------------------------
+  - id: TI-AUD-002
+    name: Tenant Data Export
+    name_vi: Xuất dữ liệu khách thuê
+    severity: high
+    description: |
+      Data export MUST only include tenant's own data.
+      Export requests MUST be logged and rate-limited.
+    description_vi: |
+      Xuất dữ liệu CHỈ ĐƯỢC bao gồm dữ liệu của chính khách thuê đó.
+      Yêu cầu xuất PHẢI được ghi log và giới hạn tốc độ.
+
+    export_rules:
+      data_scope:
+        - "Only tenant's own data"
+        - "No cross-tenant references exposed"
+        - "Internal IDs replaced with external identifiers"
+        - "Sensitive fields masked or excluded"
+
+      rate_limits:
+        full_export: "1 per day"
+        partial_export: "10 per hour"
+
+      audit_trail:
+        - export_requested_at
+        - export_type
+        - requested_by
+        - data_categories
+        - export_completed_at
+        - download_count
+        - download_ips
+
+# =============================================================================
+# TESTING & VALIDATION
+# =============================================================================
+testing:
+  # Required test scenarios for tenant isolation
+  mandatory_tests:
+    - id: TI-TEST-001
+      name: Cross-Tenant Data Access
+      type: security
+      description: "Verify tenant A cannot access tenant B's data"
+      scenario: |
+        1. Create tenant A and tenant B
+        2. Create data for each tenant
+        3. Authenticate as tenant A user
+        4. Attempt to access tenant B's resources
+        5. Verify access denied with consistent error
+      expected_result: "404 Not Found (not 403 to prevent enumeration)"
+
+    - id: TI-TEST-002
+      name: RLS Policy Enforcement
+      type: security
+      description: "Verify RLS policies block cross-tenant queries"
+      scenario: |
+        1. Set tenant context to tenant A
+        2. Execute query without tenant filter
+        3. Verify only tenant A data returned
+        4. Attempt to override with explicit tenant_id
+        5. Verify RLS blocks the override
+      expected_result: "Only authenticated tenant's data accessible"
+
+    - id: TI-TEST-003
+      name: Cache Isolation
+      type: security
+      description: "Verify cache keys are properly namespaced"
+      scenario: |
+        1. Cache data for tenant A
+        2. Switch context to tenant B
+        3. Attempt to access same cache key
+        4. Verify cache miss (not tenant A's data)
+      expected_result: "Cache miss for different tenant"
+
+    - id: TI-TEST-004
+      name: File Storage Isolation
+      type: security
+      description: "Verify file access is tenant-scoped"
+      scenario: |
+        1. Upload file for tenant A
+        2. Generate presigned URL as tenant A
+        3. Attempt to access with tenant B credentials
+        4. Verify access denied
+      expected_result: "403 Forbidden"
+
+    - id: TI-TEST-005
+      name: Queue Job Isolation
+      type: security
+      description: "Verify jobs execute in correct tenant context"
+      scenario: |
+        1. Queue job for tenant A
+        2. Process job
+        3. Verify tenant context set correctly
+        4. Verify job only accesses tenant A data
+      expected_result: "Job executes with proper tenant isolation"
+
+  # Automated security scanning
+  security_scanning:
+    frequency: daily
+    tools:
+      - sqlmap: "SQL injection testing"
+      - burp_suite: "API security testing"
+      - custom_scanner: "Cross-tenant access testing"
+
+    alerts:
+      critical: immediate
+      high: within_1_hour
+      medium: within_24_hours
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  database_layer:
+    - "[ ] RLS enabled on all tenant-scoped tables"
+    - "[ ] tenant_id column added to all relevant tables"
+    - "[ ] Indexes created on tenant_id columns"
+    - "[ ] Foreign key cascades configured"
+    - "[ ] Audit triggers installed"
+
+  application_layer:
+    - "[ ] Tenant resolution middleware implemented"
+    - "[ ] Request context carries tenant_id"
+    - "[ ] All queries use tenant-scoped repositories"
+    - "[ ] Cache keys include tenant prefix"
+    - "[ ] Background jobs include tenant context"
+
+  api_layer:
+    - "[ ] Authentication extracts tenant context"
+    - "[ ] Authorization verifies tenant ownership"
+    - "[ ] Rate limiting per tenant implemented"
+    - "[ ] Error messages don't leak tenant info"
+
+  storage_layer:
+    - "[ ] File paths include tenant_id"
+    - "[ ] Presigned URLs validate tenant ownership"
+    - "[ ] Bucket policies enforce isolation"
+
+  monitoring:
+    - "[ ] Cross-tenant access alerts configured"
+    - "[ ] RLS violation logging enabled"
+    - "[ ] Security scanning scheduled"
+    - "[ ] Audit log retention configured"

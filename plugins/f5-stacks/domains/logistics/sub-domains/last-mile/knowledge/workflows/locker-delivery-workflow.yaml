@@ -1,0 +1,476 @@
+name: LockerDeliveryWorkflow
+display_name: Locker Delivery Workflow
+description: |
+  Workflow for smart locker deliveries.
+  Covers compartment reservation, deposit, notification, and pickup.
+
+domain: logistics
+subdomain: last-mile
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_type: locker_delivery
+trigger: delivery.method = 'locker'
+
+participants:
+  - role: system
+    description: Locker Management System
+  - role: agent
+    description: Delivery agent depositing package
+  - role: locker
+    description: Smart locker hardware
+  - role: recipient
+    description: Customer picking up package
+  - role: operations
+    description: Operations team for issues
+
+states:
+  - id: locker_requested
+    name: Locker Requested
+    description: Locker delivery method selected
+    type: initial
+
+  - id: compartment_reserved
+    name: Compartment Reserved
+    description: Locker compartment reserved for package
+    type: intermediate
+
+  - id: agent_assigned
+    name: Agent Assigned
+    description: Delivery agent assigned to deposit
+    type: intermediate
+
+  - id: en_route_to_locker
+    name: En Route to Locker
+    description: Agent heading to locker location
+    type: intermediate
+
+  - id: at_locker
+    name: At Locker
+    description: Agent at locker location
+    type: intermediate
+
+  - id: depositing
+    name: Depositing
+    description: Agent depositing package
+    type: intermediate
+
+  - id: deposited
+    name: Deposited
+    description: Package successfully deposited
+    type: intermediate
+
+  - id: notification_sent
+    name: Notification Sent
+    description: Pickup notification sent to recipient
+    type: intermediate
+
+  - id: awaiting_pickup
+    name: Awaiting Pickup
+    description: Package waiting for recipient pickup
+    type: intermediate
+
+  - id: pickup_in_progress
+    name: Pickup In Progress
+    description: Recipient at locker, opening compartment
+    type: intermediate
+
+  - id: picked_up
+    name: Picked Up
+    description: Package collected by recipient
+    type: final_success
+
+  - id: expired
+    name: Expired
+    description: Pickup window expired
+    type: intermediate
+
+  - id: retrieved
+    name: Retrieved
+    description: Package retrieved by agent after expiry
+    type: final_failure
+
+  - id: failed
+    name: Failed
+    description: Locker delivery failed
+    type: final_failure
+
+transitions:
+  - id: T001
+    name: Reserve Compartment
+    from: locker_requested
+    to: compartment_reserved
+    trigger: system
+    conditions:
+      - locker.status = 'active'
+      - suitable_compartment_available = true
+    actions:
+      - find_suitable_compartment
+      - reserve_compartment
+      - set_reservation_expiry
+      - record_compartment_id
+      - update_locker_availability
+
+  - id: T002
+    name: Assign Agent
+    from: compartment_reserved
+    to: agent_assigned
+    trigger: system
+    conditions:
+      - reservation_valid = true
+      - agent_available = true
+    actions:
+      - select_agent
+      - provide_locker_details
+      - include_access_instructions
+      - update_route
+
+  - id: T003
+    name: Start Journey
+    from: agent_assigned
+    to: en_route_to_locker
+    trigger: agent
+    conditions:
+      - agent.confirmed = true
+      - package_in_possession = true
+    actions:
+      - start_tracking
+      - calculate_eta
+      - notify_system
+
+  - id: T004
+    name: Arrive at Locker
+    from: en_route_to_locker
+    to: at_locker
+    trigger: geofence
+    conditions:
+      - agent.location WITHIN locker_geofence
+    actions:
+      - verify_locker_operational
+      - prepare_deposit_code
+      - start_deposit_timer
+
+  - id: T005
+    name: Start Deposit
+    from: at_locker
+    to: depositing
+    trigger: locker
+    conditions:
+      - agent_authenticated = true
+      - compartment_door_opened = true
+    actions:
+      - open_compartment
+      - log_door_open_time
+      - start_deposit_timeout
+
+  - id: T006
+    name: Complete Deposit
+    from: depositing
+    to: deposited
+    trigger: locker
+    conditions:
+      - compartment_door_closed = true
+      - package_detected = true
+    actions:
+      - confirm_deposit
+      - lock_compartment
+      - generate_pickup_code
+      - capture_deposit_photo
+      - record_deposit_time
+      - release_agent
+
+  - id: T007
+    name: Send Notification
+    from: deposited
+    to: notification_sent
+    trigger: system
+    actions:
+      - send_pickup_code
+      - send_locker_location
+      - send_access_instructions
+      - set_pickup_deadline
+      - start_hold_timer
+
+  - id: T008
+    name: Await Pickup
+    from: notification_sent
+    to: awaiting_pickup
+    trigger: system
+    actions:
+      - enable_pickup_mode
+      - start_reminder_schedule
+      - monitor_pickup_attempts
+
+  - id: T009
+    name: Recipient Arrives
+    from: awaiting_pickup
+    to: pickup_in_progress
+    trigger: locker
+    conditions:
+      - valid_code_entered = true OR
+      - app_unlock_triggered = true
+    actions:
+      - verify_access_code
+      - open_compartment
+      - log_pickup_start
+      - start_retrieval_timeout
+
+  - id: T010
+    name: Complete Pickup
+    from: pickup_in_progress
+    to: picked_up
+    trigger: locker
+    conditions:
+      - compartment_door_closed = true
+      - compartment_empty = true
+    actions:
+      - confirm_pickup
+      - lock_compartment
+      - mark_available
+      - complete_delivery
+      - send_confirmation
+      - request_rating
+
+  - id: T011
+    name: Expire Hold
+    from: awaiting_pickup
+    to: expired
+    trigger: timeout
+    conditions:
+      - hold_time_exceeded = true
+    actions:
+      - send_expiry_warning
+      - schedule_retrieval
+      - notify_operations
+      - update_status
+
+  - id: T012
+    name: Retrieve Package
+    from: expired
+    to: retrieved
+    trigger: agent
+    conditions:
+      - retrieval_assigned = true
+      - package_collected = true
+    actions:
+      - open_compartment
+      - collect_package
+      - mark_available
+      - initiate_return_or_reattempt
+      - notify_customer
+
+  - id: T013
+    name: Handle Failure
+    from: [compartment_reserved, at_locker, depositing]
+    to: failed
+    trigger: [system, agent, locker]
+    conditions:
+      - deposit_not_possible = true
+    actions:
+      - release_reservation
+      - record_failure_reason
+      - redirect_to_alternative
+      - notify_customer
+
+compartment_selection:
+  algorithm: best_fit
+  criteria:
+    - package_size <= compartment_size
+    - prefer_exact_size_match
+    - consider_locker_utilization
+    - distribute_across_sections
+
+  size_mapping:
+    small:
+      max_dimensions: [30, 30, 20]  # cm
+      max_weight: 2  # kg
+    medium:
+      max_dimensions: [45, 35, 30]
+      max_weight: 10
+    large:
+      max_dimensions: [60, 45, 40]
+      max_weight: 25
+    extra_large:
+      max_dimensions: [80, 60, 50]
+      max_weight: 40
+
+access_methods:
+  - method: pin_code
+    description: 6-digit PIN sent via SMS
+    format: "XXXXXX"
+    validity: until_pickup_or_expiry
+    max_attempts: 5
+
+  - method: qr_code
+    description: QR code in app
+    format: dynamic_qr
+    validity: single_use
+    requires_app: true
+
+  - method: barcode
+    description: Barcode on tracking page
+    format: code128
+    validity: until_pickup_or_expiry
+
+  - method: app_unlock
+    description: One-tap unlock in app
+    requires: bluetooth_or_internet
+    authentication: app_login
+
+  - method: nfc
+    description: NFC tap with registered card
+    requires: registered_nfc_card
+    authentication: pre_registered
+
+notifications:
+  - stage: deposit_complete
+    timing: immediate
+    recipient: customer
+    channels: [sms, push, email]
+    content:
+      - pickup_code
+      - locker_location
+      - locker_address
+      - operating_hours
+      - pickup_deadline
+      - directions_link
+
+  - stage: reminder_1
+    timing: 24 hours after deposit
+    recipient: customer
+    channels: [push, sms]
+    content:
+      - reminder_message
+      - time_remaining
+      - pickup_code
+
+  - stage: reminder_2
+    timing: 12 hours before expiry
+    recipient: customer
+    channels: [push, sms, email]
+    content:
+      - urgent_reminder
+      - expiry_warning
+      - pickup_code
+      - alternative_options
+
+  - stage: final_warning
+    timing: 2 hours before expiry
+    recipient: customer
+    channels: [push, sms, call]
+    content:
+      - final_warning
+      - immediate_action_required
+      - pickup_code
+      - extension_option
+
+  - stage: expired_notice
+    timing: at expiry
+    recipient: customer
+    channels: [sms, email]
+    content:
+      - expiry_notice
+      - next_steps
+      - refund_or_redelivery_info
+
+hold_periods:
+  - service_level: standard
+    free_hold: 48 hours
+    max_hold: 72 hours
+    extension_available: true
+    extension_fee: 5000  # VND per 24h
+
+  - service_level: express
+    free_hold: 24 hours
+    max_hold: 48 hours
+    extension_available: true
+    extension_fee: 10000
+
+  - service_level: premium
+    free_hold: 72 hours
+    max_hold: 120 hours
+    extension_available: true
+    extension_fee: 0  # free for premium
+
+locker_events:
+  - event: compartment_opened
+    source: locker
+    data: [locker_id, compartment_id, opened_by, timestamp]
+
+  - event: compartment_closed
+    source: locker
+    data: [locker_id, compartment_id, timestamp]
+
+  - event: package_detected
+    source: locker_sensor
+    data: [locker_id, compartment_id, weight, timestamp]
+
+  - event: access_attempt
+    source: locker
+    data: [locker_id, method, success, timestamp]
+
+  - event: locker_offline
+    source: system
+    data: [locker_id, last_seen, alert_sent]
+
+exception_handling:
+  - exception: compartment_jammed
+    action: alert_maintenance
+    customer_action: offer_alternative
+
+  - exception: locker_offline
+    action: redirect_to_nearby_locker
+    customer_notification: immediate
+
+  - exception: wrong_code_max_attempts
+    action: lock_out_temporary
+    customer_action: call_support
+
+  - exception: package_stuck
+    action: dispatch_technician
+    customer_action: refund_or_redelivery
+
+  - exception: compartment_forced_open
+    action: security_alert
+    investigation: required
+
+metrics:
+  - name: deposit_success_rate
+    description: Successful deposits vs attempts
+    target: > 99%
+
+  - name: pickup_rate
+    description: Packages picked up within window
+    target: > 95%
+
+  - name: average_pickup_time
+    description: Time from deposit to pickup
+    benchmark: < 24 hours
+
+  - name: expiry_rate
+    description: Packages exceeding hold time
+    target: < 3%
+
+  - name: locker_utilization
+    description: Average compartment usage
+    optimal: 70-85%
+
+events:
+  - name: locker.compartment_reserved
+    payload: [delivery_id, locker_id, compartment_id]
+
+  - name: locker.package_deposited
+    payload: [delivery_id, locker_id, compartment_id, deposit_time]
+
+  - name: locker.pickup_code_sent
+    payload: [delivery_id, customer_id, channel]
+
+  - name: locker.package_collected
+    payload: [delivery_id, locker_id, pickup_time]
+
+  - name: locker.hold_expired
+    payload: [delivery_id, locker_id, expired_at]
+
+  - name: locker.package_retrieved
+    payload: [delivery_id, retrieved_by, action]

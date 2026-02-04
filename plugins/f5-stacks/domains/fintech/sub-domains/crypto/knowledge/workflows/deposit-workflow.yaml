@@ -1,0 +1,320 @@
+name: DepositWorkflow
+display_name: Deposit Workflow / Quy trình nạp tiền
+description: |
+  End-to-end workflow for cryptocurrency deposits from detection
+  to crediting user balance.
+
+domain: fintech
+sub_domain: crypto
+workflow_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: Blockchain transaction detected
+  outcome: Balance credited to user wallet
+  typical_duration: 1 minute to 1 hour (varies by network)
+  actors:
+    - user
+    - blockchain_monitor
+    - deposit_processor
+    - notification_service
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # Step 1: Address Generation (Pre-requisite)
+  - id: WF-DEP-01
+    name: Generate Deposit Address
+    name_vi: Tạo địa chỉ nạp tiền
+    actor: system
+    trigger: User requests deposit address for asset/network
+    description: |
+      Generate or retrieve deposit address for user.
+      Each user gets unique address per network.
+    actions:
+      - Check if address exists for user + network
+      - If not exists, generate new address from HD wallet
+      - Store address with user association
+      - Return address and memo/tag if required
+    outputs:
+      - deposit_address
+      - memo_tag (if applicable)
+      - network
+    validations:
+      - User KYC verified (if required)
+      - Network supports deposits
+      - Address generation service available
+
+  # Step 2: Transaction Detection
+  - id: WF-DEP-02
+    name: Detect Incoming Transaction
+    name_vi: Phát hiện giao dịch đến
+    actor: blockchain_monitor
+    trigger: New block mined
+    description: |
+      Monitor blockchain for incoming transactions to
+      platform deposit addresses.
+    actions:
+      - Scan new blocks for transactions
+      - Match destination addresses with deposit addresses
+      - Extract transaction details (amount, tx_hash, etc.)
+      - Create deposit record with status 'detected'
+    outputs:
+      - deposit_id
+      - tx_hash
+      - amount
+      - from_address
+      - block_number
+    monitoring:
+      bitcoin: Every 10 minutes
+      ethereum: Every 12 seconds
+      bsc: Every 3 seconds
+      tron: Every 3 seconds
+
+  # Step 3: Validation
+  - id: WF-DEP-03
+    name: Validate Deposit
+    name_vi: Xác thực khoản nạp
+    actor: deposit_processor
+    trigger: Deposit detected
+    description: |
+      Validate the incoming deposit meets requirements.
+    actions:
+      - Verify transaction exists on blockchain
+      - Check amount meets minimum deposit
+      - Verify memo/tag matches (if required)
+      - Check asset is supported
+      - Screen address for compliance
+    validations:
+      - amount >= min_deposit
+      - network_enabled = true
+      - from_address not blacklisted
+      - memo/tag valid (for applicable networks)
+    on_failure:
+      invalid_amount: Mark as below_minimum, notify user
+      invalid_memo: Manual review required
+      blacklisted: Freeze and report
+
+  # Step 4: Confirmation Tracking
+  - id: WF-DEP-04
+    name: Track Confirmations
+    name_vi: Theo dõi xác nhận
+    actor: blockchain_monitor
+    trigger: Deposit validated
+    description: |
+      Monitor blockchain confirmations until threshold reached.
+    actions:
+      - Update status to 'confirming'
+      - Poll blockchain for new blocks
+      - Increment confirmation count
+      - Update deposit record
+    outputs:
+      - confirmations_received
+      - confirmations_required
+    confirmation_requirements:
+      bitcoin:
+        small: { threshold: 0.1 BTC, confirmations: 1 }
+        medium: { threshold: 1 BTC, confirmations: 3 }
+        large: { threshold: null, confirmations: 6 }
+      ethereum: 12
+      bsc: 15
+      tron: 20
+      solana: 32
+      polygon: 128
+    next_step:
+      if: confirmations_received >= confirmations_required
+      then: WF-DEP-05
+
+  # Step 5: Credit Balance
+  - id: WF-DEP-05
+    name: Credit User Balance
+    name_vi: Cộng số dư người dùng
+    actor: deposit_processor
+    trigger: Confirmations complete
+    description: |
+      Credit the deposit amount to user's wallet balance.
+    actions:
+      - Begin database transaction
+      - Update deposit status to 'completed'
+      - Credit user wallet balance
+      - Create balance transaction record
+      - Commit transaction
+    validations:
+      - Double-spend check (tx_hash unique)
+      - Amount consistency check
+      - User wallet active
+    outputs:
+      - new_balance
+      - credited_amount
+      - transaction_id
+
+  # Step 6: Notification
+  - id: WF-DEP-06
+    name: Send Notification
+    name_vi: Gửi thông báo
+    actor: notification_service
+    trigger: Balance credited
+    description: |
+      Notify user of successful deposit.
+    actions:
+      - Send push notification
+      - Send email notification
+      - Update deposit history in UI
+    notification_content:
+      title: "Deposit Confirmed"
+      body: "{amount} {asset} has been credited to your wallet"
+      data:
+        deposit_id: "..."
+        tx_hash: "..."
+        amount: "..."
+        asset: "..."
+
+# =============================================================================
+# STATE TRANSITIONS
+# =============================================================================
+state_machine:
+  initial: detected
+  states:
+    detected:
+      description: Transaction seen on blockchain
+      transitions:
+        - to: confirming
+          event: validation_passed
+        - to: failed
+          event: validation_failed
+
+    confirming:
+      description: Waiting for confirmations
+      transitions:
+        - to: completed
+          event: confirmations_complete
+        - to: failed
+          event: transaction_failed
+
+    completed:
+      description: Balance credited
+      terminal: true
+
+    failed:
+      description: Deposit failed
+      terminal: true
+      reasons:
+        - below_minimum
+        - invalid_memo
+        - blacklisted_address
+        - blockchain_reorg
+        - double_spend
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  - scenario: Blockchain Reorganization
+    detection: Block hash changed for confirmed block
+    response:
+      - Revert credited balance if needed
+      - Restart confirmation tracking
+      - Alert operations team
+
+  - scenario: Double Spend Detected
+    detection: Same tx_hash already processed
+    response:
+      - Reject duplicate deposit
+      - Log incident
+      - No balance credit
+
+  - scenario: Wrong Memo/Tag
+    detection: Memo/tag doesn't match user
+    response:
+      - Hold deposit for manual review
+      - Attempt user identification
+      - Manual credit if resolved
+
+  - scenario: Below Minimum Amount
+    detection: Amount < min_deposit
+    response:
+      - Mark as below_minimum
+      - Notify user
+      - Suggest consolidation
+
+  - scenario: Network Congestion
+    detection: Confirmation time >> expected
+    response:
+      - Continue waiting
+      - Notify user of delay
+      - No timeout for valid transactions
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - name: deposit_detection_latency
+      description: Time from blockchain to detection
+      threshold: < 30 seconds
+      alert: warning
+
+    - name: confirmation_time
+      description: Time to reach required confirmations
+      threshold: varies by network
+      alert: info
+
+    - name: crediting_latency
+      description: Time from confirmation to credit
+      threshold: < 5 seconds
+      alert: warning
+
+    - name: failed_deposit_rate
+      description: Percentage of failed deposits
+      threshold: < 1%
+      alert: critical
+
+  alerts:
+    - name: High Failure Rate
+      condition: failed_rate > 5%
+      severity: critical
+      notification: PagerDuty
+
+    - name: Delayed Confirmations
+      condition: confirmation_time > 2x expected
+      severity: warning
+      notification: Slack
+
+    - name: Large Deposit
+      condition: amount > threshold
+      severity: info
+      notification: Compliance team
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - deposit_detected
+    - deposit_validated
+    - confirmation_received
+    - balance_credited
+    - deposit_failed
+  retention: 10 years
+  immutable: true
+
+# =============================================================================
+# SLA REQUIREMENTS
+# =============================================================================
+sla:
+  detection_time:
+    target: < 1 minute after block
+    measurement: blockchain_time to detected_at
+
+  crediting_time:
+    target: < 1 minute after confirmations
+    measurement: confirmed_at to credited_at
+
+  availability:
+    target: 99.9%
+    measurement: Uptime of deposit processing

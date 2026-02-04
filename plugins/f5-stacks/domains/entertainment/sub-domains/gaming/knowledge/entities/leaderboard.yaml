@@ -1,0 +1,291 @@
+name: leaderboard
+display_name: Leaderboard
+description: |
+  Competitive rankings for players based on various metrics.
+  Supports global, regional, friends, and seasonal leaderboards.
+
+domain: entertainment
+subdomain: gaming
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  # Identity
+  - name: id
+    type: uuid
+    required: true
+    description: Unique leaderboard identifier
+
+  - name: leaderboard_id
+    type: string
+    required: true
+    unique: true
+    description: Public leaderboard ID
+    example: "LB-GLOBAL-SCORE"
+
+  - name: game_id
+    type: uuid
+    required: true
+    description: Game this leaderboard belongs to
+
+  # Display
+  - name: name
+    type: string
+    required: true
+    max_length: 100
+    description: Leaderboard name
+    example: "Global High Scores"
+
+  - name: description
+    type: string
+    required: false
+    max_length: 500
+    description: Leaderboard description
+
+  - name: icon_url
+    type: url
+    required: false
+    description: Leaderboard icon
+
+  # Status
+  - name: status
+    type: enum
+    values: [active, archived, seasonal, maintenance]
+    required: true
+    default: active
+
+  - name: visibility
+    type: enum
+    values: [public, authenticated, friends_only]
+    required: true
+    default: public
+
+  # Type & Scope
+  - name: leaderboard_type
+    type: enum
+    values: [global, regional, friends, guild, seasonal, event, daily, weekly]
+    required: true
+    description: Leaderboard scope
+
+  - name: region
+    type: string
+    required: false
+    description: Region filter (for regional boards)
+
+  # Metric Configuration
+  - name: metric
+    type: enum
+    values: [score, wins, kills, time, level, distance, collection, rating, xp, currency]
+    required: true
+    description: What is being ranked
+
+  - name: metric_label
+    type: string
+    required: true
+    description: Display label for metric
+    example: "Total Score"
+
+  - name: sort_order
+    type: enum
+    values: [desc, asc]
+    required: true
+    default: desc
+    description: Higher or lower is better
+
+  - name: format
+    type: string
+    required: false
+    description: Value display format
+    example: "{value:,}"
+
+  - name: aggregation
+    type: enum
+    values: [sum, max, min, avg, latest, count]
+    required: true
+    default: max
+    description: How values are aggregated
+
+  # Game Mode Filter
+  - name: game_mode
+    type: string
+    required: false
+    description: Filter by game mode
+
+  - name: difficulty
+    type: string
+    required: false
+    description: Filter by difficulty
+
+  - name: character_class
+    type: string
+    required: false
+    description: Filter by character/class
+
+  # Reset Configuration
+  - name: reset_period
+    type: enum
+    values: [never, hourly, daily, weekly, monthly, seasonal]
+    required: true
+    default: never
+    description: How often board resets
+
+  - name: last_reset_at
+    type: datetime
+    required: false
+    description: Last reset timestamp
+
+  - name: next_reset_at
+    type: datetime
+    required: false
+    description: Next scheduled reset
+
+  # Season
+  - name: season_id
+    type: string
+    required: false
+    description: Season identifier
+
+  - name: season_name
+    type: string
+    required: false
+    description: Season display name
+
+  - name: season_start
+    type: datetime
+    required: false
+    description: Season start date
+
+  - name: season_end
+    type: datetime
+    required: false
+    description: Season end date
+
+  # Entry Configuration
+  - name: min_games
+    type: integer
+    required: false
+    default: 1
+    description: Minimum games to qualify
+
+  - name: max_entries
+    type: integer
+    required: false
+    default: 10000
+    description: Maximum entries stored
+
+  # Rewards
+  - name: has_rewards
+    type: boolean
+    required: true
+    default: false
+
+  - name: rewards
+    type: json
+    required: false
+    description: |
+      Rewards by rank range:
+      - rank_from: 1, rank_to: 1, rewards: {...}
+      - rank_from: 2, rank_to: 10, rewards: {...}
+
+  # Statistics
+  - name: total_entries
+    type: integer
+    required: true
+    default: 0
+
+  - name: entries_today
+    type: integer
+    required: false
+    default: 0
+
+  # Audit
+  - name: created_at
+    type: datetime
+    required: true
+    auto: true
+
+  - name: updated_at
+    type: datetime
+    required: true
+    auto: true
+
+relationships:
+  - name: game
+    type: belongs_to
+    target: game
+    foreign_key: game_id
+
+  - name: entries
+    type: has_many
+    target: leaderboard_entry
+    foreign_key: leaderboard_id
+
+indexes:
+  - name: idx_leaderboard_game
+    fields: [game_id]
+    type: btree
+
+  - name: idx_leaderboard_type
+    fields: [leaderboard_type]
+    type: btree
+
+  - name: idx_leaderboard_season
+    fields: [season_id]
+    type: btree
+
+# Embedded entity for entries
+embedded_entities:
+  - name: leaderboard_entry
+    attributes:
+      - name: id
+        type: uuid
+        required: true
+
+      - name: leaderboard_id
+        type: uuid
+        required: true
+
+      - name: player_id
+        type: uuid
+        required: true
+
+      - name: rank
+        type: integer
+        required: true
+
+      - name: previous_rank
+        type: integer
+        required: false
+        description: Rank in last period
+
+      - name: value
+        type: bigint
+        required: true
+        description: The ranked metric value
+
+      - name: secondary_value
+        type: bigint
+        required: false
+        description: Tiebreaker value
+
+      - name: games_played
+        type: integer
+        required: false
+
+      - name: updated_at
+        type: datetime
+        required: true
+
+    indexes:
+      - name: idx_entry_leaderboard_rank
+        fields: [leaderboard_id, rank]
+        type: unique
+
+      - name: idx_entry_player
+        fields: [leaderboard_id, player_id]
+        type: unique
+
+business_rules:
+  - rule: progression-rules
+    description: Rank calculation and rewards

@@ -1,0 +1,598 @@
+name: trading-use-cases
+display_name: Use Cases - Securities Trading
+description: |
+  Collection of main use cases for securities trading system.
+  Includes order placement, portfolio management, market monitoring.
+
+domain: fintech/stock-trading
+version: "1.0"
+
+# =============================================================================
+# USE CASE: Place buy/sell order
+# =============================================================================
+use_cases:
+  - id: UC-TRADE-001
+    name: Place Securities Buy Order
+    actor: Investor
+    description: |
+      Investor places a buy order for securities through app/web.
+      System authenticates, checks buying power, and sends order to Exchange.
+
+    preconditions:
+      - Logged into the system
+      - Account has completed KYC and activated
+      - Within trading hours (or pre-session order)
+
+    triggers:
+      - Investor selects "Place Buy Order"
+
+    main_flow:
+      - step: 1
+        action: Select securities symbol to buy
+        system_response: Display price information, volume, top 3 bid/ask prices
+
+      - step: 2
+        action: Enter quantity and price
+        system_response: Calculate and display total order value, trading fees
+
+      - step: 3
+        action: Select order type (LO/ATO/ATC/MP)
+        system_response: Adjust form according to order type
+
+      - step: 4
+        action: Confirm order placement
+        system_response: |
+          - Check cash balance
+          - Check trading limit
+          - Hold funds
+          - Send order to Exchange
+          - Return order code and status
+
+      - step: 5
+        action: Receive confirmation
+        system_response: Display successful order notification with order code
+
+    alternative_flows:
+      - id: AF1
+        name: Insufficient funds
+        trigger_step: 4
+        flow:
+          - Notify "Insufficient balance"
+          - Display current balance and required amount
+          - Suggest reducing quantity or depositing funds
+
+      - id: AF2
+        name: Outside trading hours
+        trigger_step: 4
+        flow:
+          - Notify pre-session order
+          - Order will be sent when session opens
+
+      - id: AF3
+        name: Price exceeds limit
+        trigger_step: 2
+        flow:
+          - Warn price exceeds allowed range
+          - Auto-adjust to ceiling/floor price
+
+    exception_flows:
+      - id: EF1
+        name: Exchange connection error
+        handling: |
+          - Retry 3 times with exponential backoff
+          - If still fails, queue for pending
+          - Notify investor
+
+      - id: EF2
+        name: Exchange rejects order
+        handling: |
+          - Return held funds
+          - Notify rejection reason
+          - Log for analysis
+
+    postconditions:
+      - Order recorded in system
+      - Funds held
+      - Order sent to Exchange (or pending session)
+      - Investor receives confirmation
+
+    business_rules:
+      - BR001: Order quantity must be divisible by 100 (lot size)
+      - BR002: Order price must be within allowed range
+      - BR003: Total value + fees <= available balance
+      - BR004: ATO/ATC orders only in corresponding session
+
+    performance_requirements:
+      - Order processing time: < 100ms
+      - Exchange sending time: < 50ms
+      - Confirmation display time: < 200ms
+
+  # =============================================================================
+  - id: UC-TRADE-002
+    name: Place Securities Sell Order
+    actor: Investor
+    description: |
+      Investor places sell order for held securities.
+
+    preconditions:
+      - Logged into the system
+      - Has available securities to sell
+      - Within trading hours
+
+    triggers:
+      - Investor selects "Place Sell Order"
+      - Or selects "Sell" from portfolio
+
+    main_flow:
+      - step: 1
+        action: Select securities symbol from portfolio
+        system_response: |
+          - Display available quantity
+          - Display average cost price
+          - Display current market price
+          - Display estimated profit/loss
+
+      - step: 2
+        action: Enter quantity and sell price
+        system_response: |
+          - Calculate expected sell value
+          - Calculate realized profit/loss
+          - Calculate fees and tax
+
+      - step: 3
+        action: Confirm order placement
+        system_response: |
+          - Hold securities
+          - Send order to Exchange
+          - Return confirmation
+
+    alternative_flows:
+      - id: AF1
+        name: Sell all
+        trigger_step: 2
+        flow:
+          - Click "Sell All"
+          - Auto-fill quantity = available
+
+      - id: AF2
+        name: Securities not settled
+        trigger_step: 1
+        flow:
+          - Display "Securities settling T+2"
+          - Do not allow selling unsettled quantity
+
+    business_rules:
+      - BR001: Sell quantity <= available quantity
+      - BR002: Cannot sell securities pending settlement (T+2)
+      - BR003: Sell tax 0.1% of transaction value
+
+  # =============================================================================
+  - id: UC-TRADE-003
+    name: Cancel Pending Order
+    actor: Investor
+    description: |
+      Investor cancels order that has been sent but not matched or partially matched.
+
+    preconditions:
+      - Has pending order
+      - Within cancellation allowed hours
+
+    main_flow:
+      - step: 1
+        action: Go to pending orders list
+        system_response: Display list of pending orders
+
+      - step: 2
+        action: Select order to cancel
+        system_response: Display order details and cancelable quantity
+
+      - step: 3
+        action: Confirm cancellation
+        system_response: |
+          - Send cancellation request to Exchange
+          - Wait for Exchange confirmation
+          - Return held funds/securities
+          - Update status
+
+    alternative_flows:
+      - id: AF1
+        name: Order matched during cancellation
+        trigger_step: 3
+        flow:
+          - Notify order has been matched
+          - Cannot cancel
+
+    business_rules:
+      - BR001: Can only cancel unmatched order
+      - BR002: Cancel order during trading hours
+
+  # =============================================================================
+  - id: UC-TRADE-004
+    name: Modify Pending Order
+    actor: Investor
+    description: |
+      Investor modifies price or quantity of unmatched order.
+
+    preconditions:
+      - Has pending order
+      - Exchange allows modification (HOSE does not allow)
+
+    main_flow:
+      - step: 1
+        action: Select order to modify
+        system_response: Display modification form with current information
+
+      - step: 2
+        action: Enter new price/quantity
+        system_response: Validate and calculate changes
+
+      - step: 3
+        action: Confirm modification
+        system_response: |
+          - Cancel old order on Exchange
+          - Send new order
+          - Adjust held amounts
+
+    business_rules:
+      - BR001: HNX allows modification, HOSE does not
+      - BR002: Modifying order = cancel old + place new
+      - BR003: Lose matching priority when modifying
+
+  # =============================================================================
+  - id: UC-TRADE-005
+    name: View Transaction History
+    actor: Investor
+    description: |
+      Investor views history of executed transactions.
+
+    preconditions:
+      - Logged in
+
+    main_flow:
+      - step: 1
+        action: Go to "Transaction History"
+        system_response: |
+          Display list with filters:
+          - Time range
+          - Transaction type (buy/sell)
+          - Securities symbol
+          - Status
+
+      - step: 2
+        action: Select transaction for details
+        system_response: |
+          - Placement/match time
+          - Price and quantity
+          - Fees and tax
+          - Settlement status
+
+      - step: 3
+        action: Export report (optional)
+        system_response: Export Excel/PDF
+
+  # =============================================================================
+  - id: UC-PORTFOLIO-001
+    name: View Investment Portfolio
+    actor: Investor
+    description: |
+      Investor views investment portfolio overview.
+
+    preconditions:
+      - Logged in
+
+    main_flow:
+      - step: 1
+        action: Go to "Portfolio"
+        system_response: |
+          Display:
+          - Total NAV value
+          - Available cash
+          - Total unrealized profit/loss
+          - Positions list
+
+      - step: 2
+        action: Select a position
+        system_response: |
+          Position details:
+          - Quantity (T0, T1, T2, available)
+          - Average cost price
+          - Market price
+          - Profit/loss
+          - % change
+          - Recent transactions
+
+      - step: 3
+        action: Analyze portfolio (optional)
+        system_response: |
+          - Allocation by sector
+          - Risk metrics
+          - Performance chart
+
+  # =============================================================================
+  - id: UC-PORTFOLIO-002
+    name: Track P&L Realtime
+    actor: Investor
+    description: |
+      Track portfolio profit/loss in real-time during session.
+
+    preconditions:
+      - Logged in
+      - Has positions in portfolio
+
+    main_flow:
+      - step: 1
+        action: Enable realtime mode
+        system_response: |
+          - Subscribe market data feed
+          - Update price every 1-5 seconds
+
+      - step: 2
+        action: View P&L updates
+        system_response: |
+          Realtime display:
+          - Total P&L (amount + %)
+          - P&L per position
+          - Sparkline chart
+          - Flash on change
+
+    technical_requirements:
+      - WebSocket for realtime update
+      - Debounce UI update (100ms)
+      - Caching market data
+
+  # =============================================================================
+  - id: UC-MARKET-001
+    name: View Realtime Price Board
+    actor: Investor
+    description: |
+      Monitor securities prices in real-time.
+
+    main_flow:
+      - step: 1
+        action: Go to "Price Board"
+        system_response: |
+          Display price board with:
+          - Top 3 bid/ask prices
+          - Match price, matched volume
+          - Change vs reference price
+          - Color coding (green/red/yellow)
+
+      - step: 2
+        action: Filter/Sort
+        system_response: |
+          Filter by:
+          - Exchange (HOSE/HNX/UPCoM)
+          - Sector
+          - Watchlist
+          Sort by:
+          - Top gainers/losers
+          - Trading volume
+
+      - step: 3
+        action: Select symbol for details
+        system_response: |
+          - Intraday chart
+          - Order book depth
+          - Company information
+          - Related news
+
+  # =============================================================================
+  - id: UC-MARKET-002
+    name: Manage Watchlist
+    actor: Investor
+    description: |
+      Create and manage personal watchlist.
+
+    main_flow:
+      - step: 1
+        action: Create new watchlist
+        system_response: Create list with user-defined name
+
+      - step: 2
+        action: Add symbols to watchlist
+        system_response: Add and sort symbols
+
+      - step: 3
+        action: Set price alerts
+        system_response: |
+          - Alert when price reaches threshold
+          - Alert on % change
+          - Push notification
+
+    business_rules:
+      - BR001: Maximum 10 watchlists per user
+      - BR002: Maximum 50 symbols per watchlist
+
+  # =============================================================================
+  - id: UC-MARGIN-001
+    name: Register for Margin Trading
+    actor: Investor
+    description: |
+      Register to open margin trading account.
+
+    preconditions:
+      - Has regular trading account
+      - Meets margin opening requirements
+
+    main_flow:
+      - step: 1
+        action: Go to "Register Margin"
+        system_response: |
+          Display:
+          - Terms and conditions
+          - Margin interest rates
+          - List of marginable securities
+
+      - step: 2
+        action: Fill additional information
+        system_response: Collect financial information
+
+      - step: 3
+        action: Agree to terms and digital signature
+        system_response: |
+          - Credit assessment
+          - Determine credit limit
+          - Activate feature
+
+    business_rules:
+      - BR001: Minimum asset requirement 100 million VND
+      - BR002: Trading history >= 6 months
+
+  # =============================================================================
+  - id: UC-MARGIN-002
+    name: Place Margin Order
+    actor: Investor
+    description: |
+      Place buy order using margin leverage.
+
+    preconditions:
+      - Margin account activated
+      - Has remaining margin limit
+
+    main_flow:
+      - step: 1
+        action: Select "Margin Trading" mode
+        system_response: |
+          Display:
+          - Current buying power (cash + margin)
+          - Remaining limit
+          - Current margin ratio
+
+      - step: 2
+        action: Place margin buy order
+        system_response: |
+          - Validate marginable security
+          - Calculate margin requirement
+          - Check buying power
+
+      - step: 3
+        action: Confirm
+        system_response: |
+          - Record margin order
+          - Update margin used
+          - Send order to Exchange
+
+    business_rules:
+      - BR001: Initial margin 50%
+      - BR002: Only margin with securities in list
+      - BR003: Auto-check maintenance margin
+
+  # =============================================================================
+  - id: UC-ALERT-001
+    name: Receive Order Match Notification
+    actor: Investor
+    description: |
+      Receive realtime notification when order is matched.
+
+    main_flow:
+      - step: 1
+        trigger: Order matched (partial or full)
+        system_response: |
+          Push notification with:
+          - Securities symbol, Buy/Sell
+          - Matched quantity, Match price
+          - Total value
+          - Remaining (if any)
+
+      - step: 2
+        action: Tap notification
+        system_response: Open order details
+
+    delivery_channels:
+      - Push notification (app)
+      - SMS (large orders)
+      - Email (end of day summary)
+
+  # =============================================================================
+  - id: UC-REPORT-001
+    name: View Account Statement
+    actor: Investor
+    description: |
+      View detailed cash and securities statement.
+
+    main_flow:
+      - step: 1
+        action: Go to "Statement"
+        system_response: |
+          Display tabs:
+          - Cash statement
+          - Securities statement
+          - Summary report
+
+      - step: 2
+        action: Select time range
+        system_response: |
+          - Filter by day/week/month/year
+          - Custom range
+
+      - step: 3
+        action: View details
+        system_response: |
+          Cash statement:
+          - Opening balance
+          - Transactions (buy/sell/deposit/withdraw/fees)
+          - Closing balance
+
+          Securities statement:
+          - Opening quantity
+          - Changes (buy/sell/rights)
+          - Closing quantity
+
+      - step: 4
+        action: Export report
+        system_response: PDF/Excel with standard format
+
+# =============================================================================
+# Non-functional Requirements
+# =============================================================================
+non_functional_requirements:
+  performance:
+    - Order processing: < 100ms end-to-end
+    - Market data latency: < 50ms
+    - Page load time: < 2 seconds
+    - Concurrent users: 10,000+
+
+  availability:
+    - Trading hours: 99.99% uptime
+    - Non-trading hours: 99.9% uptime
+    - RTO: 15 minutes
+    - RPO: 0 (no data loss)
+
+  security:
+    - 2FA for order confirmation
+    - Session timeout: 15 minutes
+    - Encryption: TLS 1.3
+    - API rate limiting
+
+  scalability:
+    - Horizontal scaling for peak loads
+    - Auto-scaling during high volatility
+    - Queue-based order processing
+
+# =============================================================================
+# Integration Points
+# =============================================================================
+integrations:
+  - name: Exchange Gateway
+    type: FIX Protocol
+    purpose: Send/receive orders
+
+  - name: Market Data Feed
+    type: WebSocket
+    purpose: Realtime price updates
+
+  - name: VSD Gateway
+    type: API
+    purpose: Settlement and corporate actions
+
+  - name: Payment Gateway
+    type: REST API
+    purpose: Deposit/withdrawal
+
+  - name: SMS Gateway
+    type: REST API
+    purpose: OTP and notifications
+
+  - name: Email Service
+    type: SMTP/API
+    purpose: Email notifications

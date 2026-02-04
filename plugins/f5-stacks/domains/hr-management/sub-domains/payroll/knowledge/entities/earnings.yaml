@@ -1,0 +1,420 @@
+name: earnings
+display_name: Payroll Earnings
+description: |
+  Individual earning entries for payroll processing, including salary
+  components, allowances, bonuses, and other taxable/non-taxable income.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Earning
+  table_name: payroll_earnings
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: payslip_id
+      type: uuid
+      required: true
+
+    - name: employee_id
+      type: uuid
+      required: true
+
+    - name: period_id
+      type: uuid
+      required: true
+
+    # Earning Type
+    - name: earning_code
+      type: string
+      length: 20
+      required: true
+
+    - name: earning_name
+      type: string
+      length: 100
+      required: true
+
+    - name: earning_category
+      type: enum
+      values: [salary, allowance, bonus, commission, overtime, reimbursement, other]
+      required: true
+
+    # Calculation
+    - name: calculation_type
+      type: enum
+      values: [fixed, hourly, daily, percentage, formula]
+      required: true
+
+    - name: quantity
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 1
+      description: Hours, days, or units
+
+    - name: rate
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Rate per unit
+
+    - name: percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: If percentage-based
+
+    - name: base_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Base for percentage calculation
+
+    - name: formula
+      type: text
+      description: Custom formula if applicable
+
+    - name: amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    # Tax Treatment
+    - name: is_taxable
+      type: boolean
+      default: true
+
+    - name: taxable_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: non_taxable_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: tax_exemption_reason
+      type: string
+      length: 200
+
+    # Insurance Treatment
+    - name: si_contributable
+      type: boolean
+      default: false
+      description: Included in SI base
+
+    - name: si_contribution_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Proration
+    - name: is_prorated
+      type: boolean
+      default: false
+
+    - name: proration_factor
+      type: decimal
+      precision: 5
+      scale: 4
+      description: e.g., 0.5 for half month
+
+    - name: full_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount before proration
+
+    - name: proration_reason
+      type: string
+      length: 100
+      description: New hire, termination, leave
+
+    # Source Reference
+    - name: source_type
+      type: enum
+      values: [salary_structure, manual, attendance, overtime, bonus_run, commission_calc]
+
+    - name: source_id
+      type: uuid
+      description: Reference to source record
+
+    # Status
+    - name: status
+      type: enum
+      values: [pending, calculated, approved, processed, cancelled]
+      default: pending
+
+    # Metadata
+    - name: effective_date
+      type: date
+
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: payslip
+      type: belongs_to
+      entity: PaySlip
+      foreign_key: payslip_id
+
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: period
+      type: belongs_to
+      entity: PayrollPeriod
+      foreign_key: period_id
+
+  indexes:
+    - columns: [payslip_id, earning_code]
+      unique: true
+    - columns: [employee_id, period_id]
+    - columns: [earning_code]
+    - columns: [earning_category]
+    - columns: [status]
+
+  earning_types:
+    salary:
+      - code: BASIC
+        name: Lương cơ bản
+        taxable: true
+        si_contributable: true
+        calculation: fixed
+
+      - code: PROB_SALARY
+        name: Lương thử việc
+        taxable: true
+        si_contributable: true
+        calculation: fixed
+        note: "Usually 85% of official salary"
+
+    allowances:
+      - code: HOUSING
+        name: Phụ cấp nhà ở
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+      - code: TRANSPORT
+        name: Phụ cấp đi lại
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+      - code: MEAL
+        name: Phụ cấp ăn trưa
+        taxable: conditional
+        tax_exempt_limit: 730000
+        si_contributable: false
+        calculation: fixed
+
+      - code: PHONE
+        name: Phụ cấp điện thoại
+        taxable: conditional
+        si_contributable: false
+        calculation: fixed
+
+      - code: RESPONSIBILITY
+        name: Phụ cấp trách nhiệm
+        taxable: true
+        si_contributable: true
+        calculation: fixed
+
+      - code: POSITION
+        name: Phụ cấp chức vụ
+        taxable: true
+        si_contributable: true
+        calculation: fixed
+
+      - code: SENIORITY
+        name: Phụ cấp thâm niên
+        taxable: true
+        si_contributable: false
+        calculation: percentage
+
+      - code: HAZARD
+        name: Phụ cấp độc hại
+        taxable: true
+        si_contributable: true
+        calculation: fixed
+
+    overtime:
+      - code: OT_WEEKDAY
+        name: Làm thêm ngày thường
+        taxable: true
+        si_contributable: false
+        calculation: hourly
+        rate_multiplier: 1.5
+
+      - code: OT_WEEKEND
+        name: Làm thêm cuối tuần
+        taxable: true
+        si_contributable: false
+        calculation: hourly
+        rate_multiplier: 2.0
+
+      - code: OT_HOLIDAY
+        name: Làm thêm ngày lễ
+        taxable: true
+        si_contributable: false
+        calculation: hourly
+        rate_multiplier: 3.0
+
+      - code: OT_NIGHT
+        name: Làm đêm
+        taxable: true
+        si_contributable: false
+        calculation: hourly
+        rate_multiplier: 0.3
+
+    bonuses:
+      - code: BONUS_13TH
+        name: Lương tháng 13
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+      - code: BONUS_PERF
+        name: Thưởng hiệu suất
+        taxable: true
+        si_contributable: false
+        calculation: percentage
+
+      - code: BONUS_PROJECT
+        name: Thưởng dự án
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+      - code: BONUS_TET
+        name: Thưởng Tết
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+    commissions:
+      - code: SALES_COMM
+        name: Hoa hồng bán hàng
+        taxable: true
+        si_contributable: false
+        calculation: percentage
+
+      - code: REFERRAL
+        name: Thưởng giới thiệu
+        taxable: true
+        si_contributable: false
+        calculation: fixed
+
+    reimbursements:
+      - code: TRAVEL_REIMB
+        name: Hoàn chi công tác
+        taxable: false
+        si_contributable: false
+        calculation: fixed
+
+      - code: UNIFORM
+        name: Tiền đồng phục
+        taxable: false
+        si_contributable: false
+        calculation: fixed
+
+      - code: TRAINING
+        name: Chi phí đào tạo
+        taxable: false
+        si_contributable: false
+        calculation: fixed
+
+  validations:
+    - field: amount
+      rule: non_negative
+      message: "Earning amount cannot be negative"
+
+    - field: quantity
+      rule: positive
+      when: calculation_type in [hourly, daily]
+      message: "Quantity must be positive"
+
+    - field: rate
+      rule: positive
+      when: calculation_type in [hourly, daily]
+      message: "Rate must be positive"
+
+  computed_fields:
+    - name: amount
+      formula: |
+        CASE calculation_type
+          WHEN 'fixed' THEN rate
+          WHEN 'hourly' THEN quantity * rate
+          WHEN 'daily' THEN quantity * rate
+          WHEN 'percentage' THEN base_amount * (percentage / 100)
+          ELSE 0
+        END
+
+    - name: taxable_amount
+      formula: |
+        IF is_taxable THEN
+          IF earning_code = 'MEAL' AND amount > 730000 THEN
+            amount - 730000
+          ELSE
+            amount
+          END
+        ELSE 0
+        END
+
+    - name: non_taxable_amount
+      formula: "amount - taxable_amount"
+
+  hooks:
+    on_create:
+      - validate_earning_code
+      - calculate_amount
+      - determine_tax_treatment
+      - determine_si_treatment
+
+    on_calculate:
+      - apply_proration
+      - split_taxable_amounts
+      - update_payslip_totals
+
+  audit:
+    track:
+      - amount
+      - status
+      - is_taxable
+
+    retention: 10_years
+
+compliance:
+  - standard: Vietnam_PIT_Law
+    requirement: Correct tax treatment per earning type
+  - standard: Circular_111
+    requirement: Non-taxable allowance limits

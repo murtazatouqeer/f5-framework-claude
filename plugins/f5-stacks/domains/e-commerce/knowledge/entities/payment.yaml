@@ -1,0 +1,393 @@
+name: Payment
+display_name: Payment / Thanh toán
+description: |
+  Payment transaction record for an order.
+  Tracks payment attempts, authorization, capture, and refunds.
+  Supports multiple payment methods and partial payments.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the payment
+
+  - name: payment_number
+    type: string
+    required: true
+    description: Human-readable payment reference
+    validation:
+      pattern: "^PAY-[0-9]{8}-[A-Z0-9]{6}$"
+    example: "PAY-20240115-ABC123"
+
+  - name: order_id
+    type: uuid
+    required: true
+    description: Reference to order being paid
+
+  - name: customer_id
+    type: uuid
+    required: false
+    description: Reference to customer (null for guest)
+
+  - name: status
+    type: enum
+    required: true
+    description: Payment status
+    validation:
+      values: [pending, processing, authorized, captured, partially_refunded, refunded, failed, cancelled, expired]
+    default: pending
+
+  - name: method
+    type: enum
+    required: true
+    description: Payment method type
+    validation:
+      values: [credit_card, debit_card, bank_transfer, cod, e_wallet, qr_code, bnpl, crypto]
+
+  - name: provider
+    type: string
+    required: true
+    description: Payment provider/gateway
+    validation:
+      max_length: 50
+    example: "stripe"
+
+  - name: provider_transaction_id
+    type: string
+    required: false
+    description: Transaction ID from payment provider
+    validation:
+      max_length: 255
+
+  - name: currency
+    type: string
+    required: true
+    description: Payment currency (ISO 4217)
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: amount
+    type: decimal
+    required: true
+    description: Total payment amount
+    validation:
+      min: 0
+
+  - name: authorized_amount
+    type: decimal
+    required: true
+    description: Amount authorized
+    validation:
+      min: 0
+    default: 0
+
+  - name: captured_amount
+    type: decimal
+    required: true
+    description: Amount captured/settled
+    validation:
+      min: 0
+    default: 0
+
+  - name: refunded_amount
+    type: decimal
+    required: true
+    description: Amount refunded
+    validation:
+      min: 0
+    default: 0
+
+  - name: fee_amount
+    type: decimal
+    required: true
+    description: Payment processing fee
+    validation:
+      min: 0
+    default: 0
+
+  - name: net_amount
+    type: decimal
+    required: false
+    description: Net amount after fees
+    validation:
+      min: 0
+
+  - name: card_brand
+    type: string
+    required: false
+    description: Card brand (Visa, Mastercard, etc.)
+    validation:
+      max_length: 20
+
+  - name: card_last_four
+    type: string
+    required: false
+    description: Last 4 digits of card
+    validation:
+      pattern: "^[0-9]{4}$"
+
+  - name: card_expiry_month
+    type: integer
+    required: false
+    description: Card expiry month
+    validation:
+      min: 1
+      max: 12
+
+  - name: card_expiry_year
+    type: integer
+    required: false
+    description: Card expiry year
+    validation:
+      min: 2024
+      max: 2050
+
+  - name: bank_code
+    type: string
+    required: false
+    description: Bank code for bank transfer
+    validation:
+      max_length: 20
+
+  - name: bank_name
+    type: string
+    required: false
+    description: Bank name
+    validation:
+      max_length: 100
+
+  - name: wallet_type
+    type: string
+    required: false
+    description: E-wallet type (MoMo, ZaloPay, VNPay)
+    validation:
+      max_length: 50
+
+  - name: billing_address
+    type: object
+    required: false
+    description: Billing address snapshot
+
+  - name: ip_address
+    type: string
+    required: false
+    description: Customer IP address
+    validation:
+      max_length: 45
+
+  - name: user_agent
+    type: string
+    required: false
+    description: Customer browser user agent
+    validation:
+      max_length: 500
+
+  - name: failure_code
+    type: string
+    required: false
+    description: Error code if failed
+    validation:
+      max_length: 50
+
+  - name: failure_message
+    type: string
+    required: false
+    description: Error message if failed
+    validation:
+      max_length: 500
+
+  - name: metadata
+    type: json
+    required: false
+    description: Additional payment metadata
+
+  - name: authorized_at
+    type: timestamp
+    required: false
+    description: When payment was authorized
+
+  - name: captured_at
+    type: timestamp
+    required: false
+    description: When payment was captured
+
+  - name: failed_at
+    type: timestamp
+    required: false
+    description: When payment failed
+
+  - name: refunded_at
+    type: timestamp
+    required: false
+    description: When refund was processed
+
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Payment authorization expiry
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    required: true
+    description: Order being paid
+
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: false
+    description: Customer making payment
+
+  - name: refunds
+    type: has_many
+    entity: Refund
+    required: false
+    description: Refunds for this payment
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Payment initiated, awaiting processing
+    - name: processing
+      description: Payment being processed by provider
+    - name: authorized
+      description: Payment authorized, awaiting capture
+    - name: captured
+      description: Payment captured/settled
+    - name: partially_refunded
+      description: Part of payment refunded
+    - name: refunded
+      description: Full payment refunded
+    - name: failed
+      description: Payment failed
+    - name: cancelled
+      description: Payment cancelled by user/system
+    - name: expired
+      description: Payment authorization expired
+  transitions:
+    - from: pending
+      to: processing
+      trigger: process
+      description: Start processing payment
+    - from: pending
+      to: cancelled
+      trigger: cancel
+      description: Cancel before processing
+    - from: processing
+      to: authorized
+      trigger: authorize
+      conditions: [provider_approved]
+      description: Payment authorized
+    - from: processing
+      to: captured
+      trigger: capture_direct
+      conditions: [provider_approved, auto_capture]
+      description: Direct capture (no auth hold)
+    - from: processing
+      to: failed
+      trigger: fail
+      description: Payment failed
+    - from: authorized
+      to: captured
+      trigger: capture
+      description: Capture authorized funds
+    - from: authorized
+      to: cancelled
+      trigger: void
+      description: Void authorization
+    - from: authorized
+      to: expired
+      trigger: expire
+      conditions: [authorization_expired]
+      description: Authorization expired
+    - from: captured
+      to: partially_refunded
+      trigger: partial_refund
+      conditions: [refund_amount_less_than_captured]
+      description: Partial refund
+    - from: captured
+      to: refunded
+      trigger: full_refund
+      description: Full refund
+    - from: partially_refunded
+      to: refunded
+      trigger: complete_refund
+      conditions: [remaining_balance_zero]
+      description: Complete remaining refund
+
+indexes:
+  - [payment_number]
+  - [order_id]
+  - [customer_id]
+  - [status]
+  - [provider, provider_transaction_id]
+  - [method]
+  - [created_at]
+  - [captured_at]
+
+business_rules:
+  - BR-PAY-001: Payment number format PAY-YYYYMMDD-XXXXXX (auto-generated)
+  - BR-PAY-002: captured_amount cannot exceed authorized_amount
+  - BR-PAY-003: refunded_amount cannot exceed captured_amount
+  - BR-PAY-004: Authorization expires after 7 days (configurable)
+  - BR-PAY-005: net_amount = captured_amount - fee_amount - refunded_amount
+  - BR-PAY-006: COD payments marked captured upon delivery
+  - BR-PAY-007: Multiple payments allowed per order (partial payments)
+  - BR-PAY-008: Card details stored only as masked references
+  - BR-PAY-009: Failed payments allow retry with new payment
+  - BR-PAY-010: Refunds must be to original payment method
+  - BR-PAY-011: 3D Secure required for card payments over threshold
+
+computed_fields:
+  - name: net_amount
+    formula: captured_amount - fee_amount - refunded_amount
+    description: Net amount after fees and refunds
+
+  - name: refundable_amount
+    formula: captured_amount - refunded_amount
+    description: Amount available for refund
+
+  - name: is_refundable
+    formula: status IN (captured, partially_refunded) AND refundable_amount > 0
+    description: Whether payment can be refunded
+
+  - name: is_complete
+    formula: captured_amount >= amount
+    description: Whether full amount is captured
+
+events:
+  - name: payment.initiated
+    payload: [id, payment_number, order_id, amount, method]
+    description: Fired when payment is initiated
+
+  - name: payment.authorized
+    payload: [id, payment_number, authorized_amount]
+    description: Fired when payment is authorized
+
+  - name: payment.captured
+    payload: [id, payment_number, captured_amount, net_amount]
+    description: Fired when payment is captured
+
+  - name: payment.failed
+    payload: [id, payment_number, failure_code, failure_message]
+    description: Fired when payment fails
+
+  - name: payment.refunded
+    payload: [id, payment_number, refunded_amount, remaining_amount]
+    description: Fired when refund is processed

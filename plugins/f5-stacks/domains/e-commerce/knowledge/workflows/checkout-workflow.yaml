@@ -1,0 +1,418 @@
+name: Checkout Workflow
+display_name: Checkout Workflow / Quy trình thanh toán
+description: |
+  End-to-end checkout process from cart to order confirmation.
+  Handles address selection, shipping method, payment, and order creation.
+
+domain: e-commerce
+version: "1.0"
+
+triggers:
+  - event: checkout.initiated
+    source: Cart
+    condition: cart.item_count > 0
+
+actors:
+  - name: Customer
+    role: primary
+    description: Person completing the checkout
+  - name: System
+    role: automated
+    description: Backend processing system
+  - name: Payment Gateway
+    role: external
+    description: Payment processing service
+  - name: Inventory Service
+    role: internal
+    description: Stock management service
+
+steps:
+  - id: INIT
+    name: Initialize Checkout
+    description: Start checkout session and validate cart
+    actor: System
+    type: automated
+    actions:
+      - Validate cart is not empty
+      - Check all items are still available
+      - Create checkout session
+      - Set session timeout (30 minutes)
+    inputs:
+      - cart_id
+      - customer_id (optional)
+    outputs:
+      - checkout_session_id
+      - cart_validation_result
+    validations:
+      - rule: BR-ORD-002
+        description: Minimum one item required
+      - rule: BR-ORD-011
+        description: All products must be active
+    on_success: RESERVE_STOCK
+    on_failure: SHOW_CART_ERRORS
+
+  - id: RESERVE_STOCK
+    name: Reserve Inventory
+    description: Reserve stock for checkout duration
+    actor: Inventory Service
+    type: automated
+    actions:
+      - Reserve quantity for each item
+      - Set reservation expiry
+      - Update available quantities
+    inputs:
+      - cart_items
+    outputs:
+      - reservation_ids
+      - reserved_until
+    validations:
+      - rule: BR-INV-003
+        description: Check stock availability
+      - rule: BR-INV-011
+        description: Create checkout reservation
+    on_success: COLLECT_ADDRESS
+    on_failure: SHOW_STOCK_ERROR
+
+  - id: COLLECT_ADDRESS
+    name: Collect Shipping Address
+    description: Get or select shipping address
+    actor: Customer
+    type: interactive
+    actions:
+      - Show saved addresses (if logged in)
+      - Allow new address entry
+      - Validate address format
+      - Check delivery zone
+    inputs:
+      - customer_id (optional)
+      - new_address (optional)
+    outputs:
+      - shipping_address
+      - billing_address
+      - address_validation_result
+    validations:
+      - rule: BR-SHP-001
+        description: Address must be valid
+      - rule: BR-SHP-002
+        description: Vietnam addresses require ward/district
+      - rule: BR-SHP-004
+        description: Must be in serviceable zone
+    ui_elements:
+      - saved_address_selector
+      - new_address_form
+      - same_as_shipping_checkbox
+    on_success: SELECT_SHIPPING
+    on_failure: SHOW_ADDRESS_ERROR
+
+  - id: SELECT_SHIPPING
+    name: Select Shipping Method
+    description: Choose shipping carrier and method
+    actor: Customer
+    type: interactive
+    actions:
+      - Calculate available shipping options
+      - Show shipping rates and ETAs
+      - Apply free shipping if eligible
+      - Allow delivery date selection (optional)
+    inputs:
+      - shipping_address
+      - cart_items
+      - cart_subtotal
+    outputs:
+      - shipping_method
+      - shipping_cost
+      - estimated_delivery
+    validations:
+      - rule: BR-SHP-010
+        description: Calculate shipping rate
+      - rule: BR-SHP-020
+        description: Apply free shipping threshold
+      - rule: BR-SHP-030
+        description: Carrier must serve destination
+    ui_elements:
+      - shipping_method_radio
+      - delivery_date_picker
+      - shipping_cost_display
+    on_success: APPLY_DISCOUNTS
+    on_failure: SHOW_SHIPPING_ERROR
+
+  - id: APPLY_DISCOUNTS
+    name: Apply Discounts
+    description: Apply coupons and promotional discounts
+    actor: Customer
+    type: interactive
+    actions:
+      - Auto-apply eligible promotions
+      - Allow coupon code entry
+      - Validate coupon eligibility
+      - Calculate discount amounts
+      - Apply loyalty points (optional)
+    inputs:
+      - coupon_code (optional)
+      - loyalty_points_to_redeem (optional)
+      - cart_subtotal
+      - customer_id
+    outputs:
+      - applied_discounts
+      - total_discount
+      - loyalty_points_used
+    validations:
+      - rule: BR-PRO-002
+        description: Coupon date validation
+      - rule: BR-PRO-005
+        description: Per customer usage limit
+      - rule: BR-PRO-010
+        description: Customer eligibility
+      - rule: BR-PRI-014
+        description: Discount cannot exceed subtotal
+    ui_elements:
+      - coupon_input
+      - loyalty_points_slider
+      - discount_summary
+    on_success: CALCULATE_TOTALS
+    on_failure: SHOW_DISCOUNT_ERROR
+
+  - id: CALCULATE_TOTALS
+    name: Calculate Order Totals
+    description: Calculate final order amounts
+    actor: System
+    type: automated
+    actions:
+      - Calculate subtotal
+      - Apply discounts
+      - Add shipping
+      - Calculate tax
+      - Determine final total
+    inputs:
+      - cart_items
+      - shipping_cost
+      - applied_discounts
+    outputs:
+      - subtotal
+      - discount_amount
+      - shipping_amount
+      - tax_amount
+      - total_amount
+    validations:
+      - rule: BR-PRI-040
+        description: Order total calculation
+      - rule: BR-PRI-030
+        description: VAT calculation
+      - rule: BR-ORD-042
+        description: Minimum order value
+    on_success: SHOW_SUMMARY
+    on_failure: CALCULATION_ERROR
+
+  - id: SHOW_SUMMARY
+    name: Order Summary Review
+    description: Display order summary for review
+    actor: Customer
+    type: interactive
+    actions:
+      - Display all order details
+      - Show itemized costs
+      - Confirm shipping and billing addresses
+      - Display estimated delivery
+    inputs:
+      - order_summary
+    outputs:
+      - customer_confirmation
+    ui_elements:
+      - order_summary_panel
+      - item_list
+      - cost_breakdown
+      - address_display
+      - edit_buttons
+    on_success: SELECT_PAYMENT
+    on_back: APPLY_DISCOUNTS
+
+  - id: SELECT_PAYMENT
+    name: Select Payment Method
+    description: Choose payment method
+    actor: Customer
+    type: interactive
+    actions:
+      - Show available payment methods
+      - Filter based on order value (COD limit)
+      - Show saved payment methods
+      - Collect payment details
+    inputs:
+      - total_amount
+      - customer_id
+    outputs:
+      - payment_method
+      - payment_details
+    validations:
+      - rule: BR-ORD-014
+        description: COD limit check
+    ui_elements:
+      - payment_method_selector
+      - card_input_form
+      - bank_transfer_details
+      - e_wallet_options
+    on_success: PROCESS_PAYMENT
+    on_failure: SHOW_PAYMENT_ERROR
+
+  - id: PROCESS_PAYMENT
+    name: Process Payment
+    description: Process payment through gateway
+    actor: Payment Gateway
+    type: automated
+    actions:
+      - Tokenize payment details
+      - Authorize payment amount
+      - Handle 3D Secure if required
+      - Capture payment (or defer for COD)
+    inputs:
+      - payment_method
+      - payment_details
+      - total_amount
+    outputs:
+      - payment_id
+      - payment_status
+      - transaction_id
+    validations:
+      - rule: BR-PAY-003
+        description: Capture cannot exceed authorized
+    on_success: CREATE_ORDER
+    on_failure: PAYMENT_FAILED
+    on_pending: AWAIT_PAYMENT_CONFIRMATION
+
+  - id: CREATE_ORDER
+    name: Create Order
+    description: Create order record from checkout
+    actor: System
+    type: automated
+    actions:
+      - Generate order number
+      - Create order record
+      - Create order items with snapshots
+      - Convert reservations to committed
+      - Apply loyalty points if used
+      - Link payment to order
+    inputs:
+      - checkout_session
+      - payment_id
+    outputs:
+      - order_id
+      - order_number
+    validations:
+      - rule: BR-ORD-001
+        description: Order number generation
+      - rule: BR-ORD-005
+        description: Price snapshot
+      - rule: BR-INV-012
+        description: Convert to committed inventory
+    on_success: CONFIRM_ORDER
+    on_failure: ROLLBACK_CHECKOUT
+
+  - id: CONFIRM_ORDER
+    name: Confirm Order
+    description: Finalize and confirm order
+    actor: System
+    type: automated
+    actions:
+      - Update order status to confirmed
+      - Clear cart
+      - Trigger confirmation email
+      - Trigger order.created event
+      - Update customer order count
+    inputs:
+      - order_id
+    outputs:
+      - confirmation_number
+      - confirmation_email_sent
+    events:
+      - order.created
+      - order.confirmed
+    on_success: SHOW_CONFIRMATION
+    on_failure: ALERT_SUPPORT
+
+  - id: SHOW_CONFIRMATION
+    name: Show Confirmation
+    description: Display order confirmation to customer
+    actor: Customer
+    type: interactive
+    actions:
+      - Display order number
+      - Show order summary
+      - Provide tracking information
+      - Offer related products
+    ui_elements:
+      - confirmation_page
+      - order_details_panel
+      - next_steps_info
+      - related_products_carousel
+    outputs:
+      - checkout_complete
+
+  # Error States
+  - id: SHOW_CART_ERRORS
+    name: Cart Validation Errors
+    description: Display cart validation issues
+    actor: System
+    type: error_handler
+    actions:
+      - Display specific item errors
+      - Offer to remove unavailable items
+      - Suggest alternatives
+    recovery: Return to cart
+
+  - id: SHOW_STOCK_ERROR
+    name: Stock Unavailable
+    description: Handle out of stock situations
+    actor: System
+    type: error_handler
+    actions:
+      - Show which items are unavailable
+      - Offer waitlist signup
+      - Suggest alternatives
+    recovery: Update cart and retry
+
+  - id: PAYMENT_FAILED
+    name: Payment Failed
+    description: Handle payment failures
+    actor: System
+    type: error_handler
+    actions:
+      - Display error message
+      - Allow retry with same method
+      - Suggest alternative payment methods
+      - Log failure for analytics
+    recovery: SELECT_PAYMENT
+
+  - id: ROLLBACK_CHECKOUT
+    name: Rollback Checkout
+    description: Rollback on critical failure
+    actor: System
+    type: automated
+    actions:
+      - Release inventory reservations
+      - Void payment authorization
+      - Delete incomplete order
+      - Notify support team
+    recovery: Return to cart with error message
+
+timeouts:
+  checkout_session: 30 minutes
+  payment_processing: 5 minutes
+  inventory_reservation: 30 minutes
+
+notifications:
+  - event: order_confirmed
+    channels: [email, sms, push]
+    template: order_confirmation
+
+  - event: payment_failed
+    channels: [email]
+    template: payment_failed_retry
+
+integrations:
+  - service: payment_gateway
+    methods: [authorize, capture, void]
+  - service: inventory_service
+    methods: [reserve, commit, release]
+  - service: shipping_service
+    methods: [get_rates, estimate_delivery]
+  - service: notification_service
+    methods: [send_email, send_sms, send_push]

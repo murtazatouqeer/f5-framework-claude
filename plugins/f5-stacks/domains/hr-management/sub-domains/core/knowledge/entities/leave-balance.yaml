@@ -1,0 +1,315 @@
+name: leave-balance
+display_name: Leave Balance
+description: |
+  Leave balance entity tracking employee entitlements, accruals,
+  usage, and carry-forward for each leave type.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: LeaveBalance
+  table_name: leave_balances
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: employee_id
+        type: uuid
+        required: true
+        foreign_key: employees.id
+        description: "Employee this balance belongs to"
+
+      - name: leave_type_id
+        type: uuid
+        required: true
+        foreign_key: leave_types.id
+        description: "Leave type"
+
+      - name: year
+        type: integer
+        required: true
+        description: "Calendar/fiscal year"
+
+      - name: status
+        type: enum
+        default: "active"
+        values: [active, closed, archived]
+        description: "Balance status"
+
+    # Entitlement
+    entitlement:
+      - name: annual_entitlement
+        type: decimal
+        required: true
+        precision: 5
+        scale: 2
+        description: "Total entitlement for the year"
+
+      - name: base_entitlement
+        type: decimal
+        description: "Base entitlement from policy"
+
+      - name: seniority_bonus
+        type: decimal
+        default: 0
+        description: "Additional days from seniority"
+
+      - name: proration_factor
+        type: decimal
+        default: 1.0
+        description: "Proration for partial year"
+
+      - name: prorated_entitlement
+        type: decimal
+        computed: true
+        formula: "annual_entitlement * proration_factor"
+        description: "Prorated entitlement"
+
+      - name: adjustment
+        type: decimal
+        default: 0
+        description: "Manual adjustments"
+
+      - name: adjustment_reason
+        type: text
+        description: "Reason for adjustment"
+
+    # Carry Forward
+    carry_forward:
+      - name: carry_forward_in
+        type: decimal
+        default: 0
+        description: "Days carried from previous year"
+
+      - name: carry_forward_in_expiry
+        type: date
+        description: "Expiry date for carried days"
+
+      - name: carry_forward_out
+        type: decimal
+        default: 0
+        description: "Days to carry to next year"
+
+    # Usage
+    usage:
+      - name: used
+        type: decimal
+        default: 0
+        description: "Days used (approved leave taken)"
+
+      - name: pending
+        type: decimal
+        default: 0
+        description: "Days in pending requests"
+
+      - name: planned
+        type: decimal
+        default: 0
+        description: "Days in approved future leave"
+
+    # Calculated Balances
+    balances:
+      - name: available
+        type: decimal
+        computed: true
+        formula: "prorated_entitlement + carry_forward_in + adjustment - used - pending"
+        description: "Available balance"
+
+      - name: remaining
+        type: decimal
+        computed: true
+        formula: "prorated_entitlement + carry_forward_in + adjustment - used"
+        description: "Remaining (excluding pending)"
+
+      - name: total_taken
+        type: decimal
+        computed: true
+        formula: "used"
+        description: "Total days taken"
+
+      - name: utilization_rate
+        type: decimal
+        computed: true
+        formula: "used / (prorated_entitlement + carry_forward_in) * 100"
+        description: "Utilization percentage"
+
+    # Encashment
+    encashment:
+      - name: encashable
+        type: decimal
+        computed: true
+        description: "Days eligible for encashment"
+
+      - name: encashed
+        type: decimal
+        default: 0
+        description: "Days already encashed"
+
+      - name: encashment_value
+        type: decimal
+        description: "Monetary value of encashment"
+
+    # Forfeit
+    forfeit:
+      - name: forfeited
+        type: decimal
+        default: 0
+        description: "Days forfeited/expired"
+
+      - name: forfeit_date
+        type: date
+        description: "Date of forfeiture"
+
+    # Accrual Tracking
+    accrual:
+      - name: accrual_method
+        type: enum
+        values: [annual, monthly, per_occurrence]
+        description: "How balance accrues"
+
+      - name: accrued_ytd
+        type: decimal
+        default: 0
+        description: "Year-to-date accrued"
+
+      - name: last_accrual_date
+        type: date
+        description: "Last accrual calculation date"
+
+      - name: next_accrual_date
+        type: date
+        description: "Next scheduled accrual"
+
+    # System
+    system:
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: created_by
+        type: uuid
+        foreign_key: users.id
+
+      - name: updated_by
+        type: uuid
+        foreign_key: users.id
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+      description: "Employee"
+
+    - name: leave_type
+      type: belongs_to
+      entity: LeaveType
+      foreign_key: leave_type_id
+      description: "Leave type"
+
+    - name: leave_requests
+      type: has_many
+      entity: LeaveRequest
+      description: "Leave requests affecting this balance"
+
+    - name: transactions
+      type: has_many
+      entity: LeaveBalanceTransaction
+      description: "Balance transaction history"
+
+  indexes:
+    - columns: [employee_id, leave_type_id, year]
+      unique: true
+    - columns: [employee_id]
+    - columns: [leave_type_id]
+    - columns: [year]
+    - columns: [status]
+
+  hooks:
+    before_create:
+      - calculate_entitlement
+      - apply_seniority_bonus
+      - calculate_proration
+      - import_carry_forward
+
+    after_update:
+      - log_balance_change
+      - check_negative_balance
+
+    scheduled:
+      - name: monthly_accrual
+        frequency: "monthly"
+        action: "process_accrual"
+
+      - name: year_end_processing
+        frequency: "yearly"
+        action: "process_year_end"
+
+  operations:
+    - name: deduct
+      description: "Deduct days from balance"
+      params: [days, request_id]
+      validations:
+        - "days > 0"
+        - "available >= days"
+
+    - name: restore
+      description: "Restore days to balance (cancelled leave)"
+      params: [days, request_id]
+
+    - name: adjust
+      description: "Manual adjustment"
+      params: [days, reason, adjusted_by]
+      audit: true
+
+    - name: accrue
+      description: "Process monthly accrual"
+      params: [period]
+
+    - name: forfeit_expired
+      description: "Forfeit expired carry forward"
+      trigger: "carry_forward_in_expiry reached"
+
+    - name: year_end_close
+      description: "Process year-end carry forward"
+      steps:
+        - calculate_remaining
+        - calculate_carry_forward
+        - create_next_year_balance
+        - close_current_balance
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - used
+      - adjustment
+      - carry_forward_in
+      - carry_forward_out
+    retention: "5 years"
+
+  reports:
+    - name: balance_summary
+      description: "Employee leave balance summary"
+
+    - name: utilization_report
+      description: "Leave utilization by department"
+
+    - name: liability_report
+      description: "Outstanding leave liability"
+
+    - name: expiring_balance
+      description: "Balances expiring soon"

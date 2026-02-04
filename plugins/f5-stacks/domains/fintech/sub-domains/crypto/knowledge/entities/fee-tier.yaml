@@ -1,0 +1,465 @@
+name: FeeTier
+display_name: Fee Tier / Bậc phí
+description: |
+  Trading fee tier based on user's trading volume or token holdings.
+  Determines maker and taker fee rates for trading.
+
+domain: fintech
+sub_domain: crypto
+entity_type: reference
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique fee tier identifier
+
+  # Tier Identification
+  tier_level:
+    type: integer
+    required: true
+    unique: true
+    indexed: true
+    description: Tier level (0 = lowest, higher = better)
+    examples: [0, 1, 2, 3, 4, 5]
+
+  tier_name:
+    type: string
+    max_length: 50
+    required: true
+    unique: true
+    description: Tier display name
+    examples: ["Regular", "VIP 1", "VIP 2", "VIP 3", "Market Maker"]
+
+  tier_name_vi:
+    type: string
+    max_length: 50
+    description: Vietnamese tier name
+    examples: ["Thường", "VIP 1", "VIP 2", "VIP 3", "Nhà tạo lập"]
+
+  # Fee Rates
+  maker_fee:
+    type: decimal
+    precision: 8
+    scale: 6
+    required: true
+    description: Maker fee rate (0.001 = 0.1%)
+    examples:
+      regular: 0.001000
+      vip_1: 0.000900
+      vip_2: 0.000800
+      market_maker: 0.000000
+
+  taker_fee:
+    type: decimal
+    precision: 8
+    scale: 6
+    required: true
+    description: Taker fee rate (0.001 = 0.1%)
+    examples:
+      regular: 0.001000
+      vip_1: 0.000975
+      vip_2: 0.000950
+      market_maker: 0.000300
+
+  # Qualification Requirements
+  volume_requirement_30d:
+    type: decimal
+    precision: 28
+    scale: 2
+    description: Required 30-day trading volume (in USD/BTC)
+    examples:
+      regular: 0
+      vip_1: 100000
+      vip_2: 500000
+      vip_3: 2000000
+
+  volume_currency:
+    type: enum
+    values:
+      - usd
+      - btc
+    default: usd
+    description: Currency for volume calculation
+
+  token_holding_requirement:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Required platform token holding
+    examples:
+      regular: 0
+      vip_1: 1000
+      vip_2: 5000
+      vip_3: 20000
+
+  token_symbol:
+    type: string
+    max_length: 10
+    description: Platform token symbol for holding requirement
+    example: "BNB"
+
+  # Qualification Logic
+  qualification_logic:
+    type: enum
+    values:
+      - volume_only
+      - holdings_only
+      - volume_or_holdings
+      - volume_and_holdings
+    default: volume_or_holdings
+    description: How requirements are evaluated
+
+  # Additional Benefits
+  withdrawal_limit_multiplier:
+    type: decimal
+    precision: 5
+    scale: 2
+    default: 1.00
+    description: Multiplier for daily withdrawal limit
+    examples:
+      regular: 1.00
+      vip_1: 1.50
+      vip_2: 2.00
+      vip_3: 5.00
+
+  referral_commission_bonus:
+    type: decimal
+    precision: 5
+    scale: 4
+    default: 0
+    description: Additional referral commission (0.05 = 5%)
+
+  priority_support:
+    type: boolean
+    default: false
+    description: Access to priority customer support
+
+  dedicated_account_manager:
+    type: boolean
+    default: false
+    description: Assigned account manager
+
+  api_rate_limit_multiplier:
+    type: decimal
+    precision: 5
+    scale: 2
+    default: 1.00
+    description: API rate limit multiplier
+    examples:
+      regular: 1.00
+      vip_1: 2.00
+      vip_2: 5.00
+      market_maker: 10.00
+
+  # Fee Payment Options
+  fee_discount_with_token:
+    type: decimal
+    precision: 5
+    scale: 4
+    default: 0.25
+    description: Additional discount when paying fees with platform token
+    example: "0.25 = 25% off"
+
+  # Status
+  is_active:
+    type: boolean
+    default: true
+    description: Whether this tier is currently available
+
+  is_invitation_only:
+    type: boolean
+    default: false
+    description: Requires invitation to access this tier
+
+  # Timestamps
+  effective_from:
+    type: timestamp
+    description: When this tier structure became effective
+
+  updated_at:
+    type: timestamp
+    auto_update: true
+
+# =============================================================================
+# USER FEE TIER ASSIGNMENT
+# =============================================================================
+user_tier:
+  description: User's current fee tier assignment
+
+  attributes:
+    user_id:
+      type: uuid
+      required: true
+      indexed: true
+
+    current_tier_id:
+      type: uuid
+      required: true
+
+    volume_30d:
+      type: decimal
+      description: Current 30-day trading volume
+
+    token_balance:
+      type: decimal
+      description: Current platform token balance
+
+    tier_calculated_at:
+      type: timestamp
+      description: When tier was last calculated
+
+    tier_valid_until:
+      type: timestamp
+      description: Tier validity period end
+
+    is_locked:
+      type: boolean
+      default: false
+      description: Tier locked (won't downgrade)
+
+    lock_expiry:
+      type: timestamp
+      description: When tier lock expires
+
+    manual_override:
+      type: boolean
+      default: false
+      description: Manually assigned tier
+
+    override_reason:
+      type: string
+      description: Reason for manual override
+
+# =============================================================================
+# FEE TIER STRUCTURE
+# =============================================================================
+tier_structure:
+  description: Standard fee tier configuration
+
+  tiers:
+    - level: 0
+      name: Regular
+      maker_fee: 0.001000
+      taker_fee: 0.001000
+      volume_30d: 0
+      token_holding: 0
+
+    - level: 1
+      name: VIP 1
+      maker_fee: 0.000900
+      taker_fee: 0.000975
+      volume_30d: 100000
+      token_holding: 100
+
+    - level: 2
+      name: VIP 2
+      maker_fee: 0.000800
+      taker_fee: 0.000950
+      volume_30d: 500000
+      token_holding: 500
+
+    - level: 3
+      name: VIP 3
+      maker_fee: 0.000700
+      taker_fee: 0.000900
+      volume_30d: 2000000
+      token_holding: 2000
+
+    - level: 4
+      name: VIP 4
+      maker_fee: 0.000600
+      taker_fee: 0.000800
+      volume_30d: 10000000
+      token_holding: 10000
+
+    - level: 5
+      name: VIP 5
+      maker_fee: 0.000400
+      taker_fee: 0.000600
+      volume_30d: 50000000
+      token_holding: 50000
+
+    - level: 6
+      name: VIP 6
+      maker_fee: 0.000200
+      taker_fee: 0.000400
+      volume_30d: 100000000
+      token_holding: 100000
+
+    - level: 10
+      name: Market Maker
+      maker_fee: 0.000000
+      taker_fee: 0.000200
+      volume_30d: null
+      note: By invitation only
+
+# =============================================================================
+# FEE CALCULATION
+# =============================================================================
+fee_calculation:
+  description: How trading fees are calculated
+
+  base_formula:
+    maker_fee: trade_value * maker_fee_rate
+    taker_fee: trade_value * taker_fee_rate
+
+  discounts:
+    - name: Token Payment
+      condition: User pays fee with platform token
+      discount: fee_discount_with_token
+      stacking: true
+
+    - name: Referral Discount
+      condition: User was referred
+      discount: 0.10
+      duration: 90 days
+      stacking: true
+
+    - name: Promotional
+      condition: Active promotion
+      discount: variable
+      stacking: false
+
+  maximum_discount: 0.50
+  description: Total discount capped at 50%
+
+  effective_fee_formula: |
+    base_fee = trade_value * fee_rate
+    total_discount = min(sum(applicable_discounts), maximum_discount)
+    effective_fee = base_fee * (1 - total_discount)
+
+# =============================================================================
+# TIER EVALUATION
+# =============================================================================
+tier_evaluation:
+  description: How user tier is determined
+
+  schedule:
+    frequency: daily
+    time: "00:00 UTC"
+    lookback_period: 30 days
+
+  evaluation_rules:
+    - Check 30-day trading volume
+    - Check current token holdings
+    - Apply qualification_logic for tier
+    - Compare with current tier
+    - Apply tier change rules
+
+  tier_change_rules:
+    upgrade:
+      condition: Meets higher tier requirements
+      action: Immediate upgrade
+      notification: true
+
+    downgrade:
+      condition: No longer meets current tier
+      action: Downgrade after grace period
+      grace_period: 7 days
+      notification: true
+
+    lock:
+      condition: Special VIP status or promotion
+      action: Prevent automatic downgrade
+      duration: configurable
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  users:
+    type: has_many
+    entity: UserFeeTier
+    foreign_key: tier_id
+    description: Users at this tier
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_tier_level
+    columns: [tier_level]
+    unique: true
+
+  - name: idx_tier_active
+    columns: [is_active]
+
+  - name: idx_user_tier_user
+    columns: [user_id]
+    unique: true
+    table: user_fee_tiers
+
+  - name: idx_user_tier_validity
+    columns: [tier_valid_until]
+    table: user_fee_tiers
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-FEE-001
+    name: Tier Level Uniqueness
+    name_vi: Bậc phí duy nhất
+    description: Each tier level must be unique
+    enforcement: database_constraint
+
+  - id: BR-FEE-002
+    name: Fee Monotonicity
+    name_vi: Phí giảm dần theo bậc
+    description: Higher tiers must have lower or equal fees
+    enforcement: validation
+
+  - id: BR-FEE-003
+    name: Daily Recalculation
+    name_vi: Tính toán hàng ngày
+    description: User tiers are recalculated daily
+    enforcement: scheduled_job
+
+  - id: BR-FEE-004
+    name: Grace Period
+    name_vi: Thời gian ân hạn
+    description: Users get 7-day grace before tier downgrade
+    enforcement: application_logic
+
+  - id: BR-FEE-005
+    name: Volume Calculation
+    name_vi: Tính khối lượng
+    description: Volume includes both maker and taker trades
+    enforcement: application_logic
+
+# =============================================================================
+# VALIDATIONS
+# =============================================================================
+validations:
+  maker_fee:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+      less_than_or_equal_to: 0.01
+      message: Maker fee must be between 0% and 1%
+
+  taker_fee:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+      less_than_or_equal_to: 0.01
+      message: Taker fee must be between 0% and 1%
+
+  tier_level:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+      only_integer: true
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  sensitive_fields: []
+  retention_years: 5

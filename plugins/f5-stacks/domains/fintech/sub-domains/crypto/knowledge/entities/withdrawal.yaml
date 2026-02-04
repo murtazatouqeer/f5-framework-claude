@@ -1,0 +1,470 @@
+name: Withdrawal
+display_name: Withdrawal / Rút tiền
+description: |
+  Cryptocurrency withdrawal transaction from user's exchange wallet
+  to an external wallet address.
+
+domain: fintech
+sub_domain: crypto
+entity_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique withdrawal identifier
+
+  # Business Identifier
+  withdrawal_id:
+    type: string
+    max_length: 20
+    unique: true
+    indexed: true
+    pattern: "WDR-[A-Z0-9]{8}"
+    description: Human-readable withdrawal ID
+    example: "WDR-X1Y2Z3W4"
+
+  # References
+  user_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Withdrawing user
+    reference: users.id
+
+  wallet_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Source wallet
+    reference: wallets.id
+
+  asset_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Withdrawn asset
+    reference: crypto_assets.id
+
+  # Network Information
+  network:
+    type: enum
+    required: true
+    values:
+      - bitcoin
+      - ethereum
+      - bsc
+      - polygon
+      - solana
+      - tron
+      - avalanche
+      - arbitrum
+      - optimism
+      - ton
+    description: Blockchain network for withdrawal
+
+  # Status
+  status:
+    type: enum
+    required: true
+    values:
+      - pending_approval
+      - approved
+      - processing
+      - broadcasting
+      - confirming
+      - completed
+      - failed
+      - cancelled
+      - rejected
+    default: pending_approval
+    description: Withdrawal status
+    definition:
+      pending_approval: Awaiting verification/approval
+      approved: Approved, queued for processing
+      processing: Being processed by system
+      broadcasting: Transaction sent to blockchain
+      confirming: Waiting for confirmations
+      completed: Successfully completed
+      failed: Technical failure
+      cancelled: Cancelled by user
+      rejected: Rejected by system or admin
+
+  # Amounts
+  amount:
+    type: decimal
+    precision: 28
+    scale: 8
+    required: true
+    description: Gross withdrawal amount
+
+  fee:
+    type: decimal
+    precision: 28
+    scale: 8
+    required: true
+    description: Withdrawal fee
+
+  amount_received:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Net amount user receives (amount - fee)
+
+  # Destination
+  to_address:
+    type: string
+    max_length: 200
+    required: true
+    indexed: true
+    description: Destination external address
+
+  address_tag:
+    type: string
+    max_length: 100
+    description: Memo/tag for certain networks (XRP, XLM, EOS)
+
+  address_label:
+    type: string
+    max_length: 100
+    description: User's label for the address
+
+  is_whitelisted:
+    type: boolean
+    default: false
+    description: Whether address is in user's whitelist
+
+  # Blockchain Data
+  tx_hash:
+    type: string
+    max_length: 100
+    indexed: true
+    description: Blockchain transaction hash
+
+  block_number:
+    type: bigint
+    description: Block number containing transaction
+
+  # Security & Verification
+  requires_2fa:
+    type: boolean
+    default: true
+    description: Whether 2FA is required
+
+  two_fa_verified:
+    type: boolean
+    default: false
+    description: Whether 2FA was verified
+
+  two_fa_method:
+    type: enum
+    values:
+      - google_auth
+      - sms
+      - email
+    description: 2FA method used
+
+  # Risk Assessment
+  risk_score:
+    type: integer
+    min: 0
+    max: 100
+    description: Risk score (0-100)
+
+  risk_factors:
+    type: array
+    items: string
+    description: Identified risk factors
+    examples: [[new_address, large_amount, new_account]]
+
+  # Manual Review
+  requires_manual_review:
+    type: boolean
+    default: false
+    description: Whether manual approval needed
+
+  reviewed_by:
+    type: uuid
+    description: Admin who reviewed
+    reference: admin_users.id
+
+  reviewed_at:
+    type: timestamp
+    description: When review completed
+
+  review_notes:
+    type: string
+    max_length: 1000
+    description: Admin review notes
+
+  # Failure Information
+  failure_reason:
+    type: enum
+    values:
+      - insufficient_balance
+      - invalid_address
+      - network_error
+      - risk_rejected
+      - user_cancelled
+      - admin_rejected
+      - timeout
+      - daily_limit_exceeded
+      - address_blacklisted
+    description: Reason for failure/rejection
+
+  failure_details:
+    type: string
+    max_length: 500
+    description: Detailed failure message
+
+  # Retry Information
+  retry_count:
+    type: integer
+    default: 0
+    description: Number of broadcast retries
+
+  max_retries:
+    type: integer
+    default: 3
+    description: Maximum retry attempts
+
+  # Timestamps
+  initiated_at:
+    type: timestamp
+    auto_generate: true
+    description: When withdrawal was initiated
+
+  approved_at:
+    type: timestamp
+    description: When approved
+
+  broadcasted_at:
+    type: timestamp
+    description: When sent to blockchain
+
+  completed_at:
+    type: timestamp
+    description: When confirmed complete
+
+  cancelled_at:
+    type: timestamp
+    description: When cancelled
+
+  # IP and Device
+  ip_address:
+    type: string
+    max_length: 45
+    description: IP address of request
+
+  device_id:
+    type: string
+    max_length: 100
+    description: Device identifier
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending_approval
+  transitions:
+    pending_approval:
+      - to: approved
+        event: approve
+        conditions:
+          - 2fa_verified
+          - within_limits
+        actions:
+          - lock_balance
+          - queue_for_processing
+
+      - to: rejected
+        event: reject
+        actions:
+          - log_rejection
+          - notify_user
+
+      - to: cancelled
+        event: cancel
+        conditions:
+          - user_request
+        actions:
+          - notify_user
+
+    approved:
+      - to: processing
+        event: start_processing
+
+      - to: cancelled
+        event: cancel
+        actions:
+          - unlock_balance
+          - notify_user
+
+    processing:
+      - to: broadcasting
+        event: broadcast
+        actions:
+          - sign_transaction
+          - submit_to_network
+
+      - to: failed
+        event: processing_error
+        actions:
+          - unlock_balance
+          - notify_user
+          - alert_support
+
+    broadcasting:
+      - to: confirming
+        event: tx_detected
+        actions:
+          - save_tx_hash
+
+      - to: failed
+        event: broadcast_failed
+        conditions:
+          - retry_count >= max_retries
+        actions:
+          - unlock_balance
+          - notify_user
+
+      - to: broadcasting
+        event: retry
+        conditions:
+          - retry_count < max_retries
+        actions:
+          - increment_retry_count
+
+    confirming:
+      - to: completed
+        event: confirmed
+        actions:
+          - debit_balance
+          - notify_user
+
+      - to: failed
+        event: confirmation_failed
+        actions:
+          - investigate
+          - notify_support
+
+    completed:
+      terminal: true
+
+    failed:
+      terminal: true
+
+    cancelled:
+      terminal: true
+
+    rejected:
+      terminal: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  user:
+    type: belongs_to
+    entity: User
+    foreign_key: user_id
+
+  wallet:
+    type: belongs_to
+    entity: Wallet
+    foreign_key: wallet_id
+
+  asset:
+    type: belongs_to
+    entity: CryptoAsset
+    foreign_key: asset_id
+
+  reviewer:
+    type: belongs_to
+    entity: AdminUser
+    foreign_key: reviewed_by
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_withdrawal_user
+    columns: [user_id]
+
+  - name: idx_withdrawal_tx
+    columns: [tx_hash]
+    unique: true
+    condition: "tx_hash IS NOT NULL"
+
+  - name: idx_withdrawal_status
+    columns: [status]
+
+  - name: idx_withdrawal_pending
+    columns: [status, initiated_at]
+    condition: "status = 'pending_approval'"
+
+  - name: idx_withdrawal_address
+    columns: [to_address]
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-WDR-001
+    name: 2FA Required
+    name_vi: Yêu cầu 2FA
+    description: All withdrawals require 2FA verification
+    enforcement: application_logic
+
+  - id: BR-WDR-002
+    name: New Address Cooling Period
+    name_vi: Thời gian chờ địa chỉ mới
+    description: 24-hour delay for withdrawals to non-whitelisted addresses
+    enforcement: application_logic
+    config:
+      cooling_period_hours: 24
+
+  - id: BR-WDR-003
+    name: Manual Review Threshold
+    name_vi: Ngưỡng xét duyệt thủ công
+    description: Large withdrawals require manual approval
+    enforcement: application_logic
+    thresholds:
+      btc: 10
+      eth: 100
+      usdt: 100000
+
+  - id: BR-WDR-004
+    name: Daily Limit by KYC
+    name_vi: Giới hạn hàng ngày theo KYC
+    description: Withdrawal limits based on KYC level
+    enforcement: application_logic
+    limits:
+      kyc_none: 0
+      kyc_basic: 2  # BTC equivalent
+      kyc_advanced: 100
+      kyc_vip: unlimited
+
+  - id: BR-WDR-005
+    name: Address Blacklist Check
+    name_vi: Kiểm tra địa chỉ cấm
+    description: Block withdrawals to sanctioned addresses
+    enforcement: application_logic
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  log_all_operations: true
+  sensitive_fields: [ip_address, device_id]
+  retention_years: 10

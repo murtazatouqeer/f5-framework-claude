@@ -1,0 +1,460 @@
+# Rent Collection Rules
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy tắc thu tiền thuê / 賃料回収規則
+
+business_rules:
+  name: RentRules
+  name_vi: Quy tắc thu tiền thuê
+  name_ja: 賃料回収規則
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Business rules governing rent collection, late fees,
+    payment processing, and delinquency management.
+
+  # Legal Framework
+  legal_references:
+    - name: Vietnam Civil Code 2015
+      name_vi: Bộ luật Dân sự 2015
+      relevance: Contract payment terms
+    - name: Vietnam Housing Law 2014
+      name_vi: Luật Nhà ở 2014
+      relevance: Rental payment regulations
+
+  # Rule Categories
+  categories:
+    - payment_timing
+    - payment_methods
+    - late_fees
+    - payment_application
+    - delinquency
+    - rent_adjustments
+
+  # ==========================================
+  # PAYMENT TIMING
+  # ==========================================
+
+  payment_timing:
+    - rule_id: BR-RNT-001
+      name: Rent Due Date
+      name_vi: Ngày đến hạn tiền thuê
+      description: |
+        Standard rent due date and timing rules.
+      default:
+        due_day: 1
+        description: "First day of each month"
+      configuration:
+        - due_day_range: [1, 28]
+        - not_29_30_31: "To avoid month-length issues"
+      advance_payment:
+        - permitted: true
+        - encouraged: true
+        - discount: optional
+      enforcement: required
+
+    - rule_id: BR-RNT-002
+      name: Grace Period
+      name_vi: Thời gian ân hạn
+      description: |
+        Period after due date before late fees apply.
+      parameters:
+        grace_period_days:
+          default: 5
+          min: 0
+          max: 10
+      rules:
+        - late_fee_applies_after: grace_period_days
+        - weekend_holiday_extension: true
+        - grace_period_not_right: "Payment should still be on time"
+      communication:
+        - reminder_before_due: 3_days
+        - reminder_on_due_date: true
+        - late_notice_after_grace: true
+      enforcement: required
+
+    - rule_id: BR-RNT-003
+      name: Payment Received Date
+      name_vi: Ngày nhận thanh toán
+      description: |
+        What constitutes a received payment.
+      definitions:
+        bank_transfer: "Date funds credited to account"
+        check: "Date check received (not dated)"
+        cash: "Date cash received"
+        online_payment: "Date transaction completed"
+        mail: "Postmark date OR receipt date (per policy)"
+      holidays_weekends:
+        - if_due_on_holiday: "Due next business day"
+        - if_due_on_weekend: "Due next business day OR Friday prior"
+      time_of_day:
+        - cutoff_time: "End of business day"
+        - after_cutoff: "Next business day"
+      enforcement: required
+
+  # ==========================================
+  # PAYMENT METHODS
+  # ==========================================
+
+  payment_methods:
+    - rule_id: BR-RNT-010
+      name: Accepted Payment Methods
+      name_vi: Phương thức thanh toán chấp nhận
+      description: |
+        Payment methods accepted for rent.
+      preferred_methods:
+        - bank_transfer:
+            accepted: true
+            preferred: true
+            processing_time: same_day
+        - auto_debit:
+            accepted: true
+            preferred: true
+            setup: requires_authorization
+            processing_fee: none
+      accepted_methods:
+        - cash:
+            accepted: true
+            preferred: false
+            receipt: required
+            limit: "Per anti-money laundering rules"
+        - check:
+            accepted: true
+            preferred: false
+            processing_time: 2-3_days
+            returned_check_fee: applicable
+        - credit_card:
+            accepted: conditional
+            processing_fee: "May pass to tenant"
+            fee_percent: 2-3
+        - e_wallet:
+            accepted: true
+            providers: ["momo", "zalopay", "vnpay"]
+            processing_fee: per_provider
+      not_accepted:
+        - foreign_currency: true
+        - cryptocurrency: true
+        - barter: true
+      enforcement: required
+
+    - rule_id: BR-RNT-011
+      name: Auto-Pay Setup
+      name_vi: Thiết lập thanh toán tự động
+      description: |
+        Rules for automatic rent payment.
+      setup_requirements:
+        - written_authorization: required
+        - bank_account_details: required
+        - signature: required
+        - cancellation_notice: 10_days
+      processing:
+        - debit_date: rent_due_date
+        - retry_on_failure: true
+        - retry_count: 2
+        - retry_interval: 3_days
+      tenant_benefits:
+        - convenience: true
+        - on_time_guarantee: true
+        - discount: optional
+      landlord_benefits:
+        - reliable_collection: true
+        - reduced_administration: true
+      enforcement: recommended
+
+    - rule_id: BR-RNT-012
+      name: Returned Payment (NSF)
+      name_vi: Thanh toán bị trả lại
+      description: |
+        Handling of bounced checks or failed payments.
+      nsf_fee:
+        amount: "Per lease agreement"
+        typical_range: "200,000 - 500,000 VND"
+      actions:
+        - notify_tenant: immediately
+        - add_nsf_fee: true
+        - require_certified_payment: "For future payments"
+        - revert_payment_credit: true
+      consequences:
+        - first_occurrence: warning_and_fee
+        - second_occurrence: require_certified_funds_only
+        - third_occurrence: may_terminate_lease
+      enforcement: required
+
+  # ==========================================
+  # LATE FEES
+  # ==========================================
+
+  late_fees:
+    - rule_id: BR-RNT-020
+      name: Late Fee Calculation
+      name_vi: Tính phí trễ hạn
+      description: |
+        How late fees are calculated.
+      methods:
+        flat_fee:
+          description: "Fixed amount"
+          typical: "5% of monthly rent"
+          cap: "Per local regulations if any"
+        percentage:
+          description: "Percent of rent due"
+          typical: 5
+          max: 10
+        daily:
+          description: "Per day late"
+          typical: "0.1% of rent per day"
+          cap: "Maximum total late fee"
+      timing:
+        - applies_after: grace_period
+        - charged_once_per_period: true_for_flat
+        - charged_daily: true_for_daily
+      cap:
+        - maximum_late_fee: "10% of monthly rent OR per regulations"
+      enforcement: required
+
+    - rule_id: BR-RNT-021
+      name: Late Fee Waiver Policy
+      name_vi: Chính sách miễn phí trễ hạn
+      description: |
+        When late fees may be waived.
+      automatic_waiver:
+        - bank_processing_delay: true
+        - landlord_error: true
+        - documented_emergency: case_by_case
+      goodwill_waiver:
+        - first_time_late: "May waive once per year"
+        - requires: written_request
+        - approval: property_manager
+        - documentation: required
+      no_waiver:
+        - habitual_late_payer: ">3 times in 12 months"
+        - without_communication: true
+      tracking:
+        - waivers_per_tenant: tracked
+        - annual_limit: 1
+      enforcement: recommended
+
+  # ==========================================
+  # PAYMENT APPLICATION
+  # ==========================================
+
+  payment_application:
+    - rule_id: BR-RNT-030
+      name: Payment Allocation Order
+      name_vi: Thứ tự phân bổ thanh toán
+      description: |
+        Order in which payments are applied to charges.
+      allocation_order:
+        1: legal_fees
+        2: late_fees
+        3: nsf_fees
+        4: utility_charges
+        5: other_charges
+        6: oldest_rent_balance
+        7: current_month_rent
+      partial_payment:
+        - apply_in_order: true
+        - cannot_specify_allocation: "Tenant cannot dictate"
+        - remaining_balance: continues_as_due
+      overpayment:
+        - credit_to_next_month: default
+        - refund_if_requested: true
+        - refund_threshold: ">1 month rent"
+      enforcement: required
+
+    - rule_id: BR-RNT-031
+      name: Partial Payment Acceptance
+      name_vi: Chấp nhận thanh toán một phần
+      description: |
+        Policy on accepting partial rent payments.
+      policy:
+        default: accept_partial_payments
+        options:
+          - always_accept: "Apply to oldest balance"
+          - conditional_accept: "With payment plan"
+          - refuse_partial: "During eviction process"
+      considerations:
+        - accepting_partial_may_reset_eviction: true
+        - written_agreement: recommended
+        - document_as_partial: required
+      during_eviction:
+        - consult_legal: required
+        - may_refuse: true
+        - reservation_of_rights: "Accept without waiving rights"
+      enforcement: required
+
+    - rule_id: BR-RNT-032
+      name: Payment Receipts
+      name_vi: Biên lai thanh toán
+      description: |
+        Requirements for payment documentation.
+      receipt_requirements:
+        - provide_receipt: required
+        - receipt_format:
+            - date
+            - amount
+            - payment_method
+            - period_covered
+            - remaining_balance
+            - receipt_number
+      delivery:
+        - automatic_for_online: true
+        - upon_request_for_cash: required
+        - within_timeframe: 24_hours
+      record_retention:
+        - minimum: 5_years
+      enforcement: required
+
+  # ==========================================
+  # DELINQUENCY MANAGEMENT
+  # ==========================================
+
+  delinquency:
+    - rule_id: BR-RNT-040
+      name: Delinquency Timeline
+      name_vi: Lịch trình xử lý nợ
+      description: |
+        Escalation timeline for unpaid rent.
+      timeline:
+        day_1:
+          - rent_due: true
+        day_6:
+          - grace_period_ends: true
+          - late_fee_applied: true
+          - late_notice_sent: true
+        day_10:
+          - phone_call: true
+          - payment_plan_discussion: true
+        day_15:
+          - formal_demand_letter: true
+          - pay_or_quit_notice: optional
+        day_30:
+          - pay_or_quit_notice: required
+          - legal_consultation: true
+        day_45:
+          - eviction_filing: if_not_resolved
+      flexibility:
+        - payment_plan_option: true
+        - case_by_case_evaluation: true
+      enforcement: required
+
+    - rule_id: BR-RNT-041
+      name: Payment Plans
+      name_vi: Kế hoạch thanh toán
+      description: |
+        Guidelines for delinquent tenant payment plans.
+      eligibility:
+        - first_time_delinquency: preferred
+        - demonstrated_hardship: true
+        - communication_with_landlord: required
+      terms:
+        - maximum_duration: 3_months
+        - current_rent_required: true
+        - additional_payment_toward_balance: required
+        - late_fees_may_be_included: true
+      documentation:
+        - written_agreement: required
+        - payment_schedule: specific_dates
+        - default_consequences: stated
+      default:
+        - missed_payment: terminates_plan
+        - resume_collection: immediate
+        - eviction_may_proceed: true
+      enforcement: recommended
+
+    - rule_id: BR-RNT-042
+      name: Collection Actions
+      name_vi: Hành động thu nợ
+      description: |
+        Steps for collecting delinquent rent.
+      internal_collection:
+        - notices_and_calls: first
+        - payment_plans: if_appropriate
+        - escalation_to_management: as_needed
+      external_collection:
+        - collection_agency: after_move_out
+        - when: balance_remains_after_deposit
+        - tenant_notification: required
+      legal_action:
+        - small_claims_court: for_rent_recovery
+        - eviction: for_possession
+        - judgment: may_pursue
+      reporting:
+        - credit_reporting: "If available and legal"
+        - collection_account: "After 90 days"
+      enforcement: required
+
+  # ==========================================
+  # RENT ADJUSTMENTS
+  # ==========================================
+
+  rent_adjustments:
+    - rule_id: BR-RNT-050
+      name: Rent Increase Process
+      name_vi: Quy trình tăng tiền thuê
+      description: |
+        How and when rent can be increased.
+      timing:
+        - during_fixed_term: not_allowed
+        - at_renewal: standard
+        - month_to_month: "With proper notice"
+      notice_requirements:
+        - written_notice: required
+        - advance_notice: 30_days_minimum
+        - recommended_notice: 60_days
+      content:
+        - current_rent: stated
+        - new_rent: stated
+        - effective_date: stated
+        - reason: optional_but_recommended
+      limits:
+        - legal_cap: "None in most Vietnam jurisdictions"
+        - reasonable_increase: "Based on market"
+      enforcement: required
+
+    - rule_id: BR-RNT-051
+      name: Rent Reduction/Concession
+      name_vi: Giảm tiền thuê/Ưu đãi
+      description: |
+        When and how rent concessions are offered.
+      types:
+        - one_time_concession: "Free month, discount"
+        - ongoing_reduction: "Lower monthly rate"
+        - move_in_special: "First month free"
+      documentation:
+        - written_agreement: required
+        - term_specified: required
+        - conditions_stated: required
+      considerations:
+        - market_conditions: primary_factor
+        - tenant_quality: consideration
+        - lease_term: consideration
+      enforcement: recommended
+
+    - rule_id: BR-RNT-052
+      name: Prorated Rent Calculation
+      name_vi: Tính tiền thuê theo ngày
+      description: |
+        How to calculate partial month rent.
+      calculation_method:
+        formula: "(monthly_rent / days_in_month) * days_occupied"
+        example:
+          monthly_rent: 10000000
+          days_in_month: 30
+          move_in_day: 15
+          prorated_amount: "(10000000 / 30) * 16 = 5,333,333 VND"
+      application:
+        - move_in: "From move-in to end of month"
+        - move_out: "From 1st to move-out day"
+        - mid_month_changes: "Prorate difference"
+      alternatives:
+        - daily_rate: "Rent / 30"
+        - weekly_rate: "Rent * 12 / 52"
+      enforcement: required
+
+  # Summary
+  summary:
+    total_rules: 14
+    categories: 6
+    required_enforcement: 12
+    recommended_enforcement: 2

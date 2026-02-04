@@ -1,0 +1,759 @@
+name: claim_assessment_workflow
+display_name: Claim Assessment Workflow
+description: |
+  Comprehensive workflow for claim assessment including document review,
+  coverage verification, quantum calculation, and recommendation.
+
+domain: insurance
+subdomain: claims
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-ASS-001
+  name: Claim Assessment
+  description: Assess claim from registration to recommendation
+  trigger:
+    type: event
+    events:
+      - claim.registered
+      - claim.ready_for_assessment
+
+  sla:
+    initial_review: 24_hours
+    document_collection: 14_days
+    assessment_completion: 30_days
+    complex_claims: 60_days
+
+stages:
+  - id: initiate
+    name: Initiate Assessment
+    description: Start assessment process
+    type: automated
+
+    steps:
+      - id: create_assessment
+        name: Create Assessment Record
+        action: create_assessment
+        type: initial
+        generates:
+          - assessment_id
+          - assessment_number
+
+      - id: assign_assessor
+        name: Assign Assessor
+        action: assign_assessor
+        based_on:
+          - claim_type
+          - claim_value
+          - complexity
+          - handler_workload
+
+      - id: determine_requirements
+        name: Determine Assessment Requirements
+        action: evaluate_requirements
+        outputs:
+          - surveyor_required
+          - medical_review_required
+          - specialist_required
+          - legal_review_required
+
+      - id: set_deadlines
+        name: Set Assessment Deadlines
+        action: schedule_milestones
+        milestones:
+          - document_deadline
+          - survey_deadline
+          - assessment_deadline
+
+    transitions:
+      - to: document_review
+        condition: always
+
+  - id: document_review
+    name: Document Review
+    description: Review and validate submitted documents
+    type: semi_automated
+
+    steps:
+      - id: check_documents
+        name: Check Document Status
+        action: review_documents
+        check:
+          - documents_received
+          - documents_pending
+          - documents_verified
+
+      - id: validate_documents
+        name: Validate Documents
+        action: validate_documents
+        validations:
+          - completeness_check
+          - authenticity_check
+          - date_validation
+          - amount_verification
+        rules:
+          - CLM-DOC-001
+          - CLM-DOC-002
+          - CLM-DOC-003
+          - CLM-DOC-004
+          - CLM-DOC-005
+
+      - id: extract_data
+        name: Extract Document Data
+        action: process_documents
+        using:
+          - ocr_extraction
+          - data_validation
+        outputs:
+          - extracted_amounts
+          - diagnosis_codes
+          - treatment_details
+
+      - id: request_missing
+        name: Request Missing Documents
+        action: send_document_request
+        if: documents_missing
+        template: document_request
+        deadline: 14_days
+
+      - id: flag_issues
+        name: Flag Document Issues
+        action: record_issues
+        issues:
+          - suspicious_documents
+          - inconsistent_data
+          - unverifiable_sources
+
+    transitions:
+      - to: coverage_verification
+        condition: documents_complete OR documents_sufficient
+      - to: await_documents
+        condition: critical_documents_missing
+      - to: fraud_review
+        condition: document_fraud_suspected
+
+  - id: await_documents
+    name: Await Documents
+    description: Wait for required documents
+    type: waiting
+    timeout: 30_days
+
+    steps:
+      - id: send_reminders
+        name: Send Reminders
+        action: schedule_reminders
+        schedule:
+          - 7_days: first_reminder
+          - 14_days: second_reminder
+          - 21_days: final_warning
+
+      - id: process_received
+        name: Process Received Documents
+        action: on_document_upload
+        trigger: document.uploaded
+
+      - id: check_completeness
+        name: Check Completeness
+        action: evaluate_completeness
+        on_each_upload: true
+
+    transitions:
+      - to: document_review
+        condition: documents_received
+      - to: assess_without_documents
+        condition: timeout AND can_proceed
+      - to: deny_incomplete
+        condition: timeout AND cannot_proceed
+
+  - id: coverage_verification
+    name: Coverage Verification
+    description: Verify policy coverage for the claim
+    type: semi_automated
+
+    steps:
+      - id: verify_policy_status
+        name: Verify Policy Status
+        action: check_policy_status
+        checks:
+          - active_at_loss_date
+          - premium_status
+          - grace_period
+        rules:
+          - CLM-ELG-001
+          - CLM-ELG-004
+
+      - id: check_coverage_type
+        name: Check Coverage Type
+        action: verify_coverage
+        match:
+          - claim_type_to_coverage
+          - peril_to_coverage
+        rules:
+          - COV-APP-001
+          - COV-APP-004
+
+      - id: review_exclusions
+        name: Review Exclusions
+        action: check_exclusions
+        against:
+          - standard_exclusions
+          - policy_exclusions
+          - endorsement_exclusions
+        rules:
+          - COV-EXC-001
+          - COV-EXC-002
+          - COV-EXC-003
+          - COV-EXC-004
+
+      - id: check_conditions
+        name: Check Policy Conditions
+        action: verify_conditions
+        conditions:
+          - notification_timing
+          - reasonable_care
+          - cooperation
+        rules:
+          - COV-CON-001
+          - COV-CON-002
+
+      - id: calculate_limits
+        name: Calculate Applicable Limits
+        action: determine_limits
+        consider:
+          - coverage_limit
+          - sub_limits
+          - aggregate_limits
+          - deductibles
+          - co_payments
+        rules:
+          - COV-LIM-001
+          - COV-LIM-002
+          - COV-LIM-003
+
+      - id: record_coverage_decision
+        name: Record Coverage Decision
+        action: update_assessment
+        updates:
+          coverage_confirmed: "{{result}}"
+          coverage_notes: "{{notes}}"
+          applicable_coverages: "{{coverages}}"
+          exclusions_applicable: "{{exclusions}}"
+
+    transitions:
+      - to: arrange_survey
+        condition: coverage_confirmed AND survey_required
+      - to: arrange_medical_review
+        condition: coverage_confirmed AND medical_review_required
+      - to: quantum_calculation
+        condition: coverage_confirmed AND no_survey_required
+      - to: denial_preparation
+        condition: coverage_denied
+
+  - id: arrange_survey
+    name: Arrange Survey
+    description: Arrange surveyor inspection if required
+    type: semi_automated
+
+    steps:
+      - id: select_surveyor
+        name: Select Surveyor
+        action: assign_surveyor
+        criteria:
+          - survey_type_expertise
+          - location_proximity
+          - availability
+          - panel_surveyor
+
+      - id: create_survey_request
+        name: Create Survey Request
+        action: create_surveyor_report
+        status: assigned
+        include:
+          - survey_scope
+          - claim_details
+          - inspection_requirements
+
+      - id: notify_parties
+        name: Notify Parties
+        action: send_notifications
+        to:
+          - surveyor
+          - claimant
+        template: survey_arrangement
+
+      - id: schedule_inspection
+        name: Schedule Inspection
+        action: coordinate_schedule
+        within: 3_days
+
+    transitions:
+      - to: await_survey
+        condition: survey_scheduled
+
+  - id: await_survey
+    name: Await Survey Report
+    description: Wait for surveyor report
+    type: waiting
+    timeout: 14_days
+
+    steps:
+      - id: track_progress
+        name: Track Survey Progress
+        action: monitor_status
+        check_for:
+          - inspection_completed
+          - draft_submitted
+          - report_finalized
+
+      - id: process_report
+        name: Process Survey Report
+        action: on_report_received
+        trigger: surveyor_report.finalized
+
+      - id: review_findings
+        name: Review Survey Findings
+        action: analyze_report
+        extract:
+          - cause_of_damage
+          - damage_extent
+          - valuation
+          - recommendations
+
+    transitions:
+      - to: quantum_calculation
+        condition: report_received
+      - to: escalate_survey_delay
+        condition: timeout
+
+  - id: arrange_medical_review
+    name: Arrange Medical Review
+    description: Arrange medical report review
+    type: semi_automated
+
+    steps:
+      - id: request_medical_report
+        name: Request Medical Report
+        action: create_medical_report_request
+        from:
+          - hospital
+          - attending_physician
+        type: based_on_claim_type
+
+      - id: schedule_ime
+        name: Schedule IME if Required
+        action: arrange_ime
+        if: ime_required
+        criteria:
+          - claim_value_high
+          - disability_claim
+          - duration_extended
+
+      - id: notify_parties
+        name: Notify Parties
+        action: send_notifications
+        to:
+          - claimant
+          - medical_provider
+        template: medical_report_request
+
+    transitions:
+      - to: await_medical_report
+        condition: request_sent
+
+  - id: await_medical_report
+    name: Await Medical Report
+    description: Wait for medical documentation
+    type: waiting
+    timeout: 21_days
+
+    steps:
+      - id: track_reports
+        name: Track Report Status
+        action: monitor_medical_reports
+
+      - id: process_report
+        name: Process Medical Report
+        action: on_report_received
+        trigger: medical_report.received
+
+      - id: review_medical
+        name: Review Medical Findings
+        action: analyze_medical_report
+        extract:
+          - diagnosis
+          - treatment
+          - prognosis
+          - disability_assessment
+          - cost_breakdown
+
+    transitions:
+      - to: quantum_calculation
+        condition: report_received
+      - to: escalate_medical_delay
+        condition: timeout
+
+  - id: quantum_calculation
+    name: Quantum Calculation
+    description: Calculate claim amount
+    type: semi_automated
+
+    steps:
+      - id: compile_costs
+        name: Compile All Costs
+        action: gather_claim_items
+        from:
+          - submitted_documents
+          - survey_report
+          - medical_report
+
+      - id: validate_items
+        name: Validate Claim Items
+        action: validate_claim_items
+        checks:
+          - reasonable_costs
+          - market_rates
+          - coverage_eligibility
+          - sub_limit_compliance
+
+      - id: apply_depreciation
+        name: Apply Depreciation
+        action: calculate_depreciation
+        if: acv_basis
+        rules:
+          - COV-DEP-001
+          - COV-DEP-002
+          - COV-DEP-003
+
+      - id: calculate_assessment
+        name: Calculate Assessed Amount
+        action: compute_quantum
+        formula: |
+          item_totals = SUM(approved_items)
+          less_depreciation = item_totals - depreciation
+          less_deductible = less_depreciation - deductible
+          less_co_payment = less_co_payment - co_payment
+          net_payable = less_co_payment
+
+      - id: compare_claimed
+        name: Compare to Claimed Amount
+        action: variance_analysis
+        calculate:
+          - variance_amount
+          - variance_percentage
+          - variance_reasons
+
+      - id: record_quantum
+        name: Record Quantum Decision
+        action: update_assessment
+        updates:
+          claimed_amount: "{{claimed}}"
+          assessed_amount: "{{assessed}}"
+          item_breakdown: "{{items}}"
+          deductible_amount: "{{deductible}}"
+          net_payable: "{{net}}"
+
+    transitions:
+      - to: fraud_screening
+        condition: always
+
+  - id: fraud_screening
+    name: Fraud Screening
+    description: Screen for fraud indicators
+    type: automated
+
+    steps:
+      - id: run_fraud_rules
+        name: Run Fraud Detection Rules
+        action: execute_fraud_rules
+        rule_sets:
+          - claim_timing_indicators
+          - documentation_indicators
+          - claim_history_indicators
+          - amount_indicators
+          - behavioral_indicators
+          - incident_indicators
+
+      - id: calculate_score
+        name: Calculate Fraud Score
+        action: compute_fraud_score
+        output: fraud_score
+
+      - id: identify_red_flags
+        name: Identify Red Flags
+        action: compile_red_flags
+        output: red_flag_list
+
+      - id: determine_action
+        name: Determine Action
+        action: evaluate_fraud_risk
+        thresholds:
+          low: 0-29
+          medium: 30-49
+          high: 50-69
+          critical: 70-100
+
+    transitions:
+      - to: recommendation
+        condition: fraud_score < 50
+      - to: fraud_review
+        condition: fraud_score >= 50
+
+  - id: fraud_review
+    name: Fraud Review
+    description: Detailed fraud review
+    type: manual
+
+    steps:
+      - id: flag_for_siu
+        name: Flag for SIU Review
+        action: create_fraud_indicator
+        status: flagged
+
+      - id: compile_evidence
+        name: Compile Evidence
+        action: gather_fraud_evidence
+
+      - id: siu_decision
+        name: SIU Decision
+        action: await_decision
+        options:
+          - proceed_with_caution
+          - additional_investigation
+          - refer_to_siu
+          - deny_for_fraud
+
+    transitions:
+      - to: recommendation
+        condition: proceed_approved
+      - to: fraud_investigation_workflow
+        condition: siu_referral
+      - to: denial_preparation
+        condition: deny_for_fraud
+
+  - id: recommendation
+    name: Make Recommendation
+    description: Formulate assessment recommendation
+    type: semi_automated
+
+    steps:
+      - id: evaluate_findings
+        name: Evaluate All Findings
+        action: compile_assessment
+        inputs:
+          - coverage_verification
+          - quantum_calculation
+          - fraud_screening
+          - survey_findings
+          - medical_findings
+
+      - id: determine_recommendation
+        name: Determine Recommendation
+        action: formulate_recommendation
+        options:
+          - approve_full
+          - approve_partial
+          - deny
+          - ex_gratia
+          - refer_to_senior
+          - refer_to_legal
+          - more_info_needed
+
+      - id: calculate_payable
+        name: Calculate Recommended Amount
+        action: finalize_amount
+        if: recommendation IN (approve_full, approve_partial, ex_gratia)
+
+      - id: document_reasoning
+        name: Document Reasoning
+        action: record_rationale
+        required:
+          - recommendation_reason
+          - supporting_evidence
+          - conditions
+
+      - id: check_authority
+        name: Check Authority Level
+        action: verify_authority
+        rules:
+          - SET-AUT-001
+          - SET-AUT-002
+          - SET-AUT-003
+          - SET-AUT-004
+
+    transitions:
+      - to: peer_review
+        condition: requires_peer_review
+      - to: complete_assessment
+        condition: within_authority
+      - to: escalate_for_approval
+        condition: exceeds_authority
+
+  - id: peer_review
+    name: Peer Review
+    description: Peer review for complex or high-value assessments
+    type: manual
+
+    steps:
+      - id: assign_reviewer
+        name: Assign Peer Reviewer
+        action: select_peer_reviewer
+        criteria:
+          - senior_to_assessor
+          - relevant_expertise
+          - available
+
+      - id: conduct_review
+        name: Conduct Review
+        action: peer_review_assessment
+        review:
+          - coverage_decision
+          - quantum_calculation
+          - recommendation
+
+      - id: record_review
+        name: Record Review Outcome
+        action: update_assessment
+        updates:
+          peer_reviewer_id: "{{reviewer_id}}"
+          peer_review_status: "{{status}}"
+          peer_review_notes: "{{notes}}"
+
+    transitions:
+      - to: complete_assessment
+        condition: review_approved
+      - to: recommendation
+        condition: review_returned
+
+  - id: escalate_for_approval
+    name: Escalate for Approval
+    description: Escalate to higher authority
+    type: manual
+
+    steps:
+      - id: identify_approver
+        name: Identify Approver
+        action: find_approver
+        based_on:
+          - amount
+          - claim_type
+          - recommendation_type
+
+      - id: submit_for_approval
+        name: Submit for Approval
+        action: create_approval_request
+
+      - id: await_decision
+        name: Await Decision
+        action: wait_for_approval
+
+    transitions:
+      - to: complete_assessment
+        condition: approved
+      - to: recommendation
+        condition: returned_for_revision
+
+  - id: denial_preparation
+    name: Prepare Denial
+    description: Prepare claim denial
+    type: semi_automated
+
+    steps:
+      - id: document_denial
+        name: Document Denial Reasons
+        action: record_denial
+        required:
+          - denial_code
+          - detailed_reason
+          - supporting_evidence
+
+      - id: check_denial_authority
+        name: Check Denial Authority
+        action: verify_denial_authority
+        rules:
+          - SET-DEN-004
+
+      - id: prepare_letter
+        name: Prepare Denial Letter
+        action: generate_denial_letter
+        include:
+          - claim_details
+          - denial_reasons
+          - appeal_information
+
+    transitions:
+      - to: complete_assessment
+        condition: denial_approved
+
+  - id: complete_assessment
+    name: Complete Assessment
+    description: Finalize assessment
+    type: automated
+
+    steps:
+      - id: finalize_assessment
+        name: Finalize Assessment
+        action: update_assessment
+        status: completed
+        updates:
+          completed_at: "{{now}}"
+
+      - id: update_claim
+        name: Update Claim Status
+        action: update_claim
+        based_on_recommendation:
+          approve_full: approved
+          approve_partial: partially_approved
+          deny: denied
+          ex_gratia: approved
+          refer_to_senior: under_review
+
+      - id: adjust_reserve
+        name: Adjust Reserve
+        action: update_reserve
+        to: recommended_amount
+        rules:
+          - RES-ADJ-005
+          - RES-ADJ-006
+
+      - id: trigger_next
+        name: Trigger Next Workflow
+        action: trigger_workflow
+        if: recommendation IN (approve_full, approve_partial, ex_gratia)
+        workflow: settlement_workflow
+
+    transitions:
+      - to: end
+        condition: always
+
+events_emitted:
+  - assessment.created
+  - assessment.assigned
+  - assessment.coverage_verified
+  - assessment.survey_requested
+  - assessment.medical_requested
+  - assessment.quantum_calculated
+  - assessment.completed
+  - assessment.peer_reviewed
+
+metrics:
+  - name: assessment_cycle_time
+    description: Average assessment completion time
+    calculation: "AVG(completed_at - created_at)"
+
+  - name: sla_compliance
+    description: Assessment SLA compliance rate
+    calculation: "(completed_within_sla / total) * 100"
+
+  - name: approval_rate
+    description: Claim approval rate
+    calculation: "(approved / total) * 100"
+
+  - name: fraud_detection_rate
+    description: Fraud detection rate
+    calculation: "(fraud_flagged / total) * 100"
+
+  - name: assessment_accuracy
+    description: Assessment accuracy vs settlement
+    calculation: "AVG(1 - ABS(assessment - settlement) / assessment)"

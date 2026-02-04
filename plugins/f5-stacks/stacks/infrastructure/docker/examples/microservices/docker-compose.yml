@@ -1,0 +1,237 @@
+# Microservices Architecture - Docker Compose Configuration
+# Usage: docker compose up -d
+
+name: microservices
+
+services:
+  # ===================
+  # API Gateway
+  # ===================
+  gateway:
+    build:
+      context: ./gateway
+      target: production
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    environment:
+      - USER_SERVICE_URL=http://user-service:3001
+      - PRODUCT_SERVICE_URL=http://product-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - RATE_LIMIT_REQUESTS=100
+      - RATE_LIMIT_WINDOW=60
+    depends_on:
+      - user-service
+      - product-service
+      - order-service
+    networks:
+      - public
+      - services
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # ===================
+  # User Service
+  # ===================
+  user-service:
+    build:
+      context: ./services/user
+      target: production
+    environment:
+      - DATABASE_URL=postgres://${DB_USER:-postgres}:${DB_PASSWORD}@user-db:5432/users
+      - REDIS_URL=redis://cache:6379
+      - RABBITMQ_URL=amqp://rabbit:${RABBITMQ_PASSWORD:-rabbit}@rabbitmq:5672
+      - SERVICE_NAME=user-service
+      - SERVICE_PORT=3001
+    depends_on:
+      user-db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - services
+      - user-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  user-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: users
+    volumes:
+      - user_db_data:/var/lib/postgresql/data
+    networks:
+      - user-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===================
+  # Product Service
+  # ===================
+  product-service:
+    build:
+      context: ./services/product
+      target: production
+    environment:
+      - MONGODB_URL=mongodb://root:${MONGO_PASSWORD}@product-db:27017/products?authSource=admin
+      - REDIS_URL=redis://cache:6379
+      - RABBITMQ_URL=amqp://rabbit:${RABBITMQ_PASSWORD:-rabbit}@rabbitmq:5672
+      - SERVICE_NAME=product-service
+      - SERVICE_PORT=3002
+    depends_on:
+      product-db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    networks:
+      - services
+      - product-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  product-db:
+    image: mongo:7
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+      MONGO_INITDB_DATABASE: products
+    volumes:
+      - product_db_data:/data/db
+    networks:
+      - product-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===================
+  # Order Service
+  # ===================
+  order-service:
+    build:
+      context: ./services/order
+      target: production
+    environment:
+      - DATABASE_URL=postgres://${DB_USER:-postgres}:${DB_PASSWORD}@order-db:5432/orders
+      - USER_SERVICE_URL=http://user-service:3001
+      - PRODUCT_SERVICE_URL=http://product-service:3002
+      - RABBITMQ_URL=amqp://rabbit:${RABBITMQ_PASSWORD:-rabbit}@rabbitmq:5672
+      - SERVICE_NAME=order-service
+      - SERVICE_PORT=3003
+    depends_on:
+      order-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - services
+      - order-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  order-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: orders
+    volumes:
+      - order_db_data:/var/lib/postgresql/data
+    networks:
+      - order-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ===================
+  # Shared Infrastructure
+  # ===================
+  cache:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: rabbit
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-rabbit}
+    ports:
+      - "15672:15672"  # Management UI
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - services
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+
+# ===================
+# Networks
+# ===================
+networks:
+  public:
+    driver: bridge
+  services:
+    driver: bridge
+    internal: true
+  user-network:
+    driver: bridge
+    internal: true
+  product-network:
+    driver: bridge
+    internal: true
+  order-network:
+    driver: bridge
+    internal: true
+
+# ===================
+# Volumes
+# ===================
+volumes:
+  user_db_data:
+  product_db_data:
+  order_db_data:
+  redis_data:
+  rabbitmq_data:

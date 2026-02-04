@@ -1,0 +1,441 @@
+name: receipt-rules
+display_name: Goods Receipt Rules
+display_name_vi: Quy tắc nhập kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Business rules for goods receipt processing, quality inspection,
+  quantity verification, and inventory posting. Ensures accurate
+  receipt and proper handling of incoming materials.
+
+rule_categories:
+  - receipt_processing_rules
+  - inspection_rules
+  - quantity_rules
+  - posting_rules
+  - exception_rules
+
+rules:
+  # ============================================
+  # RECEIPT PROCESSING RULES
+  # ============================================
+  - id: GR-001
+    name: Receipt Against PO Required
+    category: receipt_processing_rules
+    priority: critical
+    description: |
+      Most receipts require a valid purchase order reference.
+    rule: |
+      FOR GoodsReceipt.receipt_type = 'purchase_order':
+        REQUIRE valid PurchaseOrder reference
+        PurchaseOrder.status IN ('sent', 'acknowledged', 'partially_received')
+        PurchaseOrderLine.status IN ('open', 'partially_received')
+    exceptions:
+      - Free receipts with approval
+      - Returns processing
+      - Consignment stock
+
+  - id: GR-002
+    name: Delivery Note Verification
+    category: receipt_processing_rules
+    priority: high
+    description: |
+      Verify delivery note against PO before receipt.
+    checks:
+      - Supplier matches PO supplier
+      - Material matches PO material
+      - Quantity within acceptable range
+      - Delivery note number unique
+    action_on_mismatch: |
+      Flag for review
+      Do not proceed with receipt
+      Contact supplier/procurement
+
+  - id: GR-003
+    name: Receipt Document Requirements
+    category: receipt_processing_rules
+    priority: medium
+    description: |
+      Required documents for goods receipt.
+    standard_documents:
+      - Delivery note / packing slip
+      - PO reference
+      - Material identification
+    conditional_documents:
+      batch_managed:
+        - Batch certificate
+        - Production date
+        - Expiry date
+      regulated_materials:
+        - Certificate of Analysis (CoA)
+        - Certificate of Conformance (CoC)
+      hazardous:
+        - MSDS (Material Safety Data Sheet)
+        - Hazmat documentation
+      imports:
+        - Customs declaration
+        - Bill of lading
+
+  - id: GR-004
+    name: Three-Way Match
+    category: receipt_processing_rules
+    priority: critical
+    description: |
+      Match GR with PO and Invoice before payment.
+    matching_criteria:
+      po_to_gr:
+        quantity: Within tolerance
+        price: Must match
+        material: Must match
+      gr_to_invoice:
+        quantity: Within tolerance
+        amount: Within tolerance
+    tolerance_settings:
+      quantity_tolerance: ±2%
+      price_tolerance: ±0.1%
+      amount_tolerance: ±2%
+    exceptions:
+      - Service receipts
+      - Evaluated Receipt Settlement (ERS)
+
+  # ============================================
+  # INSPECTION RULES
+  # ============================================
+  - id: GR-I001
+    name: Mandatory Inspection Materials
+    category: inspection_rules
+    priority: critical
+    description: |
+      Materials requiring mandatory quality inspection.
+    always_inspect:
+      - Critical raw materials
+      - Materials from new suppliers (first 3 lots)
+      - Materials with quality history issues
+      - Regulated materials
+      - Safety-critical components
+    inspection_levels:
+      - Skip lot (proven quality)
+      - Reduced inspection
+      - Normal inspection
+      - Tightened inspection
+
+  - id: GR-I002
+    name: Inspection Level Adjustment
+    category: inspection_rules
+    priority: medium
+    description: |
+      Rules for adjusting inspection levels.
+    to_reduced:
+      condition: 10 consecutive lots accepted
+      requirement: Supplier rating >= 4.0
+    to_tightened:
+      condition: 2 lots rejected in 5 consecutive
+    to_normal:
+      from_reduced: 1 lot rejected
+      from_tightened: 5 consecutive lots accepted
+    to_skip_lot:
+      condition: 20 consecutive lots accepted
+      requirement: Supplier is strategic/preferred
+
+  - id: GR-I003
+    name: Inspection Sampling
+    category: inspection_rules
+    priority: high
+    description: |
+      Sampling rules for incoming inspection.
+    method: AQL (Acceptable Quality Level) based
+    aql_levels:
+      critical_defects: "0%"
+      major_defects: "1.0%"
+      minor_defects: "2.5%"
+    sample_size: Per ISO 2859-1 / ANSI Z1.4
+    lot_acceptance:
+      accept: Defects <= accept number
+      reject: Defects >= reject number
+
+  - id: GR-I004
+    name: Inspection Hold Period
+    category: inspection_rules
+    priority: high
+    description: |
+      Stock held pending inspection completion.
+    rule: |
+      IF inspection_required THEN
+        Inventory.batch_status = 'quality_inspection'
+        Inventory.blocked_qty = receipt_qty
+        Material NOT available for use
+      UNTIL inspection completed
+    maximum_hold_days: 5
+    escalation: Alert if inspection not completed
+
+  - id: GR-I005
+    name: Failed Inspection Handling
+    category: inspection_rules
+    priority: critical
+    description: |
+      Handling of materials failing inspection.
+    options:
+      return_to_supplier:
+        - Create return delivery
+        - Update supplier scorecard
+        - Claim credit
+      use_as_is:
+        - Requires engineering approval
+        - Document deviation
+        - Trace throughout production
+      rework:
+        - If economically viable
+        - Re-inspect after rework
+      scrap:
+        - If cannot be salvaged
+        - Create scrap record
+        - Charge to supplier if quality issue
+    required_documentation:
+      - NCR (Non-Conformance Report)
+      - Root cause analysis (for recurring)
+      - Supplier notification
+
+  # ============================================
+  # QUANTITY RULES
+  # ============================================
+  - id: GR-Q001
+    name: Over-Receipt Limits
+    category: quantity_rules
+    priority: high
+    description: |
+      Limits on receiving more than ordered.
+    rules:
+      standard_materials:
+        over_delivery_tolerance: 10%
+        action_if_exceeded: Reject excess
+      bulk_materials:
+        over_delivery_tolerance: 15%
+        action_if_exceeded: Review with procurement
+      no_tolerance:
+        over_delivery_tolerance: 0%
+        applies_to: Serial-managed items
+    approval_required:
+      - Receipt > tolerance requires supervisor
+      - Receipt > 20% requires procurement manager
+
+  - id: GR-Q002
+    name: Under-Receipt Handling
+    category: quantity_rules
+    priority: medium
+    description: |
+      Handling of short deliveries.
+    rules:
+      within_tolerance:
+        under_delivery_tolerance: 10%
+        action: Accept and flag shortage
+      beyond_tolerance:
+        action: |
+          Do not close PO line
+          Create shortage report
+          Notify supplier for balance
+    auto_close_conditions:
+      - Remaining qty < minimum viable
+      - Procurement confirms completion
+      - Supplier confirms final shipment
+
+  - id: GR-Q003
+    name: Quantity Verification
+    category: quantity_rules
+    priority: high
+    description: |
+      Physical verification of received quantity.
+    requirements:
+      count_method:
+        - Piece count for discrete items
+        - Weight verification for bulk
+        - Volume measurement for liquids
+      documentation:
+        - Record actual received quantity
+        - Note any discrepancies
+        - Photograph damage if applicable
+    variance_threshold:
+      require_recount: "> 2%"
+      require_supervisor: "> 5%"
+
+  # ============================================
+  # POSTING RULES
+  # ============================================
+  - id: GR-P001
+    name: Inventory Posting Timing
+    category: posting_rules
+    priority: high
+    description: |
+      When to post receipts to inventory.
+    standard_rule: |
+      Post upon physical receipt AND
+      (inspection_passed OR inspection_not_required)
+    exceptions:
+      - Quality hold stock (posted but blocked)
+      - Consignment (not valued until consumed)
+    posting_date: |
+      Use actual receipt date
+      Cannot post to closed period
+      Cannot post future date
+
+  - id: GR-P002
+    name: Valuation at Receipt
+    category: posting_rules
+    priority: critical
+    description: |
+      How to value received inventory.
+    valuation_method:
+      standard_cost:
+        rule: Use material standard cost
+        variance: Book to PPV account
+      moving_average:
+        rule: Recalculate average
+        formula: |
+          New_Avg = (Old_Qty × Old_Avg + New_Qty × New_Price)
+                   / (Old_Qty + New_Qty)
+      actual_cost:
+        rule: Use PO price
+    landed_cost:
+      include:
+        - Freight (if FOB origin)
+        - Customs duties
+        - Handling fees
+      exclude:
+        - Payment discounts
+        - Returns
+
+  - id: GR-P003
+    name: Batch/Serial Assignment
+    category: posting_rules
+    priority: high
+    description: |
+      Rules for batch and serial number assignment.
+    batch_managed:
+      - Assign batch at receipt
+      - Capture production date
+      - Capture expiry date
+      - Link to supplier batch
+    serial_managed:
+      - Capture each serial number
+      - Create individual inventory record
+      - Validate serial uniqueness
+    auto_batch_generation:
+      format: "B-{YYYYMMDD}-{SEQ}"
+      applies_to: When supplier batch not provided
+
+  - id: GR-P004
+    name: Location Assignment
+    category: posting_rules
+    priority: medium
+    description: |
+      Rules for assigning storage location.
+    assignment_method:
+      putaway_rules:
+        - Check material default location
+        - Check zone restrictions
+        - Check available capacity
+        - Consider pick face needs
+      priority:
+        1: Material-specific location
+        2: Material group zone
+        3: Random available location
+    validation:
+      - Location can accept material type
+      - Storage conditions match
+      - Capacity available
+
+  # ============================================
+  # EXCEPTION RULES
+  # ============================================
+  - id: GR-E001
+    name: Discrepancy Handling
+    category: exception_rules
+    priority: high
+    description: |
+      Handling receipt discrepancies.
+    types:
+      quantity_variance:
+        threshold: "> tolerance %"
+        action: Create discrepancy report
+        notify: Procurement, supplier
+      quality_issue:
+        action: Create NCR
+        notify: Quality, supplier
+      wrong_material:
+        action: Reject delivery
+        notify: Procurement, supplier
+      damage:
+        action: Photograph, document
+        notify: Carrier, supplier, claims
+    resolution_timeline:
+      minor: 3 business days
+      major: 5 business days
+      escalation: Manager if unresolved
+
+  - id: GR-E002
+    name: Receipt Reversal
+    category: exception_rules
+    priority: high
+    description: |
+      Rules for reversing goods receipts.
+    allowed_conditions:
+      - Not yet invoiced
+      - Material still in original location
+      - Within reversal period
+    reversal_period: 30 days
+    approval_required:
+      - Same day: Receiver
+      - Next day: Supervisor
+      - After 7 days: Manager
+    action: |
+      Create reversal GR
+      Restore PO open quantity
+      Update inventory
+      Document reason
+
+  - id: GR-E003
+    name: Return to Supplier
+    category: exception_rules
+    priority: medium
+    description: |
+      Processing returns to supplier.
+    valid_reasons:
+      - Quality rejection
+      - Damaged goods
+      - Wrong material
+      - Over-shipment
+      - Obsolete material
+    process:
+      - Create return delivery document
+      - Obtain RMA from supplier
+      - Ship with proper documentation
+      - Track credit receipt
+    documentation:
+      - Return reason
+      - Inspection results (if quality)
+      - Photos (if damage)
+      - Supplier RMA number
+
+compliance:
+  standards:
+    - ISO 9001 (Receiving Inspection)
+    - GMP (for regulated industries)
+    - SOX (for inventory valuation)
+
+metrics:
+  - name: Receipt Processing Time
+    formula: AVG(Posted_Time - Delivery_Time)
+    target: "< 4 hours"
+
+  - name: Receipt Accuracy
+    formula: (Receipts without discrepancy / Total receipts) × 100
+    target: "> 98%"
+
+  - name: Inspection Cycle Time
+    formula: AVG(Inspection_Complete - Inspection_Start)
+    target: "< 24 hours"
+
+  - name: Three-Way Match Rate
+    formula: (Auto-matched / Total invoices) × 100
+    target: "> 90%"

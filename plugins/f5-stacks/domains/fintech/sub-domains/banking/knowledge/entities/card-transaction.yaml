@@ -1,0 +1,610 @@
+name: CardTransaction
+display_name: Card Transaction / Giao dịch thẻ
+description: |
+  Records of card-based transactions including purchases, ATM withdrawals,
+  refunds, and reversals. Captures authorization, clearing, and settlement
+  lifecycle with fraud detection integration.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique transaction identifier
+
+  transaction_reference:
+    type: string
+    format: "^TXN-[0-9]{8}-[A-Z0-9]{8}$"
+    unique: true
+    indexed: true
+    description: Human-readable transaction reference
+    description_vi: Mã tham chiếu giao dịch
+    example: "TXN-20241215-A1B2C3D4"
+
+  auth_code:
+    type: string
+    max_length: 6
+    nullable: true
+    indexed: true
+    description: Authorization code from network
+
+  retrieval_reference_number:
+    type: string
+    max_length: 12
+    nullable: true
+    description: RRN for network reconciliation
+
+  # ---------------------------------------------------------------------------
+  # Card & Account
+  # ---------------------------------------------------------------------------
+  card_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: Card
+
+  account_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: BankAccount
+
+  account_holder_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: AccountHolder
+
+  card_number_masked:
+    type: string
+    description: Masked card number for display
+
+  # ---------------------------------------------------------------------------
+  # Transaction Type
+  # ---------------------------------------------------------------------------
+  transaction_type:
+    type: enum
+    values: [purchase, atm_withdrawal, cash_advance, refund, reversal, fee, adjustment]
+    required: true
+    indexed: true
+    description: Type of card transaction
+    description_vi: Loại giao dịch
+    value_descriptions:
+      purchase: "POS or online purchase / Mua hàng"
+      atm_withdrawal: "ATM cash withdrawal / Rút tiền ATM"
+      cash_advance: "Cash advance / Ứng tiền mặt"
+      refund: "Merchant refund / Hoàn tiền"
+      reversal: "Transaction reversal / Đảo giao dịch"
+      fee: "Card fee / Phí thẻ"
+      adjustment: "Manual adjustment / Điều chỉnh"
+
+  transaction_category:
+    type: enum
+    values: [pos, ecommerce, atm, moto, recurring, contactless]
+    required: true
+    description: Transaction channel/method
+    description_vi: Kênh giao dịch
+    value_descriptions:
+      pos: "Point of Sale terminal"
+      ecommerce: "Online/E-commerce"
+      atm: "ATM machine"
+      moto: "Mail/Telephone order"
+      recurring: "Recurring/Subscription"
+      contactless: "NFC/Contactless payment"
+
+  # ---------------------------------------------------------------------------
+  # Amount
+  # ---------------------------------------------------------------------------
+  amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Transaction amount in transaction currency
+    description_vi: Số tiền giao dịch
+
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    required: true
+    description: Transaction currency (ISO 4217)
+
+  billing_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Amount in cardholder's billing currency
+    description_vi: Số tiền quy đổi
+
+  billing_currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+    description: Cardholder's billing currency
+
+  exchange_rate:
+    type: decimal
+    precision: 12
+    scale: 6
+    nullable: true
+    description: Exchange rate applied
+
+  fee_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Transaction fee
+    description_vi: Phí giao dịch
+
+  # ---------------------------------------------------------------------------
+  # Merchant Information
+  # ---------------------------------------------------------------------------
+  merchant_id:
+    type: string
+    max_length: 15
+    nullable: true
+    indexed: true
+    description: Merchant ID from acquirer
+
+  merchant_name:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Merchant name
+    description_vi: Tên đơn vị chấp nhận thẻ
+
+  merchant_category_code:
+    type: string
+    format: "^[0-9]{4}$"
+    nullable: true
+    indexed: true
+    description: MCC code
+    description_vi: Mã danh mục đơn vị
+
+  merchant_city:
+    type: string
+    max_length: 50
+    nullable: true
+
+  merchant_country:
+    type: string
+    format: "^[A-Z]{2}$"
+    nullable: true
+    description: Merchant country (ISO 3166-1)
+
+  terminal_id:
+    type: string
+    max_length: 16
+    nullable: true
+    description: Terminal ID
+
+  # ---------------------------------------------------------------------------
+  # Status
+  # ---------------------------------------------------------------------------
+  status:
+    type: enum
+    values: [pending, authorized, declined, cleared, settled, reversed, disputed, chargedback]
+    default: pending
+    indexed: true
+    description: Transaction lifecycle status
+    description_vi: Trạng thái giao dịch
+    value_descriptions:
+      pending: "Authorization pending / Chờ xác thực"
+      authorized: "Authorized, hold placed / Đã xác thực"
+      declined: "Authorization declined / Từ chối"
+      cleared: "Clearing received / Đã đối soát"
+      settled: "Settlement complete / Đã quyết toán"
+      reversed: "Transaction reversed / Đã đảo"
+      disputed: "Under dispute / Đang tranh chấp"
+      chargedback: "Chargeback processed / Đã hoàn tiền"
+
+  decline_reason:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Reason for decline if applicable
+
+  decline_code:
+    type: string
+    max_length: 10
+    nullable: true
+    description: Network decline code
+
+  # ---------------------------------------------------------------------------
+  # Authorization Details
+  # ---------------------------------------------------------------------------
+  auth_response_code:
+    type: string
+    max_length: 2
+    nullable: true
+    description: Authorization response code
+
+  auth_method:
+    type: enum
+    values: [pin, signature, biometric, 3ds, no_cvm]
+    nullable: true
+    description: Cardholder verification method
+
+  three_ds_status:
+    type: enum
+    values: [not_applicable, authenticated, attempted, failed, not_enrolled]
+    nullable: true
+    description: 3D Secure authentication status
+
+  pin_verified:
+    type: boolean
+    default: false
+    description: Whether PIN was verified
+
+  # ---------------------------------------------------------------------------
+  # Risk & Fraud
+  # ---------------------------------------------------------------------------
+  risk_score:
+    type: integer
+    minimum: 0
+    maximum: 100
+    nullable: true
+    description: Fraud risk score (0-100)
+    description_vi: Điểm rủi ro gian lận
+
+  risk_flags:
+    type: json
+    nullable: true
+    description: Risk indicators triggered
+    example: ["high_amount", "new_merchant", "unusual_location"]
+
+  fraud_alert:
+    type: boolean
+    default: false
+    description: Fraud alert triggered
+
+  fraud_status:
+    type: enum
+    values: [none, suspected, confirmed, cleared]
+    default: none
+    description: Fraud investigation status
+
+  # ---------------------------------------------------------------------------
+  # Geolocation
+  # ---------------------------------------------------------------------------
+  transaction_location:
+    type: json
+    nullable: true
+    description: Transaction location if available
+    example: {"lat": 10.762622, "lng": 106.660172}
+
+  ip_address:
+    type: string
+    max_length: 45
+    nullable: true
+    description: IP address for online transactions
+
+  device_fingerprint:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Device fingerprint for online transactions
+
+  # ---------------------------------------------------------------------------
+  # Settlement
+  # ---------------------------------------------------------------------------
+  settlement_date:
+    type: date
+    nullable: true
+    description: When transaction was settled
+
+  settlement_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Final settlement amount
+
+  interchange_fee:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Interchange fee paid
+
+  # ---------------------------------------------------------------------------
+  # References
+  # ---------------------------------------------------------------------------
+  original_transaction_id:
+    type: uuid
+    nullable: true
+    references: CardTransaction
+    description: Original transaction (for refunds/reversals)
+
+  related_transactions:
+    type: json
+    nullable: true
+    description: Related transaction IDs
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  transaction_at:
+    type: timestamp
+    required: true
+    indexed: true
+    description: When transaction occurred
+
+  authorized_at:
+    type: timestamp
+    nullable: true
+
+  cleared_at:
+    type: timestamp
+    nullable: true
+
+  settled_at:
+    type: timestamp
+    nullable: true
+
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  card:
+    type: belongs_to
+    entity: Card
+    foreign_key: card_id
+
+  account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: account_id
+
+  account_holder:
+    type: belongs_to
+    entity: AccountHolder
+    foreign_key: account_holder_id
+
+  original_transaction:
+    type: belongs_to
+    entity: CardTransaction
+    foreign_key: original_transaction_id
+    description: For refunds/reversals
+
+  refunds:
+    type: has_many
+    entity: CardTransaction
+    foreign_key: original_transaction_id
+    scope: "transaction_type = 'refund'"
+
+  reversals:
+    type: has_many
+    entity: CardTransaction
+    foreign_key: original_transaction_id
+    scope: "transaction_type = 'reversal'"
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending
+
+  states:
+    pending:
+      description: "Awaiting authorization response"
+      timeout: 30_seconds
+
+    authorized:
+      description: "Authorized with hold on funds"
+      timeout: 7_days
+      timeout_action: "auto_reverse"
+
+    declined:
+      description: "Authorization declined"
+      final: true
+
+    cleared:
+      description: "Clearing message received from network"
+
+    settled:
+      description: "Settlement complete"
+      final: true
+
+    reversed:
+      description: "Transaction reversed/voided"
+      final: true
+
+    disputed:
+      description: "Dispute/chargeback initiated"
+
+    chargedback:
+      description: "Chargeback finalized"
+      final: true
+
+  transitions:
+    - from: pending
+      to: authorized
+      event: authorize
+      actions:
+        - "Place hold on account"
+        - "Update card limits used"
+        - "Send notification"
+
+    - from: pending
+      to: declined
+      event: decline
+      actions:
+        - "Log decline reason"
+        - "Send decline notification"
+
+    - from: authorized
+      to: cleared
+      event: clear
+      actions:
+        - "Convert hold to actual debit"
+        - "Adjust for final amount if different"
+
+    - from: authorized
+      to: reversed
+      event: reverse
+      conditions:
+        - "Before clearing"
+      actions:
+        - "Release hold"
+        - "Restore card limits"
+
+    - from: cleared
+      to: settled
+      event: settle
+      actions:
+        - "Finalize accounting entries"
+
+    - from: [authorized, cleared, settled]
+      to: disputed
+      event: dispute
+      actions:
+        - "Create dispute case"
+        - "Place provisional hold"
+
+    - from: disputed
+      to: settled
+      event: resolve_in_bank_favor
+
+    - from: disputed
+      to: chargedback
+      event: chargeback
+      actions:
+        - "Credit cardholder"
+        - "Debit merchant settlement"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-TXN-001
+    name: Authorization Timeout
+    description: Decline if no response within 30 seconds
+    rule: |
+      IF status = 'pending' AND NOW() - created_at > 30 seconds
+      THEN status = 'declined', decline_reason = 'timeout'
+
+  - id: BR-TXN-002
+    name: Hold Expiry
+    description: Auto-reverse authorized holds after 7 days
+    rule: |
+      IF status = 'authorized' AND NOW() - authorized_at > 7 days
+      THEN reverse_transaction()
+
+  - id: BR-TXN-003
+    name: Fraud Check
+    description: Trigger fraud alert for high risk scores
+    rule: |
+      IF risk_score >= 80 THEN
+        fraud_alert = true
+        notify_fraud_team()
+
+  - id: BR-TXN-004
+    name: Daily Limit Check
+    description: Decline if daily limit exceeded
+    rule: |
+      IF card.daily_used + amount > card.daily_limit
+      THEN decline('DAILY_LIMIT_EXCEEDED')
+
+  - id: BR-TXN-005
+    name: International Transaction Check
+    description: Check international enablement
+    rule: |
+      IF merchant_country != 'VN' AND card.international_enabled = false
+      THEN decline('INTERNATIONAL_DISABLED')
+
+# =============================================================================
+# MCC CATEGORIES
+# =============================================================================
+mcc_categories:
+  groceries:
+    codes: ["5411", "5422"]
+    description: "Grocery stores, supermarkets"
+
+  restaurants:
+    codes: ["5812", "5813", "5814"]
+    description: "Restaurants, bars, fast food"
+
+  travel:
+    codes: ["3000-3299", "4111", "4112", "4511"]
+    description: "Airlines, hotels, transportation"
+
+  gas_stations:
+    codes: ["5541", "5542"]
+    description: "Fuel and gas stations"
+
+  utilities:
+    codes: ["4900"]
+    description: "Utility bills"
+
+  gambling:
+    codes: ["7995"]
+    description: "Gambling/Betting"
+    default_blocked: true
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_txn_card
+    fields: [card_id]
+
+  - name: idx_txn_account
+    fields: [account_id]
+
+  - name: idx_txn_reference
+    fields: [transaction_reference]
+    unique: true
+
+  - name: idx_txn_date
+    fields: [transaction_at]
+
+  - name: idx_txn_status
+    fields: [status]
+
+  - name: idx_txn_merchant
+    fields: [merchant_id]
+
+  - name: idx_txn_mcc
+    fields: [merchant_category_code]
+
+  - name: idx_txn_auth_code
+    fields: [auth_code]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  retention_years: 7
+  events:
+    - transaction_initiated
+    - transaction_authorized
+    - transaction_declined
+    - transaction_cleared
+    - transaction_settled
+    - transaction_reversed
+    - dispute_opened
+    - chargeback_processed
+    - fraud_flagged

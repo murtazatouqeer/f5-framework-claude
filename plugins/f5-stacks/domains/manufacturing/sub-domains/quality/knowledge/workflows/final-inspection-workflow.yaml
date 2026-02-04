@@ -1,0 +1,723 @@
+name: final-inspection-workflow
+display_name: Final Inspection Workflow
+display_name_vi: Quy trình kiểm tra cuối cùng
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: workflow
+
+description: |
+  End-to-end workflow for final product inspection before shipment including
+  functional testing, visual inspection, packaging verification, and release
+  authorization with Certificate of Analysis generation.
+
+description_vi: |
+  Quy trình đầu cuối cho kiểm tra sản phẩm cuối cùng trước khi giao hàng
+  bao gồm kiểm tra chức năng, kiểm tra trực quan, xác minh đóng gói và
+  ủy quyền giải phóng với tạo Giấy chứng nhận phân tích.
+
+workflow_metadata:
+  category: quality_control
+  complexity: high
+  estimated_duration: "2-24 hours"
+  automation_level: semi-automated
+  compliance:
+    - ISO 9001:2015
+    - IATF 16949
+    - FDA 21 CFR Part 820
+    - AS9100 (if aerospace)
+
+actors:
+  - id: final_inspector
+    name: Final Inspector
+    name_vi: Kiểm tra viên cuối cùng
+    responsibilities:
+      - Perform visual inspection
+      - Execute dimensional checks
+      - Conduct functional tests
+      - Verify packaging
+
+  - id: quality_engineer
+    name: Quality Engineer
+    name_vi: Kỹ sư chất lượng
+    responsibilities:
+      - Review inspection data
+      - Approve product release
+      - Handle non-conformances
+      - Generate certificates
+
+  - id: quality_manager
+    name: Quality Manager
+    name_vi: Quản lý chất lượng
+    responsibilities:
+      - Approve critical releases
+      - Sign certificates
+      - Authorize customer shipments
+      - Handle concessions
+
+  - id: shipping_coordinator
+    name: Shipping Coordinator
+    name_vi: Điều phối viên giao hàng
+    responsibilities:
+      - Prepare shipping documents
+      - Coordinate logistics
+      - Apply shipping labels
+      - Schedule pickups
+
+triggers:
+  - id: production_complete
+    name: Production Complete
+    type: event
+    source: mes_system
+    condition: "work_order.status = 'production_complete'"
+
+  - id: assembly_complete
+    name: Assembly Complete
+    type: event
+    source: production_system
+    condition: "assembly.status = 'complete'"
+
+  - id: customer_order_ready
+    name: Customer Order Ready
+    type: event
+    source: order_system
+    condition: "order.ready_for_inspection = true"
+
+states:
+  - id: awaiting_inspection
+    name: Awaiting Inspection
+    name_vi: Chờ kiểm tra
+    type: initial
+    description: Product complete, waiting for final inspection
+
+  - id: inspection_in_progress
+    name: Inspection In Progress
+    name_vi: Đang kiểm tra
+    type: intermediate
+    description: Final inspection being performed
+
+  - id: testing_in_progress
+    name: Testing In Progress
+    name_vi: Đang kiểm tra chức năng
+    type: intermediate
+    description: Functional testing underway
+
+  - id: pending_review
+    name: Pending Review
+    name_vi: Chờ xem xét
+    type: intermediate
+    description: Inspection complete, awaiting quality review
+
+  - id: pending_disposition
+    name: Pending Disposition
+    name_vi: Chờ xử lý
+    type: intermediate
+    description: Non-conformance found, disposition required
+
+  - id: approved_for_release
+    name: Approved for Release
+    name_vi: Được phê duyệt giải phóng
+    type: intermediate
+    description: Quality approved, ready for packaging verification
+
+  - id: packaging_verification
+    name: Packaging Verification
+    name_vi: Xác minh đóng gói
+    type: intermediate
+    description: Verifying packaging meets requirements
+
+  - id: released
+    name: Released
+    name_vi: Đã giải phóng
+    type: final
+    description: Product released for shipment
+
+  - id: rejected
+    name: Rejected
+    name_vi: Bị từ chối
+    type: final
+    description: Product rejected, requires disposition
+
+  - id: on_hold
+    name: On Hold
+    name_vi: Tạm giữ
+    type: intermediate
+    description: Product on hold pending decision
+
+steps:
+  - id: receive_for_inspection
+    name: Receive for Final Inspection
+    name_vi: Nhận để kiểm tra cuối cùng
+    sequence: 1
+    actor: final_inspector
+    description: Receive product from production for final inspection
+    from_state: awaiting_inspection
+    to_state: inspection_in_progress
+    actions:
+      - Verify work order documentation
+      - Check all in-process inspections complete
+      - Verify quantity matches
+      - Review any in-process NCRs
+      - Create final inspection record
+    inputs:
+      - name: work_order
+        type: document
+        required: true
+      - name: in_process_records
+        type: record
+        required: true
+      - name: product_lot
+        type: material
+        required: true
+    outputs:
+      - name: final_inspection_record
+        type: record
+    validations:
+      - All prior inspections passed
+      - Quantity accounted for
+      - Documentation complete
+    sla:
+      target: 15 minutes
+      maximum: 30 minutes
+
+  - id: determine_sampling
+    name: Determine Sampling Plan
+    name_vi: Xác định kế hoạch lấy mẫu
+    sequence: 2
+    actor: final_inspector
+    description: Determine appropriate sampling plan for lot
+    from_state: inspection_in_progress
+    to_state: inspection_in_progress
+    actions:
+      - Look up product inspection plan
+      - Determine inspection level
+      - Calculate sample size from AQL tables
+      - Select random samples
+    outputs:
+      - name: sample_selection
+        type: record
+    business_rules:
+      - Use customer-specified AQL if defined
+      - Apply tightened if recent quality issues
+      - 100% for critical safety items
+
+  - id: perform_visual_inspection
+    name: Perform Visual Inspection
+    name_vi: Thực hiện kiểm tra trực quan
+    sequence: 3
+    actor: final_inspector
+    description: Inspect product for visual and cosmetic defects
+    from_state: inspection_in_progress
+    to_state: inspection_in_progress
+    actions:
+      - Inspect surface finish
+      - Check for scratches, dents, marks
+      - Verify color and appearance
+      - Check labels and markings
+      - Inspect for contamination
+    inputs:
+      - name: visual_standards
+        type: document
+        required: true
+      - name: limit_samples
+        type: reference
+        required: false
+    outputs:
+      - name: visual_inspection_results
+        type: record
+      - name: defect_photos
+        type: attachment
+        conditional: true
+    defect_classification:
+      critical:
+        - Safety marking missing
+        - Wrong product identification
+      major:
+        - Visible surface defects
+        - Color mismatch
+        - Label errors
+      minor:
+        - Minor scratches in non-functional area
+        - Slight color variation
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: perform_dimensional_inspection
+    name: Perform Dimensional Inspection
+    name_vi: Thực hiện kiểm tra kích thước
+    sequence: 4
+    actor: final_inspector
+    description: Verify critical dimensions meet specifications
+    from_state: inspection_in_progress
+    to_state: inspection_in_progress
+    actions:
+      - Measure critical dimensions
+      - Record all measurements
+      - Calculate deviation from nominal
+      - Compare to specification limits
+    inputs:
+      - name: dimensional_specifications
+        type: document
+        required: true
+      - name: measurement_equipment
+        type: equipment
+        required: true
+    outputs:
+      - name: dimensional_results
+        type: record
+      - name: measurement_data
+        type: record
+    validations:
+      - Equipment calibration current
+      - All critical dimensions measured
+      - Results within tolerance
+    sla:
+      target: 1 hour
+      maximum: 4 hours
+
+  - id: perform_functional_testing
+    name: Perform Functional Testing
+    name_vi: Thực hiện kiểm tra chức năng
+    sequence: 5
+    actor: final_inspector
+    description: Execute functional tests per test procedure
+    from_state: inspection_in_progress
+    to_state: testing_in_progress
+    actions:
+      - Set up test equipment
+      - Execute test procedure
+      - Record test results
+      - Document any failures
+    inputs:
+      - name: test_procedure
+        type: document
+        required: true
+      - name: test_equipment
+        type: equipment
+        required: true
+    outputs:
+      - name: functional_test_results
+        type: record
+      - name: test_data
+        type: record
+    test_types:
+      - electrical_test
+      - pressure_test
+      - leak_test
+      - performance_test
+      - safety_test
+    validations:
+      - Test equipment calibrated
+      - Test conditions met
+      - All test steps completed
+    sla:
+      target: 2 hours
+      maximum: 8 hours
+
+  - id: record_inspection_results
+    name: Record Inspection Results
+    name_vi: Ghi nhận kết quả kiểm tra
+    sequence: 6
+    actor: final_inspector
+    description: Compile all inspection results and determine lot status
+    from_state: testing_in_progress
+    to_state: pending_review
+    actions:
+      - Compile all inspection data
+      - Count defects by category
+      - Apply acceptance criteria
+      - Determine pass/fail status
+      - Prepare summary report
+    inputs:
+      - name: all_inspection_results
+        type: record
+        required: true
+    outputs:
+      - name: inspection_summary
+        type: report
+      - name: lot_status
+        type: decision
+        values: [pass, fail, conditional]
+    decision_logic:
+      pass:
+        condition: "all_critical_pass AND defects <= accept_number"
+      fail:
+        condition: "any_critical_fail OR defects >= reject_number"
+      conditional:
+        condition: "minor_defects_only AND customer_concession_possible"
+
+  - id: quality_review
+    name: Quality Review
+    name_vi: Xem xét chất lượng
+    sequence: 7
+    actor: quality_engineer
+    description: Review inspection results and approve release
+    from_state: pending_review
+    to_state: approved_for_release
+    condition: "lot_status = 'pass'"
+    actions:
+      - Review inspection summary
+      - Verify data completeness
+      - Check traceability
+      - Approve for release
+    inputs:
+      - name: inspection_summary
+        type: report
+        required: true
+    outputs:
+      - name: quality_approval
+        type: approval
+    validations:
+      - All required inspections complete
+      - No open NCRs
+      - Traceability complete
+    sla:
+      target: 30 minutes
+      maximum: 2 hours
+
+  - id: handle_non_conformance
+    name: Handle Non-Conformance
+    name_vi: Xử lý không phù hợp
+    sequence: 7
+    actor: quality_engineer
+    description: Process non-conforming product
+    from_state: pending_review
+    to_state: pending_disposition
+    condition: "lot_status IN ('fail', 'conditional')"
+    actions:
+      - Create NCR record
+      - Document all defects
+      - Identify affected quantity
+      - Evaluate disposition options
+    outputs:
+      - name: ncr_record
+        type: record
+      - name: disposition_recommendation
+        type: document
+    notifications:
+      - recipient: quality_manager
+        message: "Final inspection NCR: {{product_code}}"
+        priority: high
+
+  - id: determine_disposition
+    name: Determine Disposition
+    name_vi: Xác định xử lý
+    sequence: 8
+    actor: quality_manager
+    description: Decide disposition for non-conforming product
+    from_state: pending_disposition
+    to_state: pending_disposition
+    actions:
+      - Review NCR details
+      - Evaluate customer impact
+      - Consider cost implications
+      - Select disposition
+      - Document rationale
+    inputs:
+      - name: ncr_record
+        type: record
+        required: true
+    outputs:
+      - name: disposition_decision
+        type: decision
+        values: [rework, scrap, use_as_is, return_to_production, sort]
+    decision_points:
+      - condition: "disposition = 'rework'"
+        next_step: create_rework_order
+      - condition: "disposition = 'scrap'"
+        next_step: process_scrap
+      - condition: "disposition = 'use_as_is'"
+        next_step: request_customer_concession
+      - condition: "disposition = 'sort'"
+        next_step: perform_sorting
+    approval_matrix:
+      minor_defects: quality_engineer
+      major_defects: quality_manager
+      critical_defects: director_quality
+      customer_specification: customer_approval_required
+
+  - id: request_customer_concession
+    name: Request Customer Concession
+    name_vi: Yêu cầu nhượng bộ khách hàng
+    sequence: 9
+    actor: quality_engineer
+    description: Request customer approval for use-as-is
+    from_state: pending_disposition
+    to_state: on_hold
+    condition: "disposition = 'use_as_is'"
+    actions:
+      - Prepare deviation request
+      - Document impact assessment
+      - Submit to customer
+      - Track response
+    outputs:
+      - name: deviation_request
+        type: document
+      - name: customer_response
+        type: record
+    sla:
+      target: 24 hours
+      maximum: 72 hours
+    decision_points:
+      - condition: "customer_response = 'approved'"
+        next_step: quality_review
+      - condition: "customer_response = 'rejected'"
+        next_step: determine_disposition
+
+  - id: create_rework_order
+    name: Create Rework Order
+    name_vi: Tạo lệnh làm lại
+    sequence: 9
+    actor: quality_engineer
+    description: Create rework order for non-conforming product
+    from_state: pending_disposition
+    to_state: on_hold
+    condition: "disposition = 'rework'"
+    actions:
+      - Define rework procedure
+      - Specify acceptance criteria
+      - Create rework work order
+      - Route to production
+    outputs:
+      - name: rework_order
+        type: record
+    next_workflow: rework-workflow
+
+  - id: verify_packaging
+    name: Verify Packaging
+    name_vi: Xác minh đóng gói
+    sequence: 10
+    actor: final_inspector
+    description: Verify product packaging meets requirements
+    from_state: approved_for_release
+    to_state: packaging_verification
+    actions:
+      - Verify packaging type correct
+      - Check quantity per package
+      - Verify labels correct
+      - Check protective materials
+      - Verify customer-specific requirements
+    inputs:
+      - name: packaging_specification
+        type: document
+        required: true
+    outputs:
+      - name: packaging_verification_record
+        type: record
+    validations:
+      - Package type matches spec
+      - Labels correct and legible
+      - Quantity accurate
+      - Protection adequate
+    sla:
+      target: 30 minutes
+      maximum: 1 hour
+
+  - id: generate_coa
+    name: Generate Certificate of Analysis
+    name_vi: Tạo Giấy chứng nhận phân tích
+    sequence: 11
+    actor: quality_engineer
+    description: Generate COA/COC for shipment
+    from_state: packaging_verification
+    to_state: packaging_verification
+    actions:
+      - Compile test results
+      - Generate certificate document
+      - Include required data
+      - Apply electronic signature
+    outputs:
+      - name: certificate_of_analysis
+        type: document
+    certificate_content:
+      - product_identification
+      - lot_batch_number
+      - quantity
+      - inspection_date
+      - test_results
+      - specification_compliance
+      - authorized_signature
+      - certificate_number
+    regulatory_requirements:
+      fda: include_21cfr_compliance
+      automotive: include_ppap_reference
+      aerospace: include_as9100_compliance
+
+  - id: release_product
+    name: Release Product
+    name_vi: Giải phóng sản phẩm
+    sequence: 12
+    actor: quality_manager
+    description: Final release authorization for shipment
+    from_state: packaging_verification
+    to_state: released
+    actions:
+      - Final review of all documentation
+      - Verify all requirements met
+      - Apply release authorization
+      - Update inventory status
+      - Notify shipping
+    inputs:
+      - name: inspection_record
+        type: record
+        required: true
+      - name: certificate_of_analysis
+        type: document
+        required: true
+    outputs:
+      - name: release_authorization
+        type: approval
+      - name: shipping_notification
+        type: notification
+    validations:
+      - All inspections passed
+      - Documentation complete
+      - COA generated
+      - No open holds
+    approval_required:
+      standard: quality_engineer
+      customer_specific: quality_manager
+      safety_critical: director_quality
+    sla:
+      target: 15 minutes
+      maximum: 1 hour
+
+  - id: prepare_shipping
+    name: Prepare Shipping Documents
+    name_vi: Chuẩn bị tài liệu giao hàng
+    sequence: 13
+    actor: shipping_coordinator
+    description: Prepare all shipping documentation
+    from_state: released
+    to_state: released
+    actions:
+      - Generate packing list
+      - Prepare shipping labels
+      - Include COA/COC
+      - Prepare customs documents if international
+      - Schedule pickup
+    outputs:
+      - name: packing_list
+        type: document
+      - name: shipping_labels
+        type: label
+      - name: shipping_documents
+        type: document_set
+
+exceptions:
+  - id: equipment_failure
+    name: Test Equipment Failure
+    description: Functional test equipment fails during testing
+    handling:
+      - Stop testing
+      - Document failure point
+      - Arrange equipment repair/replacement
+      - Hold product pending retest
+
+  - id: specification_unclear
+    name: Specification Unclear
+    description: Inspection specification ambiguous
+    handling:
+      - Stop inspection
+      - Escalate to quality engineer
+      - Clarify with engineering
+      - Document clarification for future
+
+  - id: urgent_shipment
+    name: Urgent Shipment Required
+    description: Customer requires expedited shipment
+    handling:
+      - Expedite inspection process
+      - Consider reduced sampling with approval
+      - Prioritize critical characteristics
+      - Document expedite authorization
+
+  - id: mixed_lot
+    name: Mixed Lot Discovered
+    description: Products from different lots mixed
+    handling:
+      - Segregate by lot if possible
+      - If not separable, treat as single lot
+      - Apply most restrictive inspection
+      - Document mixing issue
+
+notifications:
+  - trigger: inspection_complete_pass
+    recipients: [shipping, customer_service]
+    message: "Product {{product_code}} released for shipment"
+
+  - trigger: inspection_complete_fail
+    recipients: [quality_manager, production_manager]
+    message: "Final inspection failure: {{product_code}}"
+    priority: high
+
+  - trigger: coa_generated
+    recipients: [shipping, customer_service]
+    message: "COA ready for {{order_number}}"
+
+  - trigger: customer_concession_required
+    recipients: [sales, customer_service]
+    message: "Customer concession needed for {{order_number}}"
+    priority: high
+
+integrations:
+  - system: erp
+    events:
+      - product_released
+      - inventory_updated
+      - shipment_created
+    data_exchange:
+      - inventory_status
+      - order_fulfillment
+      - shipping_data
+
+  - system: customer_portal
+    events:
+      - coa_available
+      - shipment_scheduled
+    data_exchange:
+      - certificate_documents
+      - tracking_information
+
+  - system: document_management
+    events:
+      - inspection_record_created
+      - coa_generated
+    data_exchange:
+      - quality_documents
+      - certificates
+
+metrics:
+  - name: final_inspection_lead_time
+    description: Time from receipt to release
+    target: "< 8 hours"
+
+  - name: first_pass_yield
+    description: Pass rate on first inspection
+    target: "> 98%"
+
+  - name: coa_accuracy
+    description: Certificates without errors
+    target: "100%"
+
+  - name: on_time_release
+    description: Products released by requested date
+    target: "> 95%"
+
+  - name: customer_return_rate
+    description: Products returned due to quality
+    target: "< 0.1%"
+
+audit_trail:
+  enabled: true
+  events:
+    - inspection_results
+    - disposition_decisions
+    - release_authorizations
+    - coa_generation
+    - shipping_release
+  retention_years: 10
+  regulatory_compliance:
+    - fda_21_cfr_part_11
+    - iso_9001_records

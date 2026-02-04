@@ -1,0 +1,484 @@
+name: CODWorkflow
+display_name: Cash on Delivery Workflow
+description: |
+  Workflow for Cash on Delivery payment collection.
+  Covers payment collection, verification, reconciliation, and settlement.
+
+domain: logistics
+subdomain: last-mile
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_type: payment_collection
+trigger: delivery.is_cod = true
+
+participants:
+  - role: system
+    description: COD Management System
+  - role: agent
+    description: Delivery agent collecting payment
+  - role: recipient
+    description: Customer paying on delivery
+  - role: finance
+    description: Finance team for reconciliation
+  - role: merchant
+    description: Seller receiving payment
+
+states:
+  - id: cod_pending
+    name: COD Pending
+    description: COD payment not yet collected
+    type: initial
+
+  - id: collection_in_progress
+    name: Collection In Progress
+    description: Agent at location, collecting payment
+    type: intermediate
+
+  - id: payment_collected
+    name: Payment Collected
+    description: Cash/payment received from customer
+    type: intermediate
+
+  - id: payment_verified
+    name: Payment Verified
+    description: Payment amount verified
+    type: intermediate
+
+  - id: in_agent_custody
+    name: In Agent Custody
+    description: Cash with agent pending deposit
+    type: intermediate
+
+  - id: deposited
+    name: Deposited
+    description: Cash deposited at collection point
+    type: intermediate
+
+  - id: reconciled
+    name: Reconciled
+    description: Payment reconciled with system
+    type: intermediate
+
+  - id: settlement_pending
+    name: Settlement Pending
+    description: Awaiting merchant settlement
+    type: intermediate
+
+  - id: settled
+    name: Settled
+    description: Payment settled to merchant
+    type: final_success
+
+  - id: collection_failed
+    name: Collection Failed
+    description: Payment collection failed
+    type: final_failure
+
+  - id: disputed
+    name: Disputed
+    description: Payment under dispute
+    type: intermediate
+
+transitions:
+  - id: T001
+    name: Start Collection
+    from: cod_pending
+    to: collection_in_progress
+    trigger: agent
+    conditions:
+      - agent.at_delivery_location = true
+      - recipient.available = true
+      - package.ready_for_handover = true
+    actions:
+      - display_cod_amount
+      - confirm_payment_method
+      - prepare_receipt
+
+  - id: T002
+    name: Collect Payment
+    from: collection_in_progress
+    to: payment_collected
+    trigger: agent
+    conditions:
+      - payment_received = true
+      - amount >= cod_amount
+    actions:
+      - record_payment
+      - calculate_change_if_needed
+      - issue_receipt
+      - capture_payment_proof
+
+  - id: T003
+    name: Verify Payment
+    from: payment_collected
+    to: payment_verified
+    trigger: agent
+    conditions:
+      - amount_correct = true
+      - no_counterfeit_detected = true
+    actions:
+      - verify_denominations
+      - check_for_counterfeit
+      - confirm_total
+      - update_delivery_status
+
+  - id: T004
+    name: Secure Payment
+    from: payment_verified
+    to: in_agent_custody
+    trigger: system
+    actions:
+      - add_to_agent_collection
+      - update_agent_cash_balance
+      - set_deposit_reminder
+      - track_custody_time
+
+  - id: T005
+    name: Deposit Cash
+    from: in_agent_custody
+    to: deposited
+    trigger: agent
+    conditions:
+      - at_deposit_location = true
+      - cash_handed_over = true
+    actions:
+      - record_deposit
+      - get_deposit_receipt
+      - update_agent_balance
+      - clear_custody
+
+  - id: T006
+    name: Reconcile Payment
+    from: deposited
+    to: reconciled
+    trigger: finance
+    conditions:
+      - deposit_confirmed = true
+      - amount_matches = true
+    actions:
+      - match_with_delivery
+      - update_financial_records
+      - clear_agent_liability
+      - prepare_for_settlement
+
+  - id: T007
+    name: Prepare Settlement
+    from: reconciled
+    to: settlement_pending
+    trigger: system
+    conditions:
+      - reconciliation_complete = true
+      - settlement_cycle_reached = true
+    actions:
+      - calculate_merchant_payout
+      - deduct_service_fees
+      - prepare_settlement_batch
+      - generate_settlement_report
+
+  - id: T008
+    name: Complete Settlement
+    from: settlement_pending
+    to: settled
+    trigger: finance
+    conditions:
+      - settlement_approved = true
+      - funds_transferred = true
+    actions:
+      - transfer_to_merchant
+      - update_settlement_status
+      - send_settlement_notification
+      - close_cod_cycle
+
+  - id: T009
+    name: Collection Failed
+    from: [cod_pending, collection_in_progress]
+    to: collection_failed
+    trigger: agent
+    conditions:
+      - payment_not_possible = true
+    failure_reasons:
+      - customer_refused_cod
+      - insufficient_funds
+      - customer_not_home
+      - payment_method_issue
+    actions:
+      - record_failure_reason
+      - trigger_failed_delivery_workflow
+      - schedule_reattempt_if_eligible
+
+  - id: T010
+    name: Raise Dispute
+    from: [payment_collected, in_agent_custody, deposited, reconciled]
+    to: disputed
+    trigger: [recipient, merchant, finance]
+    conditions:
+      - dispute_raised = true
+    actions:
+      - freeze_settlement
+      - investigate_dispute
+      - gather_evidence
+      - assign_dispute_handler
+
+  - id: T011
+    name: Resolve Dispute
+    from: disputed
+    to: [reconciled, collection_failed]
+    trigger: finance
+    conditions:
+      - dispute_resolved = true
+    actions:
+      - apply_resolution
+      - update_records
+      - notify_parties
+      - process_adjustments
+
+payment_methods:
+  - method: cash
+    description: Physical cash payment
+    verification: manual_count
+    change_required: possible
+    counterfeit_check: required
+
+  - method: mobile_payment
+    description: Mobile wallet (MoMo, ZaloPay, etc.)
+    verification: real_time
+    change_required: no
+    receipt: digital
+
+  - method: bank_transfer
+    description: Instant bank transfer
+    verification: real_time
+    change_required: no
+    receipt: digital
+
+  - method: card_on_delivery
+    description: Card payment via mobile POS
+    verification: real_time
+    change_required: no
+    receipt: digital
+
+collection_rules:
+  - rule: exact_amount_preferred
+    description: Prefer exact payment to avoid change
+    action: remind_customer_before_delivery
+
+  - rule: max_change_limit
+    description: Maximum change agent can provide
+    limit: 500000  # VND
+    action: request_smaller_denominations
+
+  - rule: large_denomination_policy
+    description: Policy for large bills
+    threshold: 500000  # VND
+    action: verify_authenticity
+
+  - rule: counterfeit_detection
+    description: Mandatory counterfeit check
+    applies_to: bills >= 100000 VND
+    tools: uv_light, watermark_check
+
+  - rule: dual_count
+    description: Count money twice
+    applies_to: amounts > 1000000 VND
+    witness: customer_presence
+
+agent_limits:
+  - limit: daily_collection_limit
+    amount: 10000000  # VND
+    action_on_exceed: force_deposit
+
+  - limit: single_transaction_limit
+    amount: 5000000  # VND
+    action_on_exceed: require_approval
+
+  - limit: max_custody_duration
+    duration: 4 hours
+    action_on_exceed: alert_operations
+
+  - limit: deposit_frequency
+    minimum: every 3 deliveries
+    maximum_cash: 3000000  # VND
+    action: reminder_notification
+
+deposit_locations:
+  - type: hub
+    description: Company hub/office
+    verification: staff_count
+    receipt: printed
+
+  - type: bank
+    description: Partner bank branch
+    verification: bank_receipt
+    receipt: bank_slip
+
+  - type: atm_deposit
+    description: ATM with deposit feature
+    verification: atm_receipt
+    receipt: printed
+
+  - type: mobile_agent
+    description: Roaming collection agent
+    verification: digital_receipt
+    receipt: app_confirmation
+
+  - type: partner_store
+    description: Partner convenience store
+    verification: store_receipt
+    receipt: printed
+
+reconciliation_process:
+  - step: daily_reconciliation
+    timing: end_of_day
+    actions:
+      - match_collections_to_deliveries
+      - verify_deposit_amounts
+      - identify_discrepancies
+      - generate_daily_report
+
+  - step: discrepancy_handling
+    threshold: 10000 VND
+    actions:
+      - investigate_cause
+      - contact_agent
+      - adjust_if_valid
+      - flag_if_suspicious
+
+  - step: agent_liability
+    duration: until_deposit_confirmed
+    coverage: full_amount
+    consequences:
+      minor_shortage: deduct_from_earnings
+      major_shortage: investigation
+      repeated_issues: suspension
+
+settlement_cycles:
+  - cycle: daily
+    description: Daily settlement
+    eligibility: high_volume_merchants
+    cutoff_time: "18:00"
+    settlement_time: "next_business_day"
+
+  - cycle: weekly
+    description: Weekly settlement
+    eligibility: standard_merchants
+    settlement_day: friday
+    period: mon-sun
+
+  - cycle: biweekly
+    description: Bi-weekly settlement
+    eligibility: new_merchants
+    settlement_days: [1, 15]
+
+fees_and_deductions:
+  - fee: cod_service_fee
+    calculation: percentage_of_cod
+    rate: 1.5%
+    minimum: 5000  # VND
+
+  - fee: collection_fee
+    calculation: flat_per_transaction
+    amount: 3000  # VND
+
+  - fee: settlement_fee
+    calculation: per_settlement
+    amount: 0  # included in service fee
+
+  - deduction: returns
+    description: Deduct returned order COD
+    timing: at_return_completion
+
+  - deduction: chargebacks
+    description: Deduct disputed amounts
+    timing: after_dispute_resolution
+
+notifications:
+  - trigger: payment_collected
+    recipient: [recipient, merchant]
+    template: cod_receipt
+    channels: [sms, email]
+
+  - trigger: deposited
+    recipient: agent
+    template: deposit_confirmed
+    channels: [push, sms]
+
+  - trigger: settled
+    recipient: merchant
+    template: settlement_complete
+    channels: [email]
+    attachment: settlement_report
+
+  - trigger: disputed
+    recipient: [merchant, finance]
+    template: dispute_alert
+    channels: [email, sms]
+
+fraud_prevention:
+  - control: agent_verification
+    description: Verify agent identity before collection
+    method: app_login, biometric
+
+  - control: geofence_validation
+    description: Ensure agent at delivery location
+    tolerance: 100 meters
+
+  - control: photo_proof
+    description: Photo of cash/payment
+    required_for: amounts > 500000 VND
+
+  - control: real_time_reporting
+    description: Immediate system update
+    delay_alert: > 5 minutes
+
+  - control: pattern_detection
+    description: Detect unusual patterns
+    flags: multiple_failures, large_change, location_mismatch
+
+metrics:
+  - name: collection_success_rate
+    description: Successful COD collections
+    target: > 95%
+
+  - name: first_attempt_collection
+    description: Payment collected on first delivery
+    target: > 90%
+
+  - name: average_deposit_time
+    description: Time from collection to deposit
+    target: < 4 hours
+
+  - name: reconciliation_accuracy
+    description: Matched without discrepancy
+    target: > 99.9%
+
+  - name: settlement_timeliness
+    description: Settlements on time
+    target: 100%
+
+  - name: dispute_rate
+    description: COD transactions disputed
+    target: < 0.1%
+
+events:
+  - name: cod.collection_started
+    payload: [delivery_id, cod_amount, agent_id]
+
+  - name: cod.payment_collected
+    payload: [delivery_id, amount_collected, payment_method]
+
+  - name: cod.deposited
+    payload: [agent_id, deposit_amount, deposit_location]
+
+  - name: cod.reconciled
+    payload: [delivery_id, reconciled_amount, discrepancy]
+
+  - name: cod.settled
+    payload: [merchant_id, settlement_amount, transaction_count]
+
+  - name: cod.collection_failed
+    payload: [delivery_id, failure_reason]
+
+  - name: cod.disputed
+    payload: [delivery_id, dispute_reason, disputed_amount]

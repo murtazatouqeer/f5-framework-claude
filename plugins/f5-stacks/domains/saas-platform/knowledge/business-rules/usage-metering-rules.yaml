@@ -1,0 +1,606 @@
+name: Usage Metering Rules
+display_name: Usage Metering Rules / Quy tắc đo lường sử dụng
+description: |
+  Business rules for tracking, aggregating, and billing usage-based metrics
+  including API calls, storage, bandwidth, and custom metrics.
+
+domain: saas-platform
+rule_category: billing
+version: "1.0"
+
+# =============================================================================
+# USAGE TRACKING RULES
+# =============================================================================
+tracking_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: USG-TRK-001 - Real-Time Tracking
+  # ---------------------------------------------------------------------------
+  - id: USG-TRK-001
+    name: Real-Time Usage Tracking
+    name_vi: Theo dõi sử dụng thời gian thực
+    severity: high
+    description: |
+      Usage events must be captured in real-time with minimal latency.
+      Events are buffered and batch-processed for efficiency.
+    description_vi: |
+      Sự kiện sử dụng phải được ghi nhận thời gian thực với độ trễ tối thiểu.
+      Sự kiện được đệm và xử lý theo lô để hiệu quả.
+
+    tracking_requirements:
+      latency:
+        capture: "<100ms"
+        visibility: "<5 minutes"
+        billing_accurate: "<1 hour"
+
+      data_points:
+        required:
+          - tenant_id
+          - metric_type
+          - quantity
+          - timestamp
+          - source
+
+        optional:
+          - user_id
+          - api_key_id
+          - request_id
+          - resource_id
+          - metadata
+
+    implementation:
+      capture_method: event_stream
+      buffer_size: 1000_events
+      flush_interval: 10_seconds
+      storage: time_series_db
+
+      event_schema: |
+        {
+          "event_id": "uuid",
+          "tenant_id": "uuid",
+          "metric": "api_calls",
+          "quantity": 1,
+          "timestamp": "2024-01-15T10:30:00Z",
+          "source": "api_gateway",
+          "metadata": {
+            "endpoint": "/api/v1/users",
+            "method": "GET",
+            "response_code": 200,
+            "duration_ms": 45
+          }
+        }
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-TRK-002 - Usage Attribution
+  # ---------------------------------------------------------------------------
+  - id: USG-TRK-002
+    name: Usage Attribution
+    name_vi: Quy kết sử dụng
+    severity: high
+    description: |
+      All usage must be accurately attributed to the correct tenant.
+      Multi-level attribution for organizations within tenants.
+    description_vi: |
+      Tất cả sử dụng phải được quy kết chính xác cho khách thuê đúng.
+      Quy kết đa cấp cho tổ chức trong khách thuê.
+
+    attribution_hierarchy:
+      level_1: tenant_id  # Always required
+      level_2: organization_id  # Optional for enterprise
+      level_3: project_id  # Optional for project-based billing
+      level_4: user_id  # For per-user tracking
+
+    attribution_rules:
+      api_requests:
+        primary: "From authentication token"
+        fallback: "From API key"
+
+      background_jobs:
+        primary: "From job metadata"
+        validation: "Must match initiating request"
+
+      scheduled_tasks:
+        primary: "From task configuration"
+        system_tasks: "Attributed to platform, not tenant"
+
+# =============================================================================
+# AGGREGATION RULES
+# =============================================================================
+aggregation_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: USG-AGG-001 - Aggregation Methods
+  # ---------------------------------------------------------------------------
+  - id: USG-AGG-001
+    name: Aggregation Methods
+    name_vi: Phương pháp tổng hợp
+    severity: high
+    description: |
+      Different metrics use different aggregation methods.
+      Aggregation period aligns with billing cycle.
+    description_vi: |
+      Các chỉ số khác nhau sử dụng phương pháp tổng hợp khác nhau.
+      Kỳ tổng hợp phù hợp với chu kỳ thanh toán.
+
+    aggregation_methods:
+      sum:
+        description: "Total of all events in period"
+        description_vi: "Tổng của tất cả sự kiện trong kỳ"
+        applies_to:
+          - api_calls
+          - bandwidth_gb
+          - messages_sent
+          - emails_sent
+          - transactions
+        formula: "SUM(quantity) WHERE billing_period = current"
+
+      max:
+        description: "Maximum value at any point in period"
+        description_vi: "Giá trị tối đa tại bất kỳ thời điểm nào trong kỳ"
+        applies_to:
+          - storage_gb
+          - seats
+          - concurrent_connections
+        formula: "MAX(daily_snapshot) WHERE billing_period = current"
+        snapshot_frequency: daily
+
+      average:
+        description: "Average value over period"
+        description_vi: "Giá trị trung bình trong kỳ"
+        applies_to:
+          - compute_hours
+          - active_users
+        formula: "AVG(hourly_samples) WHERE billing_period = current"
+        sample_frequency: hourly
+
+      last:
+        description: "Value at end of period"
+        description_vi: "Giá trị vào cuối kỳ"
+        applies_to:
+          - database_size_gb
+        formula: "LAST_VALUE(quantity) WHERE billing_period = current"
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-AGG-002 - Aggregation Timing
+  # ---------------------------------------------------------------------------
+  - id: USG-AGG-002
+    name: Aggregation Timing
+    name_vi: Thời điểm tổng hợp
+    severity: medium
+    description: |
+      Aggregation schedules for different reporting needs.
+    description_vi: |
+      Lịch tổng hợp cho các nhu cầu báo cáo khác nhau.
+
+    schedules:
+      real_time_dashboard:
+        frequency: 1_minute
+        retention: 24_hours
+        use_case: "Live usage monitoring"
+
+      hourly_aggregation:
+        frequency: 1_hour
+        retention: 90_days
+        use_case: "Detailed analysis, debugging"
+
+      daily_aggregation:
+        frequency: daily_at_utc_midnight
+        retention: 2_years
+        use_case: "Billing, reporting"
+
+      billing_period_aggregation:
+        frequency: end_of_billing_period
+        retention: 7_years
+        use_case: "Invoicing, compliance"
+
+# =============================================================================
+# LIMIT ENFORCEMENT RULES
+# =============================================================================
+limit_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: USG-LIM-001 - Soft Limits (Alerts)
+  # ---------------------------------------------------------------------------
+  - id: USG-LIM-001
+    name: Soft Limits - Usage Alerts
+    name_vi: Giới hạn mềm - Cảnh báo sử dụng
+    severity: medium
+    description: |
+      Alert thresholds before reaching hard limits.
+      Notifications sent to tenant admins.
+    description_vi: |
+      Ngưỡng cảnh báo trước khi đạt giới hạn cứng.
+      Thông báo được gửi đến admin khách thuê.
+
+    alert_thresholds:
+      percentage_based:
+        - threshold: 50
+          notification: email
+          message: "You've used 50% of your {metric} allocation"
+
+        - threshold: 80
+          notification: [email, in_app]
+          message: "You've used 80% of your {metric} allocation"
+
+        - threshold: 90
+          notification: [email, in_app, webhook]
+          message: "You've used 90% of your {metric} allocation. Consider upgrading."
+
+        - threshold: 100
+          notification: [email, in_app, webhook, sms]
+          message: "You've reached your {metric} limit"
+
+    notification_rules:
+      frequency: once_per_threshold
+      reset: each_billing_period
+      suppression: 24_hours_minimum
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-LIM-002 - Hard Limits (Enforcement)
+  # ---------------------------------------------------------------------------
+  - id: USG-LIM-002
+    name: Hard Limits - Usage Enforcement
+    name_vi: Giới hạn cứng - Thực thi sử dụng
+    severity: high
+    description: |
+      Enforcement actions when usage exceeds plan limits.
+      Behavior varies by metric type and overage policy.
+    description_vi: |
+      Hành động thực thi khi sử dụng vượt quá giới hạn gói.
+      Hành vi khác nhau theo loại chỉ số và chính sách vượt quá.
+
+    enforcement_policies:
+      hard_block:
+        description: "Block further usage"
+        description_vi: "Chặn sử dụng tiếp"
+        applies_to:
+          - seats: "Cannot add more users"
+          - storage_gb: "Cannot upload new files"
+
+      soft_block:
+        description: "Degrade service, allow essential operations"
+        description_vi: "Giảm dịch vụ, cho phép hoạt động thiết yếu"
+        applies_to:
+          - api_calls:
+              at_100: "Rate limit reduced to 10%"
+              at_110: "Rate limit reduced to 1%"
+              at_125: "Block non-essential endpoints"
+
+      overage_billing:
+        description: "Allow usage, bill overage at end of period"
+        description_vi: "Cho phép sử dụng, tính phí vượt quá vào cuối kỳ"
+        applies_to:
+          - bandwidth_gb
+          - messages_sent
+          - compute_hours
+
+    grace_allowance:
+      buffer_percent: 10  # Allow 10% over limit before enforcement
+      applies_to: [api_calls, bandwidth_gb]
+      reason: "Prevent service disruption for minor overages"
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-LIM-003 - Rate Limiting
+  # ---------------------------------------------------------------------------
+  - id: USG-LIM-003
+    name: Rate Limiting
+    name_vi: Giới hạn tốc độ
+    severity: high
+    description: |
+      Per-second/minute rate limits to prevent abuse.
+      Independent of monthly allocation limits.
+    description_vi: |
+      Giới hạn tốc độ theo giây/phút để ngăn lạm dụng.
+      Độc lập với giới hạn phân bổ hàng tháng.
+
+    rate_limits_by_tier:
+      free:
+        requests_per_second: 2
+        requests_per_minute: 60
+        burst_allowance: 5
+
+      starter:
+        requests_per_second: 10
+        requests_per_minute: 300
+        burst_allowance: 20
+
+      professional:
+        requests_per_second: 50
+        requests_per_minute: 1000
+        burst_allowance: 100
+
+      enterprise:
+        requests_per_second: 200
+        requests_per_minute: 5000
+        burst_allowance: 500
+        custom_limits: available
+
+    rate_limit_response:
+      status_code: 429
+      headers:
+        - "X-RateLimit-Limit"
+        - "X-RateLimit-Remaining"
+        - "X-RateLimit-Reset"
+        - "Retry-After"
+      body: |
+        {
+          "error": "rate_limit_exceeded",
+          "message": "Too many requests. Please retry after {retry_after} seconds.",
+          "limit": {limit},
+          "remaining": 0,
+          "reset_at": "{reset_timestamp}"
+        }
+
+# =============================================================================
+# OVERAGE BILLING RULES
+# =============================================================================
+overage_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: USG-OVR-001 - Overage Calculation
+  # ---------------------------------------------------------------------------
+  - id: USG-OVR-001
+    name: Overage Calculation
+    name_vi: Tính toán vượt quá
+    severity: high
+    description: |
+      Overage charges calculated at end of billing period.
+      Rates vary by metric and tier.
+    description_vi: |
+      Phí vượt quá được tính vào cuối kỳ thanh toán.
+      Mức phí khác nhau theo chỉ số và cấp.
+
+    overage_pricing:
+      api_calls:
+        unit: 1000_calls
+        free: not_available
+        starter: 0.002
+        professional: 0.001
+        enterprise: custom
+
+      storage_gb:
+        unit: 1_gb
+        free: not_available
+        starter: 0.10
+        professional: 0.08
+        enterprise: custom
+
+      bandwidth_gb:
+        unit: 1_gb
+        free: not_available
+        starter: 0.15
+        professional: 0.10
+        enterprise: custom
+
+      seats:
+        unit: 1_seat
+        free: not_available
+        starter: 10.00  # Per seat per month
+        professional: 15.00
+        enterprise: custom
+
+    calculation_formula: |
+      overage_quantity = MAX(0, actual_usage - included_amount)
+      overage_charge = overage_quantity * overage_rate
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-OVR-002 - Overage Caps
+  # ---------------------------------------------------------------------------
+  - id: USG-OVR-002
+    name: Overage Caps
+    name_vi: Giới hạn vượt quá
+    severity: medium
+    description: |
+      Maximum overage charges to prevent bill shock.
+      Optional caps available for budget protection.
+    description_vi: |
+      Phí vượt quá tối đa để ngăn hóa đơn bất ngờ.
+      Có thể đặt giới hạn để bảo vệ ngân sách.
+
+    cap_options:
+      no_cap:
+        description: "No limit on overage charges"
+        default_for: [enterprise]
+
+      percentage_cap:
+        description: "Cap at X% of base subscription"
+        options: [50, 100, 200]
+        default_for: [professional]
+        default_value: 100
+
+      absolute_cap:
+        description: "Fixed dollar cap on overages"
+        options: [50, 100, 250, 500]
+        default_for: [starter]
+        default_value: 50
+
+    when_cap_reached:
+      - "Send notification"
+      - "Apply soft limit enforcement"
+      - "Optional: auto-upgrade prompt"
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-OVR-003 - Overage Invoice Line Items
+  # ---------------------------------------------------------------------------
+  - id: USG-OVR-003
+    name: Overage Invoice Line Items
+    name_vi: Mục hóa đơn vượt quá
+    severity: medium
+    description: |
+      Overage charges appear as separate line items on invoices.
+      Detailed breakdown provided for transparency.
+    description_vi: |
+      Phí vượt quá xuất hiện như mục riêng trên hóa đơn.
+      Cung cấp chi tiết để minh bạch.
+
+    line_item_format:
+      type: usage
+      description: "{metric} overage ({quantity} {unit} over {included} {unit} included)"
+      example: "API Calls overage (50,000 calls over 100,000 calls included)"
+
+      details:
+        - metric
+        - included_amount
+        - actual_usage
+        - overage_quantity
+        - overage_rate
+        - overage_charge
+
+# =============================================================================
+# USAGE REPORTING RULES
+# =============================================================================
+reporting_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: USG-RPT-001 - Customer Usage Dashboard
+  # ---------------------------------------------------------------------------
+  - id: USG-RPT-001
+    name: Customer Usage Dashboard
+    name_vi: Bảng điều khiển sử dụng khách hàng
+    severity: medium
+    description: |
+      Real-time usage visibility for customers.
+      Historical data and trend analysis available.
+    description_vi: |
+      Hiển thị sử dụng thời gian thực cho khách hàng.
+      Có dữ liệu lịch sử và phân tích xu hướng.
+
+    dashboard_features:
+      current_period:
+        - "Usage vs allocation bars"
+        - "Projected end-of-period usage"
+        - "Days remaining in period"
+        - "Estimated overage charges"
+
+      historical:
+        - "Month-over-month comparison"
+        - "Usage trends chart"
+        - "Peak usage times"
+        - "Usage by metric breakdown"
+
+      alerts:
+        - "Active threshold alerts"
+        - "Alert history"
+        - "Alert preferences"
+
+    data_refresh:
+      current_usage: 5_minutes
+      projections: 1_hour
+      historical: 1_hour
+
+  # ---------------------------------------------------------------------------
+  # Rule: USG-RPT-002 - Usage Export
+  # ---------------------------------------------------------------------------
+  - id: USG-RPT-002
+    name: Usage Export
+    name_vi: Xuất dữ liệu sử dụng
+    severity: low
+    description: |
+      Customers can export detailed usage data.
+      Formats and retention based on tier.
+    description_vi: |
+      Khách hàng có thể xuất dữ liệu sử dụng chi tiết.
+      Định dạng và lưu giữ dựa trên cấp.
+
+    export_options:
+      formats:
+        - CSV
+        - JSON
+        - PDF_report
+
+      granularity:
+        free: daily
+        starter: hourly
+        professional: hourly
+        enterprise: raw_events
+
+      retention:
+        free: 30_days
+        starter: 90_days
+        professional: 1_year
+        enterprise: 2_years
+
+    api_access:
+      endpoint: "/api/v1/usage"
+      rate_limit: 10_requests_per_minute
+      max_date_range: 90_days
+
+# =============================================================================
+# METRIC DEFINITIONS
+# =============================================================================
+metric_definitions:
+  api_calls:
+    name: API Calls
+    name_vi: Cuộc gọi API
+    unit: calls
+    aggregation: sum
+    billing_unit: 1000
+    description: "HTTP requests to API endpoints"
+    counted_as:
+      - "Successful requests (2xx)"
+      - "Client errors (4xx)"
+    not_counted:
+      - "Health check endpoints"
+      - "Rate limit responses (429)"
+      - "Server errors (5xx) - customer not charged"
+
+  storage_gb:
+    name: Storage
+    name_vi: Lưu trữ
+    unit: GB
+    aggregation: max
+    billing_unit: 1
+    description: "Total storage used"
+    includes:
+      - "Uploaded files"
+      - "Database storage"
+      - "Backups (if applicable)"
+    excludes:
+      - "Temporary files"
+      - "Cache storage"
+
+  bandwidth_gb:
+    name: Bandwidth
+    name_vi: Băng thông
+    unit: GB
+    aggregation: sum
+    billing_unit: 1
+    description: "Data transfer out"
+    includes:
+      - "API responses"
+      - "File downloads"
+      - "Webhook deliveries"
+    excludes:
+      - "Internal traffic"
+      - "Inbound uploads"
+
+  seats:
+    name: Team Seats
+    name_vi: Chỗ ngồi nhóm
+    unit: seats
+    aggregation: max
+    billing_unit: 1
+    description: "Active team members"
+    counted_as:
+      - "Active users"
+      - "Pending invitations"
+    not_counted:
+      - "Suspended users"
+      - "Deleted users"
+
+  compute_hours:
+    name: Compute Hours
+    name_vi: Giờ tính toán
+    unit: hours
+    aggregation: sum
+    billing_unit: 1
+    description: "Background job processing time"
+    measurement: "Wall clock time of job execution"
+
+  messages:
+    name: Messages
+    name_vi: Tin nhắn
+    unit: messages
+    aggregation: sum
+    billing_unit: 1000
+    description: "Messages sent (email, SMS, push)"
+    includes:
+      - "Email notifications"
+      - "SMS messages"
+      - "Push notifications"
+      - "In-app messages"

@@ -1,0 +1,469 @@
+name: calibration-rules
+display_name: Calibration Business Rules
+display_name_vi: Quy tắc kinh doanh hiệu chuẩn
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: business-rules
+
+description: |
+  Business rules governing measurement equipment calibration including
+  scheduling, execution, traceability, and handling out-of-tolerance conditions.
+
+description_vi: |
+  Quy tắc kinh doanh quản lý hiệu chuẩn thiết bị đo lường bao gồm
+  lập lịch, thực hiện, truy xuất nguồn gốc và xử lý điều kiện ngoài dung sai.
+
+rule_categories:
+  - calibration_scheduling
+  - calibration_execution
+  - traceability
+  - out_of_tolerance
+  - documentation
+  - equipment_management
+
+standards_reference:
+  - standard: ISO 17025
+    description: General requirements for testing and calibration laboratories
+  - standard: ISO 10012
+    description: Measurement management systems
+  - standard: ANSI/NCSL Z540.3
+    description: Requirements for calibration of measuring equipment
+
+rules:
+  # Calibration Scheduling Rules
+  - id: CAL-RULE-001
+    name: calibration_interval_required
+    name_vi: Yêu cầu chu kỳ hiệu chuẩn
+    category: calibration_scheduling
+    priority: critical
+    description: All measuring equipment must have defined calibration intervals
+    description_vi: Tất cả thiết bị đo phải có chu kỳ hiệu chuẩn được xác định
+    condition: |
+      FOR all equipment WHERE type = 'measuring'
+      calibration_interval REQUIRED
+      Based on:
+        - Manufacturer recommendation
+        - Criticality of measurement
+        - Historical stability
+        - Usage frequency
+        - Environmental conditions
+    action: |
+      REQUIRE interval assignment
+      DEFAULT to manufacturer recommendation
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-002
+    name: automatic_scheduling
+    name_vi: Lập lịch tự động
+    category: calibration_scheduling
+    priority: high
+    description: System automatically schedules next calibration
+    description_vi: Hệ thống tự động lập lịch hiệu chuẩn tiếp theo
+    condition: |
+      AFTER calibration_complete
+      next_calibration_date = performed_date + calibration_interval
+    action: |
+      AUTO-SET next calibration date
+      ADD to calibration schedule
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-003
+    name: calibration_due_notification
+    name_vi: Thông báo đến hạn hiệu chuẩn
+    category: calibration_scheduling
+    priority: high
+    description: Advance notification before calibration due
+    description_vi: Thông báo trước khi đến hạn hiệu chuẩn
+    condition: |
+      Notification schedule:
+        30 days before: First notice to owner
+        14 days before: Second notice + schedule confirmation
+        7 days before: Final notice + escalation if not scheduled
+        Day of: Alert + equipment status change
+    action: |
+      AUTO-SEND notifications
+      ESCALATE if not scheduled
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-004
+    name: overdue_equipment_handling
+    name_vi: Xử lý thiết bị quá hạn
+    category: calibration_scheduling
+    priority: critical
+    description: Overdue equipment must be removed from service
+    description_vi: Thiết bị quá hạn phải được loại bỏ khỏi sử dụng
+    condition: |
+      WHEN calibration_due_date < TODAY
+      AND calibration_status != 'completed'
+      THEN equipment.status = 'overdue'
+      AND equipment.available_for_use = false
+    action: |
+      AUTO-CHANGE status to overdue
+      BLOCK equipment selection
+      ALERT owner and quality
+    enforcement: automatic
+    exception_allowed: false
+
+  # Calibration Execution Rules
+  - id: CAL-RULE-010
+    name: qualified_technician
+    name_vi: Kỹ thuật viên đủ điều kiện
+    category: calibration_execution
+    priority: critical
+    description: Calibration performed by qualified personnel only
+    description_vi: Hiệu chuẩn chỉ được thực hiện bởi nhân viên đủ điều kiện
+    condition: |
+      performed_by.qualification includes:
+        - Equipment-specific training
+        - Calibration procedure training
+        - Current certification (if external)
+    action: |
+      VALIDATE technician qualifications
+      BLOCK unqualified calibration
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-011
+    name: calibration_procedure_required
+    name_vi: Yêu cầu quy trình hiệu chuẩn
+    category: calibration_execution
+    priority: high
+    description: Documented calibration procedure must be followed
+    description_vi: Phải tuân theo quy trình hiệu chuẩn đã được ghi nhận
+    condition: |
+      FOR each calibration:
+        calibration_procedure reference REQUIRED
+        Procedure covers all measurement ranges
+        Procedure includes acceptance criteria
+    action: |
+      VALIDATE procedure reference
+      DISPLAY procedure during calibration
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-012
+    name: environmental_conditions_recorded
+    name_vi: Ghi nhận điều kiện môi trường
+    category: calibration_execution
+    priority: high
+    description: Environmental conditions must be recorded during calibration
+    description_vi: Điều kiện môi trường phải được ghi nhận trong quá trình hiệu chuẩn
+    condition: |
+      FOR calibration record:
+        temperature RECORDED (within lab tolerance)
+        humidity RECORDED (within lab tolerance)
+        Conditions meet equipment requirements
+    action: |
+      REQUIRE environmental data entry
+      WARN if outside acceptable range
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: calibration_supervisor
+
+  - id: CAL-RULE-013
+    name: as_found_as_left_data
+    name_vi: Dữ liệu tìm thấy-để lại
+    category: calibration_execution
+    priority: critical
+    description: Record as-found and as-left data for all calibration points
+    description_vi: Ghi nhận dữ liệu tìm thấy và để lại cho tất cả điểm hiệu chuẩn
+    condition: |
+      FOR each calibration_point:
+        as_found_data REQUIRED
+        as_left_data REQUIRED (if adjustment made)
+        deviation calculated
+        pass/fail determined
+    action: |
+      REQUIRE all calibration point data
+      AUTO-CALCULATE deviations
+    enforcement: automatic
+    exception_allowed: false
+
+  # Traceability Rules
+  - id: CAL-RULE-020
+    name: nist_traceability_required
+    name_vi: Yêu cầu truy xuất NIST
+    category: traceability
+    priority: critical
+    description: Calibration must be traceable to national/international standards
+    description_vi: Hiệu chuẩn phải truy xuất được đến tiêu chuẩn quốc gia/quốc tế
+    condition: |
+      FOR all calibrations:
+        traceability_standard documented
+        Reference standard certificate available
+        Unbroken chain to NIST or equivalent
+    action: |
+      VALIDATE traceability documentation
+      REQUIRE certificate reference
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-021
+    name: reference_standard_calibration
+    name_vi: Hiệu chuẩn tiêu chuẩn tham chiếu
+    category: traceability
+    priority: critical
+    description: Reference standards must be calibrated by accredited laboratory
+    description_vi: Tiêu chuẩn tham chiếu phải được hiệu chuẩn bởi phòng thí nghiệm được công nhận
+    condition: |
+      FOR reference_standards:
+        calibrated_by accredited laboratory (ISO 17025)
+        Accreditation scope covers calibration type
+        Certificate includes uncertainty statement
+    action: |
+      VALIDATE accreditation
+      TRACK certificate expiry
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-022
+    name: uncertainty_documentation
+    name_vi: Tài liệu độ không đảm bảo
+    category: traceability
+    priority: high
+    description: Measurement uncertainty must be documented
+    description_vi: Độ không đảm bảo đo lường phải được ghi nhận
+    condition: |
+      FOR calibration records:
+        measurement_uncertainty documented
+        Uncertainty <= 1/4 of tolerance (4:1 TUR)
+        Confidence level stated (typically 95%)
+    action: |
+      REQUIRE uncertainty documentation
+      WARN if TUR < 4:1
+    enforcement: automatic
+    exception_allowed: true
+    exception_approver: quality_manager
+
+  # Out of Tolerance Rules
+  - id: CAL-RULE-030
+    name: oot_impact_assessment
+    name_vi: Đánh giá tác động OOT
+    category: out_of_tolerance
+    priority: critical
+    description: Impact assessment required when equipment found out of tolerance
+    description_vi: Đánh giá tác động được yêu cầu khi thiết bị được tìm thấy ngoài dung sai
+    condition: |
+      WHEN as_found_data OUT OF TOLERANCE
+      THEN impact_assessment REQUIRED:
+        - Last good calibration date
+        - Products measured since last calibration
+        - Degree of out-of-tolerance
+        - Risk assessment
+    action: |
+      REQUIRE impact assessment
+      NOTIFY quality_manager
+      HOLD affected products
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-031
+    name: oot_product_recall_evaluation
+    name_vi: Đánh giá thu hồi sản phẩm OOT
+    category: out_of_tolerance
+    priority: critical
+    description: Evaluate product recall when critical equipment OOT
+    description_vi: Đánh giá thu hồi sản phẩm khi thiết bị quan trọng OOT
+    condition: |
+      WHEN equipment.criticality = 'critical'
+      AND out_of_tolerance found
+      THEN recall_evaluation REQUIRED:
+        - Identify all affected lots
+        - Evaluate shipped product risk
+        - Document decision and rationale
+    action: |
+      CREATE recall assessment
+      ROUTE for quality_manager review
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-032
+    name: oot_ncr_required
+    name_vi: Yêu cầu NCR OOT
+    category: out_of_tolerance
+    priority: high
+    description: NCR required for out-of-tolerance findings
+    description_vi: NCR được yêu cầu cho phát hiện ngoài dung sai
+    condition: |
+      WHEN out_of_tolerance found
+      AND impact_assessment shows affected_products
+      THEN ncr_creation REQUIRED
+    action: |
+      PROMPT NCR creation
+      LINK NCR to calibration record
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-033
+    name: equipment_repair_requalification
+    name_vi: Sửa chữa tái đánh giá thiết bị
+    category: out_of_tolerance
+    priority: high
+    description: OOT equipment requires repair and recalibration
+    description_vi: Thiết bị OOT yêu cầu sửa chữa và hiệu chuẩn lại
+    condition: |
+      WHEN equipment OUT OF TOLERANCE:
+        - Repair or adjust
+        - Recalibrate after repair
+        - Verify as-left data in tolerance
+        OR
+        - Retire/replace equipment
+    action: |
+      UPDATE equipment status
+      SCHEDULE recalibration
+      VERIFY before return to service
+    enforcement: automatic
+    exception_allowed: false
+
+  # Documentation Rules
+  - id: CAL-RULE-040
+    name: calibration_certificate_required
+    name_vi: Yêu cầu chứng chỉ hiệu chuẩn
+    category: documentation
+    priority: critical
+    description: Calibration certificate required for each calibration
+    description_vi: Chứng chỉ hiệu chuẩn được yêu cầu cho mỗi lần hiệu chuẩn
+    condition: |
+      Calibration certificate MUST include:
+        - Equipment identification
+        - Calibration date
+        - Calibration results (all points)
+        - Reference standards used
+        - Traceability statement
+        - Uncertainty statement
+        - Environmental conditions
+        - Technician identification
+        - Next calibration date
+    action: |
+      GENERATE certificate
+      VALIDATE completeness
+      STORE in document system
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-041
+    name: calibration_sticker_label
+    name_vi: Nhãn dán hiệu chuẩn
+    category: documentation
+    priority: high
+    description: Equipment must display calibration status
+    description_vi: Thiết bị phải hiển thị trạng thái hiệu chuẩn
+    condition: |
+      ALL calibrated equipment DISPLAYS:
+        - Calibration sticker/label
+        - Calibration date
+        - Due date
+        - Calibration ID
+        OR
+        - Status tracked electronically with barcode
+    action: |
+      PROMPT sticker application
+      TRACK sticker ID
+    enforcement: procedural
+    exception_allowed: false
+
+  - id: CAL-RULE-042
+    name: record_retention
+    name_vi: Lưu giữ hồ sơ
+    category: documentation
+    priority: high
+    description: Calibration records retained per policy
+    description_vi: Hồ sơ hiệu chuẩn được lưu giữ theo chính sách
+    condition: |
+      Calibration records retained:
+        - Minimum 3 calibration cycles
+        - Or product warranty period + 2 years
+        - Or regulatory requirement
+        - Whichever is longest
+    action: |
+      ENFORCE retention period
+      PREVENT premature deletion
+    enforcement: automatic
+    exception_allowed: false
+
+  # Equipment Management Rules
+  - id: CAL-RULE-050
+    name: new_equipment_calibration
+    name_vi: Hiệu chuẩn thiết bị mới
+    category: equipment_management
+    priority: critical
+    description: New equipment must be calibrated before use
+    description_vi: Thiết bị mới phải được hiệu chuẩn trước khi sử dụng
+    condition: |
+      WHEN equipment.status = 'new'
+      THEN calibration REQUIRED before available_for_use = true
+      Even if manufacturer certificate provided
+    action: |
+      BLOCK new equipment use
+      REQUIRE initial calibration
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-051
+    name: calibration_after_repair
+    name_vi: Hiệu chuẩn sau sửa chữa
+    category: equipment_management
+    priority: critical
+    description: Calibration required after any equipment repair
+    description_vi: Hiệu chuẩn được yêu cầu sau bất kỳ sửa chữa thiết bị nào
+    condition: |
+      WHEN equipment.maintenance_type = 'repair'
+      AND affects_measurement_capability
+      THEN recalibration REQUIRED
+    action: |
+      TRIGGER calibration requirement
+      HOLD equipment from use
+    enforcement: automatic
+    exception_allowed: false
+
+  - id: CAL-RULE-052
+    name: limited_use_equipment
+    name_vi: Thiết bị sử dụng hạn chế
+    category: equipment_management
+    priority: medium
+    description: Handle equipment with limited calibration status
+    description_vi: Xử lý thiết bị với trạng thái hiệu chuẩn hạn chế
+    condition: |
+      WHEN calibration_result = 'pass_with_limitation'
+      THEN:
+        - Document limitation clearly
+        - Restrict use to within limitation
+        - Apply visual indicator
+    action: |
+      UPDATE equipment limitations
+      RESTRICT usage
+      DISPLAY warnings on selection
+    enforcement: automatic
+    exception_allowed: false
+
+interval_adjustment_criteria:
+  extend_interval:
+    conditions:
+      - Three consecutive in-tolerance calibrations
+      - No OOT findings in history
+      - Low usage environment
+      - Quality manager approval
+    max_extension: "50% of current interval"
+
+  reduce_interval:
+    conditions:
+      - OOT finding
+      - Near-tolerance readings
+      - High usage/harsh environment
+      - Critical measurement application
+
+metrics:
+  tracked:
+    - calibration_on_time_rate
+    - out_of_tolerance_rate
+    - overdue_equipment_count
+    - calibration_cost
+    - equipment_downtime
+  targets:
+    on_time_rate: "100%"
+    oot_rate: "< 5%"
+    overdue_count: "0"

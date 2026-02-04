@@ -1,0 +1,446 @@
+# B2C Retail Business Rules
+
+name: business-rules
+domain: e-commerce
+sub_domain: b2c-retail
+version: 1.0.0
+
+categories:
+  # Pricing Rules
+  pricing:
+    - id: PRICE-001
+      name: Sale Price Display
+      description: Display sale price only when lower than base price
+      condition: sale_price < base_price AND sale_price > 0
+      action: show_sale_price_with_discount_percentage
+      priority: high
+
+    - id: PRICE-002
+      name: Price Rounding
+      description: All prices rounded to 2 decimal places
+      rule: ROUND(price, 2)
+      applies_to: [display, calculation, storage]
+
+    - id: PRICE-003
+      name: Minimum Price
+      description: Products cannot be sold below cost
+      condition: sale_price >= cost_price
+      exception: clearance_category
+      priority: critical
+
+    - id: PRICE-004
+      name: Tax Inclusion
+      description: Prices displayed include/exclude tax based on region
+      rule: |
+        IF customer.region IN ['US', 'CA'] THEN display_price_excluding_tax
+        IF customer.region IN ['EU', 'UK', 'AU'] THEN display_price_including_tax
+
+    - id: PRICE-005
+      name: Currency Display
+      description: Display prices in customer's preferred currency
+      rule: convert_price(base_currency, customer.currency, exchange_rate)
+      update_frequency: daily
+
+  # Inventory Rules
+  inventory:
+    - id: INV-001
+      name: Stock Availability
+      description: Product available when stock > 0
+      condition: available_quantity > 0
+      available_quantity: stock_quantity - reserved_quantity
+
+    - id: INV-002
+      name: Low Stock Threshold
+      description: Trigger low stock alert when below threshold
+      condition: available_quantity <= low_stock_threshold
+      action: trigger_low_stock_alert
+      default_threshold: 10
+
+    - id: INV-003
+      name: Overselling Prevention
+      description: Cannot sell more than available stock
+      condition: order_quantity <= available_quantity
+      enforcement: strict
+      exception: backorder_enabled_products
+
+    - id: INV-004
+      name: Inventory Reservation
+      description: Reserve inventory during checkout
+      rule: |
+        ON checkout_start: reserve_inventory(items, 30_minutes)
+        ON checkout_complete: confirm_reservation(items)
+        ON checkout_abandon: release_reservation(items)
+        ON timeout: release_reservation(items)
+
+    - id: INV-005
+      name: Stock Synchronization
+      description: Sync stock across all sales channels
+      frequency: real_time
+      channels: [web, mobile, pos, marketplace]
+
+  # Order Rules
+  order:
+    - id: ORD-001
+      name: Minimum Order Value
+      description: Orders must meet minimum value
+      condition: order.subtotal >= minimum_order_value
+      default_minimum: 10
+      currency: USD
+      exception: digital_products_only
+
+    - id: ORD-002
+      name: Maximum Order Value
+      description: Single order cannot exceed maximum
+      condition: order.grand_total <= maximum_order_value
+      default_maximum: 10000
+      currency: USD
+      action: require_manual_approval_if_exceeded
+
+    - id: ORD-003
+      name: Maximum Items Per Order
+      description: Limit items in single order
+      condition: order.item_count <= 50
+      action: split_order_if_exceeded
+
+    - id: ORD-004
+      name: Maximum Quantity Per Item
+      description: Limit quantity of single item
+      condition: line_item.quantity <= 10
+      exception: wholesale_customers
+      action: show_contact_for_bulk
+
+    - id: ORD-005
+      name: Order Number Generation
+      description: Generate unique order number
+      format: "{prefix}{year}{month}{sequence}"
+      prefix: "ORD-"
+      sequence: 6_digit_padded
+      example: "ORD-202401000001"
+
+    - id: ORD-006
+      name: Order Confirmation
+      description: Send confirmation within time limit
+      rule: send_confirmation_email WITHIN 5 minutes OF order_placed
+      channels: [email]
+      priority: high
+
+  # Cart Rules
+  cart:
+    - id: CART-001
+      name: Cart Expiration
+      description: Cart expires after inactivity
+      rule: |
+        guest_cart: expire_after 7 days
+        logged_in_cart: never_expire
+        checkout_cart: expire_after 30 minutes
+
+    - id: CART-002
+      name: Cart Merge
+      description: Merge guest cart on login
+      rule: |
+        ON customer_login:
+          IF guest_cart EXISTS AND customer_cart EXISTS:
+            merge_carts(guest_cart, customer_cart, strategy: 'add_quantities')
+          ELSE IF guest_cart EXISTS:
+            assign_cart(guest_cart, customer)
+
+    - id: CART-003
+      name: Price Update on Cart View
+      description: Update prices when viewing cart
+      rule: validate_and_update_prices ON cart_view
+      notify_if_changed: true
+
+    - id: CART-004
+      name: Stock Validation on Cart
+      description: Validate stock when viewing cart
+      rule: check_availability ON cart_view
+      action: show_unavailable_items_warning
+
+  # Discount Rules
+  discount:
+    - id: DISC-001
+      name: Coupon Stacking
+      description: Only one coupon code per order
+      rule: max_coupons_per_order = 1
+      exception: auto_applied_promotions
+
+    - id: DISC-002
+      name: Coupon Validation
+      description: Validate coupon before application
+      validations:
+        - coupon_exists
+        - coupon_is_active
+        - current_date BETWEEN start_date AND end_date
+        - order_total >= minimum_order_amount
+        - usage_count < usage_limit
+        - customer_usage_count < per_customer_limit
+        - applicable_products_in_cart
+
+    - id: DISC-003
+      name: Discount Calculation Order
+      description: Order of discount application
+      order:
+        1: product_discounts
+        2: category_discounts
+        3: order_level_discounts
+        4: coupon_discounts
+        5: loyalty_rewards
+
+    - id: DISC-004
+      name: Maximum Discount
+      description: Cap maximum discount amount
+      rule: |
+        IF coupon.max_discount_amount IS SET:
+          discount = MIN(calculated_discount, max_discount_amount)
+
+    - id: DISC-005
+      name: Free Shipping Threshold
+      description: Free shipping above order value
+      condition: order.subtotal >= free_shipping_threshold
+      default_threshold: 50
+      currency: USD
+      shipping_methods: [standard, economy]
+
+  # Payment Rules
+  payment:
+    - id: PAY-001
+      name: Payment Timeout
+      description: Payment must complete within timeout
+      rule: payment_timeout = 30 minutes
+      action: cancel_order_on_timeout
+
+    - id: PAY-002
+      name: Payment Methods by Region
+      description: Available payment methods vary by region
+      rules:
+        US: [credit_card, paypal, apple_pay, google_pay, affirm]
+        EU: [credit_card, paypal, apple_pay, google_pay, klarna, ideal]
+        VN: [credit_card, vnpay, momo, zalopay, cod]
+
+    - id: PAY-003
+      name: COD Restrictions
+      description: Cash on delivery restrictions
+      conditions:
+        - order.total <= 200
+        - shipping.country IN ['VN']
+        - customer.cod_orders_unpaid < 2
+      additional_fee: 5
+
+    - id: PAY-004
+      name: Payment Retry
+      description: Allow payment retry on failure
+      max_retries: 3
+      cooldown_between_retries: 5 minutes
+      action_on_max_retries: cancel_order
+
+    - id: PAY-005
+      name: Fraud Prevention
+      description: Fraud detection rules
+      checks:
+        - velocity_check (max 5 orders per hour)
+        - address_verification
+        - card_verification_value
+        - 3d_secure_when_required
+      action_on_flag: manual_review
+
+  # Shipping Rules
+  shipping:
+    - id: SHIP-001
+      name: Shipping Method Availability
+      description: Show only available shipping methods
+      factors:
+        - destination_country
+        - package_weight
+        - package_dimensions
+        - order_value
+        - product_restrictions
+
+    - id: SHIP-002
+      name: Shipping Rate Calculation
+      description: Calculate shipping based on weight/dimensions
+      method: dimensional_weight
+      formula: MAX(actual_weight, (L * W * H) / dim_factor)
+      dim_factor: 139  # inches
+
+    - id: SHIP-003
+      name: Processing Time
+      description: Order processing before shipping
+      rules:
+        standard: 1-2 business days
+        express: same_day_if_before_2pm
+        custom: varies_by_product
+
+    - id: SHIP-004
+      name: Delivery Estimates
+      description: Show estimated delivery dates
+      calculation: order_date + processing_time + carrier_transit_time
+      display: date_range
+
+    - id: SHIP-005
+      name: Restricted Products
+      description: Products with shipping restrictions
+      restrictions:
+        hazardous: [ground_only, no_air]
+        perishable: [expedited_required]
+        oversized: [freight_only]
+        international_restricted: [domestic_only]
+
+  # Return Rules
+  returns:
+    - id: RET-001
+      name: Return Window
+      description: Time limit for returns
+      window: 30 days from delivery_date
+      exception: holiday_extended (45 days for holiday purchases)
+
+    - id: RET-002
+      name: Return Eligibility
+      description: Product return eligibility criteria
+      eligible_conditions:
+        - unused_and_unworn
+        - original_packaging
+        - tags_attached
+        - not_final_sale
+      non_returnable_categories:
+        - underwear
+        - swimwear
+        - personalized_items
+        - clearance_final_sale
+
+    - id: RET-003
+      name: Refund Method
+      description: Refund to original payment method
+      rule: |
+        IF original_payment_method AVAILABLE:
+          refund_to original_payment_method
+        ELSE:
+          refund_to store_credit
+
+    - id: RET-004
+      name: Refund Processing Time
+      description: Time to process refund
+      timeline:
+        credit_card: 5-7 business days
+        paypal: 3-5 business days
+        store_credit: instant
+
+    - id: RET-005
+      name: Return Shipping
+      description: Who pays return shipping
+      rules:
+        defective_item: seller_pays
+        wrong_item_sent: seller_pays
+        changed_mind: customer_pays
+        not_as_described: seller_pays
+
+  # Customer Rules
+  customer:
+    - id: CUST-001
+      name: Account Verification
+      description: Email verification required
+      rule: require_email_verification
+      timeout: 24 hours
+      action_on_timeout: deactivate_account
+
+    - id: CUST-002
+      name: Password Requirements
+      description: Password strength requirements
+      requirements:
+        min_length: 8
+        require_uppercase: true
+        require_lowercase: true
+        require_number: true
+        require_special: false
+        prevent_common: true
+        prevent_personal_info: true
+
+    - id: CUST-003
+      name: Account Lockout
+      description: Lock account after failed logins
+      max_attempts: 5
+      lockout_duration: 15 minutes
+      progressive: true  # increases with repeated lockouts
+
+    - id: CUST-004
+      name: Session Management
+      description: Session timeout rules
+      rules:
+        inactive_timeout: 30 minutes
+        absolute_timeout: 24 hours
+        remember_me_timeout: 30 days
+
+    - id: CUST-005
+      name: Marketing Consent
+      description: GDPR/CCPA compliant consent
+      rule: |
+        marketing_emails: explicit_opt_in
+        transaction_emails: implied_consent
+        unsubscribe: one_click_required
+
+  # Loyalty Rules
+  loyalty:
+    - id: LOY-001
+      name: Points Earning
+      description: Earn points on purchases
+      rule: points = FLOOR(order.subtotal * earning_rate)
+      earning_rate: 1  # 1 point per dollar
+      exclusions:
+        - shipping
+        - tax
+        - gift_cards
+
+    - id: LOY-002
+      name: Points Redemption
+      description: Redeem points for discount
+      rule: discount = points * redemption_rate
+      redemption_rate: 0.01  # $0.01 per point
+      minimum_points: 100
+      maximum_per_order: 50%  # of order value
+
+    - id: LOY-003
+      name: Points Expiration
+      description: Points expire after inactivity
+      expiration: 12 months from last_activity
+      notification: 30 days before expiration
+
+    - id: LOY-004
+      name: Tier Benefits
+      description: Loyalty tier thresholds and benefits
+      tiers:
+        bronze:
+          threshold: 0
+          earning_multiplier: 1.0
+          benefits: [free_returns]
+        silver:
+          threshold: 500 points
+          earning_multiplier: 1.25
+          benefits: [free_returns, birthday_discount]
+        gold:
+          threshold: 2000 points
+          earning_multiplier: 1.5
+          benefits: [free_returns, birthday_discount, free_shipping, early_access]
+        platinum:
+          threshold: 5000 points
+          earning_multiplier: 2.0
+          benefits: [free_returns, birthday_discount, free_shipping, early_access, dedicated_support]
+
+# Rule Enforcement
+enforcement:
+  strict:
+    - pricing.PRICE-003
+    - inventory.INV-003
+    - payment.PAY-005
+
+  warning:
+    - order.ORD-002
+    - cart.CART-003
+
+  informational:
+    - inventory.INV-002
+    - loyalty.LOY-003
+
+# Audit Logging
+audit:
+  log_all_rule_applications: true
+  log_exceptions: true
+  retention_period: 90 days

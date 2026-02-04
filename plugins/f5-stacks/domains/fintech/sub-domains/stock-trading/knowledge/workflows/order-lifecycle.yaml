@@ -1,0 +1,559 @@
+name: order-lifecycle
+display_name: Order Lifecycle
+description: |
+  Complete process of a trading order from placement to completion.
+  Includes validation, exchange submission, matching, and settlement steps.
+
+domain: fintech/stock-trading
+version: "1.0"
+type: sequential_with_parallel
+
+actors:
+  - id: investor
+    name: Investor
+    description: Customer placing buy/sell stock orders
+
+  - id: trading_system
+    name: Trading System
+    description: Securities company's core system
+
+  - id: risk_engine
+    name: Risk Management Engine
+    description: Checks and approves risk
+
+  - id: exchange_gateway
+    name: Exchange Gateway
+    description: Gateway for sending/receiving orders with exchange
+
+  - id: exchange
+    name: Exchange
+    description: HOSE/HNX/UPCoM
+
+  - id: matching_engine
+    name: Matching Engine
+    description: Exchange's order matching system
+
+  - id: vsd
+    name: VSD
+    description: Vietnam Securities Depository
+
+  - id: settlement_system
+    name: Settlement System
+    description: Handles T+2 settlement
+
+states:
+  - id: draft
+    name: Draft
+    description: Order being entered by investor
+    terminal: false
+
+  - id: submitted
+    name: Submitted
+    description: Order submitted from app/web
+    terminal: false
+
+  - id: validating
+    name: Validating
+    description: System checking conditions
+    terminal: false
+
+  - id: validation_failed
+    name: Validation Failed
+    description: Order doesn't meet conditions
+    terminal: true
+
+  - id: risk_checking
+    name: Risk Checking
+    description: Risk engine evaluating
+    terminal: false
+
+  - id: risk_rejected
+    name: Risk Rejected
+    description: Rejected due to exceeding risk threshold
+    terminal: true
+
+  - id: pending_approval
+    name: Pending Approval
+    description: Order requires manual approval (large order)
+    terminal: false
+
+  - id: approved
+    name: Approved
+    description: Order has been approved
+    terminal: false
+
+  - id: sending_to_exchange
+    name: Sending to Exchange
+    description: Gateway sending order to exchange
+    terminal: false
+
+  - id: sent
+    name: Sent
+    description: Order sent successfully
+    terminal: false
+
+  - id: exchange_rejected
+    name: Exchange Rejected
+    description: Exchange rejected the order
+    terminal: true
+
+  - id: confirmed
+    name: Confirmed
+    description: Exchange confirmed and added to order book
+    terminal: false
+
+  - id: in_order_book
+    name: In Order Book
+    description: Order waiting to be matched in order book
+    terminal: false
+
+  - id: partial_filled
+    name: Partial Filled
+    description: Part of order has been matched
+    terminal: false
+
+  - id: filled
+    name: Filled
+    description: Order fully matched
+    terminal: false
+
+  - id: pending_cancel
+    name: Pending Cancel
+    description: Cancel request sent, awaiting exchange confirmation
+    terminal: false
+
+  - id: cancelled
+    name: Cancelled
+    description: Order successfully cancelled
+    terminal: true
+
+  - id: expired
+    name: Expired
+    description: DAY order expired at end of session
+    terminal: true
+
+  - id: pending_settlement
+    name: Pending Settlement
+    description: In T+2 period
+    terminal: false
+
+  - id: settling
+    name: Settling
+    description: VSD processing settlement
+    terminal: false
+
+  - id: settled
+    name: Settled
+    description: Settlement complete, securities/cash transferred
+    terminal: true
+
+  - id: settlement_failed
+    name: Settlement Failed
+    description: Error during settlement
+    terminal: false
+
+transitions:
+  # ===== SUBMISSION FLOW =====
+  - from: draft
+    to: submitted
+    trigger: submit_order
+    actor: investor
+    conditions:
+      - All required information entered
+    actions:
+      - Assign order_number
+      - Log submission time
+      - Send order receipt notification
+
+  - from: submitted
+    to: validating
+    trigger: start_validation
+    actor: trading_system
+    actions:
+      - Start checking conditions
+
+  # ===== VALIDATION FLOW =====
+  - from: validating
+    to: validation_failed
+    trigger: validation_error
+    actor: trading_system
+    conditions:
+      - One or more validation rules failed
+    actions:
+      - Log validation error
+      - Notify investor
+      - Release held cash/securities (if any)
+
+  - from: validating
+    to: risk_checking
+    trigger: validation_passed
+    actor: trading_system
+    conditions:
+      - All validation rules passed
+    actions:
+      - Hold cash (buy order) or securities (sell order)
+      - Transfer to risk engine
+
+  # ===== RISK CHECK FLOW =====
+  - from: risk_checking
+    to: risk_rejected
+    trigger: risk_exceeded
+    actor: risk_engine
+    conditions:
+      - Risk threshold exceeded
+    actions:
+      - Log risk rejection
+      - Release held amount
+      - Notify investor
+
+  - from: risk_checking
+    to: pending_approval
+    trigger: need_manual_approval
+    actor: risk_engine
+    conditions:
+      - Large order requires manual approval
+      - Or risk warning present
+    actions:
+      - Create approval request
+      - Notify supervisor
+
+  - from: risk_checking
+    to: approved
+    trigger: risk_passed
+    actor: risk_engine
+    conditions:
+      - Risk check passed
+      - No manual approval required
+    actions:
+      - Record risk passed
+
+  - from: pending_approval
+    to: approved
+    trigger: manual_approve
+    actor: supervisor
+    actions:
+      - Record approver
+      - Log approval
+
+  - from: pending_approval
+    to: risk_rejected
+    trigger: manual_reject
+    actor: supervisor
+    actions:
+      - Record rejection reason
+      - Release held amount
+      - Notify investor
+
+  # ===== EXCHANGE SUBMISSION FLOW =====
+  - from: approved
+    to: sending_to_exchange
+    trigger: send_to_exchange
+    actor: exchange_gateway
+    actions:
+      - Format message per FIX protocol
+      - Send to exchange
+
+  - from: sending_to_exchange
+    to: sent
+    trigger: send_success
+    actor: exchange_gateway
+    actions:
+      - Record successful send time
+      - Wait for exchange confirmation
+
+  - from: sending_to_exchange
+    to: exchange_rejected
+    trigger: send_failed
+    actor: exchange_gateway
+    conditions:
+      - Connection error or immediate exchange rejection
+    actions:
+      - Log error
+      - Release held amount
+      - Notify investor
+
+  - from: sent
+    to: confirmed
+    trigger: exchange_confirm
+    actor: exchange
+    actions:
+      - Save exchange_order_id
+      - Record confirmation time
+
+  - from: sent
+    to: exchange_rejected
+    trigger: exchange_reject
+    actor: exchange
+    conditions:
+      - Exchange rejected order
+    actions:
+      - Record rejection reason
+      - Release held amount
+      - Notify investor
+
+  - from: confirmed
+    to: in_order_book
+    trigger: enter_order_book
+    actor: exchange
+    actions:
+      - Order enters order book waiting for match
+
+  # ===== MATCHING FLOW =====
+  - from: in_order_book
+    to: partial_filled
+    trigger: partial_match
+    actor: matching_engine
+    conditions:
+      - Partially matched
+    actions:
+      - Update filled_quantity
+      - Calculate average_price
+      - Create Trade record
+      - Push realtime notification
+
+  - from: in_order_book
+    to: filled
+    trigger: full_match
+    actor: matching_engine
+    conditions:
+      - Fully matched immediately
+    actions:
+      - Update status = filled
+      - Create Trade record(s)
+      - Update Position
+      - Push notification
+
+  - from: partial_filled
+    to: partial_filled
+    trigger: additional_match
+    actor: matching_engine
+    conditions:
+      - Additional match but not complete
+    actions:
+      - Update filled_quantity
+      - Recalculate average_price
+      - Create Trade record
+      - Push notification
+
+  - from: partial_filled
+    to: filled
+    trigger: final_match
+    actor: matching_engine
+    conditions:
+      - Remaining quantity matched
+    actions:
+      - Update status = filled
+      - Create Trade record
+      - Update Position
+      - Push completion notification
+
+  # ===== CANCEL FLOW =====
+  - from: [in_order_book, partial_filled]
+    to: pending_cancel
+    trigger: request_cancel
+    actor: investor
+    conditions:
+      - During trading hours
+      - Order not fully matched
+    actions:
+      - Send cancel request to exchange
+
+  - from: pending_cancel
+    to: cancelled
+    trigger: cancel_confirmed
+    actor: exchange
+    actions:
+      - Release held amount (unmatched portion)
+      - Notify successful cancellation
+
+  - from: pending_cancel
+    to: partial_filled
+    trigger: cancel_failed
+    actor: exchange
+    conditions:
+      - Matched while waiting for cancellation
+    actions:
+      - Notify unable to cancel
+
+  # ===== EXPIRY FLOW =====
+  - from: [in_order_book, partial_filled]
+    to: expired
+    trigger: session_end
+    actor: trading_system
+    conditions:
+      - time_in_force = DAY
+      - Trading session ended
+    actions:
+      - Release held amount (unmatched portion)
+      - Mark as expired
+
+  # ===== SETTLEMENT FLOW =====
+  - from: filled
+    to: pending_settlement
+    trigger: start_settlement_cycle
+    actor: settlement_system
+    actions:
+      - Calculate settlement obligation
+      - Register with VSD
+
+  - from: pending_settlement
+    to: settling
+    trigger: settlement_day
+    actor: vsd
+    conditions:
+      - T+2 day reached
+    actions:
+      - Start settlement clearing
+
+  - from: settling
+    to: settled
+    trigger: settlement_complete
+    actor: vsd
+    actions:
+      - Transfer securities (buy order)
+      - Transfer cash (sell order)
+      - Update Position final
+      - Notify completion
+
+  - from: settling
+    to: settlement_failed
+    trigger: settlement_error
+    actor: vsd
+    conditions:
+      - Insufficient cash/securities for settlement
+    actions:
+      - Log error
+      - Notify securities company and customer
+
+  - from: settlement_failed
+    to: settling
+    trigger: retry_settlement
+    actor: settlement_system
+    conditions:
+      - Sufficient cash/securities added
+    actions:
+      - Retry settlement
+
+sla:
+  order_validation:
+    target: 100ms
+    description: Order validation time
+
+  risk_check:
+    target: 50ms
+    description: Risk check time
+
+  exchange_send:
+    target: 10ms
+    description: Time to send to exchange
+
+  exchange_confirm:
+    target: 500ms
+    description: Exchange confirmation wait time
+
+  match_notification:
+    target: 100ms
+    description: Order match notification time
+
+  settlement:
+    target: 2 days
+    description: T+2 settlement cycle
+
+diagram: |
+  ┌─────────────────────────────────────────────────────────────────────────────────┐
+  │                              ORDER LIFECYCLE                                     │
+  └─────────────────────────────────────────────────────────────────────────────────┘
+
+                                    ┌──────────────┐
+                                    │    DRAFT     │
+                                    │              │
+                                    └──────┬───────┘
+                                           │ submit_order
+                                           ▼
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                              VALIDATION PHASE                                 │
+  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                    │
+  │  │  SUBMITTED   │───>│  VALIDATING  │───>│ RISK CHECK   │                    │
+  │  └──────────────┘    └──────┬───────┘    └──────┬───────┘                    │
+  │                             │ fail              │ fail                        │
+  │                             ▼                   ▼                             │
+  │                      ┌─────────────┐    ┌─────────────┐                      │
+  │                      │ VALIDATION  │    │    RISK     │                      │
+  │                      │   FAILED    │    │  REJECTED   │                      │
+  │                      └─────────────┘    └─────────────┘                      │
+  └──────────────────────────────────────────────────────────────────────────────┘
+                                           │ pass
+                                           ▼
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                              EXCHANGE PHASE                                   │
+  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                    │
+  │  │  APPROVED    │───>│   SENDING    │───>│    SENT      │                    │
+  │  └──────────────┘    └──────────────┘    └──────┬───────┘                    │
+  │                                                 │ confirm                     │
+  │                      ┌──────────────┐           ▼                             │
+  │                      │   EXCHANGE   │    ┌──────────────┐                    │
+  │                      │   REJECTED   │<───│  CONFIRMED   │                    │
+  │                      └──────────────┘    └──────┬───────┘                    │
+  └──────────────────────────────────────────────────────────────────────────────┘
+                                           │
+                                           ▼
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                              MATCHING PHASE                                   │
+  │                        ┌──────────────┐                                       │
+  │                        │  ORDER BOOK  │<──────────────────┐                  │
+  │                        └──────┬───────┘                   │                  │
+  │               ┌───────────────┼───────────────┐           │                  │
+  │               │               │               │           │                  │
+  │               ▼               ▼               ▼           │                  │
+  │        ┌───────────┐  ┌────────────┐  ┌───────────┐       │                  │
+  │        │  PARTIAL  │──│   FILLED   │  │  EXPIRED  │       │                  │
+  │        │  FILLED   │  └────────────┘  └───────────┘       │                  │
+  │        └─────┬─────┘                                      │                  │
+  │              │ additional_match                           │                  │
+  │              └────────────────────────────────────────────┘                  │
+  │                                                                               │
+  │        ┌───────────┐  ┌────────────┐  ┌───────────┐                          │
+  │        │  PENDING  │──│ CANCELLED  │  │           │                          │
+  │        │  CANCEL   │  └────────────┘  │           │                          │
+  │        └───────────┘                  │           │                          │
+  └──────────────────────────────────────────────────────────────────────────────┘
+                                           │ filled
+                                           ▼
+  ┌──────────────────────────────────────────────────────────────────────────────┐
+  │                             SETTLEMENT PHASE (T+2)                            │
+  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐                    │
+  │  │   PENDING    │───>│   SETTLING   │───>│   SETTLED    │                    │
+  │  │  SETTLEMENT  │    │    (VSD)     │    │  ✓ Complete  │                    │
+  │  └──────────────┘    └──────────────┘    └──────────────┘                    │
+  └──────────────────────────────────────────────────────────────────────────────┘
+
+metrics:
+  - name: order_success_rate
+    description: Order submission success rate
+    formula: (confirmed / submitted) × 100
+    target: ">= 99%"
+
+  - name: fill_rate
+    description: Order fill rate
+    formula: (filled + partial_filled) / confirmed × 100
+    target: ">= 80%"
+
+  - name: avg_fill_time
+    description: Average fill time
+    formula: AVG(first_filled_at - confirmed_at)
+    target: "< 1 minute"
+
+  - name: cancel_rate
+    description: Order cancellation rate
+    formula: cancelled / confirmed × 100
+    target: "< 20%"
+
+  - name: settlement_success_rate
+    description: Settlement success rate
+    formula: settled / filled × 100
+    target: ">= 99.9%"
+
+  - name: e2e_latency
+    description: End-to-end latency from submit to confirm
+    formula: AVG(confirmed_at - submitted_at)
+    target: "< 500ms"

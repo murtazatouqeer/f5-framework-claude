@@ -1,0 +1,491 @@
+name: tax-rules
+display_name: Personal Income Tax Rules
+description: |
+  Business rules for Personal Income Tax (PIT/TNCN) calculation
+  including progressive tax brackets, deductions, and withholding
+  per Vietnam tax regulations.
+
+domain: hr-management
+subdomain: payroll
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Residency Rules
+  - id: TAX-001
+    name: tax_residency_determination
+    description: Determine tax residency status for correct calculation method
+    category: classification
+    priority: critical
+
+    resident_criteria:
+      - condition: "presence_in_vietnam >= 183_days_in_year"
+        result: resident
+
+      - condition: "has_permanent_residence_in_vietnam"
+        result: resident
+
+      - condition: "has_habitual_abode_in_vietnam"
+        result: resident
+
+    non_resident_criteria:
+      - condition: "does_not_meet_resident_criteria"
+        result: non_resident
+
+    tax_treatment:
+      resident:
+        method: progressive_tax
+        brackets: vietnam_pit_brackets
+        deductions_allowed: true
+
+      non_resident:
+        method: flat_rate
+        rate: 20
+        deductions_allowed: false
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_2
+
+  # Progressive Tax Brackets
+  - id: TAX-002
+    name: progressive_tax_calculation
+    description: Apply progressive tax brackets to assessable income
+    category: calculation
+    priority: critical
+
+    condition: |
+      employee.tax_status = 'resident'
+
+    tax_brackets:
+      - bracket: 1
+        range_from: 0
+        range_to: 5000000
+        rate_percent: 5
+        cumulative_max_tax: 250000
+
+      - bracket: 2
+        range_from: 5000000
+        range_to: 10000000
+        rate_percent: 10
+        cumulative_max_tax: 750000
+
+      - bracket: 3
+        range_from: 10000000
+        range_to: 18000000
+        rate_percent: 15
+        cumulative_max_tax: 1950000
+
+      - bracket: 4
+        range_from: 18000000
+        range_to: 32000000
+        rate_percent: 20
+        cumulative_max_tax: 4750000
+
+      - bracket: 5
+        range_from: 32000000
+        range_to: 52000000
+        rate_percent: 25
+        cumulative_max_tax: 9750000
+
+      - bracket: 6
+        range_from: 52000000
+        range_to: 80000000
+        rate_percent: 30
+        cumulative_max_tax: 18150000
+
+      - bracket: 7
+        range_from: 80000000
+        range_to: null
+        rate_percent: 35
+        cumulative_max_tax: null
+
+    calculation:
+      formula: |
+        FOR each bracket WHERE assessable_income > bracket.range_from:
+          taxable_in_bracket = MIN(assessable_income, bracket.range_to) - bracket.range_from
+          tax_in_bracket = taxable_in_bracket * (bracket.rate_percent / 100)
+          total_tax += tax_in_bracket
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_22
+
+  # Non-Resident Tax
+  - id: TAX-003
+    name: non_resident_tax_calculation
+    description: Apply flat 20% tax rate for non-residents
+    category: calculation
+    priority: critical
+
+    condition: |
+      employee.tax_status = 'non_resident'
+
+    calculation:
+      rate: 20
+      formula: |
+        tax_amount = taxable_income * 0.20
+
+    notes:
+      - No deductions allowed for non-residents
+      - Tax on gross taxable income
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_18
+
+  # Personal Deduction
+  - id: TAX-004
+    name: personal_deduction
+    description: Apply personal deduction of 11,000,000 VND per month
+    category: deduction
+    priority: high
+
+    condition: |
+      employee.tax_status = 'resident'
+
+    deduction:
+      amount: 11000000
+      frequency: monthly
+      annual_equivalent: 132000000
+
+    calculation:
+      formula: |
+        assessable_income = taxable_gross - personal_deduction - dependent_deduction - insurance_deduction
+        assessable_income = MAX(0, assessable_income)
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_19
+      - standard: Resolution_954_2020
+
+  # Dependent Deduction
+  - id: TAX-005
+    name: dependent_deduction
+    description: Apply 4,400,000 VND deduction per registered dependent
+    category: deduction
+    priority: high
+
+    condition: |
+      employee.tax_status = 'resident' AND
+      employee.registered_dependents > 0
+
+    deduction:
+      amount_per_dependent: 4400000
+      frequency: monthly
+      annual_equivalent: 52800000
+
+    calculation:
+      formula: |
+        dependent_deduction = dependent_count * 4400000
+
+    eligibility_criteria:
+      children:
+        - age: "under 18"
+        - age: "18-22 if full-time student"
+        - condition: "disabled regardless of age"
+
+      parents:
+        - condition: "outside working age"
+        - condition: "within working age but disabled or no income"
+        - income_threshold: 1000000
+
+      spouse:
+        - condition: "disabled"
+        - condition: "no income or income below threshold"
+
+    registration_requirement:
+      - must_register_with_tax_authority
+      - registration_form: "02/ĐK-NPT-TNCN"
+      - supporting_documents_required: true
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_19
+      - standard: Circular_111
+
+  # Insurance Deduction
+  - id: TAX-006
+    name: insurance_deduction_before_tax
+    description: Deduct mandatory insurance contributions before tax calculation
+    category: deduction
+    priority: high
+
+    condition: |
+      employee.insurance_participant = true
+
+    deductible_items:
+      - code: SI_EE
+        name: Social Insurance (Employee)
+        rate: 8.0
+        deductible: true
+
+      - code: HI_EE
+        name: Health Insurance (Employee)
+        rate: 1.5
+        deductible: true
+
+      - code: UI_EE
+        name: Unemployment Insurance (Employee)
+        rate: 1.0
+        deductible: true
+
+    calculation:
+      formula: |
+        insurance_deduction = si_employee + hi_employee + ui_employee
+        taxable_gross = gross_income - non_taxable_income
+        assessable_income = taxable_gross - personal_deduction - dependent_deduction - insurance_deduction
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_19
+
+  # Non-Taxable Income
+  - id: TAX-007
+    name: non_taxable_income_identification
+    description: Identify and exclude non-taxable income items
+    category: classification
+    priority: high
+
+    non_taxable_items:
+      meal_allowance:
+        limit: 730000
+        condition: monthly
+        excess_treatment: taxable
+
+      uniform_allowance:
+        limit: null
+        condition: "actual_cost with documentation"
+        excess_treatment: taxable
+
+      training_expense:
+        limit: null
+        condition: "job_related training"
+        documentation: required
+
+      shift_meal:
+        limit: null
+        condition: "provided_by_employer"
+        note: "Not cash equivalent"
+
+      one_time_relocation:
+        limit: null
+        condition: "documented_relocation"
+
+      severance_pay:
+        limit: null
+        condition: "per_labor_code"
+        calculation: "0.5 month per year of service"
+
+    compliance:
+      - standard: Circular_111
+        section: Non-taxable_income
+
+  # Voluntary Pension Deduction
+  - id: TAX-008
+    name: voluntary_pension_deduction
+    description: Deduct voluntary pension contributions up to limit
+    category: deduction
+    priority: medium
+
+    condition: |
+      employee.has_voluntary_pension = true
+
+    limits:
+      - type: vietnam_fund
+        max_annual: 36000000
+        max_monthly: 3000000
+
+      - type: foreign_fund
+        max_annual: varies
+        condition: "approved_fund_only"
+
+    calculation:
+      formula: |
+        deductible_pension = MIN(actual_contribution, max_monthly)
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_19
+      - standard: Circular_111
+
+  # Charity Deduction
+  - id: TAX-009
+    name: charity_deduction
+    description: Deduct charitable donations to approved organizations
+    category: deduction
+    priority: low
+
+    condition: |
+      employee.has_charity_donation = true
+
+    requirements:
+      - donation_to_approved_organization
+      - documentation_required
+      - receipt_from_organization
+
+    approved_organizations:
+      - government_funds
+      - registered_charities
+      - social_welfare_organizations
+      - education_funds
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_19
+
+  # Tax Withholding Timing
+  - id: TAX-010
+    name: monthly_tax_withholding
+    description: Employer must withhold tax monthly
+    category: compliance
+    priority: critical
+
+    requirements:
+      - withhold_at_payment
+      - declare_by_20th_of_following_month
+      - pay_to_tax_authority
+
+    declaration_form: "02/KK-TNCN"
+
+    late_payment_penalty:
+      rate: "0.03% per day"
+      max_penalty: "75% of tax amount"
+
+    compliance:
+      - standard: Tax_Administration_Law
+        article: Article_55
+
+  # Year-End Finalization
+  - id: TAX-011
+    name: annual_tax_finalization
+    description: Annual tax finalization requirements
+    category: compliance
+    priority: high
+
+    employer_obligations:
+      - finalize_for_employees_who_authorize
+      - issue_tax_withheld_certificate
+      - submit_annual_report_by_march_31
+
+    employee_options:
+      option_1:
+        description: "Authorize employer to finalize"
+        condition: "single_employer income only"
+
+      option_2:
+        description: "Self-finalize"
+        condition: "multiple income sources OR preference"
+        deadline: "April 30 of following year"
+
+    forms:
+      employer: "05/QTT-TNCN"
+      employee: "02/QT-TNCN"
+
+    compliance:
+      - standard: Vietnam_PIT_Law
+        article: Article_26
+      - standard: Circular_111
+
+  # Tax Refund/Additional
+  - id: TAX-012
+    name: tax_adjustment_handling
+    description: Handle over/under withholding after finalization
+    category: process
+    priority: medium
+
+    overpayment:
+      options:
+        - credit_to_next_year
+        - request_refund
+      refund_timeline: "45 days from request"
+
+    underpayment:
+      deadline: "With finalization submission"
+      penalty_if_late: "0.03% per day"
+
+    employer_error:
+      responsibility: employer
+      correction_method: amended_declaration
+
+  # Special Cases
+  - id: TAX-013
+    name: bonus_tax_treatment
+    description: Tax treatment for bonuses and irregular income
+    category: calculation
+    priority: medium
+
+    treatment:
+      regular_bonus:
+        method: aggregate_with_salary
+        timing: month_of_payment
+
+      annual_bonus:
+        method: aggregate_with_salary
+        timing: month_of_payment
+
+      stock_options:
+        method: separate_taxation
+        timing: exercise_date
+        rate: progressive_brackets
+
+    note: "All bonuses subject to PIT at progressive rates for residents"
+
+  # Tax ID Validation
+  - id: TAX-014
+    name: tax_id_requirement
+    description: Employees must have valid tax ID for proper withholding
+    category: compliance
+    priority: high
+
+    requirements:
+      - tax_id_format: "10 or 13 digits"
+      - verification: "validate_with_tax_authority"
+
+    missing_tax_id:
+      action: "Apply 10% withholding rate"
+      warning: "Employee should register for tax ID"
+
+    invalid_tax_id:
+      action: "Block payroll until corrected"
+      escalation: "HR and Finance notification"
+
+rule_dependencies:
+  TAX-001:
+    determines: [TAX-002, TAX-003]
+    reason: "Residency determines calculation method"
+
+  TAX-004:
+    requires: [TAX-001]
+    reason: "Only residents get personal deduction"
+
+  TAX-005:
+    requires: [TAX-001]
+    reason: "Only residents get dependent deduction"
+
+execution_order:
+  - phase: classification
+    rules: [TAX-001, TAX-007, TAX-014]
+
+  - phase: deductions
+    rules: [TAX-004, TAX-005, TAX-006, TAX-008, TAX-009]
+
+  - phase: calculation
+    rules: [TAX-002, TAX-003, TAX-013]
+
+  - phase: compliance
+    rules: [TAX-010, TAX-011, TAX-012]
+
+compliance_summary:
+  - standard: Vietnam_PIT_Law
+    articles: [2, 18, 19, 22, 26]
+
+  - standard: Circular_111_2013
+    subject: PIT_implementation
+
+  - standard: Resolution_954_2020
+    subject: Deduction_amounts
+
+  - standard: Tax_Administration_Law
+    articles: [55]

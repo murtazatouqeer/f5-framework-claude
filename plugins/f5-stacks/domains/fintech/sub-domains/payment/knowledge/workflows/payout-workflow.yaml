@@ -1,0 +1,452 @@
+# Payout Workflow
+# Domain: fintech/payment
+# Purpose: Process merchant payouts to bank accounts
+
+name: Payout Processing
+display_name: Payout Processing Workflow
+description: |
+  Complete workflow for processing payouts from settlement batches
+  to merchant bank accounts including validation, transfer, and confirmation.
+
+  Vietnamese: Quy trình hoàn chỉnh xử lý thanh toán từ đợt quyết toán
+  đến tài khoản ngân hàng merchant bao gồm xác thực, chuyển tiền và xác nhận.
+
+domain: fintech
+sub_domain: payment
+category: workflow
+version: "1.0.0"
+
+workflow:
+  id: WF-PAY-002
+  name: payout_processing
+  trigger: scheduled_daily | settlement_completed | manual_request
+
+  schedule:
+    time: "14:00"
+    timezone: "Asia/Ho_Chi_Minh"
+    days: [mon, tue, wed, thu, fri]  # Business days only
+
+  steps:
+    # ============ STEP 1: INITIALIZE PAYOUT RUN ============
+    - id: initialize_payout_run
+      name: Initialize Payout Run
+      description: Start daily payout processing
+      vietnamese: Bắt đầu xử lý thanh toán hàng ngày
+      type: action
+      input:
+        - payout_date
+        - run_type (scheduled | manual)
+      actions:
+        - create_payout_run_record()
+        - identify_pending_payouts()
+        - verify_bank_connectivity()
+        - check_available_funds()
+      output:
+        - payout_run_id
+        - payouts_to_process[]
+        - total_payout_amount
+
+    # ============ STEP 2: VALIDATE PAYOUTS ============
+    - id: validate_payouts
+      name: Validate Payouts
+      description: Validate each payout before processing
+      vietnamese: Xác thực mỗi khoản thanh toán trước khi xử lý
+      type: batch_action
+      input:
+        - payouts_to_process
+      process:
+        for_each_payout:
+          validations:
+            - id: merchant_status
+              rule: merchant.status = 'active'
+              error: MERCHANT_NOT_ACTIVE
+
+            - id: account_verified
+              rule: merchant_account.status = 'verified'
+              error: ACCOUNT_NOT_VERIFIED
+
+            - id: minimum_amount
+              rule: payout.amount >= merchant.minimum_payout_amount
+              error: BELOW_MINIMUM
+              action: defer_payout
+
+            - id: daily_limit
+              rule: payout.amount <= merchant.daily_payout_limit
+              error: EXCEEDS_DAILY_LIMIT
+
+            - id: sufficient_balance
+              rule: merchant.available_balance >= payout.amount
+              error: INSUFFICIENT_BALANCE
+
+            - id: no_holds
+              rule: merchant.payout_hold = false
+              error: PAYOUT_ON_HOLD
+
+      output:
+        - validated_payouts[]
+        - failed_validations[]
+        - deferred_payouts[]
+
+    # ============ STEP 3: RISK CHECK ============
+    - id: risk_check
+      name: Payout Risk Check
+      description: Check for payout fraud patterns
+      vietnamese: Kiểm tra mẫu gian lận thanh toán
+      type: action
+      input:
+        - validated_payouts
+      checks:
+        - id: unusual_amount
+          rule: payout.amount <= merchant.average_payout * 3
+          risk_score_impact: +25
+
+        - id: new_account
+          rule: merchant_account.created_at < 7 days ago
+          risk_score_impact: +20
+
+        - id: account_change
+          rule: merchant_account changed in last 24h
+          risk_score_impact: +30
+
+        - id: velocity_check
+          rule: payouts_today <= normal_frequency * 2
+          risk_score_impact: +15
+
+        - id: country_change
+          rule: payout.country = merchant.registered_country
+          risk_score_impact: +40
+
+      output:
+        - risk_assessed_payouts[]
+        - high_risk_payouts[]
+      decision:
+        - if: risk_score > 70
+          goto: manual_approval
+        - else: continue
+
+    # ============ STEP 4: MANUAL APPROVAL (IF NEEDED) ============
+    - id: manual_approval
+      name: Manual Approval
+      description: Queue high-risk payouts for approval
+      vietnamese: Đưa thanh toán rủi ro cao vào hàng đợi phê duyệt
+      type: manual_action
+      actor: finance_team
+      condition: payout.risk_score > 70 OR payout.amount > approval_threshold
+      input:
+        - high_risk_payouts
+        - risk_factors
+      actions:
+        - create_approval_request()
+        - notify_approvers()
+        - wait_for_approval()
+      parameters:
+        approval_threshold: 100000000  # 100M VND
+        sla: 4 hours
+      output:
+        - approval_decision
+        - approved_by
+        - approval_notes
+      decision:
+        - if: approved
+          continue
+        - if: rejected
+          goto: reject_payout
+
+    # ============ STEP 5: PREPARE TRANSFERS ============
+    - id: prepare_transfers
+      name: Prepare Bank Transfers
+      description: Prepare transfer instructions for each payout
+      vietnamese: Chuẩn bị lệnh chuyển khoản cho mỗi thanh toán
+      type: batch_action
+      input:
+        - approved_payouts
+      process:
+        for_each_payout:
+          - determine_transfer_method:
+              - if: payout.is_instant
+                then: method = 'instant_transfer'
+                fee: instant_fee
+              - if: payout.destination_bank IN napas_banks
+                then: method = 'napas'
+                fee: 0
+              - if: international
+                then: method = 'swift'
+                fee: swift_fee
+
+          - build_transfer_instruction:
+              - source_account: platform_settlement_account
+              - destination_account: merchant_account
+              - amount: payout.net_amount
+              - reference: payout.payout_id
+              - description: "Payout {settlement_id}"
+
+          - calculate_fees:
+              - transfer_fee: based on method
+              - net_amount: payout.amount - transfer_fee
+
+      output:
+        - transfer_instructions[]
+        - total_transfer_amount
+        - total_fees
+
+    # ============ STEP 6: INITIATE TRANSFERS ============
+    - id: initiate_transfers
+      name: Initiate Bank Transfers
+      description: Send transfers to banking partner
+      vietnamese: Gửi chuyển khoản đến đối tác ngân hàng
+      type: batch_action
+      batch_config:
+        batch_size: 100
+        parallel_workers: 5
+        retry_failed: true
+      input:
+        - transfer_instructions
+      process:
+        for_each_transfer:
+          - submit_to_bank_api()
+          - store_bank_reference()
+          - update_payout_status(in_transit)
+          - debit_platform_account()
+      output:
+        - initiated_transfers[]
+        - failed_initiations[]
+        - bank_references[]
+      retry:
+        max_attempts: 3
+        backoff: exponential
+        retry_on: [timeout, connection_error]
+
+    # ============ STEP 7: TRACK TRANSFER STATUS ============
+    - id: track_transfers
+      name: Track Transfer Status
+      description: Monitor transfer completion
+      vietnamese: Theo dõi hoàn thành chuyển khoản
+      type: async_action
+      input:
+        - initiated_transfers
+      tracking:
+        polling_interval: 15 minutes
+        max_wait_time: 24 hours
+        status_check:
+          - query_bank_status(bank_reference)
+          - update_payout_status_if_changed()
+
+      statuses:
+        - pending: Transfer submitted
+        - processing: Bank processing
+        - completed: Funds deposited
+        - failed: Transfer failed
+        - returned: Funds returned
+
+      output:
+        - transfer_statuses[]
+        - completed_transfers[]
+        - failed_transfers[]
+
+    # ============ STEP 8: CONFIRM DEPOSITS ============
+    - id: confirm_deposits
+      name: Confirm Deposits
+      description: Confirm successful fund deposits
+      vietnamese: Xác nhận gửi tiền thành công
+      type: action
+      input:
+        - completed_transfers
+      process:
+        for_each_completed:
+          - update_payout_status(paid)
+          - set_paid_at(now())
+          - update_settlement_status(completed)
+          - update_merchant_last_payout()
+      output:
+        - confirmed_payouts[]
+        - total_paid_amount
+
+    # ============ STEP 9: HANDLE FAILURES ============
+    - id: handle_failures
+      name: Handle Failed Transfers
+      description: Process failed transfers
+      vietnamese: Xử lý chuyển khoản thất bại
+      type: action
+      input:
+        - failed_transfers
+      process:
+        for_each_failure:
+          - analyze_failure_reason()
+          - determine_action:
+              - if: temporary_error
+                then: schedule_retry()
+              - if: invalid_account
+                then: disable_account()
+                      notify_merchant()
+              - if: account_closed
+                then: return_funds_to_balance()
+                      require_new_account()
+
+          - update_payout_status(failed)
+          - set_failure_details()
+          - notify_merchant(failure_reason)
+          - alert_operations_if_critical()
+      output:
+        - handled_failures[]
+        - retries_scheduled[]
+        - accounts_disabled[]
+
+    # ============ STEP 10: NOTIFY MERCHANTS ============
+    - id: notify_merchants
+      name: Notify Merchants
+      description: Send payout notifications
+      vietnamese: Gửi thông báo thanh toán
+      type: async_action
+      parallel_actions:
+        - notify_success:
+            for_each: confirmed_payouts
+            channels:
+              - email: payout_confirmation
+              - webhook: payout.paid
+              - dashboard: update_balance
+
+        - notify_failure:
+            for_each: failed_payouts
+            channels:
+              - email: payout_failed
+              - webhook: payout.failed
+              - dashboard: action_required
+
+      output:
+        - notifications_sent[]
+
+    # ============ STEP 11: RECONCILE AND REPORT ============
+    - id: reconcile_and_report
+      name: Reconcile and Report
+      description: Reconcile payouts and generate reports
+      vietnamese: Đối chiếu thanh toán và tạo báo cáo
+      type: action
+      input:
+        - payout_run_id
+        - all_payouts
+      actions:
+        - reconcile_with_bank_statement()
+        - generate_payout_report()
+        - update_accounting_records()
+        - log_payout_metrics()
+      output:
+        - reconciliation_result
+        - payout_report_url
+        - metrics
+
+    # ============ STEP 12: COMPLETE PAYOUT RUN ============
+    - id: complete_payout_run
+      name: Complete Payout Run
+      description: Finalize the payout run
+      vietnamese: Hoàn tất lần chạy thanh toán
+      type: action
+      input:
+        - payout_run_id
+      actions:
+        - update_payout_run_status(completed)
+        - record_final_metrics()
+        - send_completion_notification()
+        - archive_payout_data()
+      output:
+        - payout_run_status: completed
+        - summary:
+            total_payouts: count
+            total_amount: sum
+            success_rate: percentage
+            average_processing_time: duration
+
+# ============ PAYOUT TYPES ============
+payout_types:
+  standard:
+    description: Regular scheduled payout
+    timing: T+2 business days
+    fee: 0
+    batch_processing: true
+
+  instant:
+    description: Instant payout on demand
+    timing: 15-30 minutes
+    fee: 0.5% (min 5,000 VND)
+    batch_processing: false
+    requirements:
+      - merchant.instant_payout_enabled = true
+      - merchant.verification_status = 'verified'
+      - available_for_instant > payout.amount
+
+  international:
+    description: Cross-border payout via SWIFT
+    timing: 2-5 business days
+    fee: 150,000 VND fixed
+    additional_info:
+      - swift_code_required
+      - intermediary_bank_may_be_needed
+      - exchange_rate_at_time_of_transfer
+
+# ============ TRANSFER METHODS ============
+transfer_methods:
+  napas:
+    description: Vietnam domestic interbank
+    supported_banks: all_napas_members
+    processing_time: same_day or next_day
+    cut_off_time: "15:00"
+
+  instant:
+    description: Real-time transfer
+    supported_banks: instant_enabled_banks
+    processing_time: 15-30 minutes
+    availability: 24/7
+
+  swift:
+    description: International wire transfer
+    processing_time: 2-5 business_days
+    requirements:
+      - swift_code
+      - iban_or_account_number
+      - bank_address
+
+# ============ ERROR HANDLING ============
+error_handling:
+  transfer_failures:
+    invalid_account:
+      action: disable_account
+      notification: merchant
+      retry: false
+
+    insufficient_funds:
+      action: alert_treasury
+      notification: operations
+      retry: false
+
+    bank_timeout:
+      action: retry_with_backoff
+      max_retries: 3
+      notification: if_final_failure
+
+    account_closed:
+      action: return_to_balance
+      notification: merchant
+      require_action: update_bank_account
+
+# ============ MONITORING ============
+monitoring:
+  metrics:
+    - payout_success_rate
+    - average_processing_time
+    - transfer_failure_rate
+    - instant_payout_volume
+    - total_payout_amount
+
+  alerts:
+    - success_rate_below: 98%
+    - processing_time_above: 4 hours
+    - failure_rate_above: 2%
+    - bank_connectivity_down
+    - insufficient_platform_balance
+
+# ============ SECURITY ============
+security:
+  - dual_approval_for_large_payouts
+  - ip_whitelist_for_api_access
+  - encryption_of_bank_details
+  - audit_log_all_transfers
+  - rate_limiting_on_instant_payouts

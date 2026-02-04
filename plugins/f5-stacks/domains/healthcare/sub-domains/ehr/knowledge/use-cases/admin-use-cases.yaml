@@ -1,0 +1,701 @@
+# =============================================================================
+# ADMIN USE CASES - EHR Sub-domain
+# Ca sử dụng cho Quản trị viên
+# =============================================================================
+
+name: AdminUseCases
+display_name: Admin Use Cases / Ca sử dụng cho Quản trị viên
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+actor_type: administrative
+
+description: |
+  Use cases for administrative and operational staff including registration,
+  scheduling, billing, health information management, and system administration.
+  Covers non-clinical support functions essential to EHR operations.
+
+# =============================================================================
+# ACTOR DEFINITIONS
+# =============================================================================
+primary_actors:
+  registration_clerk:
+    name: Registration Clerk
+    description: Staff registering patients
+    permissions: [demographics, insurance, scheduling]
+
+  scheduler:
+    name: Scheduling Staff
+    description: Staff managing appointments
+    permissions: [scheduling, patient_lookup]
+
+  billing_specialist:
+    name: Billing Specialist
+    description: Staff handling billing and claims
+    permissions: [billing, demographics, encounter_access]
+
+  him_specialist:
+    name: HIM Specialist
+    description: Health Information Management staff
+    permissions: [medical_records, coding, release_of_information]
+
+  system_administrator:
+    name: System Administrator
+    description: IT staff managing EHR
+    permissions: [system_configuration, user_management]
+
+  privacy_officer:
+    name: Privacy Officer
+    description: HIPAA compliance officer
+    permissions: [audit_logs, access_reports, policy_management]
+
+# =============================================================================
+# USE CASES - REGISTRATION
+# =============================================================================
+registration_use_cases:
+  - id: UC-ADM-001
+    name: Register New Patient
+    display_name_vi: Đăng ký Bệnh nhân Mới
+    description: Create new patient record in system
+    actors: [registration_clerk]
+    preconditions:
+      - Patient presenting for first visit
+      - Patient identity verified
+    trigger: New patient arrives
+    main_flow:
+      1: Clerk searches for existing patient
+      2: No match found in system
+      3: Clerk creates new patient record
+      4: Clerk enters demographics
+      5: Clerk scans ID and insurance cards
+      6: Clerk verifies insurance eligibility
+      7: Clerk collects consents
+      8: Clerk assigns MRN
+      9: Patient record created
+    required_data:
+      - legal_name: First, middle, last
+      - date_of_birth: MM/DD/YYYY
+      - gender: Administrative gender
+      - address: Current address
+      - phone: Contact numbers
+      - emergency_contact: Name and phone
+      - ssn_last_four: For identity matching
+      - insurance: Primary and secondary
+    duplicate_prevention:
+      - search_before_create: Mandatory
+      - matching_algorithm: Probabilistic matching
+      - potential_duplicates: Review before creating
+    postconditions:
+      - Patient record created with unique MRN
+      - Insurance verified
+
+  - id: UC-ADM-002
+    name: Check In Patient
+    display_name_vi: Làm thủ tục Nhập viện
+    description: Check in patient for scheduled appointment
+    actors: [registration_clerk]
+    preconditions:
+      - Patient has scheduled appointment
+      - Patient arrives at facility
+    trigger: Patient presents for appointment
+    main_flow:
+      1: Clerk searches for patient
+      2: Clerk selects scheduled appointment
+      3: Clerk verifies patient identity
+      4: Clerk updates demographics if needed
+      5: Clerk verifies insurance if needed
+      6: Clerk collects copay if required
+      7: Clerk checks in patient
+      8: Clinical staff notified
+    verification_steps:
+      - identity: Photo ID match
+      - demographics: Confirm address and phone
+      - insurance: Card match and eligibility
+      - consents: Annual update if due
+    postconditions:
+      - Patient checked in
+      - Added to clinical worklist
+
+  - id: UC-ADM-003
+    name: Verify Insurance Eligibility
+    display_name_vi: Xác minh Bảo hiểm
+    description: Verify patient insurance coverage
+    actors: [registration_clerk]
+    preconditions:
+      - Patient has insurance information on file
+    trigger: Pre-visit or at check-in
+    main_flow:
+      1: Clerk accesses eligibility verification
+      2: Clerk initiates real-time inquiry
+      3: System queries clearinghouse
+      4: Response received
+      5: Clerk reviews eligibility status
+      6: Clerk documents verification
+    eligibility_information:
+      - coverage_status: Active or inactive
+      - effective_dates: Coverage period
+      - copay_amounts: Office visit copay
+      - deductible: Amount and status
+      - prior_auth_required: Services requiring PA
+      - pcp_information: If HMO
+    alternate_flows:
+      A1_not_eligible:
+        trigger: Insurance reports not eligible
+        flow:
+          1: Clerk notifies patient
+          2: Patient provides updated information
+          3: Re-verify or self-pay discussion
+    postconditions:
+      - Eligibility documented
+      - Coverage confirmed or alternative arranged
+
+  - id: UC-ADM-004
+    name: Merge Duplicate Patients
+    display_name_vi: Hợp nhất Hồ sơ Trùng lặp
+    description: Merge duplicate patient records
+    actors: [him_specialist, system_administrator]
+    preconditions:
+      - Duplicate records identified
+      - Authority to merge
+    trigger: Duplicate patients discovered
+    main_flow:
+      1: Specialist reviews both records
+      2: Specialist confirms same patient
+      3: Specialist identifies surviving record
+      4: Specialist reviews data in both
+      5: System merges records
+      6: Non-surviving MRN deactivated
+      7: Merge documented and audited
+    merge_considerations:
+      - which_survives: Most complete record
+      - data_retention: All data preserved
+      - links_updated: All encounters moved
+      - audit_trail: Merge documented
+    postconditions:
+      - Single patient record exists
+      - All history consolidated
+
+# =============================================================================
+# USE CASES - SCHEDULING
+# =============================================================================
+scheduling_use_cases:
+  - id: UC-ADM-005
+    name: Schedule Appointment
+    display_name_vi: Đặt lịch Hẹn
+    description: Schedule patient appointment
+    actors: [scheduler]
+    preconditions:
+      - Patient exists in system
+      - Provider has available slots
+    trigger: Patient requests appointment
+    main_flow:
+      1: Scheduler searches for patient
+      2: Scheduler selects provider
+      3: Scheduler selects visit type
+      4: System displays available slots
+      5: Scheduler selects time with patient
+      6: Scheduler confirms appointment
+      7: Confirmation sent to patient
+    scheduling_rules:
+      - provider_availability: Based on template
+      - visit_duration: By visit type
+      - double_booking: By policy
+      - overbooking: By policy
+      - buffer_time: Between appointments
+    appointment_types:
+      - new_patient: Longer duration
+      - follow_up: Standard duration
+      - procedure: Block time
+      - urgent: Same day
+    postconditions:
+      - Appointment scheduled
+      - Confirmation sent
+
+  - id: UC-ADM-006
+    name: Manage Provider Schedule
+    display_name_vi: Quản lý Lịch Bác sĩ
+    description: Configure provider schedule template
+    actors: [scheduler, system_administrator]
+    preconditions:
+      - Provider is credentialed
+      - Schedule authority granted
+    trigger: Need to set up or modify schedule
+    main_flow:
+      1: Administrator opens schedule management
+      2: Administrator selects provider
+      3: Administrator defines schedule template
+      4: Administrator sets availability
+      5: Administrator applies restrictions
+      6: Template saved
+    schedule_elements:
+      - clinic_hours: Start and end times
+      - visit_types: Allowed appointment types
+      - slot_duration: Minutes per slot
+      - breaks: Lunch, meetings
+      - vacation_blocks: Time off
+    postconditions:
+      - Schedule template active
+      - Appointments can be scheduled
+
+  - id: UC-ADM-007
+    name: Manage Waitlist
+    display_name_vi: Quản lý Danh sách Chờ
+    description: Manage patients waiting for appointments
+    actors: [scheduler]
+    preconditions:
+      - Patients on waitlist
+      - Appointment becomes available
+    trigger: Cancellation creates opening
+    main_flow:
+      1: Scheduler identifies opening
+      2: Scheduler reviews waitlist
+      3: Scheduler contacts waitlist patient
+      4: Patient accepts appointment
+      5: Appointment booked from waitlist
+      6: Patient removed from waitlist
+    waitlist_management:
+      - priority_order: Urgency and date added
+      - contact_preferences: Call, text, email
+      - availability_windows: Patient preferences
+    postconditions:
+      - Opening filled
+      - Waitlist updated
+
+# =============================================================================
+# USE CASES - BILLING
+# =============================================================================
+billing_use_cases:
+  - id: UC-ADM-008
+    name: Code Encounter
+    display_name_vi: Mã hóa Ca Khám
+    description: Assign billing codes to encounter
+    actors: [billing_specialist, him_specialist]
+    preconditions:
+      - Encounter documentation complete
+      - Provider has signed note
+    trigger: Encounter ready for billing
+    main_flow:
+      1: Coder reviews documentation
+      2: Coder identifies diagnoses
+      3: Coder assigns ICD-10 codes
+      4: Coder identifies procedures
+      5: Coder assigns CPT codes
+      6: Coder reviews medical necessity
+      7: Codes submitted for billing
+    coding_guidelines:
+      - principal_diagnosis: Main reason for visit
+      - secondary_diagnoses: Comorbidities
+      - procedure_codes: Services rendered
+      - modifiers: Circumstances
+    quality_checks:
+      - documentation_supports_codes
+      - medical_necessity_met
+      - code_combinations_valid
+    postconditions:
+      - Encounter coded
+      - Ready for claim generation
+
+  - id: UC-ADM-009
+    name: Submit Claims
+    display_name_vi: Gửi Yêu cầu Bảo hiểm
+    description: Submit claims to insurance payers
+    actors: [billing_specialist]
+    preconditions:
+      - Encounters coded
+      - Patient insurance verified
+    trigger: Claims ready for submission
+    main_flow:
+      1: Specialist reviews claim queue
+      2: Specialist validates claim data
+      3: System performs scrubbing
+      4: Specialist corrects errors
+      5: Claims submitted electronically
+      6: Submission confirmed
+      7: Claims tracked for payment
+    claim_validation:
+      - patient_demographics: Name, DOB, ID
+      - insurance_information: Payer ID, policy
+      - service_details: Dates, codes
+      - provider_information: NPI, billing address
+    submission_methods:
+      - electronic: 837 format to clearinghouse
+      - paper: 1500 form for exceptions
+    postconditions:
+      - Claims submitted
+      - Tracking numbers received
+
+  - id: UC-ADM-010
+    name: Process Remittance
+    display_name_vi: Xử lý Thanh toán
+    description: Process payment and remittance from payers
+    actors: [billing_specialist]
+    preconditions:
+      - Payment received from payer
+      - Remittance advice available
+    trigger: ERA/EOB received
+    main_flow:
+      1: Specialist receives remittance
+      2: System posts payments automatically
+      3: Specialist reviews denials
+      4: Specialist identifies adjustments
+      5: Patient responsibility calculated
+      6: Patient statements generated
+    remittance_actions:
+      - paid_claims: Post payment
+      - denied_claims: Review and appeal if appropriate
+      - partial_payment: Identify reason
+      - patient_balance: Generate statement
+    denial_management:
+      - identify_reason_code
+      - determine_if_appealable
+      - submit_corrected_claim_or_appeal
+    postconditions:
+      - Payments posted
+      - Denials addressed
+
+  - id: UC-ADM-011
+    name: Prior Authorization
+    display_name_vi: Xin Phê duyệt Trước
+    description: Obtain prior authorization from payer
+    actors: [billing_specialist]
+    preconditions:
+      - Service requires authorization
+      - Clinical documentation available
+    trigger: Authorization required for service
+    main_flow:
+      1: Specialist gathers clinical information
+      2: Specialist submits authorization request
+      3: Payer reviews request
+      4: Decision received
+      5: Authorization documented
+      6: Service scheduled if approved
+    authorization_channels:
+      - electronic: Portal or API
+      - fax: Standard form
+      - phone: Urgent requests
+    decision_outcomes:
+      - approved: Document auth number
+      - denied: Evaluate appeal options
+      - pending: Track for follow-up
+    postconditions:
+      - Authorization obtained or appealed
+      - Service can proceed
+
+# =============================================================================
+# USE CASES - HEALTH INFORMATION MANAGEMENT
+# =============================================================================
+him_use_cases:
+  - id: UC-ADM-012
+    name: Process Release of Information
+    display_name_vi: Xử lý Yêu cầu Thông tin
+    description: Handle requests for patient records
+    actors: [him_specialist]
+    preconditions:
+      - Valid authorization received
+      - Request is complete
+    trigger: ROI request received
+    main_flow:
+      1: Specialist receives request
+      2: Specialist verifies authorization
+      3: Specialist validates request
+      4: Specialist retrieves records
+      5: Specialist reviews for sensitive information
+      6: Specialist prepares release
+      7: Records released to requestor
+      8: Release logged
+    authorization_requirements:
+      - patient_signature: Valid and dated
+      - specific_information: What to release
+      - recipient: Who receives
+      - purpose: Reason for disclosure
+      - expiration: Date or event
+    sensitive_information:
+      - substance_abuse: 42 CFR Part 2 consent
+      - mental_health: State-specific requirements
+      - hiv: State-specific requirements
+    postconditions:
+      - Records released appropriately
+      - Disclosure logged
+
+  - id: UC-ADM-013
+    name: Respond to Subpoena
+    display_name_vi: Phản hồi Trát đòi hầu tòa
+    description: Handle legal requests for records
+    actors: [him_specialist, privacy_officer]
+    preconditions:
+      - Valid subpoena received
+    trigger: Legal request received
+    main_flow:
+      1: Specialist receives subpoena
+      2: Specialist verifies validity
+      3: Privacy officer reviews
+      4: Legal counsel consulted if needed
+      5: Records prepared per order
+      6: Records released to court
+      7: Release documented
+    validation_steps:
+      - valid_court_order: Properly issued
+      - scope_defined: Specific records
+      - patient_notification: If required
+    special_handling:
+      - protective_order: If sensitive
+      - patient_objection: Legal review
+    postconditions:
+      - Legal obligation met
+      - Proper documentation
+
+  - id: UC-ADM-014
+    name: Manage Record Retention
+    display_name_vi: Quản lý Lưu trữ Hồ sơ
+    description: Oversee record retention and destruction
+    actors: [him_specialist]
+    preconditions:
+      - Retention schedule established
+      - Records eligible for action
+    trigger: Scheduled retention review
+    main_flow:
+      1: Specialist identifies eligible records
+      2: Specialist verifies no legal holds
+      3: Specialist confirms retention met
+      4: Records approved for destruction
+      5: Secure destruction executed
+      6: Destruction documented
+    retention_verification:
+      - minimum_retention_met
+      - no_litigation_hold
+      - no_audit_in_progress
+      - regulatory_compliance
+    destruction_methods:
+      - paper: Shredding or incineration
+      - electronic: Secure erasure
+      - media: Degaussing or destruction
+    postconditions:
+      - Records appropriately retained or destroyed
+      - Destruction certificate maintained
+
+# =============================================================================
+# USE CASES - SYSTEM ADMINISTRATION
+# =============================================================================
+system_admin_use_cases:
+  - id: UC-ADM-015
+    name: Manage User Accounts
+    display_name_vi: Quản lý Tài khoản Người dùng
+    description: Create and manage EHR user accounts
+    actors: [system_administrator]
+    preconditions:
+      - User provisioning request received
+      - HR verification completed
+    trigger: New hire or role change
+    main_flow:
+      1: Admin receives access request
+      2: Admin verifies HR employment
+      3: Admin creates user account
+      4: Admin assigns roles
+      5: Admin sets initial password
+      6: User receives credentials
+      7: User completes training
+      8: Access activated
+    account_actions:
+      - create: New user account
+      - modify: Change roles or access
+      - disable: Temporary deactivation
+      - terminate: Permanent removal
+    role_assignment:
+      - job_function: Determines base role
+      - department: Determines scope
+      - credentials: Determines privileges
+    postconditions:
+      - Account provisioned appropriately
+      - User can access system
+
+  - id: UC-ADM-016
+    name: Audit User Access
+    display_name_vi: Kiểm toán Truy cập Người dùng
+    description: Review and audit user access to PHI
+    actors: [privacy_officer, system_administrator]
+    preconditions:
+      - Audit trigger identified
+    trigger: Scheduled or triggered audit
+    main_flow:
+      1: Privacy officer defines audit scope
+      2: System generates audit report
+      3: Officer reviews access patterns
+      4: Officer identifies anomalies
+      5: Anomalies investigated
+      6: Findings documented
+      7: Actions taken if needed
+    audit_types:
+      - routine: Regular sampling
+      - vip_patient: Enhanced monitoring
+      - break_the_glass: All emergency access
+      - complaint_based: Specific allegations
+    audit_report_elements:
+      - user_id: Who accessed
+      - patient_id: Whose record
+      - action: What was done
+      - timestamp: When accessed
+      - workstation: From where
+    postconditions:
+      - Audit completed
+      - Issues addressed
+
+  - id: UC-ADM-017
+    name: Configure Clinical Content
+    display_name_vi: Cấu hình Nội dung Lâm sàng
+    description: Manage clinical content like order sets
+    actors: [system_administrator]
+    preconditions:
+      - Clinical committee approval
+      - Content validated
+    trigger: Content change request
+    main_flow:
+      1: Admin receives approved content
+      2: Admin accesses build environment
+      3: Admin creates or modifies content
+      4: Admin tests in sandbox
+      5: Content reviewed by clinical
+      6: Content promoted to production
+      7: Communication sent to users
+    content_types:
+      - order_sets: Grouped orders
+      - documentation_templates: Note templates
+      - smart_phrases: Text shortcuts
+      - preference_lists: Favorites
+      - alerts: CDS rules
+    change_management:
+      - approval_required: Clinical committee
+      - testing: Required before production
+      - documentation: Change documented
+    postconditions:
+      - Content available to users
+      - Change documented
+
+  - id: UC-ADM-018
+    name: Manage System Downtime
+    display_name_vi: Quản lý Thời gian Ngừng hệ thống
+    description: Plan and execute system maintenance
+    actors: [system_administrator]
+    preconditions:
+      - Maintenance window approved
+      - Downtime procedures established
+    trigger: Planned maintenance or emergency
+    main_flow:
+      1: Admin announces planned downtime
+      2: Users prepare for downtime
+      3: Downtime procedures activated
+      4: System taken offline
+      5: Maintenance performed
+      6: System tested
+      7: System restored
+      8: Users resume normal operations
+    downtime_procedures:
+      - notification: 72 hours advance for planned
+      - workarounds: Paper forms available
+      - critical_functions: Maintained if possible
+      - recovery: Prioritized restoration
+    communication:
+      - pre_downtime: What to expect
+      - during_downtime: Status updates
+      - post_downtime: System restored
+    postconditions:
+      - Maintenance completed
+      - System operational
+
+# =============================================================================
+# USE CASES - COMPLIANCE
+# =============================================================================
+compliance_use_cases:
+  - id: UC-ADM-019
+    name: Investigate Privacy Incident
+    display_name_vi: Điều tra Sự cố Bảo mật
+    description: Investigate potential privacy breach
+    actors: [privacy_officer]
+    preconditions:
+      - Incident reported
+      - Investigation warranted
+    trigger: Privacy incident reported
+    main_flow:
+      1: Privacy officer receives report
+      2: Officer assesses incident severity
+      3: Officer gathers information
+      4: Officer reviews audit logs
+      5: Officer interviews involved parties
+      6: Officer determines if breach occurred
+      7: Officer documents findings
+      8: Officer takes corrective action
+      9: Officer reports if required
+    incident_assessment:
+      - what_happened: Description of incident
+      - phi_involved: Type and scope
+      - individuals_affected: Count
+      - mitigation: Steps to reduce harm
+    breach_determination:
+      - low_probability_of_compromise: Not a breach
+      - unauthorized_access_or_disclosure: Breach
+      - exceptions: Treatment, operations, unintentional
+    reporting_requirements:
+      - under_500: Annual report to HHS
+      - over_500: 60 day report, media notification
+      - individual_notification: All breaches
+    postconditions:
+      - Investigation complete
+      - Reporting obligations met
+
+  - id: UC-ADM-020
+    name: Conduct Risk Assessment
+    display_name_vi: Đánh giá Rủi ro
+    description: Perform HIPAA security risk assessment
+    actors: [privacy_officer, system_administrator]
+    preconditions:
+      - Assessment scheduled
+      - Resources allocated
+    trigger: Annual assessment or significant change
+    main_flow:
+      1: Team defines scope
+      2: Team identifies assets
+      3: Team identifies threats
+      4: Team assesses vulnerabilities
+      5: Team calculates risk
+      6: Team documents findings
+      7: Team recommends remediation
+      8: Leadership approves plan
+      9: Remediation implemented
+    risk_assessment_elements:
+      - asset_inventory: Systems with ePHI
+      - threat_identification: Potential threats
+      - vulnerability_assessment: Weaknesses
+      - risk_calculation: Likelihood x impact
+      - current_controls: Existing safeguards
+    remediation_planning:
+      - prioritization: By risk level
+      - timeline: Implementation schedule
+      - resources: Required budget and staff
+    postconditions:
+      - Risk assessment documented
+      - Remediation plan approved
+
+# =============================================================================
+# NON-FUNCTIONAL REQUIREMENTS
+# =============================================================================
+non_functional_requirements:
+  security:
+    - role_based_access_control: Enforced
+    - audit_logging: All PHI access
+    - encryption: At rest and in transit
+    - password_policy: Complexity enforced
+
+  compliance:
+    - hipaa_security_rule: All safeguards
+    - hipaa_privacy_rule: All requirements
+    - state_regulations: Applicable laws
+    - pci_dss: If payment processing
+
+  availability:
+    - system_uptime: "99.9%"
+    - backup_frequency: Daily minimum
+    - disaster_recovery: Documented and tested
+
+  usability:
+    - training: Role-based training program
+    - documentation: User guides available
+    - help_desk: Support available

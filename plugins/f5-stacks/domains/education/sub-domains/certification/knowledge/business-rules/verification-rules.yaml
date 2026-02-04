@@ -1,0 +1,683 @@
+# Verification Business Rules
+# F5 Framework v2.0 - Education/Certification
+# Rules governing certificate and badge verification
+
+business_rules:
+  domain: education
+  subdomain: certification
+  category: verification
+  version: "1.0.0"
+  
+  description: |
+    Business rules governing the verification of certificates and badges,
+    including public verification, API access, privacy controls, and
+    blockchain verification.
+
+  rule_groups:
+    # ==========================================
+    # Public Verification Rules
+    # ==========================================
+    - id: public_verification
+      name: Public Verification Rules
+      name_ja: 公開検証ルール
+      description: Rules for public certificate verification
+      
+      rules:
+        - id: BR-VRF-001
+          name: Online Verification Access
+          name_ja: オンライン検証アクセス
+          description: Anyone with verification code can verify
+          priority: critical
+          
+          access:
+            who: anyone
+            requires: verification_code OR verification_url
+            authentication: none
+            
+          methods:
+            - verification_url: "{base_url}/verify/{code}"
+            - qr_scan: "Scan QR code on certificate"
+            - manual_entry: "Enter code on verification page"
+            
+          result:
+            valid_certificate:
+              display:
+                - holder_name
+                - program_name
+                - credential_type
+                - issued_at
+                - valid_until
+                - current_status
+              hidden:
+                - holder_email
+                - holder_address
+                - internal_notes
+                
+        - id: BR-VRF-002
+          name: Verification Display Content
+          name_ja: 検証表示内容
+          description: What information is shown during verification
+          priority: high
+          
+          standard_display:
+            always_shown:
+              - credential_type: "Certificate/Badge"
+              - holder_display_name: "Full name or configured alias"
+              - program_name: "Certification program name"
+              - issuing_organization: "Organization name and logo"
+              - status: "Active/Expired/Revoked"
+              
+            conditional_shown:
+              - issued_date: "if status active or expired"
+              - expiration_date: "if has expiration"
+              - certificate_number: "if configured public"
+              - skills: "if holder opted in"
+              - badge_image: "if badge type"
+              
+            never_shown:
+              - holder_private_details
+              - internal_scores
+              - internal_notes
+              - payment_information
+              
+        - id: BR-VRF-003
+          name: Verification Status Display
+          name_ja: 検証ステータス表示
+          description: Status messages and visual indicators
+          priority: high
+          
+          status_display:
+            active:
+              color: green
+              icon: checkmark
+              message: "Valid Credential"
+              message_ja: "有効な資格"
+              
+            expired:
+              color: orange
+              icon: clock
+              message: "Credential Expired"
+              message_ja: "資格失効"
+              show_renewal_info: true
+              
+            revoked:
+              color: red
+              icon: x-circle
+              message: "Credential Revoked"
+              message_ja: "資格取消"
+              show_reason: "if public_reason = true"
+              
+            suspended:
+              color: yellow
+              icon: pause
+              message: "Credential Suspended"
+              message_ja: "資格一時停止"
+              
+            not_found:
+              color: gray
+              icon: question
+              message: "Credential Not Found"
+              message_ja: "資格が見つかりません"
+              suggestion: "Check code and try again"
+
+    # ==========================================
+    # API Verification Rules
+    # ==========================================
+    - id: api_verification
+      name: API Verification Rules
+      name_ja: API検証ルール
+      description: Rules for programmatic verification via API
+      
+      rules:
+        - id: BR-VRF-010
+          name: API Authentication
+          name_ja: API認証
+          description: API access requires authentication
+          priority: critical
+          
+          authentication:
+            method: api_key
+            header: "X-API-Key"
+            
+          registration:
+            required: true
+            approval: automatic_for_basic
+            
+          key_management:
+            rotation_recommended_days: 90
+            max_keys_per_account: 5
+            
+        - id: BR-VRF-011
+          name: API Rate Limiting
+          name_ja: APIレート制限
+          description: Rate limits based on plan
+          priority: high
+          
+          rate_limits:
+            free:
+              requests_per_minute: 10
+              requests_per_day: 100
+              
+            basic:
+              requests_per_minute: 60
+              requests_per_day: 1000
+              
+            professional:
+              requests_per_minute: 300
+              requests_per_day: 10000
+              
+            enterprise:
+              requests_per_minute: 1000
+              requests_per_day: unlimited
+              
+          exceeded_response:
+            status_code: 429
+            retry_after: "included in header"
+            
+        - id: BR-VRF-012
+          name: API Response Format
+          name_ja: APIレスポンス形式
+          description: Standard API response structure
+          priority: high
+          
+          response_format:
+            success:
+              status: "verified"
+              credential:
+                id: "certificate_id"
+                type: "certificate|badge"
+                holder_name: "string"
+                program_name: "string"
+                issued_at: "ISO8601"
+                valid_until: "ISO8601|null"
+                status: "active|expired|revoked|suspended"
+                issuer:
+                  name: "string"
+                  url: "string"
+                verification_timestamp: "ISO8601"
+                
+            not_found:
+              status: "not_found"
+              message: "Credential not found"
+              
+            error:
+              status: "error"
+              error_code: "string"
+              message: "string"
+              
+        - id: BR-VRF-013
+          name: Bulk Verification API
+          name_ja: 一括検証API
+          description: Rules for bulk verification requests
+          priority: medium
+          
+          bulk_limits:
+            free: 0
+            basic: 10
+            professional: 50
+            enterprise: 200
+            
+          request_format:
+            codes: "array of verification codes"
+            max_per_request: "based on plan"
+            
+          response_format:
+            results: "array of verification results"
+            summary:
+              total: "count"
+              valid: "count"
+              invalid: "count"
+
+    # ==========================================
+    # Privacy Control Rules
+    # ==========================================
+    - id: privacy_controls
+      name: Privacy Control Rules
+      name_ja: プライバシー制御ルール
+      description: Rules for privacy and consent
+      
+      rules:
+        - id: BR-VRF-020
+          name: Verification Consent
+          name_ja: 検証同意
+          description: Holder controls verification visibility
+          priority: critical
+          
+          consent_options:
+            public_verification:
+              default: true
+              description: "Allow anyone to verify"
+              
+            show_full_name:
+              default: true
+              alternative: "Display initials or alias"
+              
+            show_skills:
+              default: false
+              description: "Include skills in verification"
+              
+            show_score:
+              default: false
+              description: "Include achievement score"
+              
+            share_with_employers:
+              default: false
+              description: "Allow employer verification with details"
+              
+          withdrawal:
+            allowed: true
+            effect: "Verification returns minimal info"
+            cannot_disable: "Basic status verification"
+            
+        - id: BR-VRF-021
+          name: Verification Logging
+          name_ja: 検証ログ
+          description: Log all verification attempts
+          priority: high
+          
+          logging:
+            always_log:
+              - verification_timestamp
+              - verification_code_used
+              - verification_result
+              - verifier_ip_hash
+              
+            conditional_log:
+              - verifier_organization: "if API verification"
+              - verifier_name: "if authenticated"
+              
+            never_log:
+              - full_ip_address
+              - user_agent_raw
+              
+          retention:
+            duration_days: 365
+            anonymization: "After 90 days"
+            
+        - id: BR-VRF-022
+          name: Holder Notification
+          name_ja: 保有者通知
+          description: Notify holder of verifications
+          priority: medium
+          
+          notification_options:
+            all_verifications:
+              default: false
+              description: "Notify on every verification"
+              
+            api_verifications:
+              default: true
+              description: "Notify on API/bulk verifications"
+              
+            suspicious_activity:
+              default: true
+              description: "Notify on unusual patterns"
+              cannot_disable: true
+              
+          suspicious_patterns:
+            - high_frequency: "> 10 verifications per hour"
+            - unusual_location: "Geographic anomaly"
+            - bulk_requests: "Enterprise API usage"
+
+    # ==========================================
+    # Blockchain Verification Rules
+    # ==========================================
+    - id: blockchain_verification
+      name: Blockchain Verification Rules
+      name_ja: ブロックチェーン検証ルール
+      description: Rules for blockchain-based verification
+      
+      rules:
+        - id: BR-VRF-030
+          name: Blockchain Anchoring
+          name_ja: ブロックチェーン定着
+          description: Anchor certificate hash to blockchain
+          priority: high
+          
+          condition:
+            when: "program.blockchain_enabled = true"
+            
+          anchoring_process:
+            - compute_hash:
+                algorithm: SHA-256
+                data:
+                  - certificate_id
+                  - holder_id
+                  - program_id
+                  - issued_at
+                  - certificate_number
+                  
+            - submit_to_blockchain:
+                networks:
+                  - ethereum
+                  - polygon
+                timing: "within 24 hours of issuance"
+                
+            - store_proof:
+                transaction_hash: true
+                block_number: true
+                timestamp: true
+                
+        - id: BR-VRF-031
+          name: Blockchain Verification Process
+          name_ja: ブロックチェーン検証プロセス
+          description: Verify certificate against blockchain
+          priority: high
+          
+          verification_steps:
+            - retrieve_certificate_data
+            - compute_expected_hash
+            - lookup_blockchain_record
+            - compare_hashes
+            - verify_chain_integrity
+            
+          result:
+            verified:
+              status: "blockchain_verified"
+              proof:
+                transaction_hash: "0x..."
+                block_number: "number"
+                verified_at: "timestamp"
+                
+            not_verified:
+              status: "blockchain_not_verified"
+              reason: "Hash mismatch or not found"
+              
+            not_anchored:
+              status: "not_blockchain_anchored"
+              reason: "Program does not use blockchain"
+              
+        - id: BR-VRF-032
+          name: Tamper Detection
+          name_ja: 改ざん検出
+          description: Detect certificate tampering
+          priority: critical
+          
+          detection_triggers:
+            - hash_mismatch: "Computed hash != stored hash"
+            - chain_discontinuity: "Broken blockchain record"
+            - signature_invalid: "Digital signature failed"
+            
+          on_detection:
+            - flag_certificate
+            - alert_issuer
+            - log_incident
+            - block_verification
+            
+          response:
+            status: "verification_failed"
+            reason: "Potential tampering detected"
+            action: "Contact issuing organization"
+
+    # ==========================================
+    # Embedded Verification Rules
+    # ==========================================
+    - id: embedded_verification
+      name: Embedded Verification Rules
+      name_ja: 埋め込み検証ルール
+      description: Rules for verification embedded in documents
+      
+      rules:
+        - id: BR-VRF-040
+          name: QR Code Generation
+          name_ja: QRコード生成
+          description: Generate QR code for verification
+          priority: high
+          
+          qr_content:
+            format: URL
+            url: "{base_url}/verify/{verification_code}"
+            
+          qr_specifications:
+            size_minimum: 100x100px
+            error_correction: "H" # High
+            format: PNG or SVG
+            
+          placement:
+            certificate: "Bottom right corner"
+            badge: "Within badge image"
+            
+        - id: BR-VRF-041
+          name: Digital Signature Verification
+          name_ja: デジタル署名検証
+          description: Verify PKI digital signatures
+          priority: high
+          
+          signature_verification:
+            algorithm: RSA-SHA256
+            key_source: issuer_public_key
+            
+          verification_steps:
+            - extract_signature
+            - retrieve_public_key
+            - verify_signature
+            - check_certificate_chain
+            - validate_timestamp
+            
+          result:
+            valid:
+              status: "signature_valid"
+              signer: "issuer organization"
+              signed_at: "timestamp"
+              
+            invalid:
+              status: "signature_invalid"
+              reason: "specific failure reason"
+              
+        - id: BR-VRF-042
+          name: PDF Verification
+          name_ja: PDF検証
+          description: Verify signed PDF certificates
+          priority: medium
+          
+          pdf_verification:
+            - check_digital_signature
+            - verify_embedded_metadata
+            - validate_qr_code_content
+            - compare_visual_hash
+            
+          metadata_fields:
+            required:
+              - certificate_id
+              - verification_code
+              - issued_at
+            optional:
+              - holder_name
+              - program_name
+
+    # ==========================================
+    # Third-Party Integration Rules
+    # ==========================================
+    - id: third_party_integration
+      name: Third-Party Integration Rules
+      name_ja: サードパーティ連携ルール
+      description: Rules for external verification systems
+      
+      rules:
+        - id: BR-VRF-050
+          name: Open Badges Verification
+          name_ja: オープンバッジ検証
+          description: Verify using Open Badges standard
+          priority: high
+          
+          verification_types:
+            hosted:
+              description: "Verify against hosted assertion URL"
+              process:
+                - fetch_assertion_url
+                - validate_json_ld
+                - check_badge_class
+                - verify_recipient
+                
+            signed:
+              description: "Verify cryptographic signature"
+              process:
+                - extract_signature
+                - validate_jwt
+                - verify_public_key
+                - check_revocation_list
+                
+        - id: BR-VRF-051
+          name: LinkedIn Integration
+          name_ja: LinkedIn連携
+          description: Rules for LinkedIn credential verification
+          priority: medium
+          
+          sharing_to_linkedin:
+            enabled: true
+            data_shared:
+              - credential_name
+              - issuing_organization
+              - issue_date
+              - credential_url
+              - credential_id
+              
+          verification_from_linkedin:
+            supported: true
+            method: "OAuth callback verification"
+            
+        - id: BR-VRF-052
+          name: Background Check Integration
+          name_ja: バックグラウンドチェック連携
+          description: Rules for employment verification services
+          priority: medium
+          
+          supported_services:
+            - type: background_check_provider
+              access: api_with_consent
+              
+            - type: hr_system
+              access: direct_integration
+              
+          consent_requirement:
+            holder_consent: required
+            consent_type: explicit
+            consent_scope: "specific credentials"
+            
+          data_provided:
+            - credential_status
+            - issue_date
+            - expiration_date
+            - issuing_organization
+            
+          data_withheld:
+            - scores
+            - internal_notes
+            - other_credentials
+
+    # ==========================================
+    # Audit and Compliance Rules
+    # ==========================================
+    - id: audit_compliance
+      name: Audit and Compliance Rules
+      name_ja: 監査コンプライアンスルール
+      description: Rules for verification auditing
+      
+      rules:
+        - id: BR-VRF-060
+          name: Verification Audit Trail
+          name_ja: 検証監査証跡
+          description: Maintain complete audit trail
+          priority: critical
+          
+          audit_record:
+            always_capture:
+              - verification_id
+              - verification_timestamp
+              - credential_verified
+              - verification_method
+              - verification_result
+              - verifier_type: "public/api/system"
+              
+            for_api_requests:
+              - api_key_used
+              - client_organization
+              - request_ip_hash
+              
+          retention:
+            minimum_years: 7
+            compliance: "GDPR, SOC2"
+            
+        - id: BR-VRF-061
+          name: Fraud Detection
+          name_ja: 不正検出
+          description: Detect fraudulent verification patterns
+          priority: high
+          
+          detection_rules:
+            - pattern: "Same IP, multiple codes"
+              threshold: "> 50 unique codes per hour"
+              action: "Rate limit + alert"
+              
+            - pattern: "Verification code enumeration"
+              threshold: "> 20 invalid attempts per minute"
+              action: "Temporary block + alert"
+              
+            - pattern: "Geographic impossibility"
+              threshold: "Verifications from distant locations within minutes"
+              action: "Flag for review"
+              
+          response_actions:
+            - log_incident
+            - rate_limit_source
+            - alert_security_team
+            - block_if_severe
+            
+        - id: BR-VRF-062
+          name: Compliance Reporting
+          name_ja: コンプライアンス報告
+          description: Generate compliance reports
+          priority: medium
+          
+          report_types:
+            - verification_summary:
+                frequency: monthly
+                content: [total_verifications, by_method, by_status]
+                
+            - security_incidents:
+                frequency: on_demand
+                content: [fraud_attempts, blocked_requests, anomalies]
+                
+            - api_usage:
+                frequency: monthly
+                content: [by_client, by_endpoint, rate_limit_hits]
+                
+          formats:
+            - PDF
+            - CSV
+            - JSON
+
+  process_flow:
+    public_verification:
+      - step: receive_verification_request
+        rules: [BR-VRF-001]
+        
+      - step: validate_code
+        rules: [BR-VRF-001]
+        
+      - step: retrieve_credential
+        rules: [BR-VRF-002, BR-VRF-020]
+        
+      - step: format_response
+        rules: [BR-VRF-002, BR-VRF-003]
+        
+      - step: log_verification
+        rules: [BR-VRF-021, BR-VRF-060]
+        
+    api_verification:
+      - step: authenticate_request
+        rules: [BR-VRF-010]
+        
+      - step: check_rate_limit
+        rules: [BR-VRF-011]
+        
+      - step: process_verification
+        rules: [BR-VRF-012, BR-VRF-013]
+        
+      - step: log_and_respond
+        rules: [BR-VRF-021, BR-VRF-060]
+
+  enforcement:
+    mode: strict
+    security_first: true
+    audit_all: true

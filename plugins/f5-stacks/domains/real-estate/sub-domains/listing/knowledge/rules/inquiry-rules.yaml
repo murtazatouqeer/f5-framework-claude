@@ -1,0 +1,380 @@
+# Inquiry Rules
+# F5 Framework v2.0 - Real Estate/Listing
+# Business rules for property inquiries and lead management
+
+rules:
+  domain: real-estate
+  subdomain: listing
+  category: inquiry
+  version: "1.0.0"
+
+  description: |
+    Business rules for managing property inquiries, lead qualification,
+    response requirements, and conversion tracking.
+
+  # Submission Rules
+  submission:
+    - id: INQ-SUB-001
+      name: Rate Limiting
+      name_vi: Giới hạn tần suất
+      description: Prevent spam inquiries
+      condition: |
+        (SELECT COUNT(*) FROM inquiry
+         WHERE (seeker_phone = NEW.seeker_phone OR seeker_email = NEW.seeker_email)
+         AND created_at > NOW() - INTERVAL '1 hour') < 10
+      action: block
+      message: "Too many inquiries. Please wait before submitting again."
+      severity: error
+
+    - id: INQ-SUB-002
+      name: Duplicate Detection
+      name_vi: Phát hiện trùng lặp
+      description: Prevent duplicate inquiries on same listing
+      condition: |
+        NOT EXISTS(
+          SELECT 1 FROM inquiry
+          WHERE listing_id = NEW.listing_id
+          AND seeker_phone = NEW.seeker_phone
+          AND status NOT IN ('lost', 'spam')
+          AND created_at > NOW() - INTERVAL '7 days'
+        )
+      action: merge
+      message: "You already have an active inquiry for this listing"
+      severity: info
+
+    - id: INQ-SUB-003
+      name: Minimum Message Length
+      name_vi: Độ dài tin nhắn tối thiểu
+      description: Require meaningful inquiry message
+      condition: "LENGTH(TRIM(inquiry.message)) >= 10"
+      action: reject
+      message: "Please provide more details in your inquiry"
+      severity: warning
+
+    - id: INQ-SUB-004
+      name: Contact Info Required
+      name_vi: Yêu cầu thông tin liên hệ
+      description: Require valid contact information
+      condition: |
+        inquiry.seeker_phone IS NOT NULL AND
+        LENGTH(inquiry.seeker_phone) >= 10 AND
+        inquiry.seeker_name IS NOT NULL AND
+        LENGTH(inquiry.seeker_name) >= 2
+      action: reject
+      message: "Valid name and phone number required"
+      severity: error
+
+  # Assignment Rules
+  assignment:
+    - id: INQ-ASN-001
+      name: Auto Assignment to Listing Agent
+      name_vi: Tự động phân công cho agent
+      description: Assign inquiry to listing agent
+      trigger: on_create
+      action: |
+        IF listing.agent_id IS NOT NULL THEN
+          UPDATE inquiry SET
+            agent_id = listing.agent_id,
+            agency_id = listing.agency_id,
+            assigned_at = NOW()
+        END
+
+    - id: INQ-ASN-002
+      name: Round Robin Assignment
+      name_vi: Phân công luân phiên
+      description: Distribute inquiries among team when no specific agent
+      trigger: on_create
+      condition: "listing.agent_id IS NULL AND listing.agency_id IS NOT NULL"
+      action: |
+        next_agent = SELECT id FROM agent
+          WHERE agency_id = listing.agency_id
+          AND status = 'active'
+          ORDER BY last_inquiry_assigned_at ASC
+          LIMIT 1
+        UPDATE inquiry SET agent_id = next_agent.id, assigned_at = NOW()
+        UPDATE agent SET last_inquiry_assigned_at = NOW() WHERE id = next_agent.id
+
+    - id: INQ-ASN-003
+      name: Reassignment Rules
+      name_vi: Quy tắc phân công lại
+      description: Reassign if agent doesn't respond
+      trigger: scheduled
+      schedule: "0 */6 * * *"  # Every 6 hours
+      condition: |
+        inquiry.status = 'new' AND
+        inquiry.created_at < NOW() - INTERVAL '24 hours' AND
+        inquiry.first_response_at IS NULL
+      action: |
+        IF inquiry.agency_id IS NOT NULL THEN
+          -- Find another available agent
+          new_agent = SELECT id FROM agent
+            WHERE agency_id = inquiry.agency_id
+            AND id != inquiry.agent_id
+            AND status = 'active'
+            ORDER BY response_rate DESC, average_response_time_minutes ASC
+            LIMIT 1
+          IF new_agent THEN
+            UPDATE inquiry SET agent_id = new_agent.id
+            NOTIFY original_agent, 'inquiry_reassigned'
+            NOTIFY new_agent, 'inquiry_assigned'
+          END
+        END
+
+  # Response Rules
+  response:
+    - id: INQ-RSP-001
+      name: Response Time SLA
+      name_vi: SLA thời gian phản hồi
+      description: Required response time by priority
+      formula: |
+        max_response_minutes =
+          CASE inquiry.priority
+            WHEN 'urgent' THEN 30
+            WHEN 'high' THEN 120    # 2 hours
+            WHEN 'medium' THEN 480  # 8 hours
+            WHEN 'low' THEN 1440    # 24 hours
+          END
+      monitoring: true
+      escalation:
+        - at_percent: 50
+          action: remind_agent
+        - at_percent: 100
+          action: escalate_to_manager
+        - at_percent: 200
+          action: reassign
+
+    - id: INQ-RSP-002
+      name: Response Tracking
+      name_vi: Theo dõi phản hồi
+      description: Track first response metrics
+      trigger: on_first_response
+      action: |
+        response_time = EXTRACT(EPOCH FROM (NOW() - inquiry.created_at)) / 60
+        UPDATE inquiry SET
+          first_response_at = NOW(),
+          response_time_minutes = response_time,
+          responded_by = current_user.id
+        UPDATE agent SET
+          response_rate = calculate_response_rate(agent.id),
+          average_response_time_minutes = calculate_avg_response_time(agent.id)
+        WHERE id = inquiry.agent_id
+
+    - id: INQ-RSP-003
+      name: Auto Response
+      name_vi: Tự động phản hồi
+      description: Send auto-acknowledgment
+      trigger: on_create
+      action: |
+        send_notification(
+          recipient: inquiry.seeker_email || inquiry.seeker_phone,
+          template: 'inquiry_received',
+          data: {
+            seeker_name: inquiry.seeker_name,
+            listing_title: listing.title,
+            agent_name: agent.full_name,
+            expected_response: 'within 24 hours'
+          }
+        )
+
+  # Lead Scoring Rules
+  lead_scoring:
+    - id: INQ-SCR-001
+      name: Lead Score Calculation
+      name_vi: Tính điểm lead
+      description: Calculate lead qualification score
+      trigger: on_create_or_update
+      formula: |
+        score = 0
+
+        -- Timeline urgency (0-25 points)
+        score += CASE inquiry.purchase_timeline
+          WHEN 'immediate' THEN 25
+          WHEN 'within_1_month' THEN 20
+          WHEN 'within_3_months' THEN 15
+          WHEN 'within_6_months' THEN 10
+          WHEN 'within_1_year' THEN 5
+          ELSE 0
+        END
+
+        -- Financing readiness (0-25 points)
+        score += CASE inquiry.financing_status
+          WHEN 'cash_buyer' THEN 25
+          WHEN 'pre_approved' THEN 20
+          WHEN 'needs_financing' THEN 10
+          ELSE 5
+        END
+
+        -- Budget alignment (0-20 points)
+        IF inquiry.budget_range IS NOT NULL THEN
+          IF listing.asking_price BETWEEN budget_range.min AND budget_range.max THEN
+            score += 20
+          ELSIF listing.asking_price <= budget_range.max * 1.1 THEN
+            score += 10
+          END
+        END
+
+        -- Engagement signals (0-15 points)
+        IF inquiry.seeker_id IS NOT NULL THEN score += 5 END  -- Registered user
+        IF LENGTH(inquiry.message) > 100 THEN score += 5 END  -- Detailed message
+        IF inquiry.questions IS NOT NULL AND array_length(inquiry.questions) > 0 THEN
+          score += 5
+        END
+
+        -- Source quality (0-15 points)
+        score += CASE inquiry.source
+          WHEN 'referral' THEN 15
+          WHEN 'website' THEN 10
+          WHEN 'mobile_app' THEN 10
+          WHEN 'walk_in' THEN 12
+          WHEN 'phone' THEN 8
+          ELSE 5
+        END
+
+        UPDATE inquiry SET
+          lead_score = score,
+          lead_temperature = CASE
+            WHEN score >= 70 THEN 'hot'
+            WHEN score >= 40 THEN 'warm'
+            ELSE 'cold'
+          END
+
+    - id: INQ-SCR-002
+      name: Auto Priority Assignment
+      name_vi: Tự động phân độ ưu tiên
+      description: Set priority based on lead score
+      trigger: after_scoring
+      action: |
+        UPDATE inquiry SET priority =
+          CASE
+            WHEN lead_score >= 80 THEN 'urgent'
+            WHEN lead_score >= 60 THEN 'high'
+            WHEN lead_score >= 40 THEN 'medium'
+            ELSE 'low'
+          END
+
+  # Follow-up Rules
+  follow_up:
+    - id: INQ-FLW-001
+      name: Follow-up Schedule
+      name_vi: Lịch theo dõi
+      description: Schedule follow-ups based on status
+      trigger: on_status_change
+      action: |
+        next_follow_up = CASE inquiry.status
+          WHEN 'contacted' THEN NOW() + INTERVAL '2 days'
+          WHEN 'qualified' THEN NOW() + INTERVAL '1 day'
+          WHEN 'viewing_scheduled' THEN viewing.scheduled_datetime + INTERVAL '1 day'
+          WHEN 'negotiating' THEN NOW() + INTERVAL '3 days'
+          ELSE NULL
+        END
+        UPDATE inquiry SET next_follow_up_at = next_follow_up
+
+    - id: INQ-FLW-002
+      name: Follow-up Reminders
+      name_vi: Nhắc nhở theo dõi
+      description: Send reminders for pending follow-ups
+      trigger: scheduled
+      schedule: "0 9 * * *"  # 9 AM daily
+      condition: |
+        inquiry.next_follow_up_at <= NOW() AND
+        inquiry.follow_up_completed = false AND
+        inquiry.status NOT IN ('converted', 'lost', 'spam')
+      action: |
+        send_notification(
+          recipient: agent.email,
+          template: 'follow_up_reminder',
+          data: {
+            inquiry_id: inquiry.inquiry_id,
+            seeker_name: inquiry.seeker_name,
+            listing_title: listing.title,
+            follow_up_notes: inquiry.follow_up_notes
+          }
+        )
+
+  # Spam Detection Rules
+  spam:
+    - id: INQ-SPM-001
+      name: Spam Pattern Detection
+      name_vi: Phát hiện mẫu spam
+      description: Detect spam patterns in inquiries
+      trigger: on_create
+      action: |
+        spam_score = 0
+
+        -- Check for spam patterns in message
+        IF MATCHES(inquiry.message, '(click here|free|winner|congratulations|urgent)') THEN
+          spam_score += 30
+        END
+
+        -- Check phone number patterns
+        IF inquiry.seeker_phone IN (SELECT phone FROM spam_blacklist) THEN
+          spam_score += 50
+        END
+
+        -- Check submission rate
+        IF (SELECT COUNT(*) FROM inquiry WHERE seeker_phone = NEW.seeker_phone AND created_at > NOW() - INTERVAL '1 hour') > 5 THEN
+          spam_score += 30
+        END
+
+        IF spam_score >= 50 THEN
+          UPDATE inquiry SET status = 'spam'
+          add_to_spam_list(inquiry.seeker_phone)
+        END
+
+    - id: INQ-SPM-002
+      name: Blacklist Check
+      name_vi: Kiểm tra danh sách đen
+      description: Block inquiries from blacklisted contacts
+      trigger: on_create
+      condition: |
+        NOT EXISTS(
+          SELECT 1 FROM inquiry_blacklist
+          WHERE phone = NEW.seeker_phone OR email = NEW.seeker_email
+        )
+      action: reject
+      message: "Unable to submit inquiry"
+      severity: error
+
+  # Conversion Rules
+  conversion:
+    - id: INQ-CNV-001
+      name: Conversion Tracking
+      name_vi: Theo dõi chuyển đổi
+      description: Track inquiry conversions
+      trigger: on_status_change_to_converted
+      action: |
+        UPDATE inquiry SET converted_at = NOW()
+        UPDATE listing SET
+          inquiries_converted = inquiries_converted + 1
+        WHERE id = inquiry.listing_id
+        UPDATE agent SET
+          conversion_rate = calculate_conversion_rate(agent.id)
+        WHERE id = inquiry.agent_id
+
+    - id: INQ-CNV-002
+      name: Lost Lead Analysis
+      name_vi: Phân tích lead mất
+      description: Track and categorize lost leads
+      trigger: on_status_change_to_lost
+      condition: "inquiry.lost_reason IS NOT NULL"
+      action: |
+        record_lost_lead_analytics(
+          inquiry_id: inquiry.id,
+          reason: inquiry.lost_reason,
+          agent_id: inquiry.agent_id,
+          listing_id: inquiry.listing_id,
+          time_to_lost: NOW() - inquiry.created_at
+        )
+
+  notifications:
+    inquiry_lifecycle:
+      - trigger: new_inquiry
+        recipients: [agent]
+        template: new_inquiry_notification
+        channels: [push, email, sms]
+      - trigger: response_overdue
+        recipients: [agent, manager]
+        template: response_overdue_alert
+      - trigger: converted
+        recipients: [agent]
+        template: conversion_celebration

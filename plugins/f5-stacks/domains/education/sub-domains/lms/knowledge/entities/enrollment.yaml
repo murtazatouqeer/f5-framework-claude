@@ -1,0 +1,358 @@
+# Enrollment Entity
+# F5 Framework v2.0 - Education/LMS
+# Learner enrollment in courses
+
+entity:
+  id: enrollment
+  name: Enrollment
+  name_ja: 登録
+  description: Learner's enrollment record in a course
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    enrollment_id:
+      type: string
+      max_length: 20
+      unique: true
+      pattern: "^ENR-[A-Z0-9]{8}$"
+      auto_generate: true
+      
+    learner_id:
+      type: uuid
+      references: learner
+      required: true
+      
+    course_id:
+      type: uuid
+      references: course
+      required: true
+      
+    course_version_id:
+      type: uuid
+      references: course_version
+      description: Specific version enrolled in
+      
+    # Status
+    status:
+      type: enum
+      values:
+        - pending      # Waiting for payment or approval
+        - active       # Currently enrolled
+        - completed    # Course finished
+        - dropped      # Voluntarily withdrew
+        - expired      # Access period ended
+        - refunded     # Payment refunded
+        - suspended    # Temporarily blocked
+      default: pending
+      
+    # Enrollment Type
+    enrollment_type:
+      type: enum
+      values:
+        - self           # Learner enrolled themselves
+        - assigned       # Assigned by organization admin
+        - gifted         # Received as gift
+        - scholarship    # Scholarship/grant
+        - trial          # Free trial enrollment
+        - promotional    # Promotional access
+      default: self
+      
+    # Timing
+    enrolled_at:
+      type: datetime
+      auto_set: create
+      
+    started_at:
+      type: datetime
+      description: First content access
+      
+    completed_at:
+      type: datetime
+      
+    expires_at:
+      type: datetime
+      description: Access expiration for time-limited
+      
+    dropped_at:
+      type: datetime
+      
+    # Access Configuration
+    access_type:
+      type: enum
+      values:
+        - lifetime       # Never expires
+        - subscription   # Active while subscribed
+        - time_limited   # Specific duration
+        - cohort         # Cohort schedule
+      default: lifetime
+      
+    access_start:
+      type: datetime
+      
+    access_end:
+      type: datetime
+      
+    access_duration_days:
+      type: integer
+      description: Days of access from enrollment
+      
+    # Payment Information
+    order_id:
+      type: uuid
+      references: order
+      
+    amount_paid:
+      type: decimal
+      precision: 10
+      scale: 2
+      
+    currency:
+      type: string
+      format: iso_4217
+      
+    payment_method:
+      type: string
+      
+    is_free:
+      type: boolean
+      default: false
+      
+    coupon_code:
+      type: string
+      max_length: 50
+      
+    discount_amount:
+      type: decimal
+      precision: 10
+      scale: 2
+      
+    # Progress Tracking
+    progress_percent:
+      type: integer
+      min: 0
+      max: 100
+      default: 0
+      
+    lessons_completed:
+      type: integer
+      default: 0
+      
+    total_lessons:
+      type: integer
+      
+    modules_completed:
+      type: integer
+      default: 0
+      
+    total_modules:
+      type: integer
+      
+    last_accessed_at:
+      type: datetime
+      
+    last_lesson_id:
+      type: uuid
+      references: lesson
+      
+    time_spent_minutes:
+      type: integer
+      default: 0
+      
+    # Cohort (for cohort-based courses)
+    cohort_id:
+      type: uuid
+      references: cohort
+      
+    # B2B Assignment
+    assigned_by:
+      type: uuid
+      references: user
+      
+    assignment_note:
+      type: text
+      max_length: 500
+      
+    due_date:
+      type: date
+      description: Expected completion date
+      
+    # Completion
+    final_grade:
+      type: decimal
+      precision: 5
+      scale: 2
+      
+    certificate_id:
+      type: uuid
+      references: certificate
+      
+    # Source Tracking
+    source:
+      type: string
+      max_length: 100
+      description: Where enrollment came from
+      
+    utm_source:
+      type: string
+      max_length: 100
+      
+    utm_medium:
+      type: string
+      max_length: 100
+      
+    utm_campaign:
+      type: string
+      max_length: 100
+      
+    # Metadata
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: active
+        action: activate
+        triggers:
+          - provision_course_access
+          - send_welcome_email
+          - initialize_progress_tracking
+          
+      - from: pending
+        to: refunded
+        action: refund
+        triggers:
+          - process_refund
+          - revoke_access
+          
+      - from: active
+        to: completed
+        action: complete
+        conditions:
+          - all_requirements_met
+        triggers:
+          - calculate_final_grade
+          - issue_certificate
+          - send_completion_email
+          - update_learner_stats
+          
+      - from: active
+        to: dropped
+        action: drop
+        triggers:
+          - record_drop_reason
+          - revoke_access
+          - process_partial_refund_if_eligible
+          
+      - from: active
+        to: expired
+        action: expire
+        conditions:
+          - access_period_ended
+        triggers:
+          - revoke_access
+          - send_expiration_notification
+          
+      - from: active
+        to: suspended
+        action: suspend
+        triggers:
+          - temporarily_revoke_access
+          
+      - from: suspended
+        to: active
+        action: reinstate
+        triggers:
+          - restore_access
+          
+      - from: expired
+        to: active
+        action: renew
+        conditions:
+          - renewal_payment_received
+        triggers:
+          - extend_access
+          - send_renewal_confirmation
+
+  relationships:
+    learner:
+      type: belongs_to
+      entity: learner
+      foreign_key: learner_id
+      
+    course:
+      type: belongs_to
+      entity: course
+      foreign_key: course_id
+      
+    course_version:
+      type: belongs_to
+      entity: course_version
+      foreign_key: course_version_id
+      
+    order:
+      type: belongs_to
+      entity: order
+      foreign_key: order_id
+      
+    cohort:
+      type: belongs_to
+      entity: cohort
+      foreign_key: cohort_id
+      
+    progress_records:
+      type: has_many
+      entity: progress
+      foreign_key: enrollment_id
+      
+    completion:
+      type: has_one
+      entity: completion
+      foreign_key: enrollment_id
+      
+    certificate:
+      type: has_one
+      entity: certificate
+      foreign_key: enrollment_id
+
+  indexes:
+    - columns: [enrollment_id]
+      unique: true
+    - columns: [learner_id, course_id]
+      unique: true
+      where: "status NOT IN ('dropped', 'refunded')"
+    - columns: [learner_id, status]
+    - columns: [course_id, status]
+    - columns: [status]
+    - columns: [enrolled_at]
+    - columns: [expires_at]
+    - columns: [cohort_id]
+
+  validations:
+    - name: access_dates_valid
+      condition: "access_start IS NOT NULL AND access_end IS NOT NULL"
+      validation: "access_end > access_start"
+      message: "Access end must be after access start"
+      
+    - name: payment_for_paid_course
+      condition: "is_free == false AND enrollment_type IN ('self')"
+      validation: "order_id IS NOT NULL"
+      message: "Order required for paid course enrollment"
+
+  audit:
+    enabled: true
+    track_changes: true
+    retention_days: 2555

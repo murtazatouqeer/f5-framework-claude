@@ -1,0 +1,497 @@
+name: content_publishing_rules
+display_name: Content Publishing Rules
+description: |
+  Business rules governing content lifecycle, publishing workflow,
+  and availability management on the streaming platform.
+
+domain: entertainment
+subdomain: streaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - content_requirements
+  - publishing_workflow
+  - availability_management
+  - quality_standards
+  - compliance
+
+rules:
+  # ============================================
+  # Content Requirements
+  # ============================================
+  - id: CPR-001
+    name: Minimum Content Requirements
+    description: All content must meet minimum requirements before publishing
+    category: content_requirements
+    severity: critical
+
+    conditions:
+      all_of:
+        - field: title
+          operator: is_not_empty
+
+        - field: description
+          operator: min_length
+          value: 50
+
+        - field: poster_url
+          operator: is_valid_url
+
+        - field: content_type
+          operator: is_not_empty
+
+        - field: genres
+          operator: array_min_length
+          value: 1
+
+        - field: age_rating
+          operator: is_not_empty
+
+        - field: languages
+          operator: array_min_length
+          value: 1
+
+        - field: quality_options
+          operator: array_min_length
+          value: 1
+
+    actions:
+      on_violation:
+        - block_state_transition
+        - notify_content_team
+        - log_validation_error
+
+    error_message: "Content missing required fields for publishing"
+
+  - id: CPR-002
+    name: Video Files Required for Publishing
+    description: Published content must have valid video files
+    category: content_requirements
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: published
+      then:
+        - field: video_files
+          operator: array_min_length
+          value: 1
+        - field: video_files[*].url
+          operator: is_valid_url
+        - field: video_files[*].drm_protected
+          operator: equals
+          value: true
+
+    actions:
+      on_violation:
+        - prevent_publishing
+        - alert_technical_team
+
+    error_message: "Valid DRM-protected video files required for publishing"
+
+  - id: CPR-003
+    name: Series Must Have Episodes
+    description: Series content must have at least one season and episode
+    category: content_requirements
+    severity: high
+
+    conditions:
+      when:
+        - field: content_type
+          operator: equals
+          value: series
+        - field: status
+          operator: equals
+          value: published
+      then:
+        - field: total_seasons
+          operator: greater_than
+          value: 0
+        - field: total_episodes
+          operator: greater_than
+          value: 0
+
+    actions:
+      on_violation:
+        - prevent_publishing
+
+    error_message: "Series must have at least one season with episodes"
+
+  # ============================================
+  # Publishing Workflow
+  # ============================================
+  - id: CPR-010
+    name: Content Review Required
+    description: Content must be reviewed before approval
+    category: publishing_workflow
+    severity: high
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: approved
+      then:
+        - field: reviewed_by
+          operator: is_not_empty
+        - field: review_date
+          operator: is_not_null
+        - field: review_checklist_completed
+          operator: equals
+          value: true
+
+    actions:
+      on_violation:
+        - block_state_transition
+
+    error_message: "Content review must be completed before approval"
+
+  - id: CPR-011
+    name: Publishing Requires Approval
+    description: Only approved content can be published
+    category: publishing_workflow
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: published
+      then:
+        - field: previous_status
+          operator: equals
+          value: approved
+        - field: approved_by
+          operator: is_not_empty
+
+    actions:
+      on_violation:
+        - block_state_transition
+        - log_security_event
+
+    error_message: "Content must be approved before publishing"
+
+  - id: CPR-012
+    name: Publisher Role Required
+    description: Only authorized users can publish content
+    category: publishing_workflow
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: published
+      then:
+        - field: current_user.role
+          operator: in
+          values: [content_manager, content_admin, super_admin]
+
+    actions:
+      on_violation:
+        - block_action
+        - log_unauthorized_attempt
+
+    error_message: "Insufficient permissions to publish content"
+
+  # ============================================
+  # Availability Management
+  # ============================================
+  - id: CPR-020
+    name: Valid License Required
+    description: Content must have valid license for territory
+    category: availability_management
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: published
+        - field: visibility
+          operator: not_equals
+          value: private
+      then:
+        - field: licenses
+          operator: has_valid_license
+          for_date: now()
+
+    actions:
+      on_violation:
+        - set_visibility
+          value: private
+        - notify_licensing_team
+        - log_compliance_event
+
+    error_message: "No valid license for content availability"
+
+  - id: CPR-021
+    name: Availability Window Enforcement
+    description: Content visibility follows availability windows
+    category: availability_management
+    severity: high
+
+    conditions:
+      always:
+        - evaluate: |
+            IF available_from IS NOT NULL AND now() < available_from
+            THEN visibility = 'scheduled'
+
+            IF available_until IS NOT NULL AND now() > available_until
+            THEN status = 'archived'
+
+    actions:
+      scheduled_check:
+        frequency: hourly
+        action: update_content_availability
+
+    triggers:
+      - event: availability_window_start
+        action: publish_content
+      - event: availability_window_end
+        action: archive_content
+
+  - id: CPR-022
+    name: Geographic Restrictions
+    description: Enforce territorial content restrictions
+    category: availability_management
+    severity: critical
+
+    conditions:
+      when:
+        - event: content_access_request
+      then:
+        - field: user_country
+          operator: in
+          reference: content.licenses[active].territories
+
+    actions:
+      on_violation:
+        - block_playback
+        - show_geo_restriction_message
+        - log_geo_block
+
+    error_message: "Content not available in your region"
+
+  # ============================================
+  # Quality Standards
+  # ============================================
+  - id: CPR-030
+    name: Minimum Video Quality
+    description: All content must have minimum HD quality
+    category: quality_standards
+    severity: medium
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: published
+      then:
+        - field: quality_options
+          operator: includes_any
+          values: [HD, FHD, 4K, HDR]
+
+    actions:
+      on_violation:
+        - flag_for_quality_review
+        - notify_transcoding_team
+
+    error_message: "Content must have minimum HD quality"
+
+  - id: CPR-031
+    name: Subtitle Requirements
+    description: Published content should have subtitles
+    category: quality_standards
+    severity: medium
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: published
+        - field: content_type
+          operator: in
+          values: [movie, series, documentary]
+      then:
+        - field: subtitles
+          operator: array_min_length
+          value: 1
+
+    actions:
+      on_violation:
+        - flag_for_accessibility_review
+        - add_to_subtitle_queue
+
+    warning_message: "Content should have subtitles for accessibility"
+
+  - id: CPR-032
+    name: Metadata Quality Check
+    description: Ensure comprehensive metadata for discovery
+    category: quality_standards
+    severity: low
+
+    conditions:
+      when:
+        - field: status
+          operator: equals
+          value: published
+      scoring:
+        - field: description
+          min_length: 100
+          weight: 20
+        - field: genres
+          min_count: 2
+          weight: 15
+        - field: keywords
+          exists: true
+          weight: 15
+        - field: backdrop_url
+          exists: true
+          weight: 10
+        - field: trailer_url
+          exists: true
+          weight: 20
+        - field: cast
+          min_count: 3
+          weight: 20
+      minimum_score: 70
+
+    actions:
+      on_violation:
+        - flag_for_metadata_enrichment
+
+    warning_message: "Content metadata quality score below threshold"
+
+  # ============================================
+  # Compliance
+  # ============================================
+  - id: CPR-040
+    name: Age Rating Enforcement
+    description: Age-restricted content requires proper classification
+    category: compliance
+    severity: critical
+
+    conditions:
+      when:
+        - field: age_rating
+          operator: in
+          values: [R, NC-17, TV-MA]
+        - field: status
+          operator: equals
+          value: published
+      then:
+        - field: content_warnings
+          operator: array_min_length
+          value: 1
+        - field: parental_guide
+          operator: is_not_null
+
+    actions:
+      on_violation:
+        - block_publishing
+        - require_content_warning
+
+    error_message: "Mature content requires content warnings"
+
+  - id: CPR-041
+    name: Copyright Compliance
+    description: Verify content rights before publishing
+    category: compliance
+    severity: critical
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: published
+      then:
+        - field: copyright_verified
+          operator: equals
+          value: true
+        - field: licenses
+          operator: array_min_length
+          value: 1
+
+    actions:
+      on_violation:
+        - block_publishing
+        - notify_legal_team
+        - log_compliance_event
+
+    error_message: "Copyright verification required before publishing"
+
+  - id: CPR-042
+    name: Content ID Registration
+    description: Register content with content ID systems
+    category: compliance
+    severity: medium
+
+    conditions:
+      when:
+        - field: status
+          operator: transition_to
+          value: published
+        - field: content_type
+          operator: in
+          values: [movie, series]
+
+    actions:
+      on_transition:
+        - register_content_id
+        - generate_fingerprint
+        - store_fingerprint_reference
+
+    audit_log: true
+
+automation:
+  - name: auto_archive_expired
+    description: Automatically archive content when license expires
+    trigger:
+      type: schedule
+      cron: "0 * * * *"
+    condition:
+      - field: status
+        operator: equals
+        value: published
+      - field: licenses.license_end
+        operator: less_than
+        value: now()
+    action:
+      - set_status: archived
+      - notify_content_team
+      - log_auto_archive
+
+  - name: publish_scheduled_content
+    description: Auto-publish content at scheduled time
+    trigger:
+      type: schedule
+      cron: "*/5 * * * *"
+    condition:
+      - field: status
+        operator: equals
+        value: approved
+      - field: available_from
+        operator: less_than_or_equal
+        value: now()
+    action:
+      - set_status: published
+      - invalidate_cache
+      - notify_marketing
+
+metrics:
+  - name: publishing_success_rate
+    description: Percentage of content successfully published
+    calculation: "(published_count / submission_count) * 100"
+
+  - name: average_review_time
+    description: Average time from submission to approval
+    calculation: "AVG(approved_at - submitted_at)"
+
+  - name: compliance_violation_rate
+    description: Rate of compliance violations
+    calculation: "(violations / total_content) * 100"

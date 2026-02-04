@@ -1,0 +1,374 @@
+name: claim_validation_rules
+display_name: Claim Validation Rules
+description: |
+  Business rules for validating insurance claims including eligibility checks,
+  completeness validation, and data quality rules.
+
+domain: insurance
+subdomain: claims
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  claim_eligibility:
+    name: Claim Eligibility Rules
+    description: Rules to determine if a claim is eligible for processing
+
+    rules:
+      - id: CLM-ELG-001
+        name: Policy Active at Loss Date
+        description: Policy must be active on the date of loss
+        priority: critical
+        condition: |
+          policy.status = 'active' OR
+          (policy.status = 'grace_period' AND
+           loss_date <= policy.grace_period_end_date)
+        error_message: "Policy was not active on the date of loss"
+        action: reject_claim
+        applies_to: [claim]
+
+      - id: CLM-ELG-002
+        name: Claim Within Notification Period
+        description: Claim must be reported within allowed notification period
+        priority: high
+        condition: |
+          DATEDIFF(fnol.received_at, claim.loss_date) <=
+          policy.notification_period_days
+        error_message: "Claim reported outside notification period"
+        action: flag_for_review
+        exception_allowed: true
+        applies_to: [claim, fnol]
+
+      - id: CLM-ELG-003
+        name: Waiting Period Satisfied
+        description: Waiting period must have passed for the coverage
+        priority: critical
+        condition: |
+          DATEDIFF(claim.loss_date, policy.inception_date) >=
+          coverage.waiting_period_days
+        error_message: "Claim is within waiting period"
+        action: reject_claim
+        exception_code: "EX-WAIVER"
+        applies_to: [claim]
+
+      - id: CLM-ELG-004
+        name: Premium Paid Up to Date
+        description: All premiums must be paid up to the loss date
+        priority: high
+        condition: |
+          policy.paid_to_date >= claim.loss_date OR
+          policy.status = 'grace_period'
+        error_message: "Premium not paid up to loss date"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: CLM-ELG-005
+        name: No Prior Termination
+        description: Policy must not have been terminated before loss
+        priority: critical
+        condition: |
+          policy.termination_date IS NULL OR
+          policy.termination_date > claim.loss_date
+        error_message: "Policy was terminated before loss date"
+        action: reject_claim
+        applies_to: [claim]
+
+  claim_completeness:
+    name: Claim Completeness Rules
+    description: Rules to validate claim data completeness
+
+    rules:
+      - id: CLM-CMP-001
+        name: Required FNOL Fields
+        description: All required FNOL fields must be provided
+        priority: high
+        condition: |
+          fnol.reporter_name IS NOT NULL AND
+          fnol.reporter_phone IS NOT NULL AND
+          fnol.incident_date IS NOT NULL AND
+          fnol.incident_type IS NOT NULL AND
+          fnol.incident_description IS NOT NULL
+        error_message: "Missing required FNOL information"
+        action: request_information
+        applies_to: [fnol]
+
+      - id: CLM-CMP-002
+        name: Loss Date Validation
+        description: Loss date must be valid and not in future
+        priority: critical
+        condition: |
+          claim.loss_date IS NOT NULL AND
+          claim.loss_date <= NOW() AND
+          claim.loss_date >= policy.inception_date
+        error_message: "Invalid loss date"
+        action: reject_submission
+        applies_to: [claim]
+
+      - id: CLM-CMP-003
+        name: Claimant Information Complete
+        description: Primary claimant information must be complete
+        priority: high
+        condition: |
+          claimant.first_name IS NOT NULL AND
+          claimant.last_name IS NOT NULL AND
+          claimant.phone IS NOT NULL AND
+          claimant.national_id IS NOT NULL
+        error_message: "Incomplete claimant information"
+        action: request_information
+        applies_to: [claimant]
+
+      - id: CLM-CMP-004
+        name: Claimed Amount Provided
+        description: Claim must have an estimated or actual claimed amount
+        priority: high
+        condition: |
+          claim.claimed_amount IS NOT NULL AND
+          claim.claimed_amount > 0
+        error_message: "Claimed amount not provided"
+        action: request_information
+        applies_to: [claim]
+
+      - id: CLM-CMP-005
+        name: Bank Details for Payment
+        description: Bank details required before payment processing
+        priority: high
+        condition: |
+          claimant.bank_account_number IS NOT NULL AND
+          claimant.bank_name IS NOT NULL AND
+          claimant.account_holder_name IS NOT NULL
+        error_message: "Bank details required for payment"
+        action: request_information
+        stage: before_settlement
+        applies_to: [claimant]
+
+  document_requirements:
+    name: Document Requirement Rules
+    description: Rules for required claim documentation
+
+    rules:
+      - id: CLM-DOC-001
+        name: Identity Document Required
+        description: Claimant must provide valid ID document
+        priority: high
+        condition: |
+          EXISTS(claim_document WHERE
+            document_type = 'id_document' AND
+            status = 'verified')
+        error_message: "Verified ID document required"
+        action: request_document
+        applies_to: [claim]
+
+      - id: CLM-DOC-002
+        name: Police Report for Theft Claims
+        description: Police report required for theft claims
+        priority: high
+        condition: |
+          claim.claim_type != 'theft' OR
+          EXISTS(claim_document WHERE
+            document_type = 'police_report' AND
+            status IN ('received', 'verified'))
+        error_message: "Police report required for theft claims"
+        action: request_document
+        applies_to: [claim]
+
+      - id: CLM-DOC-003
+        name: Death Certificate for Death Claims
+        description: Death certificate required for death claims
+        priority: critical
+        condition: |
+          claim.claim_type != 'death' OR
+          EXISTS(claim_document WHERE
+            document_type = 'death_certificate' AND
+            status = 'verified')
+        error_message: "Verified death certificate required"
+        action: request_document
+        applies_to: [claim]
+
+      - id: CLM-DOC-004
+        name: Medical Records for Health Claims
+        description: Medical documentation required for health claims
+        priority: high
+        condition: |
+          claim.claim_category != 'health' OR
+          EXISTS(claim_document WHERE
+            document_category = 'medical_documentation' AND
+            status IN ('received', 'verified'))
+        error_message: "Medical documentation required"
+        action: request_document
+        applies_to: [claim]
+
+      - id: CLM-DOC-005
+        name: Proof of Ownership for Property
+        description: Proof of ownership for property claims
+        priority: high
+        condition: |
+          claim.claim_category NOT IN ('property', 'motor') OR
+          EXISTS(claim_document WHERE
+            document_type = 'proof_of_ownership' AND
+            status IN ('received', 'verified'))
+        error_message: "Proof of ownership required"
+        action: request_document
+        applies_to: [claim]
+
+  data_quality:
+    name: Data Quality Rules
+    description: Rules for data quality and consistency
+
+    rules:
+      - id: CLM-DQ-001
+        name: Claim Amount Within Coverage Limit
+        description: Claimed amount should not exceed coverage limit
+        priority: medium
+        condition: |
+          claim.claimed_amount <= coverage.sum_insured
+        warning_message: "Claimed amount exceeds coverage limit"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: CLM-DQ-002
+        name: Consistent Loss and Report Dates
+        description: Report date must be on or after loss date
+        priority: high
+        condition: |
+          fnol.received_at >= claim.loss_date
+        error_message: "Report date cannot be before loss date"
+        action: reject_submission
+        applies_to: [claim, fnol]
+
+      - id: CLM-DQ-003
+        name: Valid Phone Number Format
+        description: Phone numbers must be in valid format
+        priority: low
+        condition: |
+          REGEXP_MATCH(claimant.phone, '^[0-9]{10,11}$')
+        warning_message: "Invalid phone number format"
+        action: flag_for_correction
+        applies_to: [claimant]
+
+      - id: CLM-DQ-004
+        name: Valid Email Format
+        description: Email addresses must be valid
+        priority: low
+        condition: |
+          claimant.email IS NULL OR
+          REGEXP_MATCH(claimant.email, '^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$')
+        warning_message: "Invalid email format"
+        action: flag_for_correction
+        applies_to: [claimant]
+
+      - id: CLM-DQ-005
+        name: National ID Validation
+        description: National ID must be valid format
+        priority: high
+        condition: |
+          REGEXP_MATCH(claimant.national_id, '^[0-9]{12}$')
+        error_message: "Invalid national ID format"
+        action: request_correction
+        applies_to: [claimant]
+
+  duplicate_detection:
+    name: Duplicate Detection Rules
+    description: Rules for detecting duplicate claims
+
+    rules:
+      - id: CLM-DUP-001
+        name: Same Policy Same Loss Date
+        description: Detect potential duplicate for same policy and loss date
+        priority: high
+        condition: |
+          NOT EXISTS(claim c2 WHERE
+            c2.policy_id = claim.policy_id AND
+            c2.loss_date = claim.loss_date AND
+            c2.id != claim.id AND
+            c2.status NOT IN ('withdrawn', 'duplicate'))
+        warning_message: "Potential duplicate claim detected"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: CLM-DUP-002
+        name: Similar Claim Description
+        description: Detect claims with very similar descriptions
+        priority: medium
+        condition: |
+          NOT EXISTS(claim c2 WHERE
+            c2.policy_id = claim.policy_id AND
+            SIMILARITY(c2.loss_description, claim.loss_description) > 0.9 AND
+            c2.id != claim.id AND
+            c2.created_at > NOW() - INTERVAL '30 days')
+        warning_message: "Similar claim description found"
+        action: flag_for_review
+        applies_to: [claim]
+
+      - id: CLM-DUP-003
+        name: Same Claimant Multiple Claims
+        description: Multiple claims from same claimant in short period
+        priority: medium
+        condition: |
+          COUNT(claim WHERE
+            claim.claimant_id = claimant.id AND
+            claim.created_at > NOW() - INTERVAL '30 days') <= 3
+        warning_message: "Multiple claims from same claimant"
+        action: flag_for_review
+        applies_to: [claim]
+
+validation_sequences:
+  fnol_submission:
+    name: FNOL Submission Validation
+    description: Validation sequence for FNOL submission
+    steps:
+      - rule_set: claim_completeness
+        rules: [CLM-CMP-001, CLM-CMP-002]
+      - rule_set: data_quality
+        rules: [CLM-DQ-002, CLM-DQ-003]
+
+  claim_registration:
+    name: Claim Registration Validation
+    description: Validation sequence for claim registration
+    steps:
+      - rule_set: claim_eligibility
+        rules: [CLM-ELG-001, CLM-ELG-002, CLM-ELG-005]
+      - rule_set: claim_completeness
+        rules: [CLM-CMP-003, CLM-CMP-004]
+      - rule_set: duplicate_detection
+        rules: [CLM-DUP-001, CLM-DUP-002]
+
+  pre_assessment:
+    name: Pre-Assessment Validation
+    description: Validation before assessment
+    steps:
+      - rule_set: claim_eligibility
+        rules: [CLM-ELG-003, CLM-ELG-004]
+      - rule_set: document_requirements
+        rules: [CLM-DOC-001, CLM-DOC-002, CLM-DOC-003, CLM-DOC-004, CLM-DOC-005]
+
+  pre_settlement:
+    name: Pre-Settlement Validation
+    description: Validation before settlement
+    steps:
+      - rule_set: claim_completeness
+        rules: [CLM-CMP-005]
+      - rule_set: data_quality
+        rules: [CLM-DQ-001]
+
+exception_handling:
+  allowed_exceptions:
+    - rule_id: CLM-ELG-002
+      exception_codes: [EX-LATE-REPORT, EX-HOSPITALIZED, EX-OVERSEAS]
+      approval_required: supervisor
+
+    - rule_id: CLM-ELG-003
+      exception_codes: [EX-WAIVER, EX-ACCIDENT-COVER]
+      approval_required: manager
+
+    - rule_id: CLM-DOC-002
+      exception_codes: [EX-NO-POLICE, EX-MINOR-THEFT]
+      approval_required: senior_handler
+
+  exception_workflow:
+    request_path: /claims/{claim_id}/exceptions
+    approval_levels:
+      senior_handler: 1
+      supervisor: 2
+      manager: 3
+      director: 4

@@ -1,0 +1,213 @@
+# Kubernetes Ingress Template
+# F5 Framework - Infrastructure Stack
+#
+# Variables:
+#   {{app_name}}         - Application name
+#   {{namespace}}        - Kubernetes namespace
+#   {{host}}             - Hostname (e.g., api.example.com)
+#   {{tls_secret}}       - TLS secret name
+#   {{ingress_class}}    - Ingress class (nginx, traefik, alb)
+#   {{path}}             - URL path (default: /)
+#   {{path_type}}        - PathType (Prefix, Exact, ImplementationSpecific)
+#   {{service_port}}     - Backend service port
+#   {{labels}}           - Additional labels
+#   {{annotations}}      - Additional annotations
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{app_name}}
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/instance: {{app_name}}
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/managed-by: f5-framework
+    {{labels}}
+  annotations:
+    f5.io/template: "k8s-ingress"
+    f5.io/version: "1.0.0"
+
+    # Common annotations
+    kubernetes.io/ingress.class: "{{ingress_class | default: nginx}}"
+
+    # TLS/SSL
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+
+    # Timeouts
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "60"
+
+    # Body size
+    nginx.ingress.kubernetes.io/proxy-body-size: "{{max_body_size | default: 10m}}"
+
+    # Rate limiting
+    nginx.ingress.kubernetes.io/limit-rps: "{{rate_limit | default: 100}}"
+    nginx.ingress.kubernetes.io/limit-connections: "{{connection_limit | default: 50}}"
+
+    # CORS (if needed)
+    {{#if enable_cors}}
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{cors_origins | default: *}}"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization"
+    {{/if}}
+
+    # cert-manager for automatic TLS
+    {{#if cert_manager_issuer}}
+    cert-manager.io/cluster-issuer: "{{cert_manager_issuer}}"
+    {{/if}}
+
+    {{annotations}}
+spec:
+  ingressClassName: {{ingress_class | default: "nginx"}}
+
+  tls:
+    - hosts:
+        - {{host}}
+      secretName: {{tls_secret | default: "{{app_name}}-tls"}}
+
+  rules:
+    - host: {{host}}
+      http:
+        paths:
+          - path: {{path | default: "/"}}
+            pathType: {{path_type | default: "Prefix"}}
+            backend:
+              service:
+                name: {{app_name}}
+                port:
+                  number: {{service_port | default: 80}}
+
+---
+# Ingress for multiple paths
+{{#if multi_path}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{app_name}}-multi
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: ingress-multi
+  annotations:
+    kubernetes.io/ingress.class: "{{ingress_class | default: nginx}}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: {{ingress_class | default: "nginx"}}
+  tls:
+    - hosts:
+        - {{host}}
+      secretName: {{tls_secret | default: "{{app_name}}-tls"}}
+  rules:
+    - host: {{host}}
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{app_name}}-api
+                port:
+                  number: 80
+          - path: /web(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{app_name}}-web
+                port:
+                  number: 80
+          - path: /admin(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{app_name}}-admin
+                port:
+                  number: 80
+{{/if}}
+
+---
+# AWS ALB Ingress variant
+{{#if aws_alb}}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{app_name}}-alb
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: alb-ingress
+  annotations:
+    kubernetes.io/ingress.class: "alb"
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/certificate-arn: {{certificate_arn}}
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "2"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/success-codes: "200-399"
+    alb.ingress.kubernetes.io/load-balancer-attributes: idle_timeout.timeout_seconds=60
+    {{annotations}}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{host}}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{app_name}}
+                port:
+                  number: {{service_port | default: 80}}
+{{/if}}
+
+---
+# Traefik IngressRoute (CRD)
+{{#if traefik}}
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: {{app_name}}-traefik
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: traefik-ingress
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - match: Host(`{{host}}`)
+      kind: Rule
+      services:
+        - name: {{app_name}}
+          port: {{service_port | default: 80}}
+      middlewares:
+        - name: {{app_name}}-headers
+  tls:
+    secretName: {{tls_secret | default: "{{app_name}}-tls"}}
+
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: Middleware
+metadata:
+  name: {{app_name}}-headers
+  namespace: {{namespace}}
+spec:
+  headers:
+    stsSeconds: 31536000
+    stsIncludeSubdomains: true
+    stsPreload: true
+    forceSTSHeader: true
+    contentTypeNosniff: true
+    browserXssFilter: true
+    frameDeny: true
+{{/if}}

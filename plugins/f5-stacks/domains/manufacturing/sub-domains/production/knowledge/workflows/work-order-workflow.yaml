@@ -1,0 +1,520 @@
+name: work-order-workflow
+display_name: Work Order Lifecycle Workflow
+display_name_vi: Quy trình vòng đời lệnh sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: workflow
+
+description: |
+  Complete workflow for work order management from creation through
+  completion, including release, execution, and closure processes.
+
+description_vi: |
+  Quy trình hoàn chỉnh quản lý lệnh sản xuất từ tạo đến
+  hoàn thành, bao gồm phát hành, thực hiện và đóng.
+
+trigger:
+  events:
+    - production_demand_created
+    - sales_order_released
+    - mrp_planned_order
+    - manual_work_order_request
+  conditions:
+    - product.make_buy = 'make'
+    - demand_quantity > 0
+
+actors:
+  - id: planner
+    name: Production Planner
+    name_vi: Kế hoạch viên sản xuất
+    responsibilities:
+      - Create work orders
+      - Schedule operations
+      - Release to production
+
+  - id: supervisor
+    name: Production Supervisor
+    name_vi: Giám sát sản xuất
+    responsibilities:
+      - Assign operators
+      - Monitor progress
+      - Handle exceptions
+
+  - id: operator
+    name: Machine Operator
+    name_vi: Công nhân vận hành
+    responsibilities:
+      - Execute operations
+      - Report output
+      - Record downtime
+
+  - id: warehouse
+    name: Warehouse Staff
+    name_vi: Nhân viên kho
+    responsibilities:
+      - Issue materials
+      - Receive finished goods
+
+  - id: quality
+    name: Quality Inspector
+    name_vi: Kiểm tra viên chất lượng
+    responsibilities:
+      - Perform inspections
+      - Approve/reject output
+
+states:
+  - id: draft
+    name: Draft
+    name_vi: Nháp
+    description: Work order being created
+
+  - id: planned
+    name: Planned
+    name_vi: Đã lên kế hoạch
+    description: Scheduled but not released
+
+  - id: released
+    name: Released
+    name_vi: Đã phát hành
+    description: Ready for production
+
+  - id: in_progress
+    name: In Progress
+    name_vi: Đang thực hiện
+    description: Production started
+
+  - id: completed
+    name: Completed
+    name_vi: Hoàn thành
+    description: All operations done
+
+  - id: closed
+    name: Closed
+    name_vi: Đã đóng
+    description: Finalized and archived
+
+  - id: cancelled
+    name: Cancelled
+    name_vi: Đã hủy
+    description: Work order cancelled
+
+  - id: on_hold
+    name: On Hold
+    name_vi: Tạm giữ
+    description: Temporarily suspended
+
+steps:
+  - id: create_work_order
+    name: Create Work Order
+    name_vi: Tạo lệnh sản xuất
+    state: draft
+    actor: planner
+    actions:
+      - action: create_work_order_header
+        inputs:
+          - product_id
+          - quantity
+          - due_date
+          - priority
+        outputs:
+          - work_order_number
+
+      - action: copy_bom
+        description: Copy BOM to work order
+        inputs:
+          - product_id
+          - effective_date
+        outputs:
+          - work_order_bom_items
+
+      - action: copy_routing
+        description: Copy routing to work order
+        inputs:
+          - product_id
+          - effective_date
+        outputs:
+          - work_order_operations
+
+      - action: calculate_requirements
+        description: Calculate material and capacity needs
+        outputs:
+          - material_requirements
+          - capacity_requirements
+
+    validations:
+      - rule: product.status = 'active'
+        message: Product must be active
+
+      - rule: quantity > 0
+        message: Quantity must be positive
+
+      - rule: due_date >= today
+        message: Due date cannot be in past
+
+    next_step: plan_work_order
+
+  - id: plan_work_order
+    name: Plan Work Order
+    name_vi: Lên kế hoạch lệnh sản xuất
+    state: draft
+    actor: planner
+    actions:
+      - action: schedule_operations
+        description: Schedule each operation
+        inputs:
+          - scheduling_method
+          - capacity_mode
+        outputs:
+          - operation_schedules
+
+      - action: check_material_availability
+        description: Verify material availability
+        outputs:
+          - material_availability_status
+          - shortage_list
+
+      - action: check_capacity_availability
+        description: Verify capacity availability
+        outputs:
+          - capacity_availability_status
+          - overload_periods
+
+      - action: assign_resources
+        description: Assign work centers and machines
+        outputs:
+          - resource_assignments
+
+    validations:
+      - rule: all_operations_scheduled
+        message: All operations must be scheduled
+
+      - rule: no_scheduling_conflicts
+        message: Resolve scheduling conflicts
+
+    transitions:
+      - to: planned
+        condition: planning_complete
+        action: update_status
+
+    next_step: release_work_order
+
+  - id: release_work_order
+    name: Release Work Order
+    name_vi: Phát hành lệnh sản xuất
+    state: planned
+    actor: planner
+    preconditions:
+      - All materials available or on order
+      - Capacity available
+      - BOM and routing complete
+
+    actions:
+      - action: verify_release_criteria
+        checks:
+          - material_availability >= threshold
+          - capacity_available = true
+          - quality_documents_ready = true
+
+      - action: generate_shop_paperwork
+        outputs:
+          - work_order_travelers
+          - picking_lists
+          - operation_cards
+
+      - action: reserve_materials
+        description: Reserve materials for work order
+
+      - action: notify_production
+        description: Notify shop floor of new work order
+
+    validations:
+      - rule: material_availability_check_passed
+        message: Materials must be available
+
+    transitions:
+      - to: released
+        condition: release_approved
+        action: set_release_date
+
+    next_step: issue_materials
+
+  - id: issue_materials
+    name: Issue Materials
+    name_vi: Xuất vật tư
+    state: released
+    actor: warehouse
+    actions:
+      - action: generate_picking_list
+        outputs:
+          - picking_list
+
+      - action: pick_materials
+        description: Pick materials from warehouse
+
+      - action: stage_at_work_center
+        description: Deliver to staging area
+
+      - action: confirm_issue
+        description: Record material issue
+        outputs:
+          - issue_transactions
+
+    validations:
+      - rule: picked_quantity <= required_quantity * 1.05
+        message: Cannot over-issue by more than 5%
+
+    next_step: start_production
+
+  - id: start_production
+    name: Start Production
+    name_vi: Bắt đầu sản xuất
+    state: released
+    actor: operator
+    actions:
+      - action: clock_in_operation
+        inputs:
+          - operator_id
+          - machine_id
+          - operation_id
+        outputs:
+          - start_timestamp
+
+      - action: verify_setup
+        description: Verify machine setup correct
+
+      - action: first_article_inspection
+        description: Inspect first piece
+        actor: quality
+
+      - action: begin_production_run
+        condition: first_article_passed
+
+    transitions:
+      - to: in_progress
+        condition: production_started
+        action: record_actual_start
+
+    next_step: execute_operations
+
+  - id: execute_operations
+    name: Execute Operations
+    name_vi: Thực hiện công đoạn
+    state: in_progress
+    actor: operator
+    loop: for_each_operation
+
+    actions:
+      - action: perform_operation
+        description: Execute the manufacturing operation
+
+      - action: record_output
+        inputs:
+          - quantity_good
+          - quantity_reject
+          - quantity_scrap
+        outputs:
+          - production_output_record
+
+      - action: record_time
+        inputs:
+          - setup_time
+          - run_time
+        outputs:
+          - time_record
+
+      - action: backflush_materials
+        condition: operation.backflush = true
+
+      - action: move_to_next_operation
+        condition: operation_complete
+
+    sub_workflows:
+      - downtime_recording
+      - quality_inspection
+      - rework_handling
+
+    validations:
+      - rule: output_quantity <= scheduled_quantity * 1.10
+        message: Cannot report more than 110% of scheduled
+
+    next_step: complete_work_order
+
+  - id: handle_exceptions
+    name: Handle Exceptions
+    name_vi: Xử lý ngoại lệ
+    state: in_progress
+    actor: supervisor
+    trigger: exception_detected
+
+    exception_types:
+      - type: material_shortage
+        actions:
+          - check_substitute_availability
+          - request_expedite
+          - adjust_schedule
+
+      - type: machine_breakdown
+        actions:
+          - record_downtime
+          - notify_maintenance
+          - reschedule_operations
+
+      - type: quality_failure
+        actions:
+          - quarantine_output
+          - initiate_ncr
+          - determine_disposition
+
+      - type: operator_unavailable
+        actions:
+          - reassign_work
+          - adjust_schedule
+
+    transitions:
+      - to: on_hold
+        condition: cannot_continue
+        action: set_hold_reason
+
+      - to: in_progress
+        condition: exception_resolved
+        action: resume_production
+
+  - id: complete_work_order
+    name: Complete Work Order
+    name_vi: Hoàn thành lệnh sản xuất
+    state: in_progress
+    actor: supervisor
+    preconditions:
+      - All operations complete
+      - Final inspection passed
+      - Output received to inventory
+
+    actions:
+      - action: verify_completion
+        checks:
+          - all_operations_status = 'complete'
+          - total_output_recorded = true
+          - materials_consumed_or_returned = true
+
+      - action: final_inspection
+        actor: quality
+        outputs:
+          - inspection_result
+
+      - action: receive_to_inventory
+        actor: warehouse
+        inputs:
+          - output_quantity
+          - lot_number
+        outputs:
+          - inventory_receipt
+
+      - action: calculate_variances
+        outputs:
+          - quantity_variance
+          - time_variance
+          - cost_variance
+
+    validations:
+      - rule: final_inspection_passed
+        message: Final inspection must pass
+
+      - rule: inventory_receipt_confirmed
+        message: Output must be received to inventory
+
+    transitions:
+      - to: completed
+        condition: completion_verified
+        action: set_completion_date
+
+    next_step: close_work_order
+
+  - id: close_work_order
+    name: Close Work Order
+    name_vi: Đóng lệnh sản xuất
+    state: completed
+    actor: planner
+    actions:
+      - action: review_variances
+        description: Review and analyze variances
+
+      - action: post_costs
+        description: Post final costs to GL
+        outputs:
+          - cost_postings
+
+      - action: return_excess_materials
+        description: Return unused materials to inventory
+        actor: warehouse
+
+      - action: archive_documents
+        description: Archive work order documentation
+
+      - action: update_metrics
+        description: Update OEE and performance metrics
+
+    validations:
+      - rule: all_transactions_posted
+        message: All transactions must be posted
+
+      - rule: no_open_issues
+        message: All issues must be resolved
+
+    transitions:
+      - to: closed
+        condition: closure_approved
+        action: set_close_date
+
+kpis:
+  - metric: On-Time Completion Rate
+    formula: (on_time_work_orders / total_work_orders) * 100
+    target: "> 95%"
+
+  - metric: Work Order Lead Time
+    formula: AVG(completion_date - release_date)
+    target: "Within planned lead time"
+
+  - metric: Quantity Variance
+    formula: (actual_quantity - planned_quantity) / planned_quantity * 100
+    target: "< 5%"
+
+  - metric: First Pass Yield
+    formula: (good_quantity / total_quantity) * 100
+    target: "> 95%"
+
+notifications:
+  - event: work_order_released
+    recipients: [supervisor, warehouse]
+    message: "Work Order {wo_number} released for production"
+
+  - event: material_shortage
+    recipients: [planner, purchasing]
+    message: "Material shortage on WO {wo_number}: {material_code}"
+
+  - event: work_order_completed
+    recipients: [planner, warehouse]
+    message: "Work Order {wo_number} completed: {quantity} units"
+
+  - event: work_order_delayed
+    recipients: [planner, supervisor]
+    message: "Work Order {wo_number} delayed: {reason}"
+
+integrations:
+  - system: ERP
+    events:
+      - work_order_created
+      - work_order_closed
+    data: costs, inventory_transactions
+
+  - system: MES
+    events:
+      - operation_started
+      - output_recorded
+    data: real_time_production_data
+
+  - system: WMS
+    events:
+      - material_issued
+      - output_received
+    data: inventory_movements

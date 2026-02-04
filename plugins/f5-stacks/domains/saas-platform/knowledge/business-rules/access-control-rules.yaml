@@ -1,0 +1,663 @@
+name: Access Control Rules
+display_name: Access Control Rules / Quy tắc kiểm soát truy cập
+description: |
+  Business rules for role-based access control (RBAC), permissions,
+  authentication, and authorization in multi-tenant SaaS.
+
+domain: saas-platform
+rule_category: security
+version: "1.0"
+compliance: [SOC2, GDPR, ISO27001]
+
+# =============================================================================
+# AUTHENTICATION RULES
+# =============================================================================
+authentication_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUTH-001 - Authentication Methods
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUTH-001
+    name: Authentication Methods
+    name_vi: Phương thức xác thực
+    severity: critical
+    description: |
+      Supported authentication methods vary by tier.
+      All methods must meet minimum security standards.
+    description_vi: |
+      Phương thức xác thực hỗ trợ khác nhau theo cấp.
+      Tất cả phương thức phải đáp ứng tiêu chuẩn bảo mật tối thiểu.
+
+    methods_by_tier:
+      free:
+        - email_password
+        - social_oauth: [google]
+
+      starter:
+        - email_password
+        - social_oauth: [google, github, microsoft]
+        - magic_link
+
+      professional:
+        - email_password
+        - social_oauth: [google, github, microsoft, linkedin]
+        - magic_link
+        - saml_sso: optional
+
+      enterprise:
+        - email_password
+        - social_oauth: configurable
+        - magic_link
+        - saml_sso: included
+        - oidc: included
+        - ldap_integration: optional
+
+    password_requirements:
+      min_length: 12
+      require_uppercase: true
+      require_lowercase: true
+      require_number: true
+      require_special: true
+      max_age_days: 90  # Enterprise only
+      history_count: 12  # Cannot reuse last 12 passwords
+      breach_check: true  # Check against known breaches
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUTH-002 - Multi-Factor Authentication
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUTH-002
+    name: Multi-Factor Authentication
+    name_vi: Xác thực đa yếu tố
+    severity: high
+    description: |
+      MFA requirements and enforcement rules.
+    description_vi: |
+      Yêu cầu và quy tắc thực thi MFA.
+
+    mfa_options:
+      totp:
+        name: "Authenticator App"
+        apps: [google_authenticator, authy, 1password]
+        enabled_for: all_tiers
+
+      sms:
+        name: "SMS Code"
+        enabled_for: [starter, professional, enterprise]
+        security_note: "Less secure, deprecated for high-security"
+
+      email:
+        name: "Email Code"
+        enabled_for: [starter, professional, enterprise]
+        security_note: "Fallback option only"
+
+      hardware_key:
+        name: "Security Key (FIDO2/WebAuthn)"
+        enabled_for: [professional, enterprise]
+        recommended: true
+
+      push:
+        name: "Push Notification"
+        enabled_for: [enterprise]
+        requires: "Mobile app installed"
+
+    enforcement:
+      free:
+        mfa_available: true
+        mfa_required: false
+
+      starter:
+        mfa_available: true
+        mfa_required: false
+        mfa_encouraged: true
+
+      professional:
+        mfa_available: true
+        mfa_required: optional_tenant_setting
+        admin_mfa_required: true
+
+      enterprise:
+        mfa_available: true
+        mfa_required: tenant_configurable
+        admin_mfa_required: true
+        security_key_required: optional
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUTH-003 - Session Management
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUTH-003
+    name: Session Management
+    name_vi: Quản lý phiên
+    severity: high
+    description: |
+      Session lifetime, concurrent sessions, and revocation rules.
+    description_vi: |
+      Thời gian phiên, phiên đồng thời và quy tắc thu hồi.
+
+    session_settings:
+      default:
+        session_duration: 24_hours
+        idle_timeout: 2_hours
+        max_concurrent_sessions: unlimited
+        remember_me_duration: 30_days
+
+      enterprise_customizable:
+        session_duration: [1, 2, 4, 8, 12, 24]_hours
+        idle_timeout: [15, 30, 60, 120]_minutes
+        max_concurrent_sessions: [1, 3, 5, unlimited]
+        remember_me: [enabled, disabled]
+
+    session_security:
+      token_rotation: true
+      fingerprint_validation: true
+      geo_anomaly_detection: true
+      device_trust: enterprise_only
+
+    revocation:
+      manual:
+        - "User can revoke own sessions"
+        - "Admin can revoke user sessions"
+        - "Owner can revoke all tenant sessions"
+
+      automatic:
+        - "Password change revokes all sessions"
+        - "MFA change revokes all sessions"
+        - "Account suspension revokes all sessions"
+        - "Security incident triggers session purge"
+
+# =============================================================================
+# AUTHORIZATION RULES
+# =============================================================================
+authorization_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUT-001 - Permission Model
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUT-001
+    name: Permission Model
+    name_vi: Mô hình quyền
+    severity: critical
+    description: |
+      RBAC permission model with resource:action pairs.
+      Permissions are additive (deny by default).
+    description_vi: |
+      Mô hình quyền RBAC với cặp resource:action.
+      Quyền là cộng dồn (mặc định từ chối).
+
+    permission_structure:
+      format: "{resource}:{action}"
+      examples:
+        - "users:read"
+        - "users:create"
+        - "users:update"
+        - "users:delete"
+        - "billing:read"
+        - "billing:manage"
+        - "settings:read"
+        - "settings:update"
+
+      wildcards:
+        - "users:*"  # All actions on users
+        - "*:read"   # Read all resources
+        - "*:*"      # Full access (owner only)
+
+    resources:
+      core:
+        - users
+        - roles
+        - organizations
+        - teams
+
+      billing:
+        - subscriptions
+        - invoices
+        - payment_methods
+        - usage
+
+      settings:
+        - tenant_settings
+        - security_settings
+        - integrations
+        - api_keys
+
+      data:
+        - exports
+        - imports
+        - audit_logs
+
+    actions:
+      standard:
+        - read
+        - create
+        - update
+        - delete
+        - list
+
+      special:
+        - manage  # Full control
+        - invite  # User invitation
+        - export  # Data export
+        - admin   # Administrative actions
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUT-002 - Role Hierarchy
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUT-002
+    name: Role Hierarchy
+    name_vi: Phân cấp vai trò
+    severity: high
+    description: |
+      System roles with hierarchical permission inheritance.
+      Custom roles available for Professional and Enterprise.
+    description_vi: |
+      Vai trò hệ thống với kế thừa quyền phân cấp.
+      Vai trò tùy chỉnh có sẵn cho Professional và Enterprise.
+
+    system_roles:
+      owner:
+        level: 100
+        description: "Full control, cannot be restricted"
+        permissions: "*:*"
+        constraints:
+          - "Exactly one owner per tenant"
+          - "Cannot be deleted"
+          - "Can only transfer ownership"
+
+      admin:
+        level: 80
+        description: "Full control except billing and ownership"
+        permissions:
+          - "users:*"
+          - "roles:*"
+          - "organizations:*"
+          - "settings:*"
+          - "integrations:*"
+          - "api_keys:*"
+          - "audit_logs:read"
+        inherits_from: null
+
+      billing_admin:
+        level: 70
+        description: "Billing and subscription management"
+        permissions:
+          - "billing:*"
+          - "subscriptions:*"
+          - "invoices:*"
+          - "payment_methods:*"
+          - "usage:read"
+        inherits_from: null
+
+      member:
+        level: 50
+        description: "Standard team member"
+        permissions:
+          - "users:read"
+          - "teams:read"
+          - "organizations:read"
+          - "settings:read"
+        inherits_from: null
+
+      viewer:
+        level: 10
+        description: "Read-only access"
+        permissions:
+          - "*:read"
+        inherits_from: null
+
+    custom_roles:
+      available_for: [professional, enterprise]
+      max_custom_roles:
+        professional: 10
+        enterprise: unlimited
+
+      constraints:
+        - "Cannot exceed creator's permissions"
+        - "Cannot grant owner-level access"
+        - "Must have unique name within tenant"
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUT-003 - Permission Evaluation
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUT-003
+    name: Permission Evaluation
+    name_vi: Đánh giá quyền
+    severity: critical
+    description: |
+      How permissions are evaluated at runtime.
+      Deny by default, explicit grant required.
+    description_vi: |
+      Cách quyền được đánh giá tại runtime.
+      Mặc định từ chối, yêu cầu cấp phép rõ ràng.
+
+    evaluation_algorithm: |
+      function hasPermission(user, resource, action):
+        # 1. Get user's effective permissions
+        permissions = getUserPermissions(user)
+
+        # 2. Check exact match
+        if f"{resource}:{action}" in permissions:
+          return true
+
+        # 3. Check resource wildcard
+        if f"{resource}:*" in permissions:
+          return true
+
+        # 4. Check action wildcard
+        if f"*:{action}" in permissions:
+          return true
+
+        # 5. Check full wildcard
+        if "*:*" in permissions:
+          return true
+
+        # 6. Default deny
+        return false
+
+    permission_sources:
+      priority_order:
+        1: "Direct user permissions"
+        2: "User's role permissions"
+        3: "Organization role permissions (if applicable)"
+        4: "Team role permissions (if applicable)"
+
+      merge_strategy: union  # All permissions combined
+
+    caching:
+      enabled: true
+      ttl: 5_minutes
+      invalidation:
+        - "Role change"
+        - "Permission change"
+        - "User deactivation"
+
+# =============================================================================
+# API ACCESS RULES
+# =============================================================================
+api_access_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-API-001 - API Key Management
+  # ---------------------------------------------------------------------------
+  - id: ACL-API-001
+    name: API Key Management
+    name_vi: Quản lý khóa API
+    severity: high
+    description: |
+      Rules for creating, using, and revoking API keys.
+    description_vi: |
+      Quy tắc tạo, sử dụng và thu hồi khóa API.
+
+    api_key_types:
+      publishable:
+        prefix: "pk_"
+        description: "Client-side, limited permissions"
+        permissions: read_only
+        exposure: safe_for_client
+
+      secret:
+        prefix: "sk_"
+        description: "Server-side, full permissions"
+        permissions: configurable
+        exposure: server_only
+
+      restricted:
+        prefix: "rk_"
+        description: "Limited to specific resources/actions"
+        permissions: explicitly_defined
+        exposure: server_only
+
+    key_limits_by_tier:
+      free:
+        max_keys: 2
+        key_types: [publishable]
+
+      starter:
+        max_keys: 10
+        key_types: [publishable, secret]
+
+      professional:
+        max_keys: 50
+        key_types: [publishable, secret, restricted]
+
+      enterprise:
+        max_keys: unlimited
+        key_types: [publishable, secret, restricted]
+
+    security_requirements:
+      key_format: "Base62, 32 characters"
+      storage: "Hashed with SHA-256"
+      display: "Show full key only once at creation"
+      rotation: "Recommended every 90 days"
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-API-002 - API Key Permissions
+  # ---------------------------------------------------------------------------
+  - id: ACL-API-002
+    name: API Key Permissions
+    name_vi: Quyền khóa API
+    severity: high
+    description: |
+      API keys inherit permissions from creating user.
+      Restricted keys can further limit scope.
+    description_vi: |
+      Khóa API kế thừa quyền từ người dùng tạo.
+      Khóa hạn chế có thể giới hạn phạm vi thêm.
+
+    permission_inheritance:
+      rule: "Cannot exceed creator's permissions"
+      example: |
+        # If user has: users:read, users:create, billing:read
+        # API key can have at most: users:read, users:create, billing:read
+        # API key CANNOT have: users:delete (not in creator's permissions)
+
+    restricted_key_scopes:
+      ip_allowlist:
+        enabled: true
+        max_ips: 20
+
+      resource_scope:
+        enabled: true
+        example: "Only access specific project_id"
+
+      action_scope:
+        enabled: true
+        example: "Read-only access"
+
+      time_restriction:
+        enabled: true
+        options:
+          - "Valid for X days"
+          - "Valid during business hours"
+          - "Expires on specific date"
+
+# =============================================================================
+# SSO RULES (PROFESSIONAL & ENTERPRISE)
+# =============================================================================
+sso_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-SSO-001 - SAML Configuration
+  # ---------------------------------------------------------------------------
+  - id: ACL-SSO-001
+    name: SAML SSO Configuration
+    name_vi: Cấu hình SSO SAML
+    severity: high
+    description: |
+      SAML 2.0 SSO configuration for Professional and Enterprise.
+    description_vi: |
+      Cấu hình SSO SAML 2.0 cho Professional và Enterprise.
+
+    availability:
+      professional: optional_addon
+      enterprise: included
+
+    configuration:
+      required_from_idp:
+        - "IdP Entity ID"
+        - "SSO URL"
+        - "X.509 Certificate"
+
+      provided_to_idp:
+        - "SP Entity ID"
+        - "ACS URL"
+        - "SLO URL"
+        - "SP Certificate"
+
+      attribute_mapping:
+        required:
+          - email
+        optional:
+          - first_name
+          - last_name
+          - department
+          - role
+
+    enforcement:
+      modes:
+        - optional: "SSO available alongside password"
+        - required: "SSO only, password disabled"
+        - required_with_exception: "SSO required, specific users exempted"
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-SSO-002 - Just-In-Time Provisioning
+  # ---------------------------------------------------------------------------
+  - id: ACL-SSO-002
+    name: Just-In-Time Provisioning
+    name_vi: Cung cấp đúng lúc
+    severity: medium
+    description: |
+      Auto-create users on first SSO login.
+    description_vi: |
+      Tự động tạo người dùng khi đăng nhập SSO lần đầu.
+
+    jit_provisioning:
+      enabled: tenant_configurable
+      default: true
+
+      user_creation:
+        source: "SAML attributes"
+        default_role: "member"
+        organization_assignment: "From SAML attribute or default"
+
+      attribute_sync:
+        on_each_login: true
+        synced_fields:
+          - email
+          - name
+          - department
+        not_synced:
+          - role  # Managed in app
+          - permissions
+
+    deprovisioning:
+      manual: "Admin removes user"
+      scim: "Enterprise - automated via SCIM"
+      idle: "Optional - disable after X days inactive"
+
+# =============================================================================
+# AUDIT RULES
+# =============================================================================
+audit_rules:
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUD-001 - Access Logging
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUD-001
+    name: Access Logging
+    name_vi: Ghi log truy cập
+    severity: critical
+    description: |
+      All access attempts must be logged for security and compliance.
+    description_vi: |
+      Tất cả nỗ lực truy cập phải được ghi log cho bảo mật và tuân thủ.
+
+    logged_events:
+      authentication:
+        - login_success
+        - login_failed
+        - logout
+        - password_change
+        - mfa_enabled
+        - mfa_disabled
+        - session_created
+        - session_revoked
+
+      authorization:
+        - permission_denied
+        - role_assigned
+        - role_removed
+        - api_key_created
+        - api_key_revoked
+
+      sensitive_access:
+        - billing_data_accessed
+        - pii_accessed
+        - audit_logs_accessed
+        - data_exported
+
+    log_fields:
+      required:
+        - timestamp
+        - tenant_id
+        - actor_id
+        - actor_type
+        - action
+        - resource
+        - outcome
+
+      contextual:
+        - ip_address
+        - user_agent
+        - geo_location
+        - session_id
+        - request_id
+
+    retention:
+      free: 30_days
+      starter: 90_days
+      professional: 1_year
+      enterprise: custom_up_to_7_years
+
+  # ---------------------------------------------------------------------------
+  # Rule: ACL-AUD-002 - Security Alerts
+  # ---------------------------------------------------------------------------
+  - id: ACL-AUD-002
+    name: Security Alerts
+    name_vi: Cảnh báo bảo mật
+    severity: high
+    description: |
+      Automatic alerts for suspicious access patterns.
+    description_vi: |
+      Cảnh báo tự động cho các mẫu truy cập đáng ngờ.
+
+    alert_triggers:
+      authentication:
+        - name: "Multiple failed logins"
+          threshold: "5 failures in 10 minutes"
+          action: "Temporary account lock + email"
+
+        - name: "Login from new location"
+          trigger: "Unrecognized geo location"
+          action: "Email verification required"
+
+        - name: "Impossible travel"
+          trigger: "Logins from distant locations within short time"
+          action: "Session termination + security review"
+
+      authorization:
+        - name: "Repeated permission denied"
+          threshold: "10 denials in 1 hour"
+          action: "Alert admin + rate limit"
+
+        - name: "Privilege escalation attempt"
+          trigger: "Attempt to access higher-level resources"
+          action: "Alert security team + log"
+
+      api_access:
+        - name: "Unusual API volume"
+          threshold: "10x normal usage"
+          action: "Alert tenant admin"
+
+        - name: "API access from new IP"
+          trigger: "Unwhitelisted IP for restricted key"
+          action: "Block + alert"
+
+    notification_channels:
+      - email
+      - in_app
+      - webhook
+      - sms_enterprise_only

@@ -1,0 +1,553 @@
+# Badge Issuance Workflow
+# F5 Framework v2.0 - Education/Certification
+# Workflow for issuing Open Badges
+
+workflow:
+  id: badge-issuance
+  name: Badge Issuance Workflow
+  name_ja: バッジ発行ワークフロー
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    Workflow for issuing Open Badges compliant digital badges upon
+    achievement completion, including verification setup and sharing.
+
+  triggers:
+    - id: achievement_completed
+      name: Achievement Completed
+      description: Learner completes badge requirements
+      event: badge.achievement.completed
+      automatic: true
+      
+    - id: manual_award
+      name: Manual Award
+      description: Admin manually awards badge
+      event: badge.admin.award
+      automatic: false
+      
+    - id: bulk_award
+      name: Bulk Award
+      description: Award badges to multiple recipients
+      event: badge.bulk.award
+      automatic: false
+      
+    - id: endorsement_earned
+      name: Endorsement Badge Earned
+      description: Badge awarded through endorsement
+      event: badge.endorsement.earned
+      automatic: true
+
+  actors:
+    - id: learner
+      name: Learner
+      description: Person earning the badge
+      
+    - id: system
+      name: System
+      description: Automated badge processes
+      
+    - id: instructor
+      name: Instructor
+      description: Course instructor awarding badge
+      
+    - id: admin
+      name: Badge Admin
+      description: Badge administration personnel
+      
+    - id: endorser
+      name: Endorser
+      description: Third party endorsing achievements
+
+  states:
+    - id: triggered
+      name: Triggered
+      name_ja: トリガー済み
+      description: Badge issuance triggered
+      
+    - id: criteria_check
+      name: Criteria Check
+      name_ja: 基準確認
+      description: Verifying badge criteria
+      
+    - id: pending_approval
+      name: Pending Approval
+      name_ja: 承認待ち
+      description: Awaiting approval
+      
+    - id: generating
+      name: Generating
+      name_ja: 生成中
+      description: Creating badge assertion
+      
+    - id: signing
+      name: Signing
+      name_ja: 署名中
+      description: Digitally signing badge
+      
+    - id: issued
+      name: Issued
+      name_ja: 発行済み
+      description: Badge issued successfully
+      
+    - id: accepted
+      name: Accepted
+      name_ja: 受領済み
+      description: Recipient accepted badge
+      
+    - id: failed
+      name: Failed
+      name_ja: 失敗
+      description: Issuance failed
+      
+    - id: rejected
+      name: Rejected
+      name_ja: 却下
+      description: Badge rejected by recipient
+
+  transitions:
+    - from: triggered
+      to: criteria_check
+      trigger: auto
+      action: verify_criteria
+      
+    - from: criteria_check
+      to: pending_approval
+      condition: "badge_class.requires_approval = true"
+      action: request_approval
+      
+    - from: criteria_check
+      to: generating
+      condition: "criteria_met = true AND auto_issue = true"
+      action: start_generation
+      
+    - from: criteria_check
+      to: failed
+      condition: "criteria_met = false"
+      action: log_failure
+      
+    - from: pending_approval
+      to: generating
+      trigger: approval_granted
+      action: start_generation
+      
+    - from: pending_approval
+      to: failed
+      trigger: approval_denied
+      action: notify_denial
+      
+    - from: generating
+      to: signing
+      trigger: assertion_created
+      action: sign_badge
+      
+    - from: signing
+      to: issued
+      trigger: signature_complete
+      action: finalize_issuance
+      
+    - from: issued
+      to: accepted
+      trigger: recipient_accepts
+      action: confirm_acceptance
+      
+    - from: issued
+      to: rejected
+      trigger: recipient_rejects
+      action: process_rejection
+
+  steps:
+    - step: 1
+      name: Trigger Badge Issuance
+      name_ja: バッジ発行トリガー
+      actor: system
+      state: triggered
+      
+      trigger_sources:
+        achievement:
+          event: course.completed OR assessment.passed
+          data:
+            - learner_id
+            - badge_class_id
+            - achievement_evidence
+            
+        manual:
+          event: admin.award_badge
+          data:
+            - recipient_id
+            - badge_class_id
+            - award_reason
+            - evidence_url
+            
+        bulk:
+          event: admin.bulk_award
+          data:
+            - recipient_list
+            - badge_class_id
+            - common_evidence
+            
+        endorsement:
+          event: endorsement.verified
+          data:
+            - endorsee_id
+            - badge_class_id
+            - endorser_info
+            
+      actions:
+        - create_issuance_record
+        - capture_trigger_context
+        - identify_badge_class
+        
+      outputs:
+        - issuance_id
+        - badge_class
+        - recipient_info
+        
+    - step: 2
+      name: Verify Badge Criteria
+      name_ja: バッジ基準確認
+      actor: system
+      state: criteria_check
+      
+      criteria_verification:
+        for_achievement:
+          - check_required_completions
+          - verify_assessment_scores
+          - validate_time_requirements
+          
+        for_manual:
+          - verify_awarder_authority
+          - check_evidence_provided
+          
+        for_endorsement:
+          - verify_endorser_credentials
+          - validate_endorsement_criteria
+          
+      duplicate_check:
+        query: |
+          SELECT COUNT(*) FROM badges 
+          WHERE recipient_id = ? 
+          AND badge_class_id = ? 
+          AND status = 'active'
+        action_if_exists: check_reissuance_policy
+        
+      reissuance_policy:
+        allow_multiple: "badge_class.allow_multiple"
+        cooldown_days: "badge_class.reissuance_cooldown"
+        
+      outputs:
+        - criteria_met: boolean
+        - criteria_details
+        - requires_approval: boolean
+        
+    - step: 3
+      name: Request Approval
+      name_ja: 承認依頼
+      actor: system
+      state: pending_approval
+      condition: "badge_class.requires_approval = true"
+      
+      approval_routing:
+        - type: instructor_approval
+          condition: "badge_class.approval_type = 'instructor'"
+          approver: course.instructor
+          
+        - type: admin_approval
+          condition: "badge_class.approval_type = 'admin'"
+          approver: badge_admin
+          
+        - type: peer_approval
+          condition: "badge_class.approval_type = 'peer'"
+          approver: qualified_peers
+          required_approvals: 2
+          
+      notification:
+        to: approver
+        template: badge_approval_request
+        include:
+          - recipient_name
+          - badge_name
+          - achievement_evidence
+          - criteria_summary
+          
+      timeout:
+        duration_hours: 48
+        action: escalate_or_auto_approve
+        
+      outputs:
+        - approval_status
+        - approver_info
+        - approval_notes
+        
+    - step: 4
+      name: Generate Badge Assertion
+      name_ja: バッジアサーション生成
+      actor: system
+      state: generating
+      
+      open_badges_compliance:
+        version: "2.0"
+        
+      assertion_generation:
+        - create_assertion_id:
+            format: "urn:uuid:{uuid}"
+            globally_unique: true
+            
+        - set_recipient:
+            type: "email"
+            identity: "sha256$salt${email}"
+            hashed: true
+            salt: generated
+            
+        - link_badge_class:
+            id: badge_class.url
+            type: "BadgeClass"
+            
+        - set_verification:
+            type: "hosted" OR "signed"
+            url: assertion_url
+            
+        - capture_evidence:
+            narrative: achievement_description
+            evidence_url: supporting_evidence
+            
+        - set_issuance_date:
+            issuedOn: NOW()
+            
+        - set_expiration:
+            condition: "badge_class.has_expiration"
+            expires: "issuedOn + validity_period"
+            
+      assertion_structure:
+        "@context": "https://w3id.org/openbadges/v2"
+        type: "Assertion"
+        id: "assertion_url"
+        recipient:
+          type: "email"
+          identity: "hashed_identity"
+          hashed: true
+          salt: "random_salt"
+        badge: "badge_class_url"
+        verification:
+          type: "hosted"
+        issuedOn: "iso8601_datetime"
+        evidence:
+          - type: "Evidence"
+            narrative: "description"
+            
+      outputs:
+        - assertion_id
+        - assertion_json
+        - recipient_identity_hash
+        
+    - step: 5
+      name: Sign Badge
+      name_ja: バッジ署名
+      actor: system
+      state: signing
+      condition: "verification_type = 'signed'"
+      
+      signing_process:
+        for_hosted:
+          action: "Store assertion at verification URL"
+          
+        for_signed:
+          - create_jwt:
+              header:
+                alg: RS256
+                typ: JWT
+              payload: assertion_json
+              
+          - sign_with_private_key:
+              key: issuer.private_key
+              
+          - create_verification_key_url:
+              public_key: issuer.public_key
+              url: issuer.verification_key_url
+              
+      baked_badge:
+        enabled: true
+        process:
+          - embed_assertion_in_image
+          - create_png_with_metadata
+          - create_svg_with_metadata
+          
+      outputs:
+        - signed_assertion OR hosted_url
+        - baked_badge_image
+        - verification_method
+        
+    - step: 6
+      name: Finalize Issuance
+      name_ja: 発行完了
+      actor: system
+      state: issued
+      
+      finalization_actions:
+        - create_badge_record:
+            status: issued
+            assertion_id: generated
+            recipient_identity_hash: calculated
+            
+        - update_badge_class_stats:
+            increment: total_issued
+            
+        - update_recipient_profile:
+            add_to_badges: true
+            update_skills: true
+            
+        - generate_share_options:
+            - linkedin_share_url
+            - twitter_share_content
+            - embed_code
+            - download_links
+            
+      notification:
+        to: recipient
+        template: badge_earned
+        include:
+          - badge_name
+          - badge_image
+          - achievement_description
+          - verification_url
+          - share_options
+          - accept_url
+          - reject_url
+          
+      outputs:
+        - badge_id
+        - assertion_url
+        - share_urls
+        - notification_sent
+        
+    - step: 7
+      name: Recipient Response
+      name_ja: 受領者応答
+      actor: learner
+      state: accepted OR rejected
+      
+      acceptance_actions:
+        - update_badge_status:
+            status: accepted
+            accepted_at: NOW()
+            
+        - enable_public_display:
+            condition: "recipient.default_badge_visibility = 'public'"
+            
+        - add_to_backpack:
+            supported_backpacks:
+              - mozilla_backpack
+              - badgr
+              - credly
+              - linkedin
+              
+      rejection_actions:
+        - update_badge_status:
+            status: rejected
+            rejected_at: NOW()
+            
+        - capture_rejection_reason:
+            optional: true
+            
+        - hide_from_public:
+            visibility: private
+            
+      no_response_handling:
+        default_after_days: 30
+        action: auto_accept
+        
+      outputs:
+        - final_status
+        - response_timestamp
+        - backpack_status
+
+  bulk_processing:
+    enabled: true
+    
+    batch_configuration:
+      max_batch_size: 500
+      parallel_processing: true
+      max_concurrent: 10
+      
+    batch_workflow:
+      - validate_all_recipients
+      - check_criteria_for_all
+      - generate_assertions_parallel
+      - sign_badges_parallel
+      - send_notifications_batched
+      
+    error_handling:
+      on_partial_failure:
+        - continue_with_successful
+        - report_failures
+        - allow_retry_failed
+        
+    reporting:
+      generate_summary: true
+      include:
+        - total_processed
+        - successful_count
+        - failed_count
+        - failure_reasons
+
+  error_handling:
+    - error: criteria_not_met
+      action: log_and_notify
+      notification:
+        to: system_admin
+        include:
+          - recipient_info
+          - missing_criteria
+          
+    - error: signing_failed
+      action: retry_then_fall_back
+      fallback: use_hosted_verification
+      
+    - error: notification_failed
+      action: queue_for_retry
+      max_retries: 3
+      
+    - error: baking_failed
+      action: issue_without_baked_image
+      provide_alternative: true
+
+  integrations:
+    - system: open_badges_validator
+      purpose: Validate badge compliance
+      
+    - system: badge_backpacks
+      purpose: Push badges to external backpacks
+      supported:
+        - badgr
+        - credly
+        - canvas_credentials
+        
+    - system: linkedin
+      purpose: Share badges to LinkedIn profiles
+      
+    - system: social_media
+      purpose: Generate share content
+
+  metrics:
+    - name: issuance_time
+      description: Time from trigger to issuance
+      target: "< 30 seconds for auto"
+      
+    - name: acceptance_rate
+      description: Percentage of badges accepted
+      target: "> 90%"
+      
+    - name: share_rate
+      description: Percentage of badges shared
+      track: true
+      
+    - name: backpack_push_success
+      description: Success rate for backpack pushes
+      target: "> 95%"
+
+  audit:
+    enabled: true
+    track_all_steps: true
+    track_assertions: true
+    retention_years: 10

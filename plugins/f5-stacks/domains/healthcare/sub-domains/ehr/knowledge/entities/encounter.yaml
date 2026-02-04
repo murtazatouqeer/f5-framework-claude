@@ -1,0 +1,621 @@
+name: Encounter
+display_name: Encounter / Lượt khám
+description: |
+  Clinical encounter representing a patient's interaction with healthcare services.
+  Includes outpatient visits, inpatient admissions, emergency visits, and telehealth.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: encounter_number
+      display_name: Encounter Number
+      type: string
+      pattern: "^ENC-[0-9]{12}$"
+      example: "ENC-202401150001"
+      auto_generated: true
+
+    - name: visit_number
+      display_name: Visit Number
+      type: string
+      description: Alternative visit identifier
+
+    - name: account_number
+      display_name: Account Number
+      type: string
+      description: Billing account number
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: planned
+      description: Scheduled but not yet started
+
+    - value: arrived
+      description: Patient has arrived/checked in
+
+    - value: triaged
+      description: Initial assessment complete (ED)
+
+    - value: in_progress
+      description: Encounter is active
+
+    - value: on_hold
+      description: Temporarily paused
+
+    - value: completed
+      description: Encounter finished, documentation complete
+
+    - value: cancelled
+      description: Encounter cancelled before starting
+
+    - value: no_show
+      description: Patient did not show for appointment
+
+    - value: entered_in_error
+      description: Encounter created in error
+
+  default: planned
+
+state_machine:
+  initial: planned
+  transitions:
+    planned:
+      - to: arrived
+        event: patient_check_in
+      - to: cancelled
+        event: cancel_encounter
+      - to: no_show
+        event: mark_no_show
+
+    arrived:
+      - to: triaged
+        event: complete_triage
+        condition: encounter_type = 'emergency'
+      - to: in_progress
+        event: start_encounter
+      - to: cancelled
+        event: cancel_encounter
+
+    triaged:
+      - to: in_progress
+        event: start_encounter
+
+    in_progress:
+      - to: on_hold
+        event: pause_encounter
+      - to: completed
+        event: complete_encounter
+
+    on_hold:
+      - to: in_progress
+        event: resume_encounter
+      - to: completed
+        event: complete_encounter
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  classification:
+    - name: encounter_type
+      type: enum
+      required: true
+      values:
+        - value: outpatient
+          description: Scheduled clinic visit
+        - value: inpatient
+          description: Hospital admission
+        - value: emergency
+          description: Emergency department visit
+        - value: observation
+          description: Observation status (not full admission)
+        - value: telehealth
+          description: Virtual/telemedicine visit
+        - value: home_visit
+          description: Home healthcare visit
+        - value: day_surgery
+          description: Same-day surgery
+
+    - name: encounter_class
+      type: enum
+      values:
+        - ambulatory
+        - inpatient
+        - emergency
+        - observation
+        - virtual
+
+    - name: service_type
+      type: enum
+      values:
+        - primary_care
+        - specialty
+        - urgent_care
+        - preventive
+        - follow_up
+        - procedure
+        - consultation
+        - surgery
+
+  participants:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: primary_provider_id
+      type: uuid
+      required: true
+      references: Provider
+      description: Attending physician or primary provider
+
+    - name: attending_provider_id
+      type: uuid
+      references: Provider
+      description: Attending of record (inpatient)
+
+    - name: referring_provider_id
+      type: uuid
+      references: Provider
+
+    - name: admitting_provider_id
+      type: uuid
+      references: Provider
+
+    - name: consulting_providers
+      type: array
+      items:
+        type: uuid
+        references: Provider
+
+    - name: care_team
+      type: array
+      items:
+        type: object
+        properties:
+          provider_id:
+            type: uuid
+            references: Provider
+          role:
+            type: enum
+            values: [attending, consulting, resident, nurse, technician, other]
+          start_date:
+            type: date
+          end_date:
+            type: date
+
+  timing:
+    - name: scheduled_start
+      type: timestamp
+
+    - name: scheduled_end
+      type: timestamp
+
+    - name: actual_start
+      type: timestamp
+      description: When encounter actually began
+
+    - name: actual_end
+      type: timestamp
+      description: When encounter actually ended
+
+    - name: duration_minutes
+      type: integer
+      computed: true
+      formula: "TIMESTAMPDIFF(MINUTE, actual_start, actual_end)"
+
+    - name: check_in_time
+      type: timestamp
+
+    - name: rooming_time
+      type: timestamp
+      description: When patient was placed in exam room
+
+    - name: provider_start_time
+      type: timestamp
+      description: When provider first saw patient
+
+    - name: checkout_time
+      type: timestamp
+
+  location:
+    - name: facility_id
+      type: uuid
+      required: true
+      references: Facility
+
+    - name: facility_name
+      type: string
+
+    - name: department_id
+      type: uuid
+      references: Department
+
+    - name: department_name
+      type: string
+
+    - name: room_number
+      type: string
+
+    - name: bed_number
+      type: string
+      description: For inpatient encounters
+
+    - name: station
+      type: string
+      description: Nursing station
+
+  clinical:
+    - name: chief_complaint
+      type: string
+      max_length: 500
+      description: Patient's primary reason for visit
+
+    - name: reason_for_visit
+      type: array
+      items:
+        type: string
+      description: Structured reason codes
+
+    - name: visit_priority
+      type: enum
+      values:
+        - routine
+        - urgent
+        - emergent
+      default: routine
+
+    - name: acuity_level
+      type: enum
+      values:
+        - level_1_resuscitation
+        - level_2_emergent
+        - level_3_urgent
+        - level_4_less_urgent
+        - level_5_non_urgent
+      description: ESI (Emergency Severity Index) for ED
+
+    - name: diagnoses
+      type: array
+      items:
+        type: object
+        properties:
+          diagnosis_id:
+            type: uuid
+            references: Diagnosis
+          sequence:
+            type: integer
+          diagnosis_type:
+            type: enum
+            values: [admitting, principal, secondary, working]
+
+    - name: procedures
+      type: array
+      items:
+        type: object
+        properties:
+          procedure_id:
+            type: uuid
+            references: Procedure
+          sequence:
+            type: integer
+
+  administrative:
+    - name: appointment_id
+      type: uuid
+      references: Appointment
+      description: Linked scheduled appointment
+
+    - name: referral_id
+      type: uuid
+      references: Referral
+      description: Linked referral if applicable
+
+    - name: pre_admission_id
+      type: uuid
+      description: Pre-admission record for planned admissions
+
+    - name: insurance_coverage_id
+      type: uuid
+      references: InsuranceCoverage
+
+    - name: authorization_number
+      type: string
+      description: Prior authorization number
+
+    - name: copay_amount
+      type: decimal
+      precision: 10
+      scale: 2
+
+    - name: copay_collected
+      type: boolean
+      default: false
+
+    - name: payment_method
+      type: enum
+      values: [insurance, self_pay, charity, workers_comp, auto_accident]
+
+  inpatient_specific:
+    - name: admission_type
+      type: enum
+      values:
+        - emergency
+        - urgent
+        - elective
+        - newborn
+        - trauma
+
+    - name: admission_source
+      type: enum
+      values:
+        - physician_referral
+        - clinic_referral
+        - hmo_referral
+        - transfer_from_hospital
+        - transfer_from_snf
+        - emergency_room
+        - court_law_enforcement
+        - self_referral
+
+    - name: expected_discharge_date
+      type: date
+
+    - name: diet_order
+      type: string
+
+    - name: activity_order
+      type: string
+
+    - name: isolation_precautions
+      type: array
+      items:
+        type: enum
+        values: [contact, droplet, airborne, neutropenic, protective]
+
+  discharge:
+    - name: discharge_disposition
+      type: enum
+      values:
+        - home
+        - home_with_services
+        - transferred_to_hospital
+        - transferred_to_snf
+        - transferred_to_rehab
+        - transferred_to_psych
+        - left_ama
+        - expired
+        - hospice_home
+        - hospice_facility
+
+    - name: discharge_status
+      type: enum
+      values: [alive, expired]
+
+    - name: discharge_instructions
+      type: text
+
+    - name: discharge_medications
+      type: array
+      items:
+        type: uuid
+        references: Prescription
+
+    - name: follow_up_required
+      type: boolean
+
+    - name: follow_up_instructions
+      type: text
+
+    - name: follow_up_provider_id
+      type: uuid
+      references: Provider
+
+    - name: follow_up_date
+      type: date
+
+    - name: return_precautions
+      type: text
+      description: When to return to ED/call provider
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: primary_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: primary_provider_id
+
+  - name: diagnoses
+    type: one_to_many
+    target: Diagnosis
+    foreign_key: encounter_id
+
+  - name: procedures
+    type: one_to_many
+    target: Procedure
+    foreign_key: encounter_id
+
+  - name: vital_signs
+    type: one_to_many
+    target: VitalSign
+    foreign_key: encounter_id
+
+  - name: clinical_notes
+    type: one_to_many
+    target: ClinicalNote
+    foreign_key: encounter_id
+
+  - name: orders
+    type: one_to_many
+    target: Order
+    foreign_key: encounter_id
+
+  - name: prescriptions
+    type: one_to_many
+    target: Prescription
+    foreign_key: encounter_id
+
+  - name: lab_orders
+    type: one_to_many
+    target: LabOrder
+    foreign_key: encounter_id
+
+  - name: imaging_orders
+    type: one_to_many
+    target: ImagingOrder
+    foreign_key: encounter_id
+
+  - name: facility
+    type: many_to_one
+    target: Facility
+    foreign_key: facility_id
+
+  - name: department
+    type: many_to_one
+    target: Department
+    foreign_key: department_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-ENC-001
+    name: Patient Required
+    description: Every encounter must be linked to a patient
+    rule: patient_id IS NOT NULL
+
+  - id: BR-ENC-002
+    name: Provider Required
+    description: Every encounter must have a primary provider
+    rule: primary_provider_id IS NOT NULL
+
+  - id: BR-ENC-003
+    name: Chief Complaint Required
+    description: Clinical encounters require chief complaint
+    rule: |
+      encounter_type IN ('outpatient', 'emergency', 'inpatient')
+      REQUIRES chief_complaint IS NOT NULL
+
+  - id: BR-ENC-004
+    name: Diagnosis Required for Completion
+    description: At least one diagnosis required to complete encounter
+    rule: |
+      status = 'completed' REQUIRES
+        diagnoses.count >= 1
+
+  - id: BR-ENC-005
+    name: Documentation Timeline - Outpatient
+    description: Outpatient documentation complete within 24 hours
+    rule: |
+      encounter_type = 'outpatient' AND status = 'completed'
+      REQUIRES documentation_complete_time <= actual_end + INTERVAL '24 hours'
+
+  - id: BR-ENC-006
+    name: Documentation Timeline - Inpatient
+    description: Inpatient progress notes due daily
+    rule: |
+      encounter_type = 'inpatient' AND status = 'in_progress'
+      REQUIRES daily_progress_note EXISTS
+
+  - id: BR-ENC-007
+    name: Discharge Summary Required
+    description: Inpatient encounters require discharge summary
+    rule: |
+      encounter_type = 'inpatient' AND status = 'completed'
+      REQUIRES discharge_summary EXISTS
+
+  - id: BR-ENC-008
+    name: ED Triage Required
+    description: Emergency encounters must be triaged
+    rule: |
+      encounter_type = 'emergency'
+      REQUIRES acuity_level IS NOT NULL
+
+  - id: BR-ENC-009
+    name: Follow-up Documentation
+    description: Discharge must include follow-up instructions
+    rule: |
+      status = 'completed' AND encounter_type IN ('inpatient', 'emergency')
+      REQUIRES follow_up_instructions IS NOT NULL
+
+  - id: BR-ENC-010
+    name: Attending Assignment - Inpatient
+    description: Inpatient encounters require attending physician
+    rule: |
+      encounter_type = 'inpatient'
+      REQUIRES attending_provider_id IS NOT NULL
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_encounter_number
+    columns: [encounter_number]
+    unique: true
+
+  - name: idx_encounter_patient
+    columns: [patient_id]
+
+  - name: idx_encounter_provider
+    columns: [primary_provider_id]
+
+  - name: idx_encounter_status
+    columns: [status]
+
+  - name: idx_encounter_type
+    columns: [encounter_type]
+
+  - name: idx_encounter_date
+    columns: [scheduled_start]
+
+  - name: idx_encounter_facility
+    columns: [facility_id, department_id]
+
+# =============================================================================
+# METRICS
+# =============================================================================
+metrics:
+  - name: average_wait_time
+    formula: "AVG(rooming_time - check_in_time)"
+    unit: minutes
+
+  - name: average_provider_time
+    formula: "AVG(checkout_time - provider_start_time)"
+    unit: minutes
+
+  - name: door_to_provider_time
+    formula: "AVG(provider_start_time - check_in_time)"
+    unit: minutes
+    target: "< 15 minutes for urgent"
+
+  - name: length_of_stay
+    formula: "AVG(actual_end - actual_start)"
+    unit: hours
+    applies_to: [inpatient, observation]
+
+  - name: no_show_rate
+    formula: "COUNT(status='no_show') / COUNT(*) * 100"
+    unit: percentage

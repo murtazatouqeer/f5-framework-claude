@@ -1,0 +1,412 @@
+name: DeliveryWorkflow
+display_name: Delivery Workflow
+description: |
+  End-to-end delivery workflow from order creation to completion.
+  Covers assignment, pickup, transit, delivery, and completion.
+
+domain: logistics
+subdomain: last-mile
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_type: delivery_fulfillment
+trigger: order.ready_for_delivery
+
+participants:
+  - role: system
+    description: Delivery Management System
+  - role: operations
+    description: Operations team for monitoring and intervention
+  - role: agent
+    description: Delivery agent (rider/driver)
+  - role: recipient
+    description: Customer receiving the delivery
+  - role: sender
+    description: Shipper/merchant
+
+states:
+  - id: created
+    name: Created
+    description: Delivery order created in system
+    type: initial
+
+  - id: pending_assignment
+    name: Pending Assignment
+    description: Waiting for agent assignment
+    type: intermediate
+
+  - id: assigned
+    name: Assigned
+    description: Agent assigned to delivery
+    type: intermediate
+
+  - id: pickup_pending
+    name: Pickup Pending
+    description: Agent heading to pickup location
+    type: intermediate
+
+  - id: picked_up
+    name: Picked Up
+    description: Package collected from sender
+    type: intermediate
+
+  - id: in_transit
+    name: In Transit
+    description: Package en route to recipient
+    type: intermediate
+
+  - id: out_for_delivery
+    name: Out for Delivery
+    description: Agent in delivery zone, approaching recipient
+    type: intermediate
+
+  - id: arrived
+    name: Arrived
+    description: Agent at delivery location
+    type: intermediate
+
+  - id: delivered
+    name: Delivered
+    description: Successfully delivered to recipient
+    type: final_success
+
+  - id: failed
+    name: Failed
+    description: Delivery attempt failed
+    type: intermediate
+
+  - id: returned
+    name: Returned
+    description: Package returned to sender/hub
+    type: final_failure
+
+  - id: cancelled
+    name: Cancelled
+    description: Delivery cancelled
+    type: final_cancelled
+
+transitions:
+  - id: T001
+    name: Initiate Assignment
+    from: created
+    to: pending_assignment
+    trigger: automatic
+    conditions:
+      - order.ready_for_delivery = true
+      - delivery.validation_passed = true
+    actions:
+      - calculate_sla_deadline
+      - determine_delivery_zone
+      - check_slot_availability
+      - queue_for_assignment
+
+  - id: T002
+    name: Assign Agent
+    from: pending_assignment
+    to: assigned
+    trigger: system
+    conditions:
+      - available_agents > 0
+      - agent.capacity_available = true
+      - agent.zone_authorized = true
+    actions:
+      - run_assignment_algorithm
+      - notify_agent
+      - update_agent_queue
+      - set_assignment_timeout
+    timeout:
+      duration: 5 minutes
+      action: reassign_or_escalate
+
+  - id: T003
+    name: Agent Accepts
+    from: assigned
+    to: pickup_pending
+    trigger: agent
+    conditions:
+      - agent.confirmed_acceptance = true
+    actions:
+      - confirm_assignment
+      - provide_pickup_details
+      - start_tracking
+      - update_eta
+
+  - id: T004
+    name: Pickup Package
+    from: pickup_pending
+    to: picked_up
+    trigger: agent
+    conditions:
+      - agent.at_pickup_location = true
+      - package.scanned = true
+    actions:
+      - verify_package_details
+      - capture_pickup_proof
+      - update_package_status
+      - notify_recipient_dispatch
+      - calculate_delivery_eta
+
+  - id: T005
+    name: Depart for Delivery
+    from: picked_up
+    to: in_transit
+    trigger: agent
+    conditions:
+      - pickup_confirmed = true
+    actions:
+      - start_delivery_timer
+      - enable_real_time_tracking
+      - send_tracking_link
+      - optimize_route
+
+  - id: T006
+    name: Enter Delivery Zone
+    from: in_transit
+    to: out_for_delivery
+    trigger: geofence
+    conditions:
+      - agent.location IN delivery_zone
+      - distance_to_recipient < 2 km
+    actions:
+      - notify_recipient_nearby
+      - provide_live_eta
+      - prepare_cod_if_applicable
+
+  - id: T007
+    name: Arrive at Location
+    from: out_for_delivery
+    to: arrived
+    trigger: geofence
+    conditions:
+      - agent.location IN delivery_geofence
+      - distance_to_recipient < 100 meters
+    actions:
+      - notify_recipient_arrived
+      - start_waiting_timer
+      - attempt_contact
+
+  - id: T008
+    name: Complete Delivery
+    from: arrived
+    to: delivered
+    trigger: agent
+    conditions:
+      - pod_captured = true
+      - cod_collected_if_required = true
+      - verification_passed = true
+    actions:
+      - mark_delivered
+      - capture_pod
+      - process_cod_payment
+      - notify_all_parties
+      - request_rating
+      - update_analytics
+
+  - id: T009
+    name: Delivery Failed
+    from: arrived
+    to: failed
+    trigger: agent
+    conditions:
+      - delivery_not_possible = true
+      - failure_reason_documented = true
+    actions:
+      - record_failure_reason
+      - capture_evidence
+      - notify_recipient
+      - schedule_reattempt_or_return
+      - update_attempt_count
+
+  - id: T010
+    name: Retry Delivery
+    from: failed
+    to: out_for_delivery
+    trigger: system
+    conditions:
+      - reattempt_scheduled = true
+      - attempt_count < max_attempts
+      - agent_assigned = true
+    actions:
+      - reset_for_reattempt
+      - notify_recipient
+      - update_instructions
+
+  - id: T011
+    name: Return to Sender
+    from: failed
+    to: returned
+    trigger: system
+    conditions:
+      - attempt_count >= max_attempts OR
+      - return_requested = true
+    actions:
+      - initiate_return_process
+      - notify_sender
+      - update_refund_status
+      - complete_return_logistics
+
+  - id: T012
+    name: Cancel Delivery
+    from: [created, pending_assignment, assigned, pickup_pending]
+    to: cancelled
+    trigger: [system, sender, recipient]
+    conditions:
+      - cancellation_allowed = true
+      - package_not_picked_up = true
+    actions:
+      - process_cancellation
+      - release_agent_if_assigned
+      - process_refund
+      - notify_all_parties
+
+activities:
+  - id: A001
+    name: Package Validation
+    state: created
+    actor: system
+    steps:
+      - validate_package_details
+      - verify_address
+      - check_service_availability
+      - calculate_pricing
+      - assign_tracking_number
+
+  - id: A002
+    name: Agent Assignment
+    state: pending_assignment
+    actor: system
+    steps:
+      - identify_eligible_agents
+      - score_by_proximity
+      - check_capacity
+      - apply_assignment_rules
+      - select_best_agent
+      - send_assignment_request
+
+  - id: A003
+    name: Pickup Process
+    state: pickup_pending
+    actor: agent
+    steps:
+      - navigate_to_pickup
+      - contact_sender_if_needed
+      - verify_package_contents
+      - scan_package_barcode
+      - capture_pickup_photo
+      - confirm_pickup_complete
+
+  - id: A004
+    name: Delivery Process
+    state: arrived
+    actor: agent
+    steps:
+      - contact_recipient
+      - verify_recipient_identity
+      - collect_cod_if_applicable
+      - hand_over_package
+      - capture_pod
+      - complete_delivery
+
+  - id: A005
+    name: COD Collection
+    state: arrived
+    actor: agent
+    condition: delivery.is_cod = true
+    steps:
+      - confirm_cod_amount
+      - collect_payment
+      - provide_receipt
+      - record_payment
+      - deposit_to_account
+
+notifications:
+  - id: N001
+    name: Order Dispatched
+    trigger: picked_up
+    recipient: recipient
+    channels: [sms, push, email]
+    template: order_dispatched
+
+  - id: N002
+    name: Agent Nearby
+    trigger: out_for_delivery
+    recipient: recipient
+    channels: [push, sms]
+    template: agent_nearby
+
+  - id: N003
+    name: Agent Arrived
+    trigger: arrived
+    recipient: recipient
+    channels: [push, sms, call]
+    template: agent_arrived
+
+  - id: N004
+    name: Delivery Complete
+    trigger: delivered
+    recipient: [recipient, sender]
+    channels: [sms, push, email]
+    template: delivery_complete
+
+  - id: N005
+    name: Delivery Failed
+    trigger: failed
+    recipient: [recipient, sender]
+    channels: [sms, push, email]
+    template: delivery_failed
+
+sla_checkpoints:
+  - checkpoint: assignment
+    max_duration: 30 minutes
+    from_state: created
+    alert_threshold: 20 minutes
+
+  - checkpoint: pickup
+    max_duration: 2 hours
+    from_state: assigned
+    alert_threshold: 90 minutes
+
+  - checkpoint: delivery
+    max_duration: varies  # based on service level
+    from_state: picked_up
+    alert_threshold: 80%
+
+exception_handling:
+  - exception: agent_no_response
+    from_state: assigned
+    timeout: 5 minutes
+    action: reassign_to_next_agent
+
+  - exception: pickup_failed
+    from_state: pickup_pending
+    action: notify_operations_and_reschedule
+
+  - exception: cod_mismatch
+    from_state: arrived
+    action: contact_operations_for_resolution
+
+  - exception: address_invalid
+    from_state: out_for_delivery
+    action: contact_recipient_and_update
+
+metrics:
+  - name: assignment_time
+    description: Time from created to assigned
+    target: < 15 minutes
+
+  - name: pickup_time
+    description: Time from assigned to picked_up
+    target: < 1 hour
+
+  - name: delivery_time
+    description: Time from picked_up to delivered
+    target: varies by service level
+
+  - name: first_attempt_success
+    description: Percentage delivered on first attempt
+    target: > 85%
+
+  - name: overall_success_rate
+    description: Percentage successfully delivered
+    target: > 98%

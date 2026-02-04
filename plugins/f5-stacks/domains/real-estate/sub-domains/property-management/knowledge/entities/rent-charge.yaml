@@ -1,0 +1,392 @@
+# Rent Charge Entity
+# F5 Framework v2.0 - Real Estate/Property Management
+# Khoản phí thuê / 賃料請求
+
+entity:
+  name: RentCharge
+  name_vi: Khoản phí thuê
+  name_ja: 賃料請求
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Represents a charge on a tenant's account, including base rent,
+    utilities, fees, and other billable items. Tracks invoicing
+    and payment status for each charge.
+
+  # Primary Key
+  identifier:
+    field: id
+    type: uuid
+    generated: true
+
+  # Business Keys
+  business_keys:
+    charge_id:
+      pattern: "CHG-{YYYYMM}-{XXXXX}"
+      example: "CHG-202401-00001"
+      unique: true
+
+  # Attributes
+  attributes:
+    # References
+    lease_id:
+      type: uuid
+      required: true
+    unit_id:
+      type: uuid
+      required: true
+    tenant_id:
+      type: uuid
+      required: true
+
+    # Charge Type
+    charge_type:
+      type: enum
+      values:
+        - base_rent
+        - utility_water
+        - utility_electricity
+        - utility_gas
+        - utility_internet
+        - parking
+        - pet_rent
+        - late_fee
+        - nsf_fee
+        - damage_charge
+        - cleaning_fee
+        - lease_violation_fee
+        - move_out_charge
+        - other
+      required: true
+      name_vi:
+        base_rent: Tiền thuê cơ bản
+        utility_water: Tiền nước
+        utility_electricity: Tiền điện
+        utility_gas: Tiền gas
+        utility_internet: Tiền internet
+        parking: Phí đỗ xe
+        pet_rent: Phí thú cưng
+        late_fee: Phí trễ hạn
+        nsf_fee: Phí check không đủ tiền
+        damage_charge: Phí hư hỏng
+        cleaning_fee: Phí vệ sinh
+        lease_violation_fee: Phí vi phạm hợp đồng
+        move_out_charge: Phí khi dọn ra
+        other: Khác
+
+    # Status
+    status:
+      type: enum
+      values:
+        - scheduled
+        - pending
+        - invoiced
+        - paid
+        - partial
+        - overdue
+        - waived
+        - written_off
+      default: scheduled
+      name_vi:
+        scheduled: Đã lên lịch
+        pending: Chờ xử lý
+        invoiced: Đã xuất hóa đơn
+        paid: Đã thanh toán
+        partial: Thanh toán một phần
+        overdue: Quá hạn
+        waived: Miễn
+        written_off: Xóa nợ
+
+    # Charge Details
+    charge:
+      type: object
+      properties:
+        description:
+          type: string
+          max_length: 255
+        amount:
+          type: money
+          required: true
+        currency:
+          type: string
+          default: "VND"
+        quantity:
+          type: decimal
+          default: 1
+          description: "For utility readings or multiple items"
+        unit_price:
+          type: money
+          description: "Price per unit for variable charges"
+        tax_amount:
+          type: money
+          default: 0
+        total_amount:
+          type: money
+          computed: true
+          formula: "amount + tax_amount"
+
+    # Period
+    period:
+      type: object
+      properties:
+        period_start:
+          type: date
+          required: true
+        period_end:
+          type: date
+          required: true
+        billing_month:
+          type: string
+          format: "YYYY-MM"
+        is_prorated:
+          type: boolean
+          default: false
+        proration_days:
+          type: integer
+
+    # Due Date
+    due_date:
+      type: date
+      required: true
+
+    # Invoice
+    invoice:
+      type: object
+      properties:
+        invoice_number:
+          type: string
+        invoice_date:
+          type: date
+        invoiced_at:
+          type: timestamp
+        invoice_url:
+          type: string
+          format: url
+        invoice_sent:
+          type: boolean
+          default: false
+        invoice_sent_at:
+          type: timestamp
+
+    # Payment Tracking
+    payment:
+      type: object
+      properties:
+        amount_paid:
+          type: money
+          default: 0
+        balance_due:
+          type: money
+          computed: true
+          formula: "total_amount - amount_paid"
+        last_payment_date:
+          type: date
+        last_payment_amount:
+          type: money
+        payment_count:
+          type: integer
+          default: 0
+
+    # Late Fee Tracking
+    late:
+      type: object
+      properties:
+        days_overdue:
+          type: integer
+          computed: true
+        is_overdue:
+          type: boolean
+          computed: true
+        late_fee_applied:
+          type: boolean
+          default: false
+        late_fee_amount:
+          type: money
+        late_fee_charge_id:
+          type: uuid
+          description: "Reference to the late fee charge"
+
+    # Recurring
+    recurring:
+      type: object
+      properties:
+        is_recurring:
+          type: boolean
+          default: false
+        recurrence_pattern:
+          type: enum
+          values: [monthly, quarterly, annually]
+        next_charge_date:
+          type: date
+        auto_generate:
+          type: boolean
+          default: true
+
+    # Adjustments
+    adjustments:
+      type: array
+      items:
+        type: object
+        properties:
+          adjustment_type:
+            type: enum
+            values: [credit, debit, waiver, write_off]
+          amount:
+            type: money
+          reason:
+            type: string
+          adjusted_by:
+            type: uuid
+          adjusted_at:
+            type: timestamp
+
+    # Metadata
+    notes:
+      type: text
+    internal_notes:
+      type: text
+    created_at:
+      type: timestamp
+      auto: create
+    updated_at:
+      type: timestamp
+      auto: update
+    created_by:
+      type: uuid
+
+  # Relationships
+  relationships:
+    lease:
+      type: belongs_to
+      entity: Lease
+      foreign_key: lease_id
+    unit:
+      type: belongs_to
+      entity: Unit
+      foreign_key: unit_id
+    tenant:
+      type: belongs_to
+      entity: Tenant
+      foreign_key: tenant_id
+    payments:
+      type: has_many
+      entity: RentPaymentAllocation
+      foreign_key: charge_id
+    late_fee_charge:
+      type: has_one
+      entity: RentCharge
+      foreign_key: parent_charge_id
+
+  # State Machine
+  state_machine:
+    field: status
+    states:
+      - scheduled
+      - pending
+      - invoiced
+      - paid
+      - partial
+      - overdue
+      - waived
+      - written_off
+    transitions:
+      - from: scheduled
+        to: pending
+        event: generate
+        action: calculate_amount
+      - from: pending
+        to: invoiced
+        event: invoice
+        action: [generate_invoice, send_invoice]
+      - from: [pending, invoiced]
+        to: paid
+        event: pay_full
+        guard: balance_zero
+      - from: [pending, invoiced]
+        to: partial
+        event: pay_partial
+        guard: balance_remaining
+      - from: partial
+        to: paid
+        event: pay_remaining
+        guard: balance_zero
+      - from: [pending, invoiced, partial]
+        to: overdue
+        event: mark_overdue
+        guard: past_due_date
+        action: apply_late_fee_if_configured
+      - from: overdue
+        to: paid
+        event: pay_full
+        guard: balance_zero
+      - from: overdue
+        to: partial
+        event: pay_partial
+      - from: [pending, invoiced, partial, overdue]
+        to: waived
+        event: waive
+        guard: has_waiver_permission
+        action: record_waiver
+      - from: [partial, overdue]
+        to: written_off
+        event: write_off
+        guard: has_write_off_permission
+        action: record_write_off
+
+  # Computed Properties
+  computed:
+    days_overdue:
+      formula: "status == 'overdue' ? (Date.today - due_date).to_i : 0"
+      type: integer
+    is_overdue:
+      formula: "Date.today > due_date && balance_due > 0"
+      type: boolean
+    balance_due:
+      formula: "total_amount - amount_paid"
+      type: money
+
+  # Indexes
+  indexes:
+    - fields: [charge_id]
+      unique: true
+    - fields: [lease_id, billing_month]
+    - fields: [tenant_id, status]
+    - fields: [unit_id, billing_month]
+    - fields: [due_date, status]
+    - fields: [status]
+    - fields: [charge_type]
+
+  # Validation Rules
+  validations:
+    - rule: "amount must be positive"
+      condition: "amount > 0"
+    - rule: "period_end must be after period_start"
+      condition: "period_end >= period_start"
+    - rule: "due_date must be reasonable"
+      condition: "due_date >= period_start"
+    - rule: "amount_paid cannot exceed total_amount"
+      condition: "amount_paid <= total_amount"
+
+  # Events
+  events:
+    - charge_created
+    - charge_invoiced
+    - invoice_sent
+    - payment_received
+    - charge_paid_full
+    - charge_overdue
+    - late_fee_applied
+    - charge_waived
+    - charge_written_off
+
+  # Audit
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - amount
+      - amount_paid
+      - adjustments
+      - late

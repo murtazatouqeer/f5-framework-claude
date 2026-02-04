@@ -1,0 +1,469 @@
+name: reservation-rules
+display_name: Reservation Business Rules
+display_name_vi: Quy tắc nghiệp vụ đặt phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Business rules governing hotel reservation creation, modification,
+  cancellation, and management processes.
+
+description_vi: |
+  Quy tắc nghiệp vụ quản lý việc tạo, sửa đổi, hủy bỏ và quản lý
+  đặt phòng khách sạn.
+
+rule_categories:
+  - booking
+  - validation
+  - modification
+  - cancellation
+  - guarantee
+  - no_show
+
+rules:
+  # ===== BOOKING RULES =====
+  - id: BR-RES-B001
+    name: Valid Stay Dates
+    name_vi: Ngày lưu trú hợp lệ
+    category: booking
+    priority: critical
+    description: |
+      Departure date must be after arrival date.
+      Maximum stay length is 365 nights.
+    condition: |
+      reservation.departure_date > reservation.arrival_date AND
+      (reservation.departure_date - reservation.arrival_date) <= 365
+    action: |
+      IF condition_not_met:
+        REJECT reservation
+        DISPLAY error "Invalid stay dates"
+    applies_to: [reservation]
+    enforcement: automatic
+
+  - id: BR-RES-B002
+    name: Occupancy Limits
+    name_vi: Giới hạn số khách
+    category: booking
+    priority: critical
+    description: |
+      Total guests cannot exceed room type maximum occupancy.
+      Children and infants follow age-specific policies.
+    condition: |
+      (reservation.adults + reservation.children) <= room_type.max_occupancy AND
+      reservation.adults >= 1
+    action: |
+      IF guests_exceed_limit:
+        IF additional_rooms_available:
+          SUGGEST adding another room
+        ELSE:
+          REJECT reservation
+    applies_to: [reservation, room_type]
+    enforcement: automatic
+
+  - id: BR-RES-B003
+    name: Advance Booking Window
+    name_vi: Thời hạn đặt trước
+    category: booking
+    priority: high
+    description: |
+      Reservations must fall within the booking window defined
+      by the rate plan (min/max advance days).
+    condition: |
+      days_until_arrival >= rate_plan.min_advance_days AND
+      (rate_plan.max_advance_days IS NULL OR
+       days_until_arrival <= rate_plan.max_advance_days)
+    action: |
+      IF outside_booking_window:
+        CHECK for alternative rate plans
+        IF none_available:
+          REJECT reservation
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RES-B004
+    name: Minimum Length of Stay
+    name_vi: Thời gian lưu trú tối thiểu
+    category: booking
+    priority: high
+    description: |
+      Reservation must meet minimum LOS requirement from
+      rate plan and/or inventory restrictions.
+    condition: |
+      reservation.nights >= MAX(rate_plan.min_los, inventory.min_los)
+    action: |
+      IF los_not_met:
+        CALCULATE required_additional_nights
+        IF guest_accepts:
+          EXTEND reservation
+        ELSE:
+          SUGGEST alternative rate plans without LOS
+    applies_to: [reservation, rate_plan, inventory]
+    enforcement: automatic
+
+  - id: BR-RES-B005
+    name: Closed to Arrival Check
+    name_vi: Kiểm tra đóng nhận khách
+    category: booking
+    priority: high
+    description: |
+      Cannot create reservation with arrival on closed-to-arrival date.
+    condition: |
+      inventory.closed_to_arrival = FALSE FOR reservation.arrival_date
+    action: |
+      IF arrival_closed:
+        SUGGEST alternative arrival dates
+        REJECT if no alternative accepted
+    applies_to: [reservation, inventory]
+    enforcement: automatic
+
+  - id: BR-RES-B006
+    name: Room Availability Check
+    name_vi: Kiểm tra phòng trống
+    category: booking
+    priority: critical
+    description: |
+      Room type must have available inventory for all stay dates.
+      Consider overbooking limits if enabled.
+    condition: |
+      FOR EACH date IN reservation.stay_dates:
+        inventory.available_rooms > 0 OR
+        (property.overbooking_enabled AND
+         inventory.overbooked < overbooking_limit)
+    action: |
+      IF no_availability:
+        SUGGEST alternative room types
+        SUGGEST alternative dates
+        ADD to waitlist if requested
+    applies_to: [reservation, inventory]
+    enforcement: automatic
+
+  # ===== VALIDATION RULES =====
+  - id: BR-RES-V001
+    name: Guest Information Required
+    name_vi: Thông tin khách bắt buộc
+    category: validation
+    priority: critical
+    description: |
+      Primary guest must have minimum required information:
+      name, contact method, and valid guarantee.
+    condition: |
+      guest.first_name IS NOT NULL AND
+      guest.last_name IS NOT NULL AND
+      (guest.email IS NOT NULL OR guest.phone IS NOT NULL)
+    action: |
+      IF missing_info:
+        PROMPT for required information
+        BLOCK confirmation until complete
+    applies_to: [reservation, guest]
+    enforcement: automatic
+
+  - id: BR-RES-V002
+    name: Rate Plan Validity
+    name_vi: Hiệu lực bảng giá
+    category: validation
+    priority: critical
+    description: |
+      Selected rate plan must be valid for all stay dates
+      and meet all applicable restrictions.
+    condition: |
+      rate_plan.is_active = TRUE AND
+      reservation.arrival_date >= rate_plan.effective_date AND
+      reservation.departure_date <= rate_plan.expiry_date AND
+      rate_plan.applicable_room_types CONTAINS reservation.room_type_id
+    action: |
+      IF rate_invalid:
+        RECALCULATE with valid rate plan
+        NOTIFY guest of price change
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RES-V003
+    name: Access Code Validation
+    name_vi: Xác thực mã truy cập
+    category: validation
+    priority: high
+    description: |
+      Rate plans requiring access code must have valid code.
+    condition: |
+      IF rate_plan.requires_access_code = TRUE:
+        reservation.access_code = rate_plan.access_code
+    action: |
+      IF code_invalid:
+        REJECT rate plan selection
+        OFFER public rates instead
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RES-V004
+    name: Corporate Account Validation
+    name_vi: Xác thực tài khoản doanh nghiệp
+    category: validation
+    priority: high
+    description: |
+      Corporate rate bookings must have valid company account.
+    condition: |
+      IF rate_plan.rate_type = 'corporate':
+        company.status = 'active' AND
+        company.credit_status = 'approved'
+    action: |
+      IF company_invalid:
+        REJECT corporate rate
+        OFFER public rates
+    applies_to: [reservation, rate_plan, company]
+    enforcement: automatic
+
+  # ===== MODIFICATION RULES =====
+  - id: BR-RES-M001
+    name: Modification Eligibility
+    name_vi: Điều kiện sửa đổi
+    category: modification
+    priority: high
+    description: |
+      Modifications allowed based on fare rules and timing.
+      Some changes may incur fees.
+    condition: |
+      reservation.status IN ('confirmed', 'guaranteed') AND
+      modification_requested BEFORE cutoff_time AND
+      rate_plan.modifications_allowed = TRUE
+    action: |
+      IF modification_allowed:
+        CALCULATE change_fee (if any)
+        CALCULATE rate_difference
+        PROCESS modification
+      ELSE:
+        SUGGEST cancel_and_rebook
+    applies_to: [reservation]
+    enforcement: automatic
+
+  - id: BR-RES-M002
+    name: Date Change Rules
+    name_vi: Quy tắc đổi ngày
+    category: modification
+    priority: high
+    description: |
+      Date changes must maintain rate validity and availability.
+    condition: |
+      new_dates WITHIN rate_plan.validity AND
+      availability_exists FOR new_dates
+    action: |
+      IF dates_valid:
+        RECALCULATE rates for new dates
+        APPLY change_fee if applicable
+        UPDATE reservation
+      ELSE:
+        REJECT modification
+        SUGGEST alternatives
+    applies_to: [reservation]
+    enforcement: automatic
+
+  - id: BR-RES-M003
+    name: Room Type Change
+    name_vi: Quy tắc đổi loại phòng
+    category: modification
+    priority: medium
+    description: |
+      Room type changes subject to availability and rate difference.
+    condition: |
+      new_room_type.availability > 0 FOR all_dates AND
+      rate_plan.applicable_room_types CONTAINS new_room_type
+    action: |
+      IF upgrade:
+        CALCULATE upgrade_fee
+        COLLECT additional payment
+      IF downgrade:
+        CALCULATE refund (if policy allows)
+      UPDATE reservation
+    applies_to: [reservation, room_type]
+    enforcement: automatic
+
+  # ===== CANCELLATION RULES =====
+  - id: BR-RES-C001
+    name: Cancellation Policy Application
+    name_vi: Áp dụng chính sách hủy
+    category: cancellation
+    priority: critical
+    description: |
+      Apply correct cancellation penalty based on timing and policy.
+    condition: |
+      cancellation_time RELATIVE TO arrival_date
+    action: |
+      IF before_deadline:
+        APPLY no_penalty OR minimal_fee
+      IF within_penalty_period:
+        APPLY cancellation_penalty PER rate_plan.cancellation_policy
+      IF non_refundable:
+        APPLY full_charge OR credit_only
+      RELEASE inventory
+      UPDATE channel availability
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RES-C002
+    name: Non-Refundable Handling
+    name_vi: Xử lý không hoàn tiền
+    category: cancellation
+    priority: critical
+    description: |
+      Non-refundable reservations have specific handling rules.
+    condition: |
+      rate_plan.is_non_refundable = TRUE
+    action: |
+      IF cancellation_requested:
+        OFFER future_credit (valid 12 months)
+        RETAIN full_payment
+        NO cash refund
+      EXCEPTION: force_majeure OR airline_initiated
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  - id: BR-RES-C003
+    name: Partial Cancellation
+    name_vi: Hủy một phần
+    category: cancellation
+    priority: medium
+    description: |
+      Allow partial room cancellation for multi-room bookings.
+    condition: |
+      reservation.room_count > 1
+    action: |
+      IF partial_cancellation:
+        RECALCULATE group_discount if applicable
+        MAY lose volume discount
+        APPLY penalty per cancelled room
+        UPDATE remaining reservation
+    applies_to: [reservation]
+    enforcement: automatic
+
+  # ===== GUARANTEE RULES =====
+  - id: BR-RES-G001
+    name: Guarantee Requirements
+    name_vi: Yêu cầu bảo đảm
+    category: guarantee
+    priority: critical
+    description: |
+      Reservations require valid guarantee based on policy.
+    condition: |
+      IF guarantee_required:
+        (credit_card.is_valid AND credit_card.not_expired) OR
+        company.guarantee_on_file OR
+        deposit.received
+    action: |
+      IF no_valid_guarantee:
+        HOLD reservation as 'tentative'
+        SET release_deadline
+        AUTO_CANCEL if not guaranteed by deadline
+    applies_to: [reservation]
+    enforcement: automatic
+
+  - id: BR-RES-G002
+    name: Credit Card Authorization
+    name_vi: Ủy quyền thẻ tín dụng
+    category: guarantee
+    priority: critical
+    description: |
+      Pre-authorize credit card for specified amount.
+    condition: |
+      guarantee_type = 'credit_card'
+    action: |
+      PRE_AUTHORIZE amount = first_night OR deposit_amount
+      IF authorization_fails:
+        REQUEST alternative card
+        SET deadline for new guarantee
+      IF declined:
+        HOLD reservation
+        NOTIFY guest
+    applies_to: [reservation, payment]
+    enforcement: automatic
+
+  - id: BR-RES-G003
+    name: Deposit Collection
+    name_vi: Thu tiền đặt cọc
+    category: guarantee
+    priority: high
+    description: |
+      Collect and track advance deposits per policy.
+    condition: |
+      rate_plan.deposit_required = TRUE
+    action: |
+      CALCULATE deposit_amount PER policy
+      COLLECT deposit BY deposit_due_date
+      IF not_received:
+        SEND reminder
+        AUTO_CANCEL if past deadline
+      RECORD as advance_deposit
+    applies_to: [reservation, rate_plan]
+    enforcement: automatic
+
+  # ===== NO-SHOW RULES =====
+  - id: BR-RES-N001
+    name: No-Show Processing
+    name_vi: Xử lý không đến
+    category: no_show
+    priority: critical
+    description: |
+      Process no-shows after arrival date cutoff.
+    condition: |
+      current_time > arrival_date + no_show_cutoff AND
+      reservation.status = 'confirmed' AND
+      guest.checked_in = FALSE
+    action: |
+      SET status = 'no_show'
+      CHARGE no_show_fee (typically first_night)
+      RELEASE remaining_nights inventory
+      NOTIFY channel (if OTA booking)
+      UPDATE statistics
+    applies_to: [reservation]
+    enforcement: automatic
+    timing: "After 6AM next day OR per property policy"
+
+  - id: BR-RES-N002
+    name: No-Show Hold Time
+    name_vi: Thời gian giữ phòng
+    category: no_show
+    priority: high
+    description: |
+      Hold room for late arrivals based on guarantee type.
+    condition: |
+      IF guaranteed_reservation:
+        hold_until = next_day_6am
+      IF non_guaranteed:
+        hold_until = 6pm_arrival_day
+    action: |
+      AFTER hold_time:
+        IF guaranteed:
+          PROCESS no_show_charge
+        IF non_guaranteed:
+          RELEASE room
+          CANCEL reservation
+    applies_to: [reservation]
+    enforcement: automatic
+
+exceptions:
+  force_majeure:
+    triggers:
+      - natural_disaster
+      - pandemic
+      - government_travel_ban
+      - airline_cancellation
+    handling:
+      - waive_penalties
+      - offer_full_refund_or_credit
+      - extend_credit_validity
+
+  loyalty_exceptions:
+    platinum_and_above:
+      - flexible_cancellation
+      - late_checkout_guaranteed
+      - room_upgrade_priority
+
+validation_messages:
+  BR-RES-B001:
+    en: "Departure date must be after arrival date"
+    vi: "Ngày đi phải sau ngày đến"
+  BR-RES-B002:
+    en: "Number of guests exceeds room capacity"
+    vi: "Số khách vượt quá sức chứa phòng"
+  BR-RES-C001:
+    en: "Cancellation policy: {policy_description}"
+    vi: "Chính sách hủy: {policy_description}"

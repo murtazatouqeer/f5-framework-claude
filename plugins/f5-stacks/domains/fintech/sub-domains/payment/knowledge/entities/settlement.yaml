@@ -1,0 +1,445 @@
+# Settlement Entity - Batch settlement records
+# Domain: fintech/payment
+# Purpose: Aggregates transactions for merchant payouts
+
+name: Settlement
+display_name: Settlement
+description: |
+  Represents a settlement batch that aggregates transactions for a merchant
+  over a specific period. Calculates gross amount, fees, reserves, and
+  net amount for payout.
+
+  Vietnamese: Đại diện cho đợt quyết toán tổng hợp giao dịch của merchant
+  trong một khoảng thời gian. Tính tổng thu, phí, dự phòng và số thực nhận.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: settlement_id
+    type: string
+    required: true
+    description: External ID (SET-YYYYMMDD-XXX)
+    validation:
+      pattern: "^SET-[0-9]{8}-[A-Z0-9]{3}$"
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant being settled
+
+  - name: merchant_account_id
+    type: uuid
+    required: true
+    description: Destination bank account
+
+  # Period
+  - name: period_start
+    type: timestamp
+    required: true
+    description: Settlement period start (Bắt đầu kỳ)
+
+  - name: period_end
+    type: timestamp
+    required: true
+    description: Settlement period end (Kết thúc kỳ)
+
+  - name: settlement_date
+    type: date
+    required: true
+    description: Date settlement is processed
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Settlement status (Trạng thái)
+    validation:
+      values: [pending, processing, completed, failed, cancelled]
+
+  # Amounts
+  - name: currency
+    type: string
+    required: true
+    description: Settlement currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+
+  - name: gross_amount
+    type: decimal
+    required: true
+    description: Total transaction amount (Tổng giao dịch)
+    validation:
+      min: 0
+
+  - name: refund_amount
+    type: decimal
+    required: true
+    description: Total refunds in period
+    validation:
+      min: 0
+    default: 0
+
+  - name: dispute_amount
+    type: decimal
+    required: true
+    description: Total disputes/chargebacks
+    validation:
+      min: 0
+    default: 0
+
+  - name: adjustment_amount
+    type: decimal
+    required: true
+    description: Manual adjustments (+/-)
+    default: 0
+
+  # Fees
+  - name: processing_fee
+    type: decimal
+    required: true
+    description: Total processing fees
+    validation:
+      min: 0
+
+  - name: refund_fee
+    type: decimal
+    required: true
+    description: Fees for refunds
+    validation:
+      min: 0
+    default: 0
+
+  - name: dispute_fee
+    type: decimal
+    required: true
+    description: Fees for disputes
+    validation:
+      min: 0
+    default: 0
+
+  - name: other_fees
+    type: decimal
+    required: true
+    description: Other fees (monthly, etc.)
+    validation:
+      min: 0
+    default: 0
+
+  - name: total_fees
+    type: decimal
+    required: true
+    description: Sum of all fees (Tổng phí)
+    validation:
+      min: 0
+
+  # Reserve
+  - name: reserve_amount
+    type: decimal
+    required: true
+    description: Amount held in reserve
+    validation:
+      min: 0
+    default: 0
+
+  - name: reserve_release_amount
+    type: decimal
+    required: true
+    description: Reserve released this period
+    validation:
+      min: 0
+    default: 0
+
+  # Net
+  - name: net_amount
+    type: decimal
+    required: true
+    description: |
+      Net amount to pay out:
+      gross - refunds - disputes - fees - reserve + reserve_release + adjustments
+    validation:
+      min: 0
+
+  # Transaction Counts
+  - name: transaction_count
+    type: integer
+    required: true
+    description: Number of successful transactions
+    validation:
+      min: 0
+
+  - name: refund_count
+    type: integer
+    required: true
+    description: Number of refunds
+    validation:
+      min: 0
+    default: 0
+
+  - name: dispute_count
+    type: integer
+    required: true
+    description: Number of disputes
+    validation:
+      min: 0
+    default: 0
+
+  # Payout Reference
+  - name: payout_id
+    type: uuid
+    required: false
+    description: Reference to payout record
+
+  - name: payout_initiated_at
+    type: timestamp
+    required: false
+    description: When payout was initiated
+
+  # Reconciliation
+  - name: reconciliation_status
+    type: enum
+    required: true
+    description: Reconciliation status
+    validation:
+      values: [pending, in_progress, matched, discrepancy, resolved]
+    default: pending
+
+  - name: reconciliation_notes
+    type: string
+    required: false
+    description: Notes from reconciliation
+    validation:
+      max: 1000
+
+  # Breakdown
+  - name: breakdown
+    type: json
+    required: false
+    description: |
+      Detailed breakdown by payment method:
+      {
+        "card": {"count": 100, "amount": 50000000, "fees": 1500000},
+        "e_wallet": {"count": 50, "amount": 20000000, "fees": 300000}
+      }
+
+  # Metadata
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: processed_at
+    type: timestamp
+    required: false
+    description: When settlement was processed
+
+  - name: completed_at
+    type: timestamp
+    required: false
+    description: When settlement completed
+
+relationships:
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant being settled
+
+  - name: merchant_account
+    type: belongs_to
+    entity: MerchantAccount
+    required: true
+    description: Destination account
+
+  - name: payments
+    type: has_many
+    entity: Payment
+    required: false
+    description: Included payments
+
+  - name: refunds
+    type: has_many
+    entity: Refund
+    required: false
+    description: Included refunds
+
+  - name: disputes
+    type: has_many
+    entity: Dispute
+    required: false
+    description: Included disputes
+
+  - name: payout
+    type: has_one
+    entity: Payout
+    required: false
+    description: Associated payout
+
+  - name: fees
+    type: has_many
+    entity: Fee
+    required: false
+    description: Fee breakdown records
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Settlement created, awaiting processing (Chờ xử lý)
+    - name: processing
+      description: Being processed (Đang xử lý)
+    - name: completed
+      description: Successfully completed (Hoàn thành)
+    - name: failed
+      description: Processing failed (Thất bại)
+    - name: cancelled
+      description: Cancelled (Đã hủy)
+
+  transitions:
+    - from: pending
+      to: processing
+      trigger: process
+      description: Start processing
+
+    - from: pending
+      to: cancelled
+      trigger: cancel
+      description: Cancel settlement
+
+    - from: processing
+      to: completed
+      trigger: complete
+      description: Processing successful
+
+    - from: processing
+      to: failed
+      trigger: fail
+      description: Processing failed
+
+    - from: failed
+      to: processing
+      trigger: retry
+      description: Retry failed settlement
+
+indexes:
+  - [settlement_id]
+  - [merchant_id, settlement_date]
+  - [merchant_id, status]
+  - [payout_id]
+  - [status, settlement_date]
+
+events:
+  - name: settlement.created
+    description: Settlement batch created
+    payload: [id, settlement_id, merchant_id, period_start, period_end]
+
+  - name: settlement.processing
+    description: Settlement processing started
+    payload: [id, settlement_id, gross_amount]
+
+  - name: settlement.completed
+    description: Settlement completed
+    payload: [id, settlement_id, net_amount, payout_id]
+
+  - name: settlement.failed
+    description: Settlement failed
+    payload: [id, settlement_id, failure_reason]
+
+  - name: settlement.reconciled
+    description: Settlement reconciled
+    payload: [id, settlement_id, reconciliation_status]
+
+business_rules:
+  - id: BR-SET-001
+    description: Settlement schedule based on merchant config (default T+2)
+    rule: |
+      settlement_date = period_end + merchant.payout_delay_days
+    vietnamese: Quyết toán theo cấu hình merchant (mặc định T+2)
+
+  - id: BR-SET-002
+    description: Reserve held for high-risk merchants
+    rule: |
+      IF merchant.risk_level IN ['elevated', 'high']
+      THEN reserve_amount = gross_amount * merchant.reserve_rate
+    vietnamese: Giữ dự phòng cho merchant rủi ro cao
+
+  - id: BR-SET-003
+    description: Minimum payout threshold applies
+    rule: |
+      IF net_amount < merchant.minimum_payout_amount
+      THEN rollover_to_next_settlement = true
+    vietnamese: Áp dụng ngưỡng thanh toán tối thiểu
+
+  - id: BR-SET-004
+    description: Net amount calculation
+    rule: |
+      net_amount = gross_amount
+                   - refund_amount
+                   - dispute_amount
+                   - total_fees
+                   - reserve_amount
+                   + reserve_release_amount
+                   + adjustment_amount
+    vietnamese: Công thức tính số thực nhận
+
+  - id: BR-SET-005
+    description: Failed settlements auto-retry next business day
+    rule: |
+      IF status = 'failed' AND retry_count < 3
+      THEN schedule_retry(next_business_day)
+    vietnamese: Quyết toán thất bại tự động thử lại
+
+api_endpoints:
+  - method: GET
+    path: /v1/settlements
+    description: List settlements with filters
+
+  - method: GET
+    path: /v1/settlements/{id}
+    description: Get settlement details
+
+  - method: GET
+    path: /v1/settlements/{id}/transactions
+    description: List transactions in settlement
+
+  - method: GET
+    path: /v1/merchants/{merchant_id}/settlements
+    description: List merchant settlements
+
+  - method: POST
+    path: /v1/settlements/{id}/retry
+    description: Retry failed settlement
+
+reporting:
+  - name: settlement_report
+    description: Detailed settlement report
+    fields: [period, transactions, fees, net_amount]
+    formats: [pdf, csv, xlsx]
+
+  - name: fee_breakdown
+    description: Fee breakdown by type
+    fields: [fee_type, count, amount]
+
+security_considerations:
+  - Settlement data accessible only to merchant
+  - Audit log for all settlement modifications
+  - Reconciliation required for discrepancies
+  - Dual approval for manual adjustments

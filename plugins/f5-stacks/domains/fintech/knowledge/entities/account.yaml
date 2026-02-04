@@ -1,0 +1,311 @@
+name: Account
+display_name: Account
+description: |
+  A unit for storing balance and executing financial transactions.
+  Each account belongs to a customer and can be of various types:
+  payment, savings, securities, e-wallet, etc.
+
+domain: fintech
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the account in the system
+
+  - name: account_number
+    type: string
+    required: true
+    description: Account number displayed to customer, following regulatory format
+    validation:
+      pattern: "^[0-9]{10,16}$"
+
+  - name: account_type
+    type: enum
+    required: true
+    description: Account type, determines features and applicable regulations
+    validation:
+      values: [payment, savings, securities, escrow, virtual_wallet]
+
+  - name: currency
+    type: string
+    required: true
+    description: Currency type of the account (ISO 4217 standard)
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: status
+    type: enum
+    required: true
+    description: Account operational status
+    validation:
+      values: [pending, active, dormant, frozen, closed]
+
+  - name: balance
+    type: decimal
+    required: true
+    description: Current balance of the account
+    validation:
+      min: 0
+    default: 0
+
+  - name: available_balance
+    type: decimal
+    required: true
+    description: Available balance (minus hold amount)
+    validation:
+      min: 0
+    default: 0
+
+  - name: hold_amount
+    type: decimal
+    required: true
+    description: Amount being held for pending transactions
+    validation:
+      min: 0
+    default: 0
+
+  - name: minimum_balance
+    type: decimal
+    required: false
+    description: Minimum balance that must be maintained in the account
+    validation:
+      min: 0
+    default: 0
+
+  - name: overdraft_limit
+    type: decimal
+    required: false
+    description: Allowed overdraft limit (if applicable)
+    validation:
+      min: 0
+    default: 0
+
+  - name: daily_transfer_limit
+    type: decimal
+    required: true
+    description: Maximum daily transfer limit
+    validation:
+      min: 0
+
+  - name: daily_transfer_used
+    type: decimal
+    required: true
+    description: Amount transferred in current day
+    validation:
+      min: 0
+    default: 0
+
+  - name: monthly_transfer_limit
+    type: decimal
+    required: false
+    description: Maximum monthly transfer limit
+    validation:
+      min: 0
+
+  - name: monthly_transfer_used
+    type: decimal
+    required: true
+    description: Amount transferred in current month
+    validation:
+      min: 0
+    default: 0
+
+  - name: interest_rate
+    type: decimal
+    required: false
+    description: Applied interest rate (% per year, savings accounts only)
+    validation:
+      min: 0
+      max: 100
+
+  - name: interest_calculation_method
+    type: enum
+    required: false
+    description: Interest calculation method (savings accounts only)
+    validation:
+      values: [daily, monthly, quarterly, yearly]
+
+  - name: term_months
+    type: integer
+    required: false
+    description: Deposit term (months, term deposits only)
+    validation:
+      min: 1
+      max: 60
+
+  - name: maturity_date
+    type: date
+    required: false
+    description: Maturity date (term deposits only)
+
+  - name: auto_renew
+    type: boolean
+    required: false
+    description: Automatically renew upon maturity
+    default: false
+
+  - name: nickname
+    type: string
+    required: false
+    description: Nickname set by customer
+    validation:
+      max: 50
+
+  - name: is_primary
+    type: boolean
+    required: true
+    description: Customer's primary account
+    default: false
+
+  - name: is_default_receive
+    type: boolean
+    required: true
+    description: Default account for receiving funds
+    default: false
+
+  - name: allow_debit
+    type: boolean
+    required: true
+    description: Allow debit transactions (outgoing transfers)
+    default: true
+
+  - name: allow_credit
+    type: boolean
+    required: true
+    description: Allow credit transactions (incoming funds)
+    default: true
+
+  - name: notification_enabled
+    type: boolean
+    required: true
+    description: Enable balance change notifications
+    default: true
+
+  - name: last_transaction_at
+    type: timestamp
+    required: false
+    description: Timestamp of most recent transaction
+
+  - name: dormant_at
+    type: timestamp
+    required: false
+    description: Timestamp when account became dormant
+
+  - name: opened_at
+    type: timestamp
+    required: true
+    description: Timestamp when account was opened
+
+  - name: closed_at
+    type: timestamp
+    required: false
+    description: Timestamp when account was closed
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: true
+    description: Customer who owns the account
+
+  - name: transactions
+    type: has_many
+    entity: Transaction
+    required: false
+    description: Transaction history of the account
+
+  - name: holds
+    type: has_many
+    entity: Hold
+    required: false
+    description: Active hold amounts
+
+  - name: standing_orders
+    type: has_many
+    entity: StandingOrder
+    required: false
+    description: Recurring transfer orders
+
+  - name: direct_debits
+    type: has_many
+    entity: DirectDebit
+    required: false
+    description: Direct debit mandates
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Account awaiting activation
+    - name: active
+      description: Account is active and operational
+    - name: dormant
+      description: Account is dormant (>12 months without transactions)
+    - name: frozen
+      description: Account is frozen (temporarily or by legal requirement)
+    - name: closed
+      description: Account is permanently closed
+  transitions:
+    - from: pending
+      to: active
+      trigger: activate
+      description: Activate new account
+    - from: active
+      to: dormant
+      trigger: mark_dormant
+      description: Mark as dormant after 12 months
+    - from: active
+      to: frozen
+      trigger: freeze
+      description: Freeze account
+    - from: dormant
+      to: active
+      trigger: reactivate
+      description: Reactivate when transaction occurs
+    - from: dormant
+      to: frozen
+      trigger: freeze
+      description: Freeze dormant account
+    - from: frozen
+      to: active
+      trigger: unfreeze
+      description: Unfreeze account
+    - from: [active, dormant]
+      to: closed
+      trigger: close
+      description: Close account (balance must be 0)
+    - from: frozen
+      to: closed
+      trigger: force_close
+      description: Force close account by legal requirement
+
+indexes:
+  - [account_number]
+  - [customer_id, account_type]
+  - [status]
+  - [currency]
+  - [last_transaction_at]
+  - [maturity_date]
+
+business_rules:
+  - BR-ACC-001: Each customer can have only 1 primary payment account
+  - BR-ACC-002: Available balance = Balance - Hold amount - Minimum balance
+  - BR-ACC-003: No transactions allowed when account is frozen or closed
+  - BR-ACC-004: Account becomes dormant after 12 months without transactions
+  - BR-ACC-005: Balance must be 0 to close account
+  - BR-ACC-006: Reset daily limit at 00:00 each day
+  - BR-ACC-007: Reset monthly limit on the first day of each month
+  - BR-ACC-008: Term deposits cannot be withdrawn early (or interest forfeited)

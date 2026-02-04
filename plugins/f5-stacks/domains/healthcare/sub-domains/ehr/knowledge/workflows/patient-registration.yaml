@@ -1,0 +1,496 @@
+# =============================================================================
+# PATIENT REGISTRATION WORKFLOW - EHR Sub-domain
+# Quy trình Đăng ký Bệnh nhân
+# =============================================================================
+
+name: PatientRegistrationWorkflow
+display_name: Patient Registration Workflow / Quy trình Đăng ký Bệnh nhân
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+workflow_type: registration
+
+description: |
+  End-to-end workflow for patient registration including new patient creation,
+  returning patient check-in, demographic verification, insurance verification,
+  and consent collection. Supports both scheduled and walk-in scenarios.
+
+# =============================================================================
+# WORKFLOW TRIGGERS
+# =============================================================================
+triggers:
+  - id: TRIG-REG-001
+    name: Scheduled Appointment Arrival
+    description: Patient arrives for scheduled appointment
+    event: patient_arrival
+    conditions:
+      - appointment_exists: true
+      - appointment_status: scheduled
+
+  - id: TRIG-REG-002
+    name: Walk-in Patient
+    description: Patient arrives without appointment
+    event: walk_in_arrival
+    conditions:
+      - appointment_exists: false
+
+  - id: TRIG-REG-003
+    name: Emergency Department Arrival
+    description: Patient presents to ED
+    event: ed_arrival
+    priority: urgent
+    special_handling: true
+
+  - id: TRIG-REG-004
+    name: Hospital Admission
+    description: Patient admitted from ED, clinic, or transfer
+    event: admission_order
+    requires: [bed_assignment, attending_physician]
+
+  - id: TRIG-REG-005
+    name: Telehealth Check-in
+    description: Patient connects for virtual visit
+    event: telehealth_connection
+    conditions:
+      - telehealth_appointment: true
+      - video_connection: established
+
+# =============================================================================
+# WORKFLOW STATES
+# =============================================================================
+states:
+  - id: initiated
+    name: Registration Initiated
+    description: Patient arrival detected, registration process started
+    entry_actions:
+      - create_registration_session
+      - assign_registration_queue
+    allowed_transitions: [patient_search, emergency_bypass]
+
+  - id: patient_search
+    name: Patient Search
+    description: Searching for existing patient record
+    entry_actions:
+      - search_by_demographics
+      - check_for_duplicates
+    allowed_transitions: [existing_patient, new_patient, duplicate_review]
+
+  - id: existing_patient
+    name: Existing Patient Identified
+    description: Patient record found in system
+    entry_actions:
+      - retrieve_patient_record
+      - display_demographics
+    allowed_transitions: [demographic_verification]
+
+  - id: new_patient
+    name: New Patient Entry
+    description: Creating new patient record
+    entry_actions:
+      - open_new_patient_form
+      - prepare_consent_forms
+    allowed_transitions: [demographic_collection]
+
+  - id: duplicate_review
+    name: Duplicate Review
+    description: Potential duplicate patients found
+    entry_actions:
+      - display_potential_matches
+      - alert_registration_specialist
+    allowed_transitions: [merge_confirmed, new_patient, existing_patient]
+
+  - id: demographic_verification
+    name: Demographic Verification
+    description: Verifying and updating patient demographics
+    entry_actions:
+      - display_current_demographics
+      - prompt_for_updates
+    allowed_transitions: [insurance_verification]
+
+  - id: demographic_collection
+    name: Demographic Collection
+    description: Collecting new patient demographics
+    entry_actions:
+      - display_demographic_form
+      - validate_required_fields
+    required_fields:
+      - full_legal_name
+      - date_of_birth
+      - gender
+      - address
+      - phone_number
+      - emergency_contact
+    allowed_transitions: [insurance_verification]
+
+  - id: insurance_verification
+    name: Insurance Verification
+    description: Verifying insurance eligibility
+    entry_actions:
+      - query_eligibility_service
+      - check_prior_authorization
+    allowed_transitions: [consent_collection, self_pay]
+
+  - id: self_pay
+    name: Self-Pay Processing
+    description: Patient paying out of pocket
+    entry_actions:
+      - display_price_estimates
+      - collect_payment_or_agreement
+    allowed_transitions: [consent_collection]
+
+  - id: consent_collection
+    name: Consent Collection
+    description: Collecting required consents
+    entry_actions:
+      - identify_required_consents
+      - present_consent_documents
+    required_consents:
+      - consent_to_treat
+      - notice_of_privacy_practices
+      - financial_agreement
+    optional_consents:
+      - health_information_exchange
+      - research_registry
+      - marketing_communications
+    allowed_transitions: [registration_complete]
+
+  - id: registration_complete
+    name: Registration Complete
+    description: All registration steps completed
+    entry_actions:
+      - generate_visit_summary
+      - assign_to_clinical_queue
+      - print_or_send_documents
+    allowed_transitions: []
+
+  - id: emergency_bypass
+    name: Emergency Registration Bypass
+    description: Abbreviated registration for emergencies
+    entry_actions:
+      - collect_minimum_demographics
+      - create_temporary_record
+      - alert_for_completion
+    allowed_transitions: [registration_complete]
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # Step 1: Patient Identification
+  - id: STEP-001
+    name: Patient Identification
+    description: Identify patient through search or creation
+    order: 1
+    actors: [registration_clerk]
+    actions:
+      - action: search_patient
+        description: Search by name, DOB, MRN, SSN
+        search_fields: [last_name, first_name, date_of_birth, mrn, ssn_last_four]
+      - action: verify_identity
+        description: Verify patient identity with photo ID
+        required: true
+        documentation: id_type_and_expiration
+    decision_points:
+      - condition: patient_found
+        true_next: verify_demographics
+        false_next: create_new_patient
+      - condition: multiple_matches
+        true_next: duplicate_resolution
+
+  # Step 2: Demographic Verification/Collection
+  - id: STEP-002
+    name: Demographics
+    description: Verify or collect patient demographics
+    order: 2
+    actors: [registration_clerk]
+    actions:
+      - action: verify_demographics
+        description: Confirm current demographics
+        fields:
+          - legal_name
+          - preferred_name
+          - date_of_birth
+          - gender
+          - address
+          - phone_numbers
+          - email
+          - emergency_contacts
+          - preferred_language
+          - race_ethnicity
+      - action: update_demographics
+        description: Update changed information
+        audit_changes: true
+
+  # Step 3: Insurance Verification
+  - id: STEP-003
+    name: Insurance Verification
+    description: Verify insurance eligibility and benefits
+    order: 3
+    actors: [registration_clerk, insurance_specialist]
+    actions:
+      - action: scan_insurance_card
+        description: Capture insurance card images
+        front_and_back: true
+      - action: verify_eligibility
+        description: Real-time eligibility check
+        integration: clearinghouse_api
+        response_elements:
+          - eligibility_status
+          - coverage_dates
+          - copay_amounts
+          - deductible_status
+          - prior_auth_requirements
+      - action: secondary_insurance
+        description: Check for secondary coverage
+        if_applicable: true
+    decision_points:
+      - condition: not_eligible
+        true_next: contact_patient_options
+      - condition: prior_auth_required
+        true_next: prior_auth_workflow
+
+  # Step 4: Financial Counseling (if needed)
+  - id: STEP-004
+    name: Financial Counseling
+    description: Address payment issues and options
+    order: 4
+    conditional: true
+    triggers:
+      - no_insurance
+      - high_out_of_pocket
+      - prior_balance_due
+    actors: [financial_counselor]
+    actions:
+      - action: estimate_charges
+        description: Provide good faith estimate
+        regulation: No Surprises Act
+      - action: payment_plan
+        description: Set up payment arrangement
+      - action: charity_care_screening
+        description: Screen for financial assistance
+      - action: collect_payment
+        description: Collect copay or deposit
+
+  # Step 5: Consent Collection
+  - id: STEP-005
+    name: Consent Collection
+    description: Obtain required signatures and consents
+    order: 5
+    actors: [registration_clerk, patient]
+    actions:
+      - action: present_privacy_notice
+        description: Provide Notice of Privacy Practices
+        acknowledgment: signature_or_decline
+        regulation: HIPAA
+      - action: consent_to_treat
+        description: General consent to treatment
+        required: true
+        signature: patient_or_representative
+      - action: financial_agreement
+        description: Assignment of benefits and payment responsibility
+        required: true
+      - action: advance_directive_inquiry
+        description: Ask about advance directives
+        for: inpatient_admissions
+      - action: hie_consent
+        description: Health Information Exchange participation
+        opt_in_or_out: per_state_model
+    consent_capture:
+      method: [electronic_signature, paper_scan]
+      witness: if_required
+      interpreter: if_needed
+
+  # Step 6: Check-in Completion
+  - id: STEP-006
+    name: Check-in Completion
+    description: Finalize registration and direct patient
+    order: 6
+    actors: [registration_clerk]
+    actions:
+      - action: assign_location
+        description: Assign waiting area or room
+      - action: provide_documents
+        description: Give patient registration materials
+        documents:
+          - visit_summary
+          - privacy_notice_copy
+          - appointment_information
+          - facility_map
+      - action: notify_clinical
+        description: Alert clinical staff of arrival
+        method: [ehr_worklist, pager, text]
+      - action: place_wristband
+        description: Apply patient ID wristband
+        for: [inpatient, procedure, ed]
+
+# =============================================================================
+# SPECIAL SCENARIOS
+# =============================================================================
+special_scenarios:
+  - id: SCEN-001
+    name: Emergency Registration
+    description: Expedited registration for emergencies
+    priority: critical
+    modifications:
+      - skip_insurance_verification: defer_to_later
+      - minimum_demographics: name_dob_chief_complaint
+      - consent: implied_for_emergency
+      - complete_later: within_24_hours
+    required_information:
+      - patient_name_or_john_jane_doe
+      - approximate_age_if_dob_unknown
+      - chief_complaint
+      - brought_by
+
+  - id: SCEN-002
+    name: Minor Patient Registration
+    description: Registration for patients under 18
+    requirements:
+      - parent_guardian_present: true
+      - legal_custody_verified: if_applicable
+      - emancipated_minor: self_consent_allowed
+    special_consents:
+      - reproductive_health: minor_may_consent_per_state
+      - mental_health: minor_may_consent_per_state
+      - substance_abuse: minor_may_consent
+
+  - id: SCEN-003
+    name: Incapacitated Patient
+    description: Patient unable to provide information
+    requirements:
+      - identify_legal_representative: healthcare_proxy_or_poa
+      - verify_authority: review_legal_documents
+      - document_representative: in_patient_record
+    fallback:
+      - no_representative: contact_social_work
+      - emergency: treat_first_then_identify
+
+  - id: SCEN-004
+    name: VIP/Confidential Registration
+    description: Enhanced privacy for certain patients
+    triggers:
+      - employee_or_family
+      - celebrity
+      - politician
+      - patient_request
+    protections:
+      - alias_registration: available
+      - restricted_access: care_team_only
+      - enhanced_logging: real_time_alerts
+      - location_suppression: optional
+
+  - id: SCEN-005
+    name: Pre-Registration
+    description: Patient completes registration before arrival
+    channels:
+      - patient_portal
+      - phone
+      - mail
+    pre_completed:
+      - demographics_verification
+      - insurance_information
+      - consent_signatures
+    at_arrival:
+      - identity_verification
+      - insurance_card_scan
+      - copay_collection
+
+# =============================================================================
+# INTEGRATIONS
+# =============================================================================
+integrations:
+  - id: INT-001
+    name: Scheduling System
+    description: Pull scheduled appointments
+    direction: inbound
+    events: [appointment_check_in, appointment_status_update]
+
+  - id: INT-002
+    name: Insurance Eligibility
+    description: Real-time eligibility verification
+    direction: outbound
+    protocol: X12_270_271
+    response_time: real_time
+
+  - id: INT-003
+    name: Master Patient Index
+    description: Enterprise patient matching
+    direction: bidirectional
+    events: [patient_search, patient_merge, new_patient]
+
+  - id: INT-004
+    name: Document Management
+    description: Store scanned documents
+    direction: outbound
+    document_types: [insurance_cards, id_cards, consent_forms]
+
+  - id: INT-005
+    name: Clinical Worklist
+    description: Notify clinical staff of arrival
+    direction: outbound
+    events: [check_in_complete, patient_in_waiting]
+
+# =============================================================================
+# METRICS AND REPORTING
+# =============================================================================
+metrics:
+  - id: MET-001
+    name: Registration Time
+    description: Time from arrival to check-in complete
+    target: "< 10 minutes for scheduled"
+    measurement: start_to_complete_timestamp
+
+  - id: MET-002
+    name: Insurance Verification Rate
+    description: Percentage verified at time of service
+    target: "> 95%"
+    measurement: verified_count / total_registrations
+
+  - id: MET-003
+    name: Consent Completion Rate
+    description: All required consents obtained
+    target: "100%"
+    measurement: complete_consents / total_registrations
+
+  - id: MET-004
+    name: Duplicate Creation Rate
+    description: New patients later identified as duplicates
+    target: "< 1%"
+    measurement: duplicates_found / new_patients_created
+
+  - id: MET-005
+    name: Pre-Registration Utilization
+    description: Patients completing pre-registration
+    target: "> 30%"
+    measurement: pre_registered / total_scheduled
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  - id: ERR-001
+    name: System Downtime
+    description: Handle registration during EHR downtime
+    procedure:
+      - switch_to_downtime_forms
+      - manual_registration_process
+      - queue_for_electronic_entry
+      - reconcile_when_system_restored
+
+  - id: ERR-002
+    name: Identity Verification Failure
+    description: Unable to verify patient identity
+    procedure:
+      - attempt_alternative_verification
+      - escalate_to_supervisor
+      - document_verification_attempts
+      - consider_registration_hold
+
+  - id: ERR-003
+    name: Insurance Verification Failure
+    description: Unable to verify coverage
+    procedure:
+      - retry_verification
+      - contact_payer_directly
+      - proceed_with_self_pay_estimate
+      - schedule_insurance_follow_up

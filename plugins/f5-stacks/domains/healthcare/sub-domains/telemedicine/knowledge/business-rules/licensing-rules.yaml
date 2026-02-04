@@ -1,0 +1,406 @@
+# Licensing Rules
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Rules for provider licensing and interstate practice
+
+business_rules:
+  id: licensing-rules
+  name: Provider Licensing Rules
+  name_ja: 医療従事者免許ルール
+  description: Rules governing provider licensing for telehealth across state lines
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  categories:
+    - id: state-licensure
+      name: State Licensure
+      description: Basic state licensing requirements
+
+    - id: interstate-compacts
+      name: Interstate Compacts
+      description: Multi-state licensing agreements
+
+    - id: prescribing
+      name: Prescribing Authority
+      description: Prescription-related licensing rules
+
+    - id: specialty-specific
+      name: Specialty-Specific Rules
+      description: Licensing rules for specific specialties
+
+  rules:
+    # State Licensure
+    - id: BR-LIC-001
+      name: Provider State Licensure Requirement
+      category: state-licensure
+      priority: critical
+      description: Provider must be licensed in patient's physical location state
+      
+      requirements:
+        primary_rule: |
+          Provider MUST hold active, unrestricted license in the state
+          where the patient is physically located during the visit
+          
+        verification_timing:
+          - At scheduling (verify provider licensed in patient's state)
+          - At visit start (re-verify patient location)
+          
+        patient_location_determination:
+          based_on: physical_location_during_visit
+          not_based_on:
+            - Patient's permanent address
+            - Patient's insurance state
+            - Provider's location
+            
+      validation:
+        on: [scheduling, visit_start]
+        action: |
+          GET patient_current_state
+          CHECK provider.licenses CONTAINS patient_current_state
+          CHECK license.status = 'active'
+          CHECK license.expiration_date > today
+          IF NOT valid_license THEN
+            BLOCK visit
+            DISPLAY "Provider not licensed in patient's location"
+            OFFER alternative_provider IN patient_state
+
+    - id: BR-LIC-002
+      name: License Status Verification
+      category: state-licensure
+      priority: critical
+      description: Verify license is active and in good standing
+      
+      status_requirements:
+        acceptable:
+          - active
+          - active_with_conditions (review conditions)
+        not_acceptable:
+          - suspended
+          - revoked
+          - expired
+          - probationary (unless approved)
+          - inactive
+          
+        verification_sources:
+          - State medical board database
+          - NPDB (National Practitioner Data Bank)
+          - Internal credentialing records
+          
+      validation:
+        frequency: 
+          - Real-time at visit
+          - Daily batch verification
+          - Immediate on status change notification
+        action: |
+          QUERY license_verification_service
+          IF status NOT IN acceptable THEN
+            SUSPEND provider_telehealth_privileges
+            NOTIFY credentialing_department
+            CANCEL upcoming_visits_in_state
+
+    # Interstate Compacts
+    - id: BR-LIC-010
+      name: Interstate Medical Licensure Compact (IMLC)
+      category: interstate-compacts
+      priority: high
+      description: Multi-state physician licensing through IMLC
+      
+      compact_details:
+        applies_to: Physicians (MD, DO)
+        participating_states: [Check current IMLC member states]
+        benefits:
+          - Expedited licensure in member states
+          - Single background check
+          - Reduced fees
+          
+        eligibility_requirements:
+          - Primary state of medical licensure
+          - Specialty board certification (or training completion)
+          - No disciplinary actions
+          - No criminal history (certain offenses)
+          - No controlled substance actions
+          
+      validation:
+        on: credentialing
+        action: |
+          IF provider.has_imlc_license THEN
+            VERIFY imlc_member_states
+            ENABLE practice_in(imlc_states)
+            TRACK license_through_compact
+
+    - id: BR-LIC-011
+      name: Nurse Licensure Compact (NLC)
+      category: interstate-compacts
+      priority: high
+      description: Multi-state nursing license compact
+      
+      compact_details:
+        applies_to: [RN, LPN/VN]
+        multistate_license:
+          - Practice in home state and all NLC states
+          - Single license, multiple states
+          - Must be primary state of residence
+          
+        enhanced_nlc:
+          effective: January 2018
+          uniform_requirements: true
+          
+      validation:
+        on: credentialing
+        action: |
+          IF nurse.has_compact_license THEN
+            ENABLE practice_in(nlc_states)
+          ELSE
+            REQUIRE individual_state_licenses
+
+    - id: BR-LIC-012
+      name: Psychology Interjurisdictional Compact (PSYPACT)
+      category: interstate-compacts
+      priority: high
+      description: Telepsychology across state lines
+      
+      compact_details:
+        applies_to: Licensed psychologists
+        services_covered:
+          - Telepsychology
+          - Temporary in-person practice
+          
+        requirements:
+          - E.Passport (for telepsychology)
+          - IPC (for temporary in-person)
+          
+      validation:
+        on: scheduling
+        action: |
+          IF provider.specialty = 'psychology' THEN
+            CHECK psypact_authorization
+            VERIFY e_passport_current
+
+    # Prescribing Authority
+    - id: BR-LIC-020
+      name: Telehealth Prescribing Requirements
+      category: prescribing
+      priority: critical
+      description: Requirements for prescribing via telehealth
+      
+      general_requirements:
+        valid_prescription:
+          - Valid patient-provider relationship established
+          - Appropriate evaluation conducted
+          - Medical indication documented
+          - License to prescribe in patient's state
+          
+        evaluation_standard:
+          - Must be consistent with in-person standard of care
+          - Appropriate for condition and medication
+          
+      state_variations:
+        some_states_require:
+          - Previous in-person visit for certain medications
+          - Video visit (not audio-only) for initial prescriptions
+          - Additional documentation
+          
+      validation:
+        on: prescription_creation
+        action: |
+          VERIFY provider.prescribing_authority(patient_state)
+          CHECK state_telehealth_prescribing_rules
+          APPLY state_specific_restrictions
+
+    - id: BR-LIC-021
+      name: Controlled Substance Prescribing (Ryan Haight Act)
+      category: prescribing
+      priority: critical
+      description: DEA requirements for controlled substance prescribing
+      
+      federal_requirements:
+        ryan_haight_act:
+          general_rule: |
+            In-person medical evaluation required before prescribing
+            controlled substances, unless exception applies
+            
+          exceptions:
+            - Treatment in DEA-registered hospital or clinic
+            - Emergency situations
+            - During declared public health emergency
+            - Practice of telemedicine by qualified practitioners
+            
+        dea_registration:
+          required: In state where controlled substance is dispensed
+          special_registration: May be required for some telemedicine
+          
+      state_requirements:
+        additional_rules:
+          - Some states more restrictive than federal
+          - Check state-specific controlled substance rules
+          - PDMP query requirements
+          
+      validation:
+        on: controlled_substance_prescription
+        action: |
+          CHECK provider.dea_registration(patient_state)
+          CHECK ryan_haight_exception_applies
+          IF no_exception THEN
+            REQUIRE prior_in_person_visit
+          RUN pdmp_query
+          DOCUMENT exception_basis IF applies
+
+    - id: BR-LIC-022
+      name: PDMP Query Requirements
+      category: prescribing
+      priority: high
+      description: Prescription Drug Monitoring Program requirements
+      
+      requirements:
+        when_required:
+          - Before prescribing controlled substances
+          - Some states require for all opioids
+          - Some states require for any controlled
+          
+        state_specific:
+          - Each state has own PDMP
+          - Query requirements vary
+          - Some require interstate PDMP check
+          
+        documentation:
+          - Record PDMP query in chart
+          - Note results in clinical decision
+          
+      validation:
+        on: controlled_substance_prescription
+        action: |
+          QUERY pdmp(patient_state)
+          DOCUMENT query_result
+          ALERT if concerning_patterns_found
+          REQUIRE provider_acknowledgment
+
+    # Specialty-Specific Rules
+    - id: BR-LIC-030
+      name: Mental Health Provider Licensing
+      category: specialty-specific
+      priority: high
+      description: Special rules for mental health telehealth
+      
+      provider_types:
+        psychiatrists:
+          license: MD/DO with psychiatry specialty
+          prescribing: Full prescribing authority
+          
+        psychologists:
+          license: State psychology license or PSYPACT
+          prescribing: Limited in some states
+          
+        clinical_social_workers:
+          license: LCSW/LICSW in patient's state
+          compact: Social Work Compact (emerging)
+          
+        licensed_counselors:
+          license: LPC/LPCC in patient's state
+          compact: Counseling Compact (emerging)
+          
+        marriage_family_therapists:
+          license: LMFT in patient's state
+          
+      special_considerations:
+        emergency_holds:
+          - Must follow patient's state laws
+          - Know local resources
+          
+        mandatory_reporting:
+          - Follow patient's state requirements
+          - Know local contacts
+          
+      validation:
+        on: scheduling
+        action: |
+          VERIFY mental_health_license(patient_state)
+          LOAD state_specific_mental_health_rules
+
+    - id: BR-LIC-031
+      name: Advanced Practice Provider Licensing
+      category: specialty-specific
+      priority: high
+      description: Licensing rules for NPs and PAs
+      
+      nurse_practitioners:
+        scope_of_practice:
+          full_practice: Independent practice allowed
+          reduced_practice: Collaborative agreement required
+          restricted_practice: Supervision required
+        state_dependent: Yes, varies significantly
+        
+      physician_assistants:
+        general_rule: Practice with physician collaboration/supervision
+        telehealth_specific:
+          - Supervision requirements may be modified
+          - Check state-specific PA telehealth rules
+          
+      validation:
+        on: [credentialing, scheduling]
+        action: |
+          CHECK np_pa_scope(patient_state)
+          IF requires_collaboration THEN
+            VERIFY collaborating_physician
+            CHECK collaboration_agreement_covers_telehealth
+
+  compliance_monitoring:
+    license_tracking:
+      - Expiration date alerts (90, 60, 30 days)
+      - Status change monitoring
+      - Disciplinary action alerts
+      
+    audit_requirements:
+      - Log all license verifications
+      - Document state of patient at each visit
+      - Track prescribing by state
+      
+    reporting:
+      - Monthly license status report
+      - Quarterly interstate practice report
+      - Annual compliance audit
+
+  decision_flow:
+    name: Licensing Verification Decision
+    steps:
+      - step: 1
+        name: Determine Patient Location
+        action: GET patient_physical_state
+        
+      - step: 2
+        name: Verify Base License
+        rule: BR-LIC-001
+        outcome_if_fail: cannot_proceed
+        
+      - step: 3
+        name: Check License Status
+        rule: BR-LIC-002
+        outcome_if_fail: cannot_proceed
+        
+      - step: 4
+        name: Check Interstate Compact
+        rules: [BR-LIC-010, BR-LIC-011, BR-LIC-012]
+        outcome: may_expedite_if_compact
+        
+      - step: 5
+        name: Verify Prescribing Authority
+        rules: [BR-LIC-020, BR-LIC-021]
+        outcome_if_prescribing: verify_authority
+        
+      - step: 6
+        name: Specialty-Specific Checks
+        rules: [BR-LIC-030, BR-LIC-031]
+        outcome: apply_specialty_rules
+        
+      - step: final
+        name: Authorization
+        outcome: authorize_or_deny
+
+  audit:
+    log_all_verifications: true
+    retention_days: 2555
+    required_fields:
+      - provider_id
+      - patient_state
+      - license_verified
+      - verification_source
+      - timestamp

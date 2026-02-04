@@ -1,0 +1,361 @@
+name: OrderBook
+display_name: Order Book / Sổ lệnh
+description: |
+  Real-time order book for a trading pair showing all open orders.
+  Maintains bid and ask sides with price levels and aggregated quantities.
+
+domain: fintech
+sub_domain: crypto
+entity_type: aggregate
+version: "1.0"
+status: active
+
+# =============================================================================
+# STRUCTURE
+# =============================================================================
+structure:
+  description: |
+    Order book is an in-memory data structure maintained by the matching engine.
+    This entity defines the snapshot format for API responses and persistence.
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Identification
+  trading_pair_id:
+    type: uuid
+    required: true
+    primary_key: true
+    description: Trading pair this order book belongs to
+    reference: trading_pairs.id
+
+  symbol:
+    type: string
+    max_length: 20
+    required: true
+    indexed: true
+    description: Trading pair symbol
+    example: "BTC/USDT"
+
+  # Snapshot Metadata
+  last_update_id:
+    type: bigint
+    required: true
+    description: Sequence number for incremental updates
+
+  snapshot_time:
+    type: timestamp
+    required: true
+    description: Time of this snapshot
+
+  # Depth Statistics
+  bid_count:
+    type: integer
+    description: Number of bid price levels
+
+  ask_count:
+    type: integer
+    description: Number of ask price levels
+
+  total_bid_volume:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Total quantity on bid side
+
+  total_ask_volume:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Total quantity on ask side
+
+  # Best Prices
+  best_bid_price:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Highest bid price
+
+  best_bid_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Quantity at best bid
+
+  best_ask_price:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Lowest ask price
+
+  best_ask_quantity:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Quantity at best ask
+
+  # Spread
+  spread:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Difference between best ask and bid
+
+  spread_percentage:
+    type: decimal
+    precision: 10
+    scale: 6
+    calculated: true
+    description: Spread as percentage of mid price
+
+  mid_price:
+    type: decimal
+    precision: 28
+    scale: 8
+    calculated: true
+    description: Average of best bid and ask
+
+# =============================================================================
+# NESTED STRUCTURES
+# =============================================================================
+nested_structures:
+  price_level:
+    description: Single price level in the order book
+    attributes:
+      price:
+        type: decimal
+        precision: 28
+        scale: 8
+        description: Price at this level
+
+      quantity:
+        type: decimal
+        precision: 28
+        scale: 8
+        description: Total quantity at this price
+
+      order_count:
+        type: integer
+        description: Number of orders at this level
+
+  order_book_side:
+    description: One side (bids or asks) of the order book
+    attributes:
+      levels:
+        type: array
+        items: price_level
+        description: Price levels sorted by price
+
+      total_volume:
+        type: decimal
+        precision: 28
+        scale: 8
+        description: Total volume on this side
+
+# =============================================================================
+# DEPTH LEVELS
+# =============================================================================
+depth_levels:
+  description: Standard depth levels for API responses
+  levels:
+    - name: level_5
+      depth: 5
+      description: Top 5 price levels
+      use_case: Mobile apps, quick overview
+
+    - name: level_10
+      depth: 10
+      description: Top 10 price levels
+      use_case: Standard trading view
+
+    - name: level_20
+      depth: 20
+      description: Top 20 price levels
+      use_case: Detailed trading view
+
+    - name: level_50
+      depth: 50
+      description: Top 50 price levels
+      use_case: Professional traders
+
+    - name: full
+      depth: 500
+      description: Full order book depth
+      use_case: Market makers, arbitrage
+
+# =============================================================================
+# UPDATE TYPES
+# =============================================================================
+update_types:
+  snapshot:
+    description: Full order book state
+    frequency: On connection, periodic refresh
+    use_case: Initial sync, recovery
+
+  delta:
+    description: Incremental changes only
+    frequency: Real-time
+    fields:
+      - update_id
+      - side
+      - price
+      - quantity (0 = remove level)
+
+  trade:
+    description: Trade execution notification
+    frequency: Real-time
+    fields:
+      - price
+      - quantity
+      - side
+      - timestamp
+
+# =============================================================================
+# AGGREGATION METHODS
+# =============================================================================
+aggregation_methods:
+  - name: price_level
+    description: |
+      Group orders by price, sum quantities.
+      Default method for public order book.
+
+  - name: tick_size
+    description: |
+      Group by rounded price ticks.
+      Reduces noise in thin markets.
+
+  - name: percentage_band
+    description: |
+      Group by percentage bands from mid price.
+      Useful for visualization.
+
+# =============================================================================
+# MATCHING RULES
+# =============================================================================
+matching_rules:
+  - id: MR-001
+    name: Price-Time Priority
+    name_vi: Ưu tiên giá-thời gian
+    description: |
+      Orders matched by best price first, then by time of arrival.
+      Standard FIFO matching for same price level.
+
+  - id: MR-002
+    name: Self-Trade Prevention
+    name_vi: Ngăn giao dịch tự thân
+    description: |
+      Orders from same user cannot match.
+      Handled according to STP mode.
+
+  - id: MR-003
+    name: Minimum Tick Size
+    name_vi: Bước giá tối thiểu
+    description: |
+      Prices must be multiples of tick size.
+      Defined per trading pair.
+
+  - id: MR-004
+    name: Lot Size
+    name_vi: Lô giao dịch
+    description: |
+      Quantities must be multiples of lot size.
+      Defined per trading pair.
+
+# =============================================================================
+# PERFORMANCE REQUIREMENTS
+# =============================================================================
+performance:
+  latency:
+    order_insert: "<100μs"
+    order_cancel: "<50μs"
+    matching: "<200μs"
+    snapshot: "<10ms"
+
+  throughput:
+    orders_per_second: 100000
+    matches_per_second: 50000
+    updates_per_second: 1000000
+
+  memory:
+    per_order: "~200 bytes"
+    per_level: "~100 bytes"
+
+# =============================================================================
+# WEBSOCKET STREAMS
+# =============================================================================
+websocket_streams:
+  depth_stream:
+    name: "depth@{symbol}"
+    description: Order book depth updates
+    update_speed: 100ms
+    format:
+      bids: [[price, quantity], ...]
+      asks: [[price, quantity], ...]
+      lastUpdateId: number
+
+  diff_depth_stream:
+    name: "depth@{symbol}@diff"
+    description: Incremental order book updates
+    update_speed: realtime
+    format:
+      e: event_type
+      E: event_time
+      s: symbol
+      U: first_update_id
+      u: final_update_id
+      b: bid_updates
+      a: ask_updates
+
+  trade_stream:
+    name: "trade@{symbol}"
+    description: Real-time trades
+    format:
+      e: trade
+      E: event_time
+      s: symbol
+      t: trade_id
+      p: price
+      q: quantity
+      T: trade_time
+      m: is_buyer_maker
+
+# =============================================================================
+# MARKET DATA CALCULATIONS
+# =============================================================================
+calculations:
+  spread:
+    formula: best_ask_price - best_bid_price
+    description: Absolute spread
+
+  spread_percentage:
+    formula: (spread / mid_price) * 100
+    description: Spread as percentage
+
+  mid_price:
+    formula: (best_bid_price + best_ask_price) / 2
+    description: Mid-market price
+
+  weighted_mid_price:
+    formula: |
+      (best_bid_price * best_ask_quantity + best_ask_price * best_bid_quantity)
+      / (best_bid_quantity + best_ask_quantity)
+    description: Quantity-weighted mid price
+
+  depth_at_percentage:
+    formula: Sum of quantities within X% of mid price
+    description: Market depth measurement
+
+  imbalance:
+    formula: (bid_volume - ask_volume) / (bid_volume + ask_volume)
+    description: Order book imbalance (-1 to 1)
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: false
+  snapshot_frequency: "1 minute"
+  retention_days: 30

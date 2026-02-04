@@ -1,0 +1,524 @@
+name: Billing Cycle
+display_name: Billing Cycle Workflow / Quy trình chu kỳ thanh toán
+description: |
+  Complete workflow for the billing cycle including invoice generation,
+  payment processing, dunning, and reconciliation.
+
+domain: saas-platform
+workflow_type: scheduled_process
+version: "1.0"
+
+# =============================================================================
+# BILLING CYCLE OVERVIEW
+# =============================================================================
+overview:
+  cycle_duration: monthly | annual
+  phases:
+    - phase: pre_billing
+      timing: "7 days before period end"
+      description: "Prepare and review upcoming charges"
+
+    - phase: invoice_generation
+      timing: "3 days before period end"
+      description: "Generate and finalize invoices"
+
+    - phase: payment_processing
+      timing: "On due date"
+      description: "Process payments"
+
+    - phase: dunning
+      timing: "After payment failure"
+      description: "Recovery and retry sequence"
+
+    - phase: reconciliation
+      timing: "End of cycle"
+      description: "Close books and advance period"
+
+# =============================================================================
+# PHASE 1: PRE-BILLING
+# =============================================================================
+phases:
+  pre_billing:
+    name: Pre-Billing Phase
+    name_vi: Giai đoạn trước thanh toán
+    timing: "7 days before current_period_end"
+
+    jobs:
+      - id: PB-01
+        name: Identify Upcoming Renewals
+        type: batch_query
+        schedule: "Daily at 01:00 UTC"
+        query: |
+          SELECT * FROM subscriptions
+          WHERE status = 'active'
+          AND current_period_end BETWEEN NOW() AND NOW() + INTERVAL '7 days'
+          AND cancel_at_period_end = false
+
+      - id: PB-02
+        name: Calculate Upcoming Charges
+        type: batch_process
+        for_each: subscription
+        actions:
+          - calculate_base_subscription_amount
+          - calculate_seat_charges
+          - fetch_usage_for_period
+          - calculate_usage_charges
+          - apply_discounts
+          - calculate_taxes
+          - store_draft_invoice_preview
+
+      - id: PB-03
+        name: Validate Payment Methods
+        type: batch_process
+        for_each: subscription
+        actions:
+          - check_payment_method_exists
+          - check_card_expiration
+          - verify_payment_method_with_processor
+
+        on_issue:
+          card_expiring:
+            - send_card_expiring_notification
+            - schedule_reminder: 3_days
+
+          no_payment_method:
+            - send_add_payment_method_notification
+            - mark_subscription_at_risk
+
+      - id: PB-04
+        name: Send Invoice Preview
+        type: conditional_notification
+        condition: "invoice_amount > previous_average * 1.2"
+        actions:
+          - generate_invoice_preview_pdf
+          - send_large_invoice_warning_email
+          - note: "Help prevent billing surprises"
+
+  # =============================================================================
+  # PHASE 2: INVOICE GENERATION
+  # =============================================================================
+  invoice_generation:
+    name: Invoice Generation Phase
+    name_vi: Giai đoạn tạo hóa đơn
+    timing: "3 days before current_period_end"
+
+    jobs:
+      - id: IG-01
+        name: Create Draft Invoices
+        type: batch_process
+        schedule: "Daily at 02:00 UTC"
+        query: |
+          SELECT * FROM subscriptions
+          WHERE status IN ('active', 'trialing')
+          AND current_period_end BETWEEN NOW() AND NOW() + INTERVAL '3 days'
+          AND NOT EXISTS (
+            SELECT 1 FROM invoices
+            WHERE subscription_id = subscriptions.id
+            AND billing_period_start = subscriptions.current_period_end
+          )
+
+        for_each: subscription
+        actions:
+          - id: IG-01a
+            name: Generate Invoice Number
+            action: |
+              invoice_number = generate_sequential_number()
+              # Format: INV-YYYY-NNNNN
+
+          - id: IG-01b
+            name: Build Line Items
+            action: |
+              line_items = []
+
+              # Base subscription
+              line_items.append({
+                type: 'subscription',
+                description: f'{plan.name} ({billing_cycle})',
+                quantity: 1,
+                unit_price: plan.price,
+                amount: plan.price
+              })
+
+              # Additional seats
+              if seats > plan.included_seats:
+                extra_seats = seats - plan.included_seats
+                line_items.append({
+                  type: 'seat',
+                  description: f'Additional seats ({extra_seats})',
+                  quantity: extra_seats,
+                  unit_price: plan.seat_price,
+                  amount: extra_seats * plan.seat_price
+                })
+
+              # Usage charges
+              for metric in metered_metrics:
+                usage = get_usage(tenant_id, metric, billing_period)
+                if usage > plan.included[metric]:
+                  overage = usage - plan.included[metric]
+                  line_items.append({
+                    type: 'usage',
+                    description: f'{metric} overage ({overage} {unit})',
+                    quantity: overage,
+                    unit_price: plan.overage_rate[metric],
+                    amount: overage * plan.overage_rate[metric]
+                  })
+
+          - id: IG-01c
+            name: Apply Discounts
+            action: |
+              for coupon in active_coupons:
+                if coupon.applies_to_invoice():
+                  discount = coupon.calculate_discount(subtotal)
+                  line_items.append({
+                    type: 'discount',
+                    description: coupon.description,
+                    amount: -discount
+                  })
+
+          - id: IG-01d
+            name: Calculate Taxes
+            action: |
+              tax_calculation = tax_service.calculate(
+                customer: tenant.billing_address,
+                line_items: line_items,
+                tax_id: tenant.tax_id
+              )
+
+              tax_amount = tax_calculation.total_tax
+              tax_details = tax_calculation.breakdown
+
+          - id: IG-01e
+            name: Create Invoice Record
+            action: |
+              invoice = Invoice.create({
+                invoice_number: invoice_number,
+                tenant_id: tenant_id,
+                subscription_id: subscription_id,
+                status: 'draft',
+                billing_period_start: current_period_end,
+                billing_period_end: current_period_end + billing_interval,
+                invoice_date: NOW(),
+                due_date: current_period_end,
+                line_items: line_items,
+                subtotal: sum(line_items.amount),
+                discount_amount: abs(discount_total),
+                tax_amount: tax_amount,
+                total: subtotal - discount + tax,
+                currency: tenant.currency
+              })
+
+      - id: IG-02
+        name: Finalize Invoices
+        type: batch_process
+        schedule: "Daily at 03:00 UTC"
+        condition: "invoice.status = 'draft' AND invoice.due_date <= NOW() + 1 day"
+        actions:
+          - validate_invoice_totals
+          - generate_pdf
+          - set_status: open
+          - set_finalized_at: NOW()
+          - send_invoice_email
+          - sync_to_accounting_system
+
+  # =============================================================================
+  # PHASE 3: PAYMENT PROCESSING
+  # =============================================================================
+  payment_processing:
+    name: Payment Processing Phase
+    name_vi: Giai đoạn xử lý thanh toán
+    timing: "On due_date"
+
+    jobs:
+      - id: PP-01
+        name: Process Due Invoices
+        type: batch_process
+        schedule: "Every hour"
+        query: |
+          SELECT * FROM invoices
+          WHERE status = 'open'
+          AND due_date <= NOW()
+          AND attempt_count = 0
+
+        for_each: invoice
+        steps:
+          - id: PP-01a
+            name: Get Payment Method
+            action: |
+              payment_method = subscription.payment_method
+                              ?? tenant.default_payment_method
+
+              if not payment_method:
+                mark_invoice_needs_payment_method()
+                return
+
+          - id: PP-01b
+            name: Create Payment Intent
+            action: |
+              payment_intent = stripe.PaymentIntent.create(
+                amount: invoice.total * 100,  # cents
+                currency: invoice.currency,
+                customer: tenant.stripe_customer_id,
+                payment_method: payment_method.external_id,
+                confirm: true,
+                off_session: true,
+                metadata: {
+                  invoice_id: invoice.id,
+                  tenant_id: tenant.id
+                }
+              )
+
+          - id: PP-01c
+            name: Handle Payment Result
+            branches:
+              success:
+                actions:
+                  - record_payment
+                  - mark_invoice_paid
+                  - send_receipt_email
+                  - emit_event: payment.success
+
+              requires_action:
+                actions:
+                  - send_3ds_required_email
+                  - create_3ds_session
+                  - wait_for_3ds_completion
+
+              failure:
+                actions:
+                  - record_failed_attempt
+                  - categorize_failure_reason
+                  - start_dunning_if_first_failure
+                  - emit_event: payment.failed
+
+      - id: PP-02
+        name: Handle 3DS Confirmations
+        type: webhook_handler
+        trigger: "stripe.payment_intent.succeeded"
+        actions:
+          - find_invoice_by_payment_intent
+          - mark_invoice_paid
+          - send_receipt_email
+
+  # =============================================================================
+  # PHASE 4: DUNNING
+  # =============================================================================
+  dunning:
+    name: Dunning Phase
+    name_vi: Giai đoạn thu nợ
+    description: "Systematic recovery process for failed payments"
+
+    sequence:
+      - day: 0
+        name: First Failure
+        status: past_due
+        actions:
+          - send_payment_failed_email
+          - show_in_app_notification
+          - log_dunning_start
+
+      - day: 1
+        name: First Retry
+        actions:
+          - attempt_payment
+          - if_failed: continue_dunning
+
+      - day: 3
+        name: Second Retry
+        actions:
+          - attempt_payment
+          - send_second_reminder_email
+          - if_failed: continue_dunning
+
+      - day: 7
+        name: Third Retry
+        actions:
+          - attempt_payment
+          - send_urgent_email
+          - add_dashboard_warning
+          - if_failed: continue_dunning
+
+      - day: 10
+        name: Service Degradation Warning
+        actions:
+          - send_final_warning_email
+          - prepare_service_degradation
+
+      - day: 14
+        name: Fourth Retry + Degradation
+        status: unpaid
+        actions:
+          - attempt_payment
+          - apply_service_degradation
+          - restrict_api_access
+          - block_new_data_creation
+
+      - day: 21
+        name: Pre-Cancellation Notice
+        actions:
+          - send_cancellation_warning
+          - offer_payment_plan_enterprise
+
+      - day: 30
+        name: Cancellation
+        status: cancelled
+        actions:
+          - cancel_subscription
+          - send_cancellation_notice
+          - start_data_retention_period
+          - log_dunning_failed
+
+    retry_optimization:
+      smart_retry:
+        enabled: true
+        factors:
+          - card_type: "Debit cards more successful on paydays"
+          - timezone: "Retry during business hours"
+          - historical: "Use past success patterns"
+
+      retry_times:
+        default: "10:00 UTC"
+        by_region:
+          americas: "15:00 UTC"
+          europe: "09:00 UTC"
+          asia: "02:00 UTC"
+
+    recovery_actions:
+      update_payment_method:
+        flow: "Send link to update card"
+        success_rate: "40% recovery"
+
+      payment_plan:
+        eligible: enterprise
+        options: [2_installments, 3_installments]
+
+  # =============================================================================
+  # PHASE 5: RECONCILIATION
+  # =============================================================================
+  reconciliation:
+    name: Reconciliation Phase
+    name_vi: Giai đoạn đối soát
+    timing: "End of billing cycle"
+
+    jobs:
+      - id: RC-01
+        name: Advance Billing Period
+        type: batch_process
+        schedule: "Hourly"
+        query: |
+          SELECT * FROM subscriptions
+          WHERE status = 'active'
+          AND current_period_end <= NOW()
+          AND EXISTS (
+            SELECT 1 FROM invoices
+            WHERE subscription_id = subscriptions.id
+            AND status = 'paid'
+            AND billing_period_start = subscriptions.current_period_end
+          )
+
+        actions:
+          - set_current_period_start: current_period_end
+          - set_current_period_end: current_period_end + billing_interval
+          - reset_usage_counters_if_needed
+
+      - id: RC-02
+        name: Close Usage Period
+        type: batch_process
+        schedule: "Daily at 00:15 UTC"
+        actions:
+          - snapshot_final_usage
+          - mark_usage_records_as_billed
+          - archive_detailed_usage_data
+
+      - id: RC-03
+        name: Revenue Recognition
+        type: batch_process
+        schedule: "Daily at 01:00 UTC"
+        actions:
+          - calculate_recognized_revenue
+          - calculate_deferred_revenue
+          - sync_to_accounting_system
+          - generate_revenue_report
+
+      - id: RC-04
+        name: Generate Reports
+        type: scheduled_report
+        schedule: "1st of month at 06:00 UTC"
+        reports:
+          - mrr_report
+          - arr_report
+          - churn_report
+          - expansion_revenue_report
+          - dunning_effectiveness_report
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  invoice_generation_failure:
+    retry_policy: "3 attempts with exponential backoff"
+    alert: engineering_team
+    fallback: manual_invoice_creation
+
+  payment_processing_failure:
+    retry_policy: "Handled by dunning sequence"
+    alert: billing_team
+
+  reconciliation_failure:
+    retry_policy: "5 attempts over 24 hours"
+    alert: finance_team
+    action: hold_period_advancement
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - invoice_generation_success_rate
+    - payment_success_rate
+    - dunning_recovery_rate
+    - average_days_to_payment
+    - failed_payment_amount
+
+  alerts:
+    - name: High Payment Failure Rate
+      condition: "payment_failure_rate > 10%"
+      severity: high
+      notify: [billing_team, engineering]
+
+    - name: Invoice Generation Backlog
+      condition: "pending_invoices > 1000"
+      severity: medium
+      notify: [engineering]
+
+    - name: Dunning Queue Growth
+      condition: "dunning_queue_growth > 20% week_over_week"
+      severity: high
+      notify: [billing_team, success_team]
+
+# =============================================================================
+# EVENTS
+# =============================================================================
+events:
+  - name: invoice.created
+    payload: [invoice_id, tenant_id, amount]
+
+  - name: invoice.finalized
+    payload: [invoice_id, invoice_number, total]
+
+  - name: invoice.paid
+    payload: [invoice_id, amount, payment_method]
+
+  - name: payment.success
+    payload: [payment_id, invoice_id, amount]
+
+  - name: payment.failed
+    payload: [invoice_id, failure_reason, attempt_count]
+
+  - name: dunning.started
+    payload: [subscription_id, invoice_id]
+
+  - name: dunning.recovered
+    payload: [subscription_id, days_in_dunning]
+
+  - name: dunning.failed
+    payload: [subscription_id, total_attempts]

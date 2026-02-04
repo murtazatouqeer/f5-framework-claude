@@ -1,0 +1,84 @@
+# Stateful App Example - Backup CronJob
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: db-backup
+  namespace: stateful-app
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/component: backup
+spec:
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: db-backup
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: postgres:15-alpine
+              env:
+                - name: PGHOST
+                  value: "db-0.db-headless"
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-secrets
+                      key: POSTGRES_USER
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: db-secrets
+                      key: POSTGRES_PASSWORD
+                - name: PGDATABASE
+                  valueFrom:
+                    configMapKeyRef:
+                      name: db-config
+                      key: POSTGRES_DB
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  BACKUP_FILE="/backup/$(date +%Y%m%d_%H%M%S)_backup.sql.gz"
+                  echo "Starting backup to $BACKUP_FILE"
+                  pg_dump | gzip > $BACKUP_FILE
+                  echo "Backup completed"
+                  # Upload to S3/GCS if configured
+                  # aws s3 cp $BACKUP_FILE s3://bucket/backups/
+              volumeMounts:
+                - name: backup
+                  mountPath: /backup
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 256Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi
+          volumes:
+            - name: backup
+              persistentVolumeClaim:
+                claimName: db-backup-pvc
+
+---
+# PVC for backup storage
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: db-backup-pvc
+  namespace: stateful-app
+  labels:
+    app.kubernetes.io/name: db
+    app.kubernetes.io/component: backup
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi

@@ -1,0 +1,366 @@
+# Verification Rules
+# F5 Framework v2.0 - Real Estate/Listing
+# Business rules for property and user verification
+
+rules:
+  domain: real-estate
+  subdomain: listing
+  category: verification
+  version: "1.0.0"
+
+  description: |
+    Business rules for verifying properties, agents, agencies, and
+    property owners. Ensures data accuracy, legal compliance, and
+    platform trust.
+
+  # Property Verification Rules
+  property_verification:
+    - id: VER-PRP-001
+      name: Document Requirements
+      name_vi: Yêu cầu tài liệu
+      description: Required documents for property verification
+      requirements:
+        pink_book:
+          required: true
+          description: "Pink book (Sổ hồng) for apartments"
+          applicable_types: [apartment, condominium, penthouse]
+        red_book:
+          required: true
+          description: "Red book (Sổ đỏ) for land/houses"
+          applicable_types: [villa, townhouse, shophouse, land_plot]
+        ownership_certificate:
+          required: true
+          description: "Proof of ownership"
+          all_types: true
+        tax_receipt:
+          required: false
+          description: "Recent property tax payment"
+          boosts_trust: true
+      action: check_documents
+
+    - id: VER-PRP-002
+      name: Address Verification
+      name_vi: Xác minh địa chỉ
+      description: Verify property address exists
+      trigger: on_submission
+      action: |
+        -- Geocode verification
+        geocode_result = geocode_address(property.full_address)
+        IF geocode_result.confidence < 0.7 THEN
+          flag_for_review(property.id, 'address_verification_failed')
+        ELSE
+          UPDATE property SET
+            latitude = geocode_result.latitude,
+            longitude = geocode_result.longitude
+        END
+
+        -- Cross-reference with government database if available
+        IF government_property_lookup_available THEN
+          official_record = lookup_property(property.address)
+          IF official_record.exists THEN
+            UPDATE property SET is_verified = true
+          END
+        END
+
+    - id: VER-PRP-003
+      name: Ownership Verification
+      name_vi: Xác minh quyền sở hữu
+      description: Verify owner has right to list property
+      trigger: on_submission
+      condition: "property.owner_id IS NOT NULL"
+      action: |
+        -- Check owner verification status
+        IF owner.verification_status != 'verified' THEN
+          flag_for_review(property.id, 'owner_not_verified')
+        END
+
+        -- Check document names match
+        IF owner.full_name != property.ownership_document.owner_name THEN
+          flag_for_review(property.id, 'owner_name_mismatch')
+        END
+
+    - id: VER-PRP-004
+      name: Duplicate Property Detection
+      name_vi: Phát hiện bất động sản trùng lặp
+      description: Detect if property already exists in system
+      trigger: on_create
+      action: |
+        duplicates = find_similar_properties(
+          address: property.full_address,
+          coordinates: (property.latitude, property.longitude),
+          area: property.total_area_sqm,
+          threshold: 0.9
+        )
+        IF duplicates.count > 0 THEN
+          flag_as_potential_duplicate(property.id, duplicates)
+        END
+
+    - id: VER-PRP-005
+      name: On-Site Verification
+      name_vi: Xác minh tại chỗ
+      description: Physical verification for premium listings
+      trigger: on_feature_request
+      condition: "listing.featured = true OR listing.premium = true"
+      action: |
+        schedule_site_visit(
+          property_id: property.id,
+          priority: listing.featured ? 'high' : 'normal',
+          requirements: [
+            'verify_address',
+            'verify_condition',
+            'verify_amenities',
+            'take_verification_photos'
+          ]
+        )
+
+  # Agent Verification Rules
+  agent_verification:
+    - id: VER-AGT-001
+      name: License Verification
+      name_vi: Xác minh giấy phép
+      description: Verify agent real estate license
+      requirements:
+        license_document:
+          required: true
+          document_types: [license_scan, license_photo]
+          expiry_check: true
+        id_document:
+          required: true
+          document_types: [national_id, passport]
+        selfie_verification:
+          required: true
+          description: "Selfie with ID for identity match"
+      action: |
+        -- OCR license details
+        license_data = ocr_document(agent.license_document)
+
+        -- Verify with licensing authority if API available
+        IF licensing_authority_api_available THEN
+          official_status = verify_license(license_data.license_number)
+          IF official_status.valid THEN
+            UPDATE agent SET
+              license_verified = true,
+              license_expiry = official_status.expiry_date
+          ELSE
+            reject_verification(agent.id, 'invalid_license')
+          END
+        ELSE
+          queue_for_manual_verification(agent.id)
+        END
+
+    - id: VER-AGT-002
+      name: Identity Verification
+      name_vi: Xác minh danh tính
+      description: Verify agent identity matches documents
+      trigger: on_submission
+      action: |
+        -- Face comparison between selfie and ID
+        match_score = compare_faces(
+          selfie: agent.selfie_verification,
+          id_photo: agent.id_document
+        )
+        IF match_score < 0.85 THEN
+          reject_verification(agent.id, 'identity_mismatch')
+        END
+
+        -- ID document validation
+        id_valid = validate_id_document(agent.id_document)
+        IF NOT id_valid THEN
+          reject_verification(agent.id, 'invalid_id_document')
+        END
+
+    - id: VER-AGT-003
+      name: Background Check
+      name_vi: Kiểm tra lý lịch
+      description: Optional background check for premium agents
+      trigger: on_premium_request
+      condition: "agent.subscription_tier IN ('premium', 'enterprise')"
+      action: |
+        request_background_check(
+          agent_id: agent.id,
+          checks: [
+            'criminal_record',
+            'professional_complaints',
+            'bankruptcy_check'
+          ]
+        )
+
+  # Agency Verification Rules
+  agency_verification:
+    - id: VER-AGC-001
+      name: Business Registration Verification
+      name_vi: Xác minh đăng ký kinh doanh
+      description: Verify agency business registration
+      requirements:
+        business_license:
+          required: true
+          description: "Business registration certificate"
+        tax_registration:
+          required: true
+          description: "Tax registration certificate"
+        real_estate_license:
+          required: true
+          description: "Real estate business license"
+        bank_account_proof:
+          required: true
+          description: "Business bank account proof"
+      action: |
+        -- Verify business registration number
+        IF business_registry_api_available THEN
+          registration = verify_business_registration(agency.business_registration_number)
+          IF registration.valid AND registration.status = 'active' THEN
+            UPDATE agency SET verification_status = 'verified'
+          ELSE
+            reject_verification(agency.id, 'invalid_business_registration')
+          END
+        END
+
+    - id: VER-AGC-002
+      name: Office Address Verification
+      name_vi: Xác minh địa chỉ văn phòng
+      description: Verify agency has physical office
+      trigger: on_submission
+      action: |
+        -- Geocode and verify address
+        address_verified = verify_commercial_address(agency.address)
+        IF NOT address_verified THEN
+          flag_for_review(agency.id, 'office_address_unverified')
+        END
+
+        -- Optional: Schedule physical verification
+        IF agency.subscription_tier IN ('premium', 'enterprise') THEN
+          schedule_office_visit(agency.id)
+        END
+
+  # Owner Verification Rules
+  owner_verification:
+    - id: VER-OWN-001
+      name: Individual Owner Verification
+      name_vi: Xác minh chủ sở hữu cá nhân
+      description: Verify individual property owner
+      condition: "owner.owner_type = 'individual'"
+      requirements:
+        id_document:
+          required: true
+          document_types: [national_id, passport]
+        selfie_verification:
+          required: true
+        address_proof:
+          required: false
+          description: "Utility bill or similar"
+      action: verify_individual_identity
+
+    - id: VER-OWN-002
+      name: Company Owner Verification
+      name_vi: Xác minh chủ sở hữu doanh nghiệp
+      description: Verify company/developer owner
+      condition: "owner.owner_type IN ('company', 'developer')"
+      requirements:
+        business_registration:
+          required: true
+        authorized_representative:
+          required: true
+          description: "ID of authorized signatory"
+        authorization_letter:
+          required: true
+          description: "Letter authorizing representative"
+      action: verify_company_owner
+
+  # Verification Workflow Rules
+  workflow:
+    - id: VER-WFL-001
+      name: Verification Queue Priority
+      name_vi: Ưu tiên hàng đợi xác minh
+      description: Prioritize verification requests
+      action: |
+        priority = CASE
+          WHEN request.subscription_tier = 'enterprise' THEN 1
+          WHEN request.subscription_tier = 'premium' THEN 2
+          WHEN request.has_premium_listing THEN 3
+          ELSE 4
+        END
+        sla_hours = CASE priority
+          WHEN 1 THEN 4
+          WHEN 2 THEN 24
+          WHEN 3 THEN 48
+          ELSE 72
+        END
+
+    - id: VER-WFL-002
+      name: Verification Expiry
+      name_vi: Hết hạn xác minh
+      description: Re-verification requirements
+      trigger: scheduled
+      schedule: "0 0 * * *"  # Daily
+      action: |
+        -- Check agent licenses expiring soon
+        expiring_agents = SELECT * FROM agent
+          WHERE license_verified = true
+          AND license_expiry BETWEEN NOW() AND NOW() + INTERVAL '30 days'
+        FOR agent IN expiring_agents:
+          notify_license_expiring(agent.id, agent.license_expiry)
+
+        -- Expired licenses
+        expired_agents = SELECT * FROM agent
+          WHERE license_verified = true
+          AND license_expiry < NOW()
+        FOR agent IN expired_agents:
+          UPDATE agent SET
+            license_verified = false,
+            status = 'suspended'
+          notify_license_expired(agent.id)
+
+    - id: VER-WFL-003
+      name: Reverification Triggers
+      name_vi: Kích hoạt xác minh lại
+      description: Events requiring reverification
+      triggers:
+        - event: significant_info_change
+          fields: [full_name, license_number, business_registration_number]
+          action: require_reverification
+        - event: multiple_complaints
+          threshold: 3
+          action: suspend_pending_review
+        - event: suspicious_activity
+          action: immediate_review
+
+  # Verification Badges
+  badges:
+    - id: VER-BDG-001
+      name: Verification Badges
+      name_vi: Huy hiệu xác minh
+      description: Trust badges for verified entities
+      badges:
+        verified_agent:
+          criteria: "agent.license_verified = true AND agent.verification_status = 'verified'"
+          display: "✓ Licensed Agent"
+        verified_agency:
+          criteria: "agency.verification_status = 'verified'"
+          display: "✓ Verified Agency"
+        verified_property:
+          criteria: "property.is_verified = true"
+          display: "✓ Verified Property"
+        verified_owner:
+          criteria: "owner.verification_status = 'verified'"
+          display: "✓ Verified Owner"
+        site_verified:
+          criteria: "property.site_verification_completed = true"
+          display: "✓ Physically Verified"
+
+  notifications:
+    verification_lifecycle:
+      - trigger: verification_submitted
+        recipients: [submitter]
+        template: verification_received
+      - trigger: verification_approved
+        recipients: [submitter]
+        template: verification_approved
+      - trigger: verification_rejected
+        recipients: [submitter]
+        template: verification_rejected
+      - trigger: reverification_required
+        recipients: [entity_owner]
+        template: reverification_needed
+      - trigger: license_expiring
+        recipients: [agent]
+        template: license_expiry_warning

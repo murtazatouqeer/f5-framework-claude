@@ -1,0 +1,483 @@
+name: Quote Workflow
+display_name: Insurance Quote Workflow
+description: |
+  End-to-end workflow for generating insurance quotes.
+  From initial inquiry to quote acceptance/conversion.
+
+domain: insurance
+subdomain: policy
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-QUOTE-001
+trigger:
+  - type: user_action
+    action: request_quote
+  - type: api_call
+    endpoint: POST /quotes
+  - type: event
+    name: quote.requested
+
+actors:
+  - id: customer
+    name: Customer/Prospect
+    type: external
+  - id: agent
+    name: Insurance Agent
+    type: internal
+  - id: system
+    name: Quote System
+    type: system
+  - id: underwriter
+    name: Underwriter
+    type: internal
+
+states:
+  - id: initiated
+    name: Quote Initiated
+    description: Quote request received
+    initial: true
+  - id: collecting_info
+    name: Collecting Information
+    description: Gathering customer and risk details
+  - id: calculating
+    name: Calculating Premium
+    description: Premium calculation in progress
+  - id: review_required
+    name: Review Required
+    description: Manual review needed
+  - id: generated
+    name: Quote Generated
+    description: Quote ready for customer
+  - id: sent
+    name: Quote Sent
+    description: Quote delivered to customer
+  - id: viewed
+    name: Quote Viewed
+    description: Customer has viewed quote
+  - id: accepted
+    name: Quote Accepted
+    description: Customer accepted quote
+  - id: declined
+    name: Quote Declined
+    description: Customer declined quote
+  - id: expired
+    name: Quote Expired
+    description: Quote validity period ended
+  - id: converted
+    name: Converted to Application
+    description: Quote converted to application
+    final: true
+
+steps:
+  - id: step_1
+    name: Initiate Quote
+    actor: customer
+    from_state: null
+    to_state: initiated
+    actions:
+      - action: create_quote_record
+        params:
+          status: initiated
+          quote_number: generate_quote_number()
+      - action: log_event
+        event: quote.initiated
+    outputs:
+      - quote_id
+      - quote_number
+
+  - id: step_2
+    name: Collect Customer Information
+    actor: customer
+    from_state: initiated
+    to_state: collecting_info
+    inputs:
+      required:
+        - customer_type
+        - full_name
+        - date_of_birth
+        - contact_email
+        - contact_phone
+      optional:
+        - occupation
+        - address
+    validations:
+      - rule: validate_age
+        condition: "age >= product.min_entry_age AND age <= product.max_entry_age"
+      - rule: validate_email
+        condition: "email IS VALID FORMAT"
+    actions:
+      - action: save_customer_info
+      - action: create_or_link_prospect
+
+  - id: step_3
+    name: Collect Risk Information
+    actor: customer
+    from_state: collecting_info
+    to_state: collecting_info
+    inputs:
+      product_specific:
+        life:
+          - sum_insured
+          - policy_term
+          - smoker_status
+          - health_declaration
+        health:
+          - sum_insured
+          - coverage_level
+          - pre_existing_conditions
+        motor:
+          - vehicle_make
+          - vehicle_model
+          - vehicle_year
+          - vehicle_value
+        property:
+          - property_type
+          - property_value
+          - location
+    validations:
+      - rule: validate_sum_insured
+        condition: "sum_insured >= product.min_sum_insured AND sum_insured <= product.max_sum_insured"
+    actions:
+      - action: save_risk_details
+
+  - id: step_4
+    name: Select Coverages
+    actor: customer
+    from_state: collecting_info
+    to_state: collecting_info
+    inputs:
+      - base_coverage
+      - optional_coverages
+      - riders
+      - payment_frequency
+    validations:
+      - rule: validate_coverage_compatibility
+      - rule: validate_rider_eligibility
+    actions:
+      - action: save_coverage_selection
+
+  - id: step_5
+    name: Calculate Premium
+    actor: system
+    from_state: collecting_info
+    to_state: calculating
+    actions:
+      - action: apply_eligibility_rules
+        rules_file: eligibility-rules.yaml
+      - action: calculate_base_premium
+        method: rate_table_lookup
+      - action: calculate_rider_premiums
+      - action: apply_loadings
+        rules_file: premium-rules.yaml
+      - action: apply_discounts
+        rules_file: premium-rules.yaml
+      - action: calculate_taxes
+      - action: generate_premium_breakdown
+    outputs:
+      - base_premium
+      - rider_premium
+      - loadings
+      - discounts
+      - taxes
+      - gross_premium
+    timeout: 30_seconds
+    on_error:
+      action: notify_support
+      fallback: manual_calculation
+
+  - id: step_5a
+    name: Underwriting Review
+    actor: underwriter
+    from_state: calculating
+    to_state: review_required
+    condition:
+      expression: |
+        eligibility_result.requires_underwriting = true OR
+        sum_insured > product.auto_accept_limit OR
+        health_declaration.has_conditions = true
+    inputs:
+      - underwriting_decision
+      - additional_loadings
+      - exclusions
+      - decline_reason
+    actions:
+      - action: assign_underwriter
+      - action: notify_underwriter
+      - action: create_underwriting_task
+    sla:
+      duration: 48_hours
+      escalation: senior_underwriter
+
+  - id: step_6
+    name: Generate Quote Document
+    actor: system
+    from_state: [calculating, review_required]
+    to_state: generated
+    condition:
+      expression: |
+        eligibility_result.eligible = true OR
+        underwriting_decision = 'approved'
+    actions:
+      - action: generate_quote_pdf
+        template: quote_template
+        include:
+          - premium_breakdown
+          - coverage_summary
+          - terms_conditions
+          - validity_period
+      - action: generate_illustration
+        condition: "product.type = 'life'"
+      - action: set_validity
+        days: 30
+      - action: log_event
+        event: quote.generated
+    outputs:
+      - quote_document_url
+      - illustration_url
+      - valid_until
+
+  - id: step_6a
+    name: Decline Quote
+    actor: system
+    from_state: [calculating, review_required]
+    to_state: declined
+    condition:
+      expression: |
+        eligibility_result.eligible = false OR
+        underwriting_decision = 'declined'
+    actions:
+      - action: generate_decline_letter
+      - action: notify_customer
+        template: quote_declined
+      - action: log_event
+        event: quote.declined
+    outputs:
+      - decline_reason
+      - alternative_products
+
+  - id: step_7
+    name: Send Quote to Customer
+    actor: agent
+    from_state: generated
+    to_state: sent
+    actions:
+      - action: send_quote
+        channels:
+          - email
+          - sms
+          - portal
+        content:
+          - quote_document
+          - illustration
+          - call_to_action
+      - action: schedule_followup
+        days: 7
+      - action: log_event
+        event: quote.sent
+    outputs:
+      - sent_at
+      - sent_to
+      - delivery_status
+
+  - id: step_8
+    name: Customer Views Quote
+    actor: customer
+    from_state: sent
+    to_state: viewed
+    trigger:
+      type: tracking
+      event: quote_opened
+    actions:
+      - action: record_view
+        data:
+          - view_timestamp
+          - device_type
+          - time_spent
+      - action: notify_agent
+      - action: log_event
+        event: quote.viewed
+
+  - id: step_9a
+    name: Customer Accepts Quote
+    actor: customer
+    from_state: [sent, viewed]
+    to_state: accepted
+    inputs:
+      - acceptance_confirmation
+      - signature
+    actions:
+      - action: record_acceptance
+      - action: validate_quote_still_valid
+      - action: log_event
+        event: quote.accepted
+    validations:
+      - rule: quote_not_expired
+        condition: "NOW() <= quote.valid_until"
+
+  - id: step_9b
+    name: Customer Declines Quote
+    actor: customer
+    from_state: [sent, viewed]
+    to_state: declined
+    inputs:
+      - decline_reason
+      - feedback
+    actions:
+      - action: record_decline
+      - action: save_feedback
+      - action: trigger_retention
+        condition: "decline_reason IN recoverable_reasons"
+      - action: log_event
+        event: quote.declined
+
+  - id: step_9c
+    name: Quote Expires
+    actor: system
+    from_state: [sent, viewed]
+    to_state: expired
+    trigger:
+      type: scheduled
+      condition: "NOW() > quote.valid_until"
+    actions:
+      - action: mark_expired
+      - action: notify_customer
+        template: quote_expired
+      - action: offer_requote
+      - action: log_event
+        event: quote.expired
+
+  - id: step_10
+    name: Convert to Application
+    actor: customer
+    from_state: accepted
+    to_state: converted
+    actions:
+      - action: create_application
+        copy_from: quote
+        fields:
+          - customer_info
+          - risk_details
+          - coverage_selection
+          - premium_details
+      - action: link_quote_to_application
+      - action: notify_agent
+      - action: log_event
+        event: quote.converted
+    outputs:
+      - application_id
+      - application_number
+
+transitions:
+  - from: initiated
+    to: collecting_info
+    event: start_quote
+
+  - from: collecting_info
+    to: calculating
+    event: calculate_premium
+    condition: "all_required_info_collected"
+
+  - from: calculating
+    to: generated
+    event: calculation_complete
+    condition: "eligible AND NOT requires_underwriting"
+
+  - from: calculating
+    to: review_required
+    event: refer_underwriting
+    condition: "requires_underwriting"
+
+  - from: review_required
+    to: generated
+    event: underwriting_approved
+
+  - from: review_required
+    to: declined
+    event: underwriting_declined
+
+  - from: generated
+    to: sent
+    event: send_quote
+
+  - from: sent
+    to: viewed
+    event: customer_viewed
+
+  - from: [sent, viewed]
+    to: accepted
+    event: customer_accepts
+
+  - from: [sent, viewed]
+    to: declined
+    event: customer_declines
+
+  - from: [sent, viewed]
+    to: expired
+    event: validity_expired
+
+  - from: accepted
+    to: converted
+    event: convert_to_application
+
+notifications:
+  - trigger: quote.generated
+    recipient: agent
+    template: quote_ready_for_sending
+    channel: [email, portal]
+
+  - trigger: quote.sent
+    recipient: customer
+    template: quote_delivered
+    channel: [email, sms]
+
+  - trigger: quote.viewed
+    recipient: agent
+    template: customer_viewed_quote
+    channel: [portal, push]
+
+  - trigger: quote.expires_soon
+    recipient: [customer, agent]
+    template: quote_expiring
+    channel: [email, sms]
+    timing: "valid_until - 3 days"
+
+  - trigger: quote.accepted
+    recipient: agent
+    template: quote_accepted
+    channel: [email, portal, push]
+
+sla:
+  quote_generation:
+    target: 2_minutes
+    max: 5_minutes
+  underwriting_review:
+    target: 24_hours
+    max: 48_hours
+  quote_validity:
+    default: 30_days
+    extendable: true
+    max_extension: 15_days
+
+metrics:
+  - name: quote_conversion_rate
+    formula: "converted_quotes / total_quotes * 100"
+  - name: average_quote_time
+    formula: "AVG(generated_at - initiated_at)"
+  - name: quote_acceptance_rate
+    formula: "accepted_quotes / sent_quotes * 100"
+  - name: quote_expiry_rate
+    formula: "expired_quotes / sent_quotes * 100"
+
+integrations:
+  - system: rating_engine
+    action: calculate_premium
+  - system: document_generation
+    action: generate_pdf
+  - system: email_service
+    action: send_quote
+  - system: crm
+    action: create_prospect
+  - system: analytics
+    action: track_events

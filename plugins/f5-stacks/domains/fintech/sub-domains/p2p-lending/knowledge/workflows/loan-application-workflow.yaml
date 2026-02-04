@@ -1,0 +1,540 @@
+name: Loan Application Workflow
+display_name: Loan Application Workflow / Quy trình đơn vay
+description: |
+  End-to-end workflow for P2P loan application processing from
+  submission through approval, including KYC, credit assessment,
+  and offer generation.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-P2P-APP
+  name: Loan Application
+  name_vi: Đơn vay
+  category: loan_origination
+
+  trigger:
+    type: borrower_initiated
+    channels:
+      - mobile_app
+      - web_platform
+      - api_partner
+
+  expected_duration:
+    auto_decision: 5_minutes
+    manual_review: 24_hours
+    with_documents: 48_hours
+
+  actors:
+    - borrower
+    - system
+    - credit_analyst
+    - underwriter
+    - fraud_analyst
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Application Initiation
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: initiate_application
+    name: Initiate Application
+    name_vi: Khởi tạo đơn vay
+    actor: borrower
+
+    description: |
+      Borrower starts loan application with basic loan request details.
+
+    inputs:
+      required:
+        - loan_amount
+        - loan_term
+        - loan_purpose
+      optional:
+        - purpose_description
+        - preferred_payment_date
+
+    validations:
+      - field: loan_amount
+        rules:
+          - min: 1000000
+          - max: 2000000000
+      - field: loan_term
+        rules:
+          - min: 1
+          - max: 60
+
+    actions:
+      - create_application_record
+      - generate_application_number
+      - check_borrower_eligibility
+
+    outputs:
+      - application_id
+      - application_number
+      - status: initiated
+
+    next_step:
+      if_eligible: verify_identity
+      if_ineligible: reject_ineligible
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Identity Verification
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: verify_identity
+    name: Verify Identity
+    name_vi: Xác minh danh tính
+    actor: borrower | system
+
+    description: |
+      Verify borrower identity through eKYC process.
+
+    for_new_borrowers:
+      required:
+        - national_id_front
+        - national_id_back
+        - selfie_with_id
+        - liveness_check
+      optional:
+        - passport
+
+    for_existing_borrowers:
+      if_kyc_valid:
+        action: skip_to_income_verification
+      if_kyc_expired:
+        action: re_verify
+
+    verification_methods:
+      ocr_extraction:
+        fields: [full_name, id_number, date_of_birth, address]
+        confidence_threshold: 0.85
+
+      face_matching:
+        compare: selfie_to_id_photo
+        threshold: 0.90
+
+      liveness_detection:
+        method: active_liveness
+        challenges: [blink, turn_head, smile]
+
+      database_check:
+        sources: [national_id_database, blacklist]
+
+    outputs:
+      - kyc_status: verified | failed | pending_review
+      - confidence_score
+      - extracted_data
+
+    next_step:
+      if_verified: collect_income_info
+      if_failed: reject_kyc_failed
+      if_pending: manual_kyc_review
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Collect Income Information
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: collect_income_info
+    name: Collect Income Information
+    name_vi: Thu thập thông tin thu nhập
+    actor: borrower
+
+    description: |
+      Collect and verify borrower income and employment details.
+
+    income_inputs:
+      required:
+        - monthly_income
+        - income_source
+        - employment_status
+      conditional:
+        if_employed:
+          - employer_name
+          - job_title
+          - employment_duration
+        if_self_employed:
+          - business_type
+          - business_duration
+          - monthly_revenue
+
+    verification_options:
+      bank_statement:
+        months_required: 3
+        analysis: income_pattern_detection
+
+      payslip:
+        months_required: 2
+        verification: employer_confirmation
+
+      tax_return:
+        years_required: 1
+        verification: tax_authority_check
+
+    income_calculation:
+      for_employed: average_of_3_months
+      for_self_employed: average_net_income_6_months
+      adjustment_factors:
+        - seasonality
+        - one_time_items
+
+    outputs:
+      - verified_income
+      - income_verification_method
+      - employment_verified: boolean
+
+    next_step: run_credit_assessment
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Credit Assessment
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: run_credit_assessment
+    name: Run Credit Assessment
+    name_vi: Đánh giá tín dụng
+    actor: system
+
+    description: |
+      Perform automated credit scoring and risk assessment.
+
+    assessment_components:
+      internal_scoring:
+        model: p2p_credit_model_v2.3
+        components:
+          - payment_history: 35%
+          - credit_utilization: 30%
+          - credit_age: 15%
+          - credit_mix: 10%
+          - new_credit: 10%
+
+      external_bureau:
+        provider: CIC_Vietnam
+        required_if: "loan_amount > 50000000 OR first_time_borrower"
+        data_points:
+          - credit_score
+          - active_accounts
+          - payment_history
+          - inquiries
+
+      debt_analysis:
+        calculate:
+          - total_existing_debt
+          - monthly_debt_payments
+          - debt_to_income_ratio
+        max_dti: 50%
+
+      fraud_screening:
+        checks:
+          - velocity_check
+          - device_fingerprint
+          - ip_geolocation
+          - duplicate_detection
+        risk_threshold: 80
+
+    outputs:
+      - credit_score
+      - credit_grade
+      - sub_grade
+      - dti_ratio
+      - fraud_score
+      - auto_decision: approve | reject | manual_review
+
+    next_step:
+      if_auto_approve: generate_offer
+      if_auto_reject: reject_credit
+      if_manual_review: manual_underwriting
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Manual Underwriting (Conditional)
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: manual_underwriting
+    name: Manual Underwriting
+    name_vi: Thẩm định thủ công
+    actor: underwriter
+    conditional: true
+
+    description: |
+      Manual review for applications requiring human judgment.
+
+    review_triggers:
+      - credit_score_borderline
+      - first_time_borrower
+      - high_amount_request
+      - fraud_flags_present
+      - income_verification_issues
+      - thin_credit_file
+
+    review_checklist:
+      identity:
+        - document_authenticity
+        - face_match_confidence
+        - data_consistency
+
+      income:
+        - income_stability
+        - employment_verification
+        - income_to_request_ratio
+
+      credit:
+        - repayment_capacity
+        - existing_obligations
+        - credit_history_patterns
+
+      risk:
+        - fraud_indicators
+        - behavioral_red_flags
+        - application_anomalies
+
+    decision_options:
+      - approve
+      - approve_with_conditions
+      - request_additional_info
+      - reject
+
+    conditions_available:
+      - reduce_loan_amount
+      - shorter_term
+      - require_guarantor
+      - require_collateral
+
+    sla:
+      target: 4_hours
+      maximum: 24_hours
+
+    outputs:
+      - underwriting_decision
+      - conditions_if_any
+      - rejection_reason_if_rejected
+
+    next_step:
+      if_approved: generate_offer
+      if_conditional: apply_conditions
+      if_request_info: request_documents
+      if_rejected: reject_underwriting
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Generate Loan Offer
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: generate_offer
+    name: Generate Loan Offer
+    name_vi: Tạo đề nghị vay
+    actor: system
+
+    description: |
+      Generate personalized loan offer based on assessment.
+
+    offer_calculation:
+      interest_rate:
+        formula: base_rate + grade_premium + term_adjustment - loyalty_discount
+        components:
+          - base_rate: 8.0
+          - grade_premium: by_grade
+          - term_adjustment: by_term
+          - loyalty_discount: by_history
+
+      approved_amount:
+        formula: MIN(requested_amount, calculated_limit)
+        limit_factors:
+          - income_multiplier
+          - dti_headroom
+          - grade_limit
+
+      monthly_payment:
+        method: selected_repayment_method
+        includes: principal_and_interest
+
+      total_cost:
+        includes:
+          - total_interest
+          - origination_fee
+          - any_other_fees
+
+    offer_content:
+      - approved_amount
+      - interest_rate
+      - term_months
+      - monthly_payment
+      - total_repayment
+      - origination_fee
+      - apr
+      - first_due_date
+      - repayment_schedule
+
+    offer_validity:
+      duration: 7_days
+      from: offer_generation
+
+    outputs:
+      - offer_id
+      - offer_details
+      - offer_expiry
+
+    next_step: present_offer
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Present Offer to Borrower
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: present_offer
+    name: Present Offer
+    name_vi: Trình bày đề nghị
+    actor: borrower
+
+    description: |
+      Present loan offer for borrower review and acceptance.
+
+    display_elements:
+      summary:
+        - approved_amount
+        - interest_rate
+        - term_months
+        - monthly_payment
+
+      details:
+        - full_repayment_schedule
+        - fee_breakdown
+        - apr_disclosure
+        - terms_and_conditions
+
+      warnings:
+        - capital_at_risk
+        - early_repayment_terms
+        - late_payment_consequences
+
+    borrower_options:
+      - accept_offer
+      - decline_offer
+      - modify_request
+
+    acceptance_requirements:
+      - read_terms_confirmation
+      - e_signature
+      - auto_debit_authorization
+
+    outputs:
+      - borrower_decision
+      - signed_agreement_if_accepted
+
+    next_step:
+      if_accepted: finalize_application
+      if_declined: close_declined
+      if_modified: recalculate_offer
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Finalize Application
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: finalize_application
+    name: Finalize Application
+    name_vi: Hoàn tất đơn vay
+    actor: system
+
+    description: |
+      Complete application processing and prepare for funding.
+
+    actions:
+      - record_acceptance
+      - generate_signed_contract
+      - create_loan_record
+      - create_marketplace_listing
+      - notify_borrower
+      - trigger_funding_workflow
+
+    outputs:
+      - loan_id
+      - listing_id
+      - contract_document
+      - status: approved_awaiting_funding
+
+    next_step: complete
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  kyc_failure:
+    retries: 2
+    action_after_retries: manual_review
+
+  credit_bureau_timeout:
+    fallback: internal_scoring_only
+    flag: bureau_unavailable
+
+  system_error:
+    action: save_state_and_retry
+    notification: operations_team
+
+  document_upload_failure:
+    retries: 3
+    alternative: skip_if_not_mandatory
+
+# =============================================================================
+# SLA & METRICS
+# =============================================================================
+sla:
+  auto_decision:
+    target: 5_minutes
+    p95: 10_minutes
+
+  manual_review:
+    target: 4_hours
+    maximum: 24_hours
+
+  total_application:
+    target: 24_hours
+    maximum: 72_hours
+
+metrics:
+  tracked:
+    - application_volume
+    - approval_rate
+    - rejection_reasons
+    - time_to_decision
+    - conversion_rate
+    - abandonment_rate
+
+  targets:
+    approval_rate: "> 40%"
+    auto_decision_rate: "> 60%"
+    time_to_decision_avg: "< 30 minutes"
+
+# =============================================================================
+# NOTIFICATIONS
+# =============================================================================
+notifications:
+  application_received:
+    channels: [push, email]
+    timing: immediate
+
+  documents_required:
+    channels: [push, email, sms]
+    timing: immediate
+    reminder: 24_hours
+
+  under_review:
+    channels: [push]
+    timing: immediate
+
+  approved:
+    channels: [push, email, sms]
+    timing: immediate
+
+  rejected:
+    channels: [push, email]
+    timing: immediate
+    include: rejection_reason
+
+  offer_expiring:
+    channels: [push, sms]
+    timing: 24_hours_before_expiry

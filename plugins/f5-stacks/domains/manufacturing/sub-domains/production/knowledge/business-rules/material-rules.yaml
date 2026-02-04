@@ -1,0 +1,477 @@
+name: material-rules
+display_name: Material Management Rules
+display_name_vi: Quy tắc quản lý vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: business-rules
+
+description: |
+  Business rules for production material management including issuing,
+  consumption tracking, backflushing, and inventory control.
+
+description_vi: |
+  Quy tắc quản lý vật tư sản xuất bao gồm xuất kho,
+  theo dõi tiêu thụ, trừ ngược và kiểm soát tồn kho.
+
+rule_categories:
+  - material_issuing
+  - consumption_tracking
+  - backflushing
+  - inventory_control
+  - shortage_handling
+
+rules:
+  material_issuing:
+    - id: MAT-001
+      name: work_order_based_issue
+      description: Issue materials only against work orders
+      description_vi: Chỉ xuất vật tư theo lệnh sản xuất
+      condition: material_issue_request
+      validation: |
+        work_order EXISTS AND
+        work_order.status IN ('released', 'in_progress') AND
+        material IN work_order.bom_items
+      action: |
+        IF validation_passed THEN
+          CREATE material_issue
+          DEDUCT from_inventory
+          LINK to_work_order
+        ELSE
+          REJECT issue_request
+      priority: critical
+      category: material_issuing
+
+    - id: MAT-002
+      name: picking_list_generation
+      description: Generate picking list for work order
+      description_vi: Tạo danh sách lấy hàng cho lệnh sản xuất
+      condition: work_order.status = 'released'
+      action: |
+        FOR each bom_item:
+          required_qty = bom_item.quantity * work_order.quantity
+          gross_qty = required_qty * (1 + scrap_factor)
+          ADD to_picking_list(material, gross_qty, location)
+        SORT by_location_sequence
+      priority: high
+      category: material_issuing
+
+    - id: MAT-003
+      name: fifo_lifo_enforcement
+      description: Enforce inventory valuation method
+      description_vi: Thực thi phương pháp định giá tồn kho
+      methods:
+        fifo: Issue oldest stock first
+        lifo: Issue newest stock first
+        fefo: Issue earliest expiry first
+        specific: Issue specific lot
+      action: |
+        lots = inventory.WHERE(material = requested_material)
+        selected_lot = lots.ORDER_BY(method_criteria).FIRST()
+        ISSUE from_selected_lot
+      priority: high
+      category: material_issuing
+
+    - id: MAT-004
+      name: lot_selection_rules
+      description: Rules for selecting material lots
+      description_vi: Quy tắc chọn lô vật liệu
+      rules:
+        - preferred_lot_if_specified
+        - exclude_quarantined_lots
+        - exclude_expired_lots
+        - prefer_same_lot_for_batch
+        - respect_customer_requirements
+      action: |
+        available_lots = lots.WHERE(
+          status = 'available' AND
+          expiry_date > planned_use_date AND
+          NOT quarantined
+        )
+        IF customer_lot_requirement THEN
+          FILTER by_customer_specification
+      priority: high
+      category: material_issuing
+
+    - id: MAT-005
+      name: partial_issue_handling
+      description: Handle partial material availability
+      description_vi: Xử lý khả dụng vật liệu một phần
+      condition: available_qty < required_qty
+      options:
+        - issue_partial: Issue available, backorder rest
+        - wait_for_full: Hold until full quantity available
+        - split_work_order: Create smaller work order
+      action: |
+        IF material.allow_partial_issue THEN
+          ISSUE available_qty
+          CREATE backorder FOR remaining
+        ELSE
+          HOLD issue UNTIL full_qty_available
+      priority: high
+      category: material_issuing
+
+  consumption_tracking:
+    - id: CON-001
+      name: actual_consumption_recording
+      description: Record actual material consumption
+      description_vi: Ghi lại tiêu thụ vật liệu thực tế
+      condition: production_in_progress
+      action: |
+        CREATE consumption_record(
+          work_order_id,
+          material_id,
+          lot_number,
+          actual_quantity,
+          timestamp,
+          operator_id
+        )
+        UPDATE work_order.material_status
+      priority: critical
+      category: consumption_tracking
+
+    - id: CON-002
+      name: variance_tracking
+      description: Track material usage variance
+      description_vi: Theo dõi chênh lệch sử dụng vật liệu
+      formula: |
+        variance = actual_consumption - standard_consumption
+        variance_percent = (variance / standard_consumption) * 100
+      thresholds:
+        warning: 5%
+        alert: 10%
+        critical: 15%
+      action: |
+        IF variance_percent > threshold THEN
+          CREATE variance_alert
+          REQUIRE explanation
+      priority: high
+      category: consumption_tracking
+
+    - id: CON-003
+      name: scrap_reporting
+      description: Report material scrap separately
+      description_vi: Báo cáo phế liệu vật liệu riêng
+      condition: material_scrapped
+      action: |
+        CREATE scrap_record(
+          material_id,
+          quantity,
+          reason_code,
+          work_order_id,
+          operation_id
+        )
+        UPDATE scrap_account
+        ANALYZE scrap_trends
+      priority: high
+      category: consumption_tracking
+
+    - id: CON-004
+      name: return_to_stock
+      description: Handle material returns from production
+      description_vi: Xử lý trả vật liệu từ sản xuất
+      condition: excess_material_after_production
+      action: |
+        IF material.condition = 'usable' THEN
+          RETURN to_inventory
+          REVERSE original_issue
+        ELSE IF reprocessable THEN
+          CREATE rework_order
+        ELSE
+          SCRAP with_reason
+      priority: medium
+      category: consumption_tracking
+
+  backflushing:
+    - id: BKF-001
+      name: backflush_trigger
+      description: Trigger backflush at operation completion
+      description_vi: Kích hoạt trừ ngược khi hoàn thành công đoạn
+      condition: |
+        operation.backflush_point = true AND
+        output_reported
+      action: |
+        FOR each backflush_item IN operation.bom_items:
+          consumption_qty = output_qty * bom_item.quantity_per
+          CREATE consumption_record
+          DEDUCT from_inventory
+      priority: high
+      category: backflushing
+
+    - id: BKF-002
+      name: backflush_lot_selection
+      description: Select lots for backflush consumption
+      description_vi: Chọn lô cho tiêu thụ trừ ngược
+      condition: backflush_triggered
+      strategies:
+        - fifo: Use oldest lots
+        - from_staging: Use staged materials
+        - proportional: Proportional from available lots
+      action: |
+        lots = get_available_lots(material, location)
+        CONSUME from_lots USING selected_strategy
+        RECORD lot_consumption_details
+      priority: high
+      category: backflushing
+
+    - id: BKF-003
+      name: negative_inventory_prevention
+      description: Prevent negative inventory from backflush
+      description_vi: Ngăn tồn kho âm từ trừ ngược
+      condition: backflush_would_cause_negative
+      action: |
+        IF inventory_after_backflush < 0 THEN
+          REJECT backflush
+          CREATE exception_alert
+          REQUIRE manual_resolution
+      priority: critical
+      category: backflushing
+
+    - id: BKF-004
+      name: backflush_adjustment
+      description: Adjust backflush for actual usage
+      description_vi: Điều chỉnh trừ ngược theo sử dụng thực tế
+      condition: actual_usage != standard_usage
+      action: |
+        IF variance > tolerance THEN
+          CREATE adjustment_record
+          REQUIRE supervisor_approval
+          POST adjustment_to_inventory
+      priority: medium
+      category: backflushing
+
+  inventory_control:
+    - id: INV-001
+      name: wip_inventory_tracking
+      description: Track work-in-process inventory
+      description_vi: Theo dõi tồn kho sản phẩm dở dang
+      locations:
+        - raw_material_staging
+        - work_center_floor
+        - queue_locations
+        - finished_goods_staging
+      action: |
+        UPDATE wip_location ON material_movement
+        CALCULATE wip_value BY location
+        TRACK aging OF wip
+      priority: high
+      category: inventory_control
+
+    - id: INV-002
+      name: floor_stock_management
+      description: Manage floor stock items
+      description_vi: Quản lý vật tư tầng sản xuất
+      condition: material.is_floor_stock = true
+      rules:
+        - no_work_order_issue_required
+        - periodic_count_replenishment
+        - consumption_by_production_rate
+        - minimum_maximum_levels
+      action: |
+        IF floor_stock_qty < reorder_point THEN
+          CREATE replenishment_request
+      priority: medium
+      category: inventory_control
+
+    - id: INV-003
+      name: cycle_counting
+      description: Regular cycle counting of materials
+      description_vi: Kiểm đếm định kỳ vật liệu
+      frequency:
+        a_items: weekly
+        b_items: monthly
+        c_items: quarterly
+      action: |
+        GENERATE count_list BASED_ON schedule
+        PERFORM physical_count
+        COMPARE to_system_quantity
+        POST adjustments
+        INVESTIGATE large_variances
+      priority: high
+      category: inventory_control
+
+    - id: INV-004
+      name: shelf_life_management
+      description: Manage shelf life and expiration
+      description_vi: Quản lý thời hạn sử dụng và hết hạn
+      condition: material.has_shelf_life = true
+      action: |
+        ALERT when remaining_life < warning_days
+        QUARANTINE when expired
+        FEFO issue_sequence
+        TRACK expiry_by_lot
+      parameters:
+        warning_days: 30
+      priority: high
+      category: inventory_control
+
+    - id: INV-005
+      name: quarantine_control
+      description: Control quarantined materials
+      description_vi: Kiểm soát vật liệu cách ly
+      conditions:
+        - incoming_inspection_pending
+        - quality_hold
+        - expired
+        - damaged
+        - recall_affected
+      action: |
+        MOVE to_quarantine_location
+        BLOCK from_production_use
+        REQUIRE disposition_decision
+        TRACK quarantine_duration
+      priority: critical
+      category: inventory_control
+
+  shortage_handling:
+    - id: SHT-001
+      name: shortage_detection
+      description: Detect material shortages
+      description_vi: Phát hiện thiếu hụt vật liệu
+      condition: always
+      action: |
+        FOR each work_order:
+          FOR each bom_item:
+            required = bom_item.quantity * wo_quantity
+            available = inventory.available_qty
+            IF available < required THEN
+              CREATE shortage_record
+              NOTIFY planning_team
+      priority: critical
+      category: shortage_handling
+
+    - id: SHT-002
+      name: shortage_prioritization
+      description: Prioritize shortage allocation
+      description_vi: Ưu tiên phân bổ thiếu hụt
+      condition: shortage_exists
+      priority_factors:
+        - work_order_priority
+        - customer_importance
+        - due_date_urgency
+        - revenue_impact
+      action: |
+        RANK work_orders BY priority_factors
+        ALLOCATE available_material TO highest_priority
+        HOLD or_reschedule remaining
+      priority: high
+      category: shortage_handling
+
+    - id: SHT-003
+      name: substitute_material
+      description: Use substitute when primary short
+      description_vi: Sử dụng vật liệu thay thế khi thiếu
+      condition: |
+        primary_material.shortage AND
+        substitute_available
+      action: |
+        CHECK substitute_approval
+        IF approved THEN
+          ISSUE substitute
+          RECORD substitution_event
+          UPDATE traceability
+        ELSE
+          REQUEST substitute_approval
+      priority: high
+      category: shortage_handling
+
+    - id: SHT-004
+      name: expediting_request
+      description: Request expedited delivery
+      description_vi: Yêu cầu giao hàng nhanh
+      condition: |
+        shortage_critical AND
+        purchase_order_exists
+      action: |
+        IDENTIFY affected_purchase_orders
+        CREATE expedite_request
+        CONTACT supplier
+        TRACK expedite_status
+        CALCULATE expedite_cost
+      priority: high
+      category: shortage_handling
+
+    - id: SHT-005
+      name: work_order_hold
+      description: Hold work order due to shortage
+      description_vi: Giữ lệnh sản xuất do thiếu hụt
+      condition: |
+        critical_shortage AND
+        no_substitute_available
+      action: |
+        SET work_order.status = 'material_hold'
+        RELEASE other_operations_if_possible
+        NOTIFY production_scheduler
+        TRACK hold_duration
+      priority: high
+      category: shortage_handling
+
+issue_methods:
+  - method: manual_issue
+    description: Operator requests and receives material
+    use_case: High-value or controlled items
+
+  - method: prekit
+    description: Materials staged before production
+    use_case: Complex assemblies, organized production
+
+  - method: floor_stock
+    description: Open access to common items
+    use_case: Low-value, high-usage items
+
+  - method: point_of_use
+    description: Materials delivered to work center
+    use_case: Lean manufacturing, JIT
+
+  - method: backflush
+    description: Consumption recorded at completion
+    use_case: Repetitive manufacturing
+
+material_categories:
+  abc_classification:
+    a_items:
+      description: High value (70-80% of value, 10-20% of SKUs)
+      control: Tight control, frequent counts
+    b_items:
+      description: Medium value (15-25% of value, 30% of SKUs)
+      control: Moderate control
+    c_items:
+      description: Low value (5% of value, 50% of SKUs)
+      control: Simple control, floor stock
+
+  by_usage:
+    raw_material: Primary input materials
+    component: Purchased parts
+    subassembly: Internally produced sub-items
+    packaging: Packaging materials
+    consumable: Non-BOM items used in production
+
+valuation_methods:
+  - method: standard_cost
+    description: Predetermined cost per unit
+
+  - method: actual_cost
+    description: Actual purchase/production cost
+
+  - method: moving_average
+    description: Weighted average of receipts
+
+  - method: fifo_cost
+    description: Cost of oldest inventory
+
+integration_points:
+  - system: WMS
+    data: inventory_levels, locations, movements
+    direction: bidirectional
+
+  - system: ERP
+    data: material_requirements, purchase_orders
+    direction: bidirectional
+
+  - system: MES
+    data: consumption, work_orders
+    direction: bidirectional
+
+  - system: Procurement
+    data: shortage_alerts, expedite_requests
+    direction: outbound

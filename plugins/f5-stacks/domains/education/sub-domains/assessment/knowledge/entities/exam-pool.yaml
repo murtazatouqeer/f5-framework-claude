@@ -1,0 +1,314 @@
+# Exam Pool Entity
+# F5 Framework v2.0 - Education/Assessment
+# Question pools for random selection
+
+entity:
+  id: exam_pool
+  name: Exam Pool
+  name_ja: 出題プール
+  description: Question pools for random selection in exams
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    pool_code:
+      type: string
+      max_length: 50
+      unique: true
+      pattern: "^POOL-[A-Z]{3}-[0-9]{4}$"
+      
+    # Basic Information
+    name:
+      type: string
+      max_length: 200
+      required: true
+      
+    description:
+      type: text
+      
+    # References
+    question_bank_id:
+      type: uuid
+      references: question_bank
+      required: true
+      
+    # Status
+    status:
+      type: enum
+      values: [draft, active, archived]
+      default: draft
+      
+    # Selection Strategy
+    selection_strategy:
+      type: enum
+      values:
+        - random              # Pure random
+        - stratified          # By difficulty/category
+        - adaptive            # Based on candidate performance
+        - balanced            # Even distribution across criteria
+        - weighted            # Weighted random selection
+      default: random
+      
+    # Pool Questions
+    question_ids:
+      type: array
+      items: uuid
+      description: Questions in this pool
+      
+    total_questions:
+      type: integer
+      computed: true
+      
+    # Selection Configuration
+    questions_to_select:
+      type: integer
+      min: 1
+      required: true
+      description: Number of questions to select per exam
+      
+    selection_rules:
+      type: array
+      items:
+        type: object
+        properties:
+          rule_id: uuid
+          rule_type:
+            type: enum
+            values:
+              - difficulty_distribution
+              - category_distribution
+              - question_type_distribution
+              - bloom_level_distribution
+              - tag_requirement
+              - exclusion_group
+              - inclusion_group
+          parameters: json
+          priority: integer
+          required: boolean
+          
+    # Difficulty Distribution
+    difficulty_distribution:
+      type: object
+      properties:
+        very_easy:
+          count: integer
+          percentage: decimal
+        easy:
+          count: integer
+          percentage: decimal
+        medium:
+          count: integer
+          percentage: decimal
+        hard:
+          count: integer
+          percentage: decimal
+        very_hard:
+          count: integer
+          percentage: decimal
+          
+    # Category Distribution
+    category_distribution:
+      type: array
+      items:
+        type: object
+        properties:
+          category_id: uuid
+          category_name: string
+          count: integer
+          percentage: decimal
+          min_count: integer
+          max_count: integer
+          
+    # Question Type Distribution
+    question_type_distribution:
+      type: json
+      description: Required distribution by question type
+      example:
+        multiple_choice:
+          count: 20
+          percentage: 50
+        essay:
+          count: 2
+          percentage: 10
+          
+    # Exclusion Rules
+    mutual_exclusions:
+      type: array
+      items:
+        type: object
+        properties:
+          group_name: string
+          question_ids: array
+          max_select: integer
+      description: Questions that shouldn't appear together
+      
+    # Prerequisites
+    prerequisites:
+      type: array
+      items:
+        type: object
+        properties:
+          question_id: uuid
+          requires: array
+      description: Questions that require other questions to appear first
+      
+    # Points Configuration
+    total_points:
+      type: decimal
+      precision: 10
+      scale: 2
+      computed: true
+      
+    points_distribution:
+      type: enum
+      values: [equal, weighted, from_questions]
+      default: from_questions
+      
+    fixed_points_per_question:
+      type: decimal
+      precision: 6
+      scale: 2
+      description: If equal distribution
+      
+    # Constraints
+    min_difficulty_index:
+      type: decimal
+      precision: 4
+      scale: 3
+      description: Minimum average difficulty
+      
+    max_difficulty_index:
+      type: decimal
+      precision: 4
+      scale: 3
+      description: Maximum average difficulty
+      
+    min_discrimination_index:
+      type: decimal
+      precision: 4
+      scale: 3
+      description: Minimum discrimination threshold
+      
+    # Overlap Prevention
+    exposure_control:
+      type: boolean
+      default: true
+      description: Prevent over-exposure of questions
+      
+    max_exposure_rate:
+      type: decimal
+      precision: 4
+      scale: 3
+      default: 0.3
+      description: Maximum selection rate per question
+      
+    exposure_tracking:
+      type: json
+      description: Current exposure counts per question
+      
+    # History
+    usage_count:
+      type: integer
+      default: 0
+      
+    last_used_at:
+      type: datetime
+      
+    # Validation
+    is_valid:
+      type: boolean
+      default: false
+      computed: true
+      description: Pool meets all selection requirements
+      
+    validation_errors:
+      type: array
+      items: string
+      
+    # Coverage Analysis
+    coverage_stats:
+      type: json
+      description: Analysis of pool coverage
+      example:
+        categories_covered: 5
+        difficulty_range: [0.3, 0.8]
+        bloom_levels_covered: ["remember", "understand", "apply"]
+        
+    # Ownership
+    created_by:
+      type: uuid
+      references: user
+      required: true
+      
+    organization_id:
+      type: uuid
+      references: organization
+      
+    # Timestamps
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  computed_fields:
+    can_fulfill_selection:
+      formula: "total_questions >= questions_to_select"
+      type: boolean
+      
+    selection_ratio:
+      formula: "questions_to_select / total_questions"
+      type: decimal
+
+  relationships:
+    question_bank:
+      type: belongs_to
+      entity: question_bank
+      foreign_key: question_bank_id
+      
+    questions:
+      type: has_many
+      entity: question
+      through: pool_questions
+      
+    exams:
+      type: has_many
+      entity: exam
+      foreign_key: question_pool_id
+      
+    creator:
+      type: belongs_to
+      entity: user
+      foreign_key: created_by
+      
+    organization:
+      type: belongs_to
+      entity: organization
+      foreign_key: organization_id
+
+  indexes:
+    - columns: [pool_code]
+      unique: true
+    - columns: [question_bank_id, status]
+    - columns: [status, selection_strategy]
+    - columns: [created_by]
+
+  validations:
+    - name: sufficient_questions
+      condition: "total_questions >= questions_to_select"
+      message: "Pool must contain at least as many questions as selection count"
+      
+    - name: valid_distribution_total
+      condition: "difficulty_distribution.sum(percentage) = 100"
+      message: "Difficulty distribution must total 100%"
+
+  audit:
+    enabled: true
+    track_changes: true

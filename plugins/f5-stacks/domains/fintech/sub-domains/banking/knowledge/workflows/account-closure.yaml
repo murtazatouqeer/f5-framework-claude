@@ -1,0 +1,736 @@
+name: Account Closure Workflow
+display_name: Account Closure Workflow / Quy trình đóng tài khoản
+description: |
+  End-to-end workflow for closing bank accounts including
+  validation, linked service cancellation, balance transfer,
+  and regulatory compliance.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW METADATA
+# =============================================================================
+workflow:
+  id: WF-ACC-CLOSE
+  name: Account Closure
+  name_vi: Đóng tài khoản
+  category: account_management
+
+  trigger:
+    type: customer_request | bank_initiated
+    channels:
+      - mobile_app
+      - web_banking
+      - branch
+      - contact_center
+
+  closure_types:
+    customer_initiated:
+      reasons:
+        - no_longer_needed
+        - switching_bank
+        - dissatisfied
+        - relocating
+
+    bank_initiated:
+      reasons:
+        - prolonged_inactivity
+        - regulatory_requirement
+        - terms_violation
+        - fraud_confirmed
+
+  expected_duration:
+    simple_closure: 30_minutes
+    with_linked_services: 3-5_business_days
+    with_compliance_review: 5-10_business_days
+
+  actors:
+    - customer
+    - system
+    - branch_staff
+    - operations_team
+    - compliance_officer
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: Initiate Closure Request
+  # ---------------------------------------------------------------------------
+  - step: 1
+    id: initiate_closure
+    name: Initiate Closure Request
+    name_vi: Khởi tạo yêu cầu đóng
+    actor: customer | bank
+
+    description: |
+      Customer or bank initiates account closure request.
+
+    customer_initiated:
+      authentication:
+        digital: [password, biometric, otp]
+        branch: id_verification
+
+      inputs:
+        - closure_reason
+        - balance_transfer_instructions
+        - feedback: optional
+
+    bank_initiated:
+      triggers:
+        dormancy_based:
+          condition: "dormant > 5 years AND balance = 0"
+          notice_period: 30_days
+
+        regulatory:
+          condition: compliance_order
+          notice_period: as_per_order
+
+        fraud:
+          condition: confirmed_fraud
+          notice_period: immediate
+
+      notification:
+        channels: [registered_mail, email, sms]
+        content: closure_notice
+
+    outputs:
+      - closure_request_id
+      - request_status: initiated
+      - initiator: customer | bank
+
+    next_step: verify_identity
+
+  # ---------------------------------------------------------------------------
+  # Step 2: Verify Identity
+  # ---------------------------------------------------------------------------
+  - step: 2
+    id: verify_identity
+    name: Verify Identity
+    name_vi: Xác minh danh tính
+    actor: customer | system
+
+    description: |
+      Verify account holder identity before proceeding.
+
+    verification_methods:
+      digital_channel:
+        required:
+          - login_authentication
+          - otp_verification
+        enhanced:
+          - biometric_confirmation
+          - video_kyc
+
+      branch:
+        required:
+          - original_id_document
+          - signature_verification
+        additional:
+          - verbal_confirmation
+
+    for_joint_accounts:
+      requirement: all_holders_consent
+      methods:
+        - all_present_at_branch
+        - separate_authenticated_requests
+        - notarized_consent
+
+    outputs:
+      - identity_verified: boolean
+      - verification_method
+      - verified_by
+
+    next_step:
+      if_verified: check_closure_requirements
+      if_failed: identity_verification_failed
+
+  # ---------------------------------------------------------------------------
+  # Step 3: Check Closure Requirements
+  # ---------------------------------------------------------------------------
+  - step: 3
+    id: check_closure_requirements
+    name: Check Closure Requirements
+    name_vi: Kiểm tra điều kiện đóng
+    actor: system
+
+    description: |
+      Verify all pre-conditions for account closure are met.
+
+    requirement_checks:
+      balance:
+        check: current_balance
+        if_positive:
+          action: require_transfer_instructions
+          options:
+            - transfer_to_another_account
+            - cash_withdrawal
+            - bank_draft
+        if_negative:
+          action: require_settlement
+          blockers: outstanding_amount
+
+      pending_transactions:
+        check: pending_count > 0
+        types:
+          - pending_transfers
+          - pending_card_auth
+          - pending_direct_debits
+          - pending_standing_orders
+        action: wait_for_settlement
+        max_wait: 7_business_days
+
+      active_cards:
+        check: active_cards_count > 0
+        action: initiate_card_cancellation
+        blocker_if: disputed_transactions
+
+      standing_orders:
+        check: active_standing_orders > 0
+        action: cancel_all
+        notification: confirm_cancellation
+
+      direct_debits:
+        check: active_mandates > 0
+        action: cancel_mandates
+        notification: notify_creditors
+
+      linked_loans:
+        check: linked_loan_balance > 0
+        action: block_closure
+        requirement: settle_loans_first
+
+      term_deposits:
+        check: active_term_deposits
+        action: require_withdrawal
+        penalty: early_withdrawal_penalty
+
+      overdraft:
+        check: overdraft_used > 0
+        action: block_closure
+        requirement: clear_overdraft
+
+    outputs:
+      - requirements_met: boolean
+      - blockers: []
+      - pending_actions: []
+
+    next_step:
+      if_all_met: initiate_service_cancellation
+      if_blocked: resolve_blockers
+
+  # ---------------------------------------------------------------------------
+  # Step 4: Resolve Blockers
+  # ---------------------------------------------------------------------------
+  - step: 4
+    id: resolve_blockers
+    name: Resolve Blockers
+    name_vi: Giải quyết các điều kiện chặn
+    actor: customer | system
+    conditional: true
+
+    description: |
+      Guide customer through resolving closure blockers.
+
+    blocker_resolution:
+      positive_balance:
+        guidance: |
+          Please transfer or withdraw remaining balance:
+          - Transfer to: {transfer_form}
+          - Withdraw at: {branch_locator}
+          - Request bank draft: {draft_form}
+
+      pending_transactions:
+        guidance: |
+          Pending transactions must settle first:
+          - {pending_list}
+          - Expected settlement: {dates}
+          We will proceed automatically after settlement.
+
+        auto_proceed: after_settlement
+
+      active_cards:
+        action: cancel_cards
+        process:
+          - block_all_cards
+          - wait_for_pending_auth
+          - cancel_cards
+
+        timeline: 2_business_days
+
+      linked_services:
+        action: cancel_services
+        services:
+          - standing_orders: immediate
+          - direct_debits: notify_creditors
+          - bill_payments: cancel_recurring
+
+      outstanding_loans:
+        guidance: |
+          Please settle outstanding loan balance:
+          - Outstanding: {loan_balance}
+          - Settlement options: {options}
+
+        block_until: loan_settled
+
+    outputs:
+      - blockers_resolved: []
+      - remaining_blockers: []
+
+    next_step:
+      if_resolved: initiate_service_cancellation
+      if_pending: wait_and_retry
+
+  # ---------------------------------------------------------------------------
+  # Step 5: Cancel Linked Services
+  # ---------------------------------------------------------------------------
+  - step: 5
+    id: initiate_service_cancellation
+    name: Cancel Linked Services
+    name_vi: Hủy các dịch vụ liên kết
+    actor: system
+
+    description: |
+      Cancel all services linked to the account.
+
+    cancellations:
+      cards:
+        process:
+          - block_all_cards_immediately
+          - cancel_card_records
+          - update_card_status: cancelled
+
+        notification:
+          customer: "Your cards linked to this account have been cancelled"
+
+      standing_orders:
+        process:
+          - cancel_all_active_orders
+          - cancel_pending_executions
+          - archive_order_history
+
+        notification:
+          customer: "Your standing orders have been cancelled"
+          list: cancelled_orders
+
+      direct_debits:
+        process:
+          - cancel_all_mandates
+          - notify_creditors
+          - archive_mandate_history
+
+        creditor_notification:
+          content: mandate_cancellation
+          timing: immediate
+
+      digital_banking:
+        process:
+          - revoke_app_access
+          - invalidate_tokens
+          - disable_web_access
+
+      notifications:
+        process:
+          - stop_all_notifications
+          - archive_preferences
+
+    outputs:
+      - services_cancelled: []
+      - cancellation_confirmations: []
+
+    next_step: transfer_remaining_balance
+
+  # ---------------------------------------------------------------------------
+  # Step 6: Transfer Remaining Balance
+  # ---------------------------------------------------------------------------
+  - step: 6
+    id: transfer_remaining_balance
+    name: Transfer Remaining Balance
+    name_vi: Chuyển số dư còn lại
+    actor: system | customer
+
+    description: |
+      Transfer any remaining balance to designated account.
+
+    transfer_options:
+      to_another_account:
+        types:
+          - own_account_same_bank
+          - own_account_other_bank
+          - third_party
+
+        process:
+          - validate_destination
+          - calculate_final_balance
+          - deduct_closure_fee_if_any
+          - execute_transfer
+          - generate_receipt
+
+      cash_withdrawal:
+        for: branch_closure_only
+        limits:
+          small_amount: immediate
+          large_amount: advance_notice
+
+        process:
+          - verify_id
+          - prepare_cash
+          - customer_signature
+          - issue_receipt
+
+      bank_draft:
+        process:
+          - prepare_draft
+          - deduct_fee
+          - customer_collection
+
+    fee_handling:
+      early_closure_fee:
+        condition: account_age < 6_months
+        amount: 50000
+        waiver: if_bank_initiated
+
+      transfer_fee:
+        internal: 0
+        external: standard_rates
+
+    final_balance_calculation:
+      formula: |
+        balance
+        - pending_fees
+        - closure_fee
+        - transfer_fee
+        + accrued_interest
+        = final_amount
+
+    outputs:
+      - final_balance_transferred
+      - transfer_reference
+      - transfer_receipt
+
+    next_step: generate_final_statement
+
+  # ---------------------------------------------------------------------------
+  # Step 7: Generate Final Statement
+  # ---------------------------------------------------------------------------
+  - step: 7
+    id: generate_final_statement
+    name: Generate Final Statement
+    name_vi: Tạo sao kê cuối cùng
+    actor: system
+
+    description: |
+      Generate final account statement for customer records.
+
+    statement_content:
+      header:
+        - account_number
+        - account_holder
+        - account_type
+        - opening_date
+        - closing_date
+
+      summary:
+        - total_deposits
+        - total_withdrawals
+        - total_interest_earned
+        - total_fees_paid
+        - final_balance
+
+      recent_transactions:
+        period: last_3_months
+        detail: full
+
+      closure_details:
+        - closure_reason
+        - balance_transfer_details
+        - fees_charged
+        - services_cancelled
+
+      regulatory_info:
+        - tax_information
+        - reporting_requirements
+
+    delivery:
+      digital:
+        - email
+        - download_in_app
+
+      physical:
+        - branch_collection
+        - registered_mail
+
+    outputs:
+      - final_statement_id
+      - statement_generated: boolean
+
+    next_step: close_account
+
+  # ---------------------------------------------------------------------------
+  # Step 8: Close Account
+  # ---------------------------------------------------------------------------
+  - step: 8
+    id: close_account
+    name: Close Account
+    name_vi: Đóng tài khoản
+    actor: system
+
+    description: |
+      Execute final account closure in core banking system.
+
+    actions:
+      update_account_status:
+        from: active
+        to: closed
+        closed_date: today
+        closed_by: system | staff_id
+
+      archive_account:
+        destination: archive_storage
+        includes:
+          - account_details
+          - transaction_history
+          - statements
+          - closure_documents
+
+      update_customer_profile:
+        remove_from: active_accounts
+        update: relationship_status
+        if_last_account: mark_as_former_customer
+
+      reserve_account_number:
+        action: permanent_reservation
+        rationale: no_reuse_policy
+
+    outputs:
+      - account_status: closed
+      - closure_timestamp
+      - archive_reference
+
+    next_step: send_closure_confirmation
+
+  # ---------------------------------------------------------------------------
+  # Step 9: Send Closure Confirmation
+  # ---------------------------------------------------------------------------
+  - step: 9
+    id: send_closure_confirmation
+    name: Send Closure Confirmation
+    name_vi: Gửi xác nhận đóng tài khoản
+    actor: system
+
+    description: |
+      Send closure confirmation to customer.
+
+    confirmation_content:
+      channels: [email, registered_mail]
+
+      includes:
+        - closure_confirmation
+        - account_summary
+        - final_statement
+        - balance_transfer_details
+        - card_cancellation_confirmation
+        - important_reminders:
+            - update_direct_debits_with_new_account
+            - update_salary_deposit_info
+            - destroy_any_remaining_cards
+
+    survey:
+      optional: true
+      content: closure_feedback_survey
+      incentive: none
+
+    outputs:
+      - confirmation_sent: boolean
+      - confirmation_id
+
+    next_step: complete_workflow
+
+  # ---------------------------------------------------------------------------
+  # Step 10: Complete Workflow
+  # ---------------------------------------------------------------------------
+  - step: 10
+    id: complete_workflow
+    name: Complete Workflow
+    name_vi: Hoàn thành quy trình
+    actor: system
+
+    description: |
+      Finalize account closure workflow.
+
+    actions:
+      update_workflow_status:
+        status: completed
+        completion_date: today
+
+      log_closure:
+        data:
+          - closure_request_id
+          - account_number
+          - closure_reason
+          - final_balance
+          - processing_time
+          - handled_by
+
+      regulatory_reporting:
+        if_required:
+          - SAR_if_suspicious
+          - large_cash_if_applicable
+
+      analytics:
+        events:
+          - account_closed
+          - customer_attrition
+          - reason_tracking
+
+    outputs:
+      - workflow_status: completed
+      - closure_reference
+
+# =============================================================================
+# BANK-INITIATED CLOSURE
+# =============================================================================
+bank_initiated_closure:
+  dormancy_based:
+    criteria:
+      - dormant_for: 5_years
+      - balance: 0
+      - no_linked_products: true
+
+    process:
+      - send_30_day_notice
+      - wait_for_response
+      - if_no_response: proceed_with_closure
+      - archive_to_unclaimed_if_balance
+
+  regulatory_based:
+    triggers:
+      - court_order
+      - regulatory_directive
+      - sanctions_confirmed
+
+    process:
+      - immediate_freeze
+      - compliance_review
+      - execute_as_directed
+      - report_to_authorities
+
+  fraud_based:
+    triggers:
+      - confirmed_fraud
+      - identity_theft_confirmed
+
+    process:
+      - immediate_freeze
+      - investigation_complete
+      - close_with_documentation
+      - report_to_authorities
+
+# =============================================================================
+# RECORD RETENTION
+# =============================================================================
+record_retention:
+  closed_account_records:
+    retention_period: 10_years
+    includes:
+      - account_details
+      - transaction_history
+      - statements
+      - closure_documents
+      - customer_communications
+
+    storage:
+      type: secure_archive
+      encryption: required
+      access: audit_controlled
+
+  regulatory_compliance:
+    vietnam_regulations:
+      period: 10_years
+
+    aml_records:
+      period: 5_years_after_closure
+
+    tax_records:
+      period: as_per_tax_authority
+
+# =============================================================================
+# SLA AND METRICS
+# =============================================================================
+sla:
+  simple_closure:
+    target: 30_minutes
+    condition: no_blockers
+
+  with_linked_services:
+    target: 3_business_days
+
+  with_pending_transactions:
+    target: 7_business_days
+
+  with_compliance_review:
+    target: 10_business_days
+
+metrics:
+  tracked:
+    - closure_volume
+    - closure_reasons
+    - average_processing_time
+    - blocker_frequency
+    - customer_feedback
+    - retention_offers_success
+
+  targets:
+    processing_within_sla: "> 95%"
+    customer_satisfaction: "> 80%"
+
+# =============================================================================
+# RETENTION OFFERS
+# =============================================================================
+retention_offers:
+  eligibility:
+    - tenure: > 1_year
+    - good_standing: true
+    - not_fraud_related: true
+
+  offers:
+    fee_waiver:
+      description: "Waive fees for 6 months"
+      trigger: fee_complaint
+
+    rate_improvement:
+      description: "Better savings rate"
+      trigger: rate_complaint
+
+    upgrade:
+      description: "Free account upgrade"
+      trigger: feature_request
+
+  presentation:
+    timing: before_final_confirmation
+    channel: in_flow
+    tracking: offer_acceptance_rate
+
+# =============================================================================
+# IMPLEMENTATION NOTES
+# =============================================================================
+implementation_notes:
+  integrations:
+    - Core Banking System
+    - Card Management System
+    - Standing Order System
+    - Direct Debit System
+    - Document Management
+    - Notification Service
+    - Archive Storage
+
+  considerations:
+    - Handle partial failures gracefully
+    - Ensure atomicity where required
+    - Maintain audit trail
+    - Support rollback scenarios
+    - Comply with data protection

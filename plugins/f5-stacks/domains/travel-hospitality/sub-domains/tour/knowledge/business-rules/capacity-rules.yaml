@@ -1,0 +1,214 @@
+name: Capacity Rules
+display_name: Tour Capacity Rules / Quy tắc sức chứa
+description: |
+  Rules governing tour capacity, minimum participants,
+  overbooking policies, and resource allocation.
+
+domain: travel-hospitality
+subdomain: tour
+category: capacity
+
+rules:
+  # Minimum Participants
+  - id: BR-CAP-001
+    name: Minimum to Operate
+    description: Tour requires minimum participants to run
+    priority: critical
+    condition: |
+      schedule.booked_count >= tour.min_participants
+    action: |
+      schedule.confirmed_to_operate = true
+      schedule.status = 'confirmed'
+      notify_customers_confirmed()
+    applies_to: [TourSchedule, Tour]
+
+  - id: BR-CAP-002
+    name: Minimum Not Met Warning
+    description: Warn customers if minimum not met 72 hours before
+    priority: high
+    condition: |
+      schedule.tour_date - NOW() <= INTERVAL '72 hours' AND
+      schedule.booked_count < tour.min_participants AND
+      schedule.confirmed_to_operate = false
+    action: |
+      notify_customers_at_risk()
+      offer_alternative_dates()
+    applies_to: [TourSchedule, Tour]
+
+  - id: BR-CAP-003
+    name: Minimum Not Met Cancellation
+    description: Cancel tour 48 hours before if minimum not met
+    priority: critical
+    condition: |
+      schedule.tour_date - NOW() <= INTERVAL '48 hours' AND
+      schedule.booked_count < tour.min_participants
+    action: |
+      schedule.status = 'cancelled'
+      cancel_all_bookings()
+      process_full_refunds()
+    applies_to: [TourSchedule, Tour]
+
+  # Maximum Capacity
+  - id: BR-CAP-010
+    name: Maximum Capacity Enforcement
+    description: Cannot exceed maximum tour capacity
+    priority: critical
+    condition: |
+      schedule.booked_count + booking.total_participants <= tour.max_participants
+    action: reject_if_violated
+    message: "Maximum capacity of {max_participants} reached"
+    applies_to: [TourSchedule, TourBooking, Tour]
+
+  - id: BR-CAP-011
+    name: Low Availability Warning
+    description: Show limited availability when spots running low
+    priority: medium
+    condition: |
+      availability.available_spots <= availability.low_availability_threshold
+    action: |
+      availability.availability_type = 'limited'
+      show_urgency_message()
+    applies_to: [TourAvailability]
+
+  - id: BR-CAP-012
+    name: Sold Out Status
+    description: Mark as sold out when no spots available
+    priority: high
+    condition: |
+      availability.available_spots = 0
+    action: |
+      availability.availability_type = 'sold_out'
+      enable_waitlist_if_configured()
+    applies_to: [TourAvailability]
+
+  # Waitlist Rules
+  - id: BR-CAP-020
+    name: Waitlist Enabled
+    description: Enable waitlist when sold out
+    priority: medium
+    condition: |
+      tour.waitlist_enabled = true AND
+      availability.availability_type = 'sold_out'
+    action: |
+      accept_waitlist_requests()
+    applies_to: [TourAvailability]
+
+  - id: BR-CAP-021
+    name: Waitlist Promotion
+    description: Offer spots to waitlist when available
+    priority: high
+    condition: |
+      availability.available_spots > 0 AND
+      availability.waitlist_count > 0
+    action: |
+      offer_to_next_on_waitlist()
+      set_response_deadline(4_hours)
+    applies_to: [TourAvailability]
+
+  - id: BR-CAP-022
+    name: Waitlist Expiry
+    description: Remove from waitlist if no response
+    priority: medium
+    condition: |
+      waitlist_offer_expired = true
+    action: |
+      remove_from_waitlist()
+      offer_to_next()
+    applies_to: [TourAvailability]
+
+  # Hold/Reserve Rules
+  - id: BR-CAP-030
+    name: Spot Hold Duration
+    description: Hold spots for 15 minutes during checkout
+    priority: critical
+    condition: |
+      checkout_in_progress = true
+    action: |
+      hold_spots(15_minutes)
+      availability.held_count += booking.total_participants
+    applies_to: [TourAvailability, TourBooking]
+
+  - id: BR-CAP-031
+    name: Release Held Spots
+    description: Release spots if checkout not completed
+    priority: critical
+    condition: |
+      hold_expired = true OR checkout_abandoned = true
+    action: |
+      availability.held_count -= held_count
+      release_spots()
+    applies_to: [TourAvailability]
+
+  - id: BR-CAP-032
+    name: Convert Hold to Booking
+    description: Convert held spots to booked on payment
+    priority: critical
+    condition: |
+      booking.payment_status = 'paid'
+    action: |
+      availability.held_count -= booking.total_participants
+      availability.booked_count += booking.total_participants
+    applies_to: [TourAvailability, TourBooking]
+
+  # Resource Allocation
+  - id: BR-CAP-040
+    name: Guide Capacity
+    description: Ensure guide can handle group size
+    priority: high
+    condition: |
+      schedule.booked_count <= guide.max_group_size OR
+      schedule.secondary_guide_id IS NOT NULL
+    action: allow_booking
+    message: "Additional guide required for this group size"
+    applies_to: [TourSchedule, Guide]
+
+  - id: BR-CAP-041
+    name: Vehicle Capacity
+    description: Vehicle must accommodate all participants
+    priority: high
+    condition: |
+      vehicle.capacity >= schedule.booked_count
+    action: allow_booking
+    message: "Larger vehicle required for this group size"
+    applies_to: [TourSchedule]
+
+  - id: BR-CAP-042
+    name: Instructor Ratio
+    description: Maintain required instructor-to-participant ratio
+    priority: critical
+    condition: |
+      activity.difficulty_level IN ('challenging', 'extreme')
+    action: |
+      required_instructors = CEIL(booked_count / ratio_denominator)
+      ensure_instructors_assigned()
+    applies_to: [Activity, TourSchedule]
+
+  # Group Size Rules
+  - id: BR-CAP-050
+    name: Small Group Guarantee
+    description: Limit group size for "small group" tours
+    priority: high
+    condition: |
+      tour.tour_type = 'small_group' AND
+      schedule.booked_count <= 12
+    action: |
+      maintain_small_group_experience()
+    applies_to: [TourSchedule, Tour]
+
+  - id: BR-CAP-051
+    name: Private Tour Capacity
+    description: Private tours reserved for one booking
+    priority: critical
+    condition: |
+      booking.booking_type = 'private'
+    action: |
+      schedule.max_capacity = booking.total_participants
+      block_additional_bookings()
+    applies_to: [TourSchedule, TourBooking]
+
+validation_order:
+  - BR-CAP-010
+  - BR-CAP-001
+  - BR-CAP-030
+  - BR-CAP-040
+  - BR-CAP-041

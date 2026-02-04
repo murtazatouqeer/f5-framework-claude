@@ -1,0 +1,192 @@
+# Announcement Entity
+# F5 Framework v2.0 - Education/LMS
+# Course announcements and notifications
+
+entity:
+  id: announcement
+  name: Announcement
+  name_ja: お知らせ
+  description: Course announcements from instructors to learners
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    # Context
+    course_id:
+      type: uuid
+      references: course
+      required: true
+      
+    # Basic Information
+    title:
+      type: string
+      max_length: 200
+      required: true
+      
+    content:
+      type: text
+      supports_markdown: true
+      required: true
+      
+    excerpt:
+      type: string
+      max_length: 300
+      description: Short preview for notifications
+      
+    # Author
+    author_id:
+      type: uuid
+      references: user
+      required: true
+      
+    # Status
+    status:
+      type: enum
+      values: [draft, scheduled, published, archived]
+      default: draft
+      
+    # Scheduling
+    scheduled_at:
+      type: datetime
+      description: When to publish
+      
+    published_at:
+      type: datetime
+      
+    expires_at:
+      type: datetime
+      description: When to auto-archive
+      
+    # Priority
+    priority:
+      type: enum
+      values: [low, normal, high, urgent]
+      default: normal
+      
+    is_pinned:
+      type: boolean
+      default: false
+      
+    # Target Audience
+    audience:
+      type: enum
+      values:
+        - all_enrolled      # All enrolled learners
+        - active_only       # Currently active learners
+        - completed_only    # Learners who completed
+        - specific_cohort   # Specific cohort
+      default: all_enrolled
+      
+    cohort_id:
+      type: uuid
+      references: cohort
+      description: If audience is specific_cohort
+      
+    # Notification Settings
+    send_email:
+      type: boolean
+      default: true
+      
+    send_push:
+      type: boolean
+      default: true
+      
+    email_sent_at:
+      type: datetime
+      
+    email_recipients_count:
+      type: integer
+      
+    # Attachments
+    attachments:
+      type: array
+      items:
+        type: object
+        properties:
+          file_url: string
+          file_name: string
+          file_type: string
+          
+    # Engagement
+    views_count:
+      type: integer
+      default: 0
+      
+    comments_enabled:
+      type: boolean
+      default: true
+      
+    comments_count:
+      type: integer
+      default: 0
+      
+    # Metadata
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: scheduled
+        action: schedule
+        conditions:
+          - scheduled_at_set
+          
+      - from: draft
+        to: published
+        action: publish_now
+        triggers:
+          - send_notifications
+          
+      - from: scheduled
+        to: published
+        action: publish
+        triggers:
+          - send_notifications
+          
+      - from: published
+        to: archived
+        action: archive
+
+  relationships:
+    course:
+      type: belongs_to
+      entity: course
+      foreign_key: course_id
+      
+    author:
+      type: belongs_to
+      entity: user
+      foreign_key: author_id
+      
+    cohort:
+      type: belongs_to
+      entity: cohort
+      foreign_key: cohort_id
+      
+    comments:
+      type: has_many
+      entity: discussion
+      foreign_key: announcement_id
+
+  indexes:
+    - columns: [course_id, status]
+    - columns: [course_id, is_pinned, published_at]
+    - columns: [status, scheduled_at]
+    - columns: [author_id]
+
+  audit:
+    enabled: true
+    track_changes: true

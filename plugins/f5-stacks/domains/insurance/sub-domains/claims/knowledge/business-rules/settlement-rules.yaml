@@ -1,0 +1,459 @@
+name: settlement_rules
+display_name: Settlement Rules
+description: |
+  Business rules for claims settlement including approval authority,
+  calculation methods, payment processing, and release requirements.
+
+domain: insurance
+subdomain: claims
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  settlement_authority:
+    name: Settlement Authority Rules
+    description: Rules for settlement approval authority
+
+    rules:
+      - id: SET-AUT-001
+        name: Handler Settlement Authority
+        description: Claims handler settlement authority limit
+        priority: critical
+        condition: |
+          settlement.prepared_by.role = 'handler' IMPLIES
+          settlement.offered_amount <= 50000000
+        error_message: "Settlement exceeds handler authority"
+        action: escalate_for_approval
+        escalate_to: senior_handler
+        applies_to: [settlement]
+
+      - id: SET-AUT-002
+        name: Senior Handler Settlement Authority
+        description: Senior handler settlement authority limit
+        priority: critical
+        condition: |
+          settlement.approved_by.role = 'senior_handler' IMPLIES
+          settlement.offered_amount <= 200000000
+        error_message: "Settlement exceeds senior handler authority"
+        action: escalate_for_approval
+        escalate_to: supervisor
+        applies_to: [settlement]
+
+      - id: SET-AUT-003
+        name: Supervisor Settlement Authority
+        description: Supervisor settlement authority limit
+        priority: critical
+        condition: |
+          settlement.approved_by.role = 'supervisor' IMPLIES
+          settlement.offered_amount <= 1000000000
+        error_message: "Settlement exceeds supervisor authority"
+        action: escalate_for_approval
+        escalate_to: manager
+        applies_to: [settlement]
+
+      - id: SET-AUT-004
+        name: Manager Settlement Authority
+        description: Manager settlement authority limit
+        priority: critical
+        condition: |
+          settlement.approved_by.role = 'manager' IMPLIES
+          settlement.offered_amount <= 5000000000
+        error_message: "Settlement exceeds manager authority"
+        action: escalate_for_approval
+        escalate_to: director
+        applies_to: [settlement]
+
+      - id: SET-AUT-005
+        name: Committee Approval Required
+        description: Settlement committee for large claims
+        priority: critical
+        condition: |
+          settlement.offered_amount > 5000000000 IMPLIES
+          settlement.committee_decision IS NOT NULL AND
+          settlement.committee_decision.decision = 'approved'
+        error_message: "Settlement committee approval required"
+        action: schedule_committee
+        applies_to: [settlement]
+
+      - id: SET-AUT-006
+        name: Denial Authority
+        description: Denial must be at appropriate authority level
+        priority: critical
+        condition: |
+          settlement.settlement_type = 'denial' IMPLIES
+          settlement.approved_by.role IN ('supervisor', 'manager', 'director')
+        error_message: "Denial requires supervisor or higher approval"
+        action: escalate_for_approval
+        applies_to: [settlement]
+
+  settlement_calculation:
+    name: Settlement Calculation Rules
+    description: Rules for calculating settlement amounts
+
+    rules:
+      - id: SET-CAL-001
+        name: Assessment Required
+        description: Settlement must be based on completed assessment
+        priority: critical
+        condition: |
+          settlement.assessment_id IS NOT NULL AND
+          assessment.status = 'completed'
+        error_message: "Completed assessment required before settlement"
+        action: block_settlement
+        applies_to: [settlement]
+
+      - id: SET-CAL-002
+        name: Deductible Application
+        description: Apply policy deductible correctly
+        priority: high
+        condition: |
+          settlement.deductible_amount = coverage.deductible_amount
+        error_message: "Incorrect deductible applied"
+        action: recalculate
+        applies_to: [settlement]
+
+      - id: SET-CAL-003
+        name: Co-Payment Application
+        description: Apply co-payment correctly
+        priority: high
+        condition: |
+          settlement.co_payment_amount =
+            settlement.offered_amount * (coverage.co_payment_percentage / 100)
+        error_message: "Incorrect co-payment calculated"
+        action: recalculate
+        applies_to: [settlement]
+
+      - id: SET-CAL-004
+        name: Limit Check
+        description: Settlement cannot exceed policy limits
+        priority: critical
+        condition: |
+          settlement.offered_amount <= coverage.sum_insured
+        error_message: "Settlement exceeds policy limit"
+        action: adjust_to_limit
+        applies_to: [settlement]
+
+      - id: SET-CAL-005
+        name: Salvage Deduction
+        description: Deduct salvage value from total loss settlements
+        priority: high
+        condition: |
+          claim.loss_type = 'total_loss' IMPLIES
+          settlement.salvage_deduction >= surveyor_report.salvage_value
+        warning_message: "Salvage deduction may be incorrect"
+        action: verify_salvage
+        applies_to: [settlement]
+
+      - id: SET-CAL-006
+        name: Net Settlement Calculation
+        description: Verify net settlement calculation
+        priority: critical
+        condition: |
+          settlement.net_settlement =
+            settlement.offered_amount -
+            settlement.deductible_amount -
+            settlement.co_payment_amount -
+            settlement.salvage_deduction -
+            settlement.other_deductions
+        error_message: "Net settlement calculation error"
+        action: recalculate
+        applies_to: [settlement]
+
+  settlement_offer:
+    name: Settlement Offer Rules
+    description: Rules for communicating settlement offers
+
+    rules:
+      - id: SET-OFF-001
+        name: Offer Documentation
+        description: Settlement offer must be documented
+        priority: high
+        condition: |
+          settlement.status = 'offer_sent' IMPLIES
+          settlement.offer_document_url IS NOT NULL
+        error_message: "Offer document required"
+        action: generate_offer_letter
+        applies_to: [settlement]
+
+      - id: SET-OFF-002
+        name: Offer Validity Period
+        description: Offer must have validity period
+        priority: medium
+        condition: |
+          settlement.offer_expiry_date IS NOT NULL AND
+          settlement.offer_expiry_date >= NOW() + INTERVAL '7 days'
+        warning_message: "Offer validity period too short"
+        action: set_expiry
+        default_validity: 30
+        applies_to: [settlement]
+
+      - id: SET-OFF-003
+        name: Breakdown Required
+        description: Offer must include item breakdown
+        priority: high
+        condition: |
+          LENGTH(settlement.item_breakdown) > 0
+        error_message: "Settlement breakdown required"
+        action: add_breakdown
+        applies_to: [settlement]
+
+      - id: SET-OFF-004
+        name: Claimant Communication
+        description: Claimant must be notified of offer
+        priority: high
+        condition: |
+          settlement.status = 'offer_sent' IMPLIES
+          settlement.offer_date IS NOT NULL AND
+          settlement.offer_method IS NOT NULL
+        error_message: "Offer communication not recorded"
+        action: record_communication
+        applies_to: [settlement]
+
+  settlement_negotiation:
+    name: Settlement Negotiation Rules
+    description: Rules for negotiating settlements
+
+    rules:
+      - id: SET-NEG-001
+        name: Negotiation Documentation
+        description: All negotiation must be documented
+        priority: high
+        condition: |
+          settlement.status = 'negotiating' IMPLIES
+          LENGTH(settlement.negotiation_history) > 0
+        error_message: "Negotiation history required"
+        action: record_negotiation
+        applies_to: [settlement]
+
+      - id: SET-NEG-002
+        name: Counter Offer Authority
+        description: Counter offers need appropriate authority
+        priority: high
+        condition: |
+          settlement.negotiation_history.LAST.our_offer <=
+          authority_limit(settlement.prepared_by.role)
+        error_message: "Counter offer exceeds authority"
+        action: escalate_for_approval
+        applies_to: [settlement]
+
+      - id: SET-NEG-003
+        name: Maximum Negotiation Rounds
+        description: Limit negotiation rounds before escalation
+        priority: medium
+        condition: |
+          settlement.negotiation_rounds <= 5
+        warning_message: "Excessive negotiation rounds"
+        action: escalate_for_guidance
+        applies_to: [settlement]
+
+      - id: SET-NEG-004
+        name: Nuisance Settlement Limit
+        description: Limit for nuisance value settlements
+        priority: medium
+        condition: |
+          settlement.settlement_type = 'compromise' AND
+          assessment.recommendation = 'deny' IMPLIES
+          settlement.offered_amount <= 10000000
+        warning_message: "Nuisance settlement exceeds threshold"
+        action: require_justification
+        applies_to: [settlement]
+
+  settlement_finalization:
+    name: Settlement Finalization Rules
+    description: Rules for finalizing settlements
+
+    rules:
+      - id: SET-FIN-001
+        name: Acceptance Required
+        description: Claimant acceptance required before finalization
+        priority: critical
+        condition: |
+          settlement.status = 'finalized' IMPLIES
+          settlement.claimant_response = 'accepted' AND
+          settlement.response_date IS NOT NULL
+        error_message: "Claimant acceptance required"
+        action: block_finalization
+        applies_to: [settlement]
+
+      - id: SET-FIN-002
+        name: Release Document Required
+        description: Release and discharge must be signed
+        priority: critical
+        condition: |
+          settlement.full_and_final = true IMPLIES
+          settlement.release_signed = true AND
+          settlement.release_document_url IS NOT NULL
+        error_message: "Signed release document required"
+        action: request_release
+        applies_to: [settlement]
+
+      - id: SET-FIN-003
+        name: All Payments Authorized
+        description: All related payments must be authorized
+        priority: high
+        condition: |
+          settlement.status = 'finalized' IMPLIES
+          NOT EXISTS(payment WHERE
+            payment.settlement_id = settlement.id AND
+            payment.status NOT IN ('approved', 'scheduled', 'processing', 'completed'))
+        error_message: "Payments not fully authorized"
+        action: authorize_payments
+        applies_to: [settlement]
+
+      - id: SET-FIN-004
+        name: Reserve Adjustment
+        description: Adjust reserve upon finalization
+        priority: high
+        condition: |
+          settlement.status = 'finalized' IMPLIES
+          reserve.current_reserve = settlement.net_settlement
+        action: adjust_reserve
+        applies_to: [settlement, reserve]
+
+  denial_rules:
+    name: Claim Denial Rules
+    description: Rules for denying claims
+
+    rules:
+      - id: SET-DEN-001
+        name: Denial Reason Required
+        description: Denial must have documented reason
+        priority: critical
+        condition: |
+          settlement.settlement_type = 'denial' IMPLIES
+          settlement.denial_reason IS NOT NULL AND
+          settlement.denial_reason_code IS NOT NULL AND
+          LENGTH(settlement.denial_reason) >= 50
+        error_message: "Detailed denial reason required"
+        action: require_justification
+        applies_to: [settlement]
+
+      - id: SET-DEN-002
+        name: Denial Letter Required
+        description: Denial letter must be sent
+        priority: critical
+        condition: |
+          settlement.settlement_type = 'denial' IMPLIES
+          settlement.denial_letter_url IS NOT NULL
+        error_message: "Denial letter required"
+        action: generate_denial_letter
+        applies_to: [settlement]
+
+      - id: SET-DEN-003
+        name: Appeal Information
+        description: Denial must include appeal information
+        priority: high
+        condition: |
+          settlement.settlement_type = 'denial' IMPLIES
+          settlement.appeal_eligible IS NOT NULL AND
+          (settlement.appeal_eligible = false OR
+           settlement.appeal_deadline IS NOT NULL)
+        error_message: "Appeal information required in denial"
+        action: add_appeal_info
+        applies_to: [settlement]
+
+      - id: SET-DEN-004
+        name: Supervisor Review for Denial
+        description: All denials reviewed by supervisor
+        priority: high
+        condition: |
+          settlement.settlement_type = 'denial' IMPLIES
+          settlement.approved_by.role IN ('supervisor', 'manager', 'director')
+        error_message: "Denial requires supervisor review"
+        action: escalate_for_review
+        applies_to: [settlement]
+
+  ex_gratia_rules:
+    name: Ex Gratia Payment Rules
+    description: Rules for ex gratia (goodwill) payments
+
+    rules:
+      - id: SET-EXG-001
+        name: Ex Gratia Justification
+        description: Ex gratia must be justified
+        priority: high
+        condition: |
+          settlement.settlement_type = 'ex_gratia' IMPLIES
+          settlement.recommendation_reason IS NOT NULL AND
+          LENGTH(settlement.recommendation_reason) >= 100
+        error_message: "Ex gratia justification required"
+        action: require_justification
+        applies_to: [settlement]
+
+      - id: SET-EXG-002
+        name: Ex Gratia Limit
+        description: Ex gratia limited to percentage of claim
+        priority: high
+        condition: |
+          settlement.settlement_type = 'ex_gratia' IMPLIES
+          settlement.offered_amount <= claim.claimed_amount * 0.50
+        warning_message: "Ex gratia exceeds 50% of claimed amount"
+        action: require_committee_approval
+        applies_to: [settlement]
+
+      - id: SET-EXG-003
+        name: Ex Gratia Authority
+        description: Ex gratia requires higher authority
+        priority: critical
+        condition: |
+          settlement.settlement_type = 'ex_gratia' IMPLIES
+          settlement.approved_by.role IN ('manager', 'director')
+        error_message: "Ex gratia requires manager or higher approval"
+        action: escalate_for_approval
+        applies_to: [settlement]
+
+      - id: SET-EXG-004
+        name: No Precedent Statement
+        description: Ex gratia must not set precedent
+        priority: medium
+        condition: |
+          settlement.settlement_type = 'ex_gratia' IMPLIES
+          settlement.offer_conditions CONTAINS 'no_precedent'
+        warning_message: "Add no-precedent statement to ex gratia"
+        action: add_condition
+        applies_to: [settlement]
+
+authority_matrix:
+  levels:
+    - role: handler
+      settlement_limit: 50000000
+      denial_authority: false
+      ex_gratia_limit: 0
+
+    - role: senior_handler
+      settlement_limit: 200000000
+      denial_authority: false
+      ex_gratia_limit: 0
+
+    - role: supervisor
+      settlement_limit: 1000000000
+      denial_authority: true
+      ex_gratia_limit: 20000000
+
+    - role: manager
+      settlement_limit: 5000000000
+      denial_authority: true
+      ex_gratia_limit: 100000000
+
+    - role: director
+      settlement_limit: 20000000000
+      denial_authority: true
+      ex_gratia_limit: 500000000
+
+    - role: committee
+      settlement_limit: unlimited
+      denial_authority: true
+      ex_gratia_limit: unlimited
+
+sla_targets:
+  settlement_offer:
+    simple_claims: 5_business_days
+    complex_claims: 15_business_days
+    catastrophe_claims: 30_business_days
+
+  settlement_finalization:
+    after_acceptance: 3_business_days
+
+  payment_processing:
+    after_finalization: 5_business_days

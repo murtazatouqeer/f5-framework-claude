@@ -1,0 +1,520 @@
+# =============================================================================
+# PATIENT PRIVACY RULES - EHR Sub-domain
+# Quy tắc Bảo mật Thông tin Bệnh nhân
+# =============================================================================
+# Compliance: HIPAA Privacy Rule, GDPR, Vietnam PDPD (Nghị định 13/2023/NĐ-CP)
+# =============================================================================
+
+name: PatientPrivacyRules
+display_name: Patient Privacy Rules / Quy tắc Bảo mật Bệnh nhân
+version: "1.0"
+domain: healthcare
+sub_domain: ehr
+category: privacy
+
+# =============================================================================
+# MINIMUM NECESSARY STANDARD
+# =============================================================================
+minimum_necessary_rules:
+  - id: PPR-MN-001
+    name: Minimum Necessary Access
+    description: |
+      Limit PHI access to the minimum necessary for the intended purpose.
+      Staff should only access information needed for their job function.
+    regulation: HIPAA 164.502(b)
+    enforcement: mandatory
+    implementation:
+      role_based_access: true
+      purpose_based_filtering: true
+      field_level_restrictions: true
+    examples:
+      - role: billing_clerk
+        access: [demographics, insurance, billing_codes]
+        excluded: [clinical_notes, diagnoses, medications]
+      - role: pharmacist
+        access: [medications, allergies, relevant_diagnoses]
+        excluded: [social_history, mental_health_notes]
+
+  - id: PPR-MN-002
+    name: Treatment Exception
+    description: |
+      Minimum necessary does not apply to disclosures for treatment purposes.
+      Providers may access full records when treating patients.
+    regulation: HIPAA 164.502(b)(2)(i)
+    enforcement: mandatory
+    conditions:
+      - provider_has_treatment_relationship: true
+      - patient_is_current_or_scheduled: true
+    audit_requirement: log_all_treatment_access
+
+  - id: PPR-MN-003
+    name: Workforce Policies
+    description: |
+      Implement policies identifying who needs access to what PHI.
+      Define categories of PHI and workforce access levels.
+    regulation: HIPAA 164.514(d)
+    enforcement: mandatory
+    requirements:
+      - access_matrix_defined: true
+      - annual_review: true
+      - exception_process_documented: true
+
+# =============================================================================
+# PHI ACCESS LOGGING
+# =============================================================================
+phi_access_logging:
+  - id: PPR-LOG-001
+    name: Comprehensive Access Logging
+    description: |
+      Log all access to PHI including views, edits, prints, and exports.
+      Logs must be tamper-evident and retained for minimum 6 years.
+    regulation: HIPAA 164.312(b)
+    enforcement: mandatory
+    logged_actions:
+      - action: view
+        fields: [user_id, patient_id, record_type, timestamp, ip_address]
+      - action: edit
+        fields: [user_id, patient_id, field_changed, old_value, new_value, timestamp]
+      - action: print
+        fields: [user_id, patient_id, pages_printed, purpose, timestamp]
+      - action: export
+        fields: [user_id, patient_id, format, destination, timestamp]
+      - action: copy
+        fields: [user_id, patient_id, fields_copied, destination, timestamp]
+    retention_years: 6
+
+  - id: PPR-LOG-002
+    name: Proactive Access Monitoring
+    description: |
+      Automatically detect and alert on suspicious access patterns.
+      Flag access outside normal working hours or care relationship.
+    regulation: HIPAA 164.308(a)(1)
+    enforcement: mandatory
+    alerts:
+      - trigger: access_outside_hours
+        threshold: after_hours_access
+        action: flag_for_review
+      - trigger: high_volume_access
+        threshold: "> 50 records/hour"
+        action: immediate_alert
+      - trigger: celebrity_patient_access
+        threshold: any_access
+        action: enhanced_logging
+      - trigger: self_access
+        threshold: any_access
+        action: flag_for_review
+      - trigger: family_member_access
+        threshold: any_access
+        action: flag_for_review
+
+  - id: PPR-LOG-003
+    name: Audit Trail Integrity
+    description: |
+      Ensure audit logs cannot be modified or deleted.
+      Implement write-once storage with cryptographic verification.
+    regulation: HIPAA 164.312(c)(1)
+    enforcement: mandatory
+    requirements:
+      - immutable_storage: true
+      - cryptographic_hashing: true
+      - backup_frequency: daily
+      - offsite_replication: true
+
+# =============================================================================
+# BREAK-THE-GLASS ACCESS
+# =============================================================================
+break_the_glass:
+  - id: PPR-BTG-001
+    name: Emergency Access Override
+    description: |
+      Allow emergency access to restricted records when clinically necessary.
+      Document reason and notify privacy officer for review.
+    regulation: HIPAA 164.512(j)
+    enforcement: mandatory
+    process:
+      step_1: User acknowledges emergency access
+      step_2: System logs access with enhanced detail
+      step_3: Automatic notification to privacy officer
+      step_4: Post-access review within 24 hours
+      step_5: Documentation in patient record
+    valid_reasons:
+      - life_threatening_emergency
+      - unconscious_patient
+      - critical_care_transfer
+      - disaster_response
+    invalid_reasons:
+      - convenience
+      - curiosity
+      - routine_care_accessible_through_normal_means
+
+  - id: PPR-BTG-002
+    name: Break-the-Glass Monitoring
+    description: |
+      All break-the-glass access must be reviewed and validated.
+      Inappropriate use results in disciplinary action.
+    enforcement: mandatory
+    review_process:
+      - reviewer: privacy_officer
+      - timeline: within_24_hours
+      - documentation: required
+      - escalation: hr_and_compliance_if_inappropriate
+    consequences:
+      first_offense: written_warning
+      second_offense: suspension
+      third_offense: termination
+      willful_violation: termination_and_referral
+
+# =============================================================================
+# VIP AND RESTRICTED PATIENTS
+# =============================================================================
+vip_patient_rules:
+  - id: PPR-VIP-001
+    name: Enhanced Patient Protection
+    description: |
+      Provide additional privacy protections for high-profile patients.
+      Restrict access to care team only with enhanced monitoring.
+    enforcement: mandatory
+    categories:
+      - celebrities
+      - politicians
+      - employees_and_family
+      - vip_request
+      - witness_protection
+    protections:
+      access_restriction: care_team_only
+      name_suppression: alias_available
+      location_masking: true
+      enhanced_logging: true
+      real_time_alerts: true
+
+  - id: PPR-VIP-002
+    name: Self/Family Member Access Restriction
+    description: |
+      Prevent staff from accessing their own or family members' records.
+      Require formal process for legitimate self-access needs.
+    enforcement: mandatory
+    restriction_scope:
+      - self
+      - spouse
+      - children
+      - parents
+      - siblings
+    exception_process:
+      - submit_request_to_privacy_officer
+      - document_legitimate_need
+      - obtain_written_approval
+      - access_logged_with_approval_reference
+
+  - id: PPR-VIP-003
+    name: Alias/Pseudonym Support
+    description: |
+      Allow patients to use aliases in scheduling and displays.
+      True identity restricted to treating clinicians.
+    enforcement: optional
+    implementation:
+      alias_in_schedules: true
+      alias_in_wristband: optional
+      true_name_in_chart: always
+      billing_uses_true_name: true
+
+# =============================================================================
+# CONSENT-BASED SHARING
+# =============================================================================
+consent_based_sharing:
+  - id: PPR-CBS-001
+    name: Patient Consent Required
+    description: |
+      Obtain patient consent before sharing PHI for non-TPO purposes.
+      Consent must be specific, informed, and revocable.
+    regulation: HIPAA 164.508
+    enforcement: mandatory
+    consent_elements:
+      - specific_information_to_disclose
+      - purpose_of_disclosure
+      - recipient_identification
+      - expiration_date_or_event
+      - patient_signature_and_date
+      - right_to_revoke_statement
+    exceptions:
+      - treatment
+      - payment
+      - healthcare_operations
+      - public_health
+      - law_enforcement_with_valid_order
+
+  - id: PPR-CBS-002
+    name: Sensitive Information Consent
+    description: |
+      Special consent required for highly sensitive information.
+      Cannot be disclosed even for TPO without explicit consent.
+    regulation: 42 CFR Part 2, State laws
+    enforcement: mandatory
+    sensitive_categories:
+      - substance_abuse_treatment
+        regulation: 42 CFR Part 2
+        consent_required: always
+      - mental_health
+        regulation: state_law_varies
+        consent_required: depends_on_jurisdiction
+      - hiv_aids
+        regulation: state_law_varies
+        consent_required: depends_on_jurisdiction
+      - genetic_information
+        regulation: GINA
+        consent_required: for_employment_insurance
+      - reproductive_health
+        regulation: state_law_varies
+        consent_required: depends_on_jurisdiction
+
+  - id: PPR-CBS-003
+    name: Health Information Exchange Consent
+    description: |
+      Manage patient consent for HIE participation.
+      Support opt-in or opt-out models per jurisdiction.
+    enforcement: mandatory
+    consent_models:
+      opt_in:
+        description: Patient must consent to participate
+        default: no_sharing
+      opt_out:
+        description: Patient must object to stop sharing
+        default: sharing_enabled
+    granular_options:
+      - by_provider
+      - by_information_type
+      - by_time_period
+
+# =============================================================================
+# RIGHT TO ACCESS AND AMEND
+# =============================================================================
+patient_rights:
+  - id: PPR-PRI-001
+    name: Right to Access Records
+    description: |
+      Patients have right to access their PHI within 30 days.
+      Provide in requested format if readily producible.
+    regulation: HIPAA 164.524
+    enforcement: mandatory
+    timeline:
+      standard: 30_days
+      extension: 30_additional_days_if_notified
+    fee:
+      allowed: reasonable_cost_based
+      prohibited: excessive_or_punitive
+    format:
+      electronic: if_maintained_electronically
+      paper: always_available
+      patient_preference: honor_when_feasible
+
+  - id: PPR-PRI-002
+    name: Right to Amend Records
+    description: |
+      Patients may request amendments to their PHI.
+      Provider must respond within 60 days.
+    regulation: HIPAA 164.526
+    enforcement: mandatory
+    process:
+      step_1: Receive written request
+      step_2: Review for accuracy
+      step_3: Accept or deny with reason
+      step_4: If denied, allow statement of disagreement
+      step_5: Append to record
+    denial_reasons:
+      - information_is_accurate
+      - not_created_by_this_provider
+      - not_part_of_designated_record_set
+      - not_accessible_to_patient
+
+  - id: PPR-PRI-003
+    name: Right to Accounting of Disclosures
+    description: |
+      Patients may request list of disclosures of their PHI.
+      Must include disclosures for 6 years prior to request.
+    regulation: HIPAA 164.528
+    enforcement: mandatory
+    included:
+      - disclosures_to_third_parties
+      - break_the_glass_access
+      - law_enforcement_disclosures
+    excluded:
+      - treatment_payment_operations
+      - patient_authorized
+      - facility_directory
+      - national_security
+    content:
+      - disclosure_date
+      - recipient_name_and_address
+      - description_of_phi
+      - purpose_of_disclosure
+
+# =============================================================================
+# DATA SUBJECT RIGHTS (GDPR)
+# =============================================================================
+gdpr_rights:
+  - id: PPR-GDPR-001
+    name: Right to Erasure
+    description: |
+      EU patients may request deletion of personal data.
+      Healthcare records have specific retention requirements.
+    regulation: GDPR Article 17
+    enforcement: mandatory_for_eu_patients
+    exceptions:
+      - legal_obligation_to_retain
+      - public_health
+      - archiving_in_public_interest
+      - legal_claims
+    process:
+      step_1: Verify identity and jurisdiction
+      step_2: Assess retention obligations
+      step_3: Delete if no legal obligation
+      step_4: Document decision and rationale
+
+  - id: PPR-GDPR-002
+    name: Right to Data Portability
+    description: |
+      Provide personal data in structured, machine-readable format.
+      Enable transfer to another controller.
+    regulation: GDPR Article 20
+    enforcement: mandatory_for_eu_patients
+    format:
+      type: structured_machine_readable
+      examples: [JSON, XML, CSV]
+    scope: data_provided_by_patient
+    timeline: without_undue_delay
+
+  - id: PPR-GDPR-003
+    name: Right to Object
+    description: |
+      Patients may object to processing for specific purposes.
+      Must cease processing unless compelling legitimate grounds.
+    regulation: GDPR Article 21
+    enforcement: mandatory_for_eu_patients
+    objection_grounds:
+      - direct_marketing: always_honor
+      - research: balance_against_legitimate_interest
+      - profiling: case_by_case
+
+# =============================================================================
+# VIETNAM PDPD COMPLIANCE
+# =============================================================================
+vietnam_pdpd_rules:
+  - id: PPR-VN-001
+    name: Consent Requirements
+    description: |
+      Obtain consent before collecting personal data.
+      Consent must be clear, specific, and documented.
+    regulation: Nghị định 13/2023/NĐ-CP Article 11
+    enforcement: mandatory_for_vietnam
+    requirements:
+      - clear_purpose_statement
+      - specific_data_types
+      - retention_period
+      - right_to_withdraw
+
+  - id: PPR-VN-002
+    name: Sensitive Data Processing
+    description: |
+      Health data is sensitive personal data requiring explicit consent.
+      Additional protections for processing and storage.
+    regulation: Nghị định 13/2023/NĐ-CP Article 2.4
+    enforcement: mandatory_for_vietnam
+    requirements:
+      - explicit_written_consent
+      - impact_assessment
+      - enhanced_security_measures
+      - limited_retention
+
+  - id: PPR-VN-003
+    name: Cross-Border Transfer
+    description: |
+      Restrictions on transferring personal data outside Vietnam.
+      Requires impact assessment and protective measures.
+    regulation: Nghị định 13/2023/NĐ-CP Article 25
+    enforcement: mandatory_for_vietnam
+    requirements:
+      - impact_assessment_completed
+      - data_subject_consent
+      - adequate_protection_in_destination
+      - notification_to_authority_if_required
+
+# =============================================================================
+# ENFORCEMENT AND SANCTIONS
+# =============================================================================
+enforcement:
+  violation_levels:
+    - level: minor
+      examples:
+        - accidental_access_immediately_reported
+        - minor_documentation_error
+      sanctions:
+        - verbal_warning
+        - additional_training
+    - level: moderate
+      examples:
+        - unauthorized_access_not_immediately_reported
+        - sharing_phi_without_proper_authorization
+      sanctions:
+        - written_warning
+        - mandatory_retraining
+        - supervision_period
+    - level: major
+      examples:
+        - repeated_violations
+        - willful_unauthorized_access
+        - failure_to_report_breach
+      sanctions:
+        - suspension
+        - termination
+        - referral_to_licensing_board
+    - level: criminal
+      examples:
+        - sale_of_phi
+        - identity_theft
+        - malicious_disclosure
+      sanctions:
+        - termination
+        - referral_to_law_enforcement
+        - civil_and_criminal_penalties
+
+  reporting_requirements:
+    internal:
+      - privacy_officer_within_24_hours
+      - compliance_department_within_48_hours
+    external:
+      - hhs_ocr_for_breaches_over_500
+      - state_attorney_general_per_state_law
+      - affected_individuals_within_60_days
+
+# =============================================================================
+# TRAINING REQUIREMENTS
+# =============================================================================
+training:
+  - id: TRN-001
+    name: Initial Privacy Training
+    description: All workforce members before accessing PHI
+    frequency: before_access_granted
+    duration_hours: 2
+    topics:
+      - hipaa_overview
+      - minimum_necessary
+      - patient_rights
+      - reporting_violations
+
+  - id: TRN-002
+    name: Annual Privacy Refresher
+    description: Annual refresher on privacy policies
+    frequency: annual
+    duration_hours: 1
+    topics:
+      - policy_updates
+      - common_violations
+      - case_studies
+
+  - id: TRN-003
+    name: Role-Specific Training
+    description: Additional training based on job function
+    frequency: as_needed
+    topics:
+      - research_staff: research_authorization_requirements
+      - billing_staff: minimum_necessary_for_billing
+      - it_staff: technical_safeguards

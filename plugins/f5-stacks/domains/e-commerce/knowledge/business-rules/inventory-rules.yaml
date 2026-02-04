@@ -1,0 +1,316 @@
+name: Inventory Rules
+display_name: Inventory Rules / Quy tắc kho hàng
+description: |
+  Business rules governing inventory management, stock tracking, and availability.
+  Includes reservation, allocation, and replenishment rules.
+
+domain: e-commerce
+category: inventory
+
+rules:
+  # Stock Availability Rules
+  - id: BR-INV-001
+    name: Available Stock Calculation
+    description: Available = Total - Reserved - Damaged - On Hold
+    priority: critical
+    condition: always
+    action: |
+      available_quantity = quantity - reserved_quantity - damaged_quantity - on_hold_quantity
+    applies_to: [Inventory]
+
+  - id: BR-INV-002
+    name: Negative Stock Prevention
+    description: Available quantity cannot go negative
+    priority: critical
+    condition: available_quantity >= 0
+    action: reject_if_violated
+    message: "Insufficient stock available"
+    applies_to: [Inventory]
+
+  - id: BR-INV-003
+    name: Oversell Prevention
+    description: Cannot sell more than available stock unless backorder enabled
+    priority: critical
+    condition: |
+      product.allow_backorder = true OR
+      order_quantity <= inventory.available_quantity
+    action: reject_if_violated
+    message: "Requested quantity exceeds available stock"
+    applies_to: [CartItem, OrderItem]
+
+  - id: BR-INV-004
+    name: Stock Status Update
+    description: Auto-update stock status based on thresholds
+    priority: high
+    condition: always
+    action: |
+      stock_status = CASE
+        WHEN available_quantity <= 0 THEN 'out_of_stock'
+        WHEN available_quantity <= low_stock_threshold THEN 'low_stock'
+        WHEN available_quantity <= reorder_point THEN 'reorder'
+        ELSE 'in_stock'
+      END
+    applies_to: [Inventory]
+
+  - id: BR-INV-005
+    name: Multi-Location Aggregation
+    description: Total available = sum of all location available quantities
+    priority: high
+    condition: product.track_inventory = true
+    action: |
+      total_available = SUM(inventory.available_quantity)
+      WHERE inventory.product_id = product.id
+    applies_to: [Product, Inventory]
+
+  # Reservation Rules
+  - id: BR-INV-010
+    name: Cart Reservation
+    description: Reserve stock when added to cart (optional)
+    priority: medium
+    condition: config.reserve_on_cart = true
+    action: |
+      inventory.reserved_quantity += cart_item.quantity
+      cart_item.reserved_until = NOW() + config.cart_reservation_duration
+    applies_to: [CartItem, Inventory]
+    config:
+      reserve_on_cart: false
+      cart_reservation_duration: "15 minutes"
+
+  - id: BR-INV-011
+    name: Checkout Reservation
+    description: Reserve stock at checkout initiation
+    priority: high
+    condition: checkout.initiated = true
+    action: |
+      FOR each cart_item:
+        inventory.reserved_quantity += cart_item.quantity
+        cart_item.reserved_until = NOW() + INTERVAL '30 minutes'
+    applies_to: [Cart, Inventory]
+
+  - id: BR-INV-012
+    name: Order Confirmation Reservation
+    description: Convert reservation to committed on order confirmation
+    priority: critical
+    condition: order.status = 'confirmed'
+    action: |
+      FOR each order_item:
+        inventory.reserved_quantity -= order_item.quantity
+        inventory.committed_quantity += order_item.quantity
+    applies_to: [Order, Inventory]
+
+  - id: BR-INV-013
+    name: Reservation Expiry
+    description: Release expired reservations automatically
+    priority: high
+    condition: cart_item.reserved_until < NOW()
+    action: |
+      inventory.reserved_quantity -= cart_item.quantity
+      cart_item.reserved_until = NULL
+      TRIGGER cart_item.reservation_expired
+    applies_to: [CartItem, Inventory]
+
+  - id: BR-INV-014
+    name: Reservation Release on Cancel
+    description: Release reservation when cart item removed or order cancelled
+    priority: high
+    condition: |
+      cart_item.removed = true OR
+      order.status = 'cancelled'
+    action: |
+      inventory.reserved_quantity -= quantity
+    applies_to: [CartItem, Order, Inventory]
+
+  # Allocation Rules
+  - id: BR-INV-020
+    name: FIFO Allocation
+    description: Allocate from oldest inventory first
+    priority: medium
+    condition: config.allocation_method = 'FIFO'
+    action: |
+      ORDER BY inventory.received_at ASC
+      ALLOCATE required_quantity
+    applies_to: [Inventory]
+    config:
+      allocation_method: "FIFO"
+
+  - id: BR-INV-021
+    name: Nearest Warehouse Allocation
+    description: Allocate from warehouse nearest to shipping address
+    priority: medium
+    condition: config.allocation_method = 'nearest'
+    action: |
+      ORDER BY DISTANCE(warehouse.location, shipping_address) ASC
+      ALLOCATE required_quantity
+    applies_to: [Inventory, Warehouse]
+
+  - id: BR-INV-022
+    name: Split Allocation
+    description: Allow allocation from multiple locations
+    priority: medium
+    condition: |
+      config.allow_split_allocation = true AND
+      single_location_available < required_quantity
+    action: |
+      ALLOCATE from multiple locations
+      CREATE multiple shipments if needed
+    applies_to: [Inventory, Order]
+    config:
+      allow_split_allocation: true
+
+  - id: BR-INV-023
+    name: Backorder Allocation
+    description: Create backorder for unavailable quantity
+    priority: medium
+    condition: |
+      product.allow_backorder = true AND
+      required_quantity > available_quantity
+    action: |
+      backorder_quantity = required_quantity - available_quantity
+      CREATE backorder_record
+    applies_to: [OrderItem, Inventory]
+
+  # Deduction Rules
+  - id: BR-INV-030
+    name: Ship Deduction
+    description: Deduct from inventory when order ships
+    priority: critical
+    condition: shipment.status = 'shipped'
+    action: |
+      inventory.quantity -= shipment_item.quantity
+      inventory.committed_quantity -= shipment_item.quantity
+    applies_to: [Shipment, Inventory]
+
+  - id: BR-INV-031
+    name: Return Addition
+    description: Add back to inventory on return receipt
+    priority: high
+    condition: |
+      return.status = 'received' AND
+      return_item.condition = 'resellable'
+    action: |
+      inventory.quantity += return_item.quantity
+    applies_to: [Return, Inventory]
+
+  - id: BR-INV-032
+    name: Damaged Return
+    description: Add to damaged quantity if return is damaged
+    priority: high
+    condition: |
+      return.status = 'received' AND
+      return_item.condition IN ('damaged', 'defective')
+    action: |
+      inventory.damaged_quantity += return_item.quantity
+    applies_to: [Return, Inventory]
+
+  # Replenishment Rules
+  - id: BR-INV-040
+    name: Reorder Point Alert
+    description: Alert when stock falls below reorder point
+    priority: high
+    condition: inventory.available_quantity <= inventory.reorder_point
+    action: |
+      TRIGGER inventory.low_stock
+      NOTIFY purchasing_team
+      IF config.auto_reorder THEN CREATE purchase_order
+    applies_to: [Inventory]
+
+  - id: BR-INV-041
+    name: Safety Stock Maintenance
+    description: Maintain minimum safety stock level
+    priority: high
+    condition: inventory.available_quantity < inventory.safety_stock
+    action: |
+      TRIGGER inventory.critical_low
+      ESCALATE to_management
+    applies_to: [Inventory]
+
+  - id: BR-INV-042
+    name: Economic Order Quantity
+    description: Calculate optimal reorder quantity
+    priority: medium
+    condition: inventory.reorder_triggered = true
+    action: |
+      EOQ = SQRT((2 * annual_demand * order_cost) / holding_cost)
+      suggested_order_quantity = MAX(EOQ, min_order_quantity)
+    applies_to: [Inventory]
+
+  # Sync Rules
+  - id: BR-INV-050
+    name: Real-time Sync
+    description: Sync inventory changes in real-time
+    priority: critical
+    condition: inventory_change_detected
+    action: |
+      UPDATE all_sales_channels
+      INVALIDATE cache
+    applies_to: [Inventory]
+
+  - id: BR-INV-051
+    name: Marketplace Sync
+    description: Sync available quantity to marketplaces
+    priority: high
+    condition: product.sold_on_marketplace = true
+    action: |
+      FOR each marketplace:
+        sync_available_quantity(
+          available - marketplace_buffer
+        )
+    applies_to: [Inventory, Product]
+    config:
+      marketplace_buffer: 5
+
+  - id: BR-INV-052
+    name: Inventory Audit Trail
+    description: Log all inventory movements
+    priority: critical
+    condition: inventory.quantity_changed = true
+    action: |
+      CREATE inventory_movement_log(
+        type, quantity, reason, user, timestamp
+      )
+    applies_to: [Inventory]
+
+  # Variant Rules
+  - id: BR-INV-060
+    name: Variant Inventory Independence
+    description: Each variant tracks inventory independently
+    priority: high
+    condition: product.has_variants = true
+    action: |
+      product.total_available = SUM(variants.available_quantity)
+    applies_to: [Product, ProductVariant, Inventory]
+
+  - id: BR-INV-061
+    name: Parent Product Status
+    description: Product in_stock if any variant in_stock
+    priority: high
+    condition: product.has_variants = true
+    action: |
+      product.stock_status =
+        IF ANY(variants.stock_status = 'in_stock')
+        THEN 'in_stock'
+        ELSE 'out_of_stock'
+    applies_to: [Product, ProductVariant]
+
+validation_order:
+  - BR-INV-001  # Available calculation
+  - BR-INV-002  # Negative prevention
+  - BR-INV-003  # Oversell prevention
+  - BR-INV-004  # Status update
+  - BR-INV-010  # Cart reservation
+  - BR-INV-020  # FIFO allocation
+  - BR-INV-030  # Ship deduction
+  - BR-INV-050  # Real-time sync
+  - BR-INV-052  # Audit trail
+
+exceptions:
+  - name: EmergencyStockOverride
+    description: Allow oversell in emergency situations
+    requires: manager_approval
+    audit: required
+    max_oversell_percentage: 10
+
+  - name: InventoryAdjustment
+    description: Manual inventory adjustments
+    requires: warehouse_manager_approval
+    audit: required

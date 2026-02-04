@@ -1,0 +1,299 @@
+# Transcript Entity
+# F5 Framework v2.0 - Education/Certification
+# Official learning and credential record
+
+entity:
+  id: transcript
+  name: Transcript
+  name_ja: 成績証明書
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    An official record of a credential holder's learning activities,
+    completed courses, earned credentials, and achievements. Can be
+    shared for verification purposes.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+      
+    - name: transcript_id
+      type: string
+      format: "TRN-{XXXXXXXX}"
+      unique: true
+      indexed: true
+      
+    - name: transcript_number
+      type: string
+      max_length: 50
+      unique: true
+      description: Official transcript number
+
+    # Holder
+    - name: holder_id
+      type: uuid
+      foreign_key: credential_holder.id
+      unique: true
+      required: true
+      indexed: true
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, locked, archived]
+      default: active
+      
+    - name: is_official
+      type: boolean
+      default: true
+      description: Official vs unofficial copy
+
+    # Holder Info (as of transcript date)
+    - name: holder_name
+      type: string
+      max_length: 200
+      required: true
+      
+    - name: holder_email
+      type: string
+      max_length: 255
+      
+    - name: holder_id_number
+      type: string
+      max_length: 100
+      description: Student/member ID
+
+    # Content
+    - name: credentials
+      type: jsonb
+      description: All credentials on transcript
+      schema:
+        - credential_type: enum[certificate, badge]
+          credential_id: uuid
+          name: string
+          program_name: string
+          issued_at: timestamp
+          status: string
+          grade: string
+          score: number
+          
+    - name: courses
+      type: jsonb
+      description: Completed courses
+      schema:
+        - course_id: uuid
+          course_name: string
+          course_code: string
+          completed_at: date
+          grade: string
+          score: number
+          credits: number
+          
+    - name: ceu_summary
+      type: jsonb
+      description: CEU summary by period
+      schema:
+        - period: string
+          program: string
+          required: number
+          earned: number
+          
+    - name: skills
+      type: jsonb
+      description: Verified skills
+      schema:
+        - skill_id: uuid
+          skill_name: string
+          level: string
+          verified_at: date
+          source: string
+
+    # Summary Stats
+    - name: total_credentials
+      type: integer
+      default: 0
+      
+    - name: active_credentials
+      type: integer
+      default: 0
+      
+    - name: total_courses
+      type: integer
+      default: 0
+      
+    - name: total_ceu_earned
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      
+    - name: total_learning_hours
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+
+    # Date Range
+    - name: earliest_credential_date
+      type: date
+      description: First credential earned
+      
+    - name: latest_credential_date
+      type: date
+      description: Most recent credential
+      
+    - name: last_updated
+      type: timestamp
+      description: Last content update
+
+    # Verification
+    - name: verification_code
+      type: string
+      length: 16
+      unique: true
+      indexed: true
+      
+    - name: verification_url
+      type: string
+      max_length: 500
+      
+    - name: qr_code_url
+      type: string
+      max_length: 500
+      
+    - name: digital_signature
+      type: text
+      description: PKI signature of transcript
+      
+    - name: signature_timestamp
+      type: timestamp
+
+    # Sharing
+    - name: is_public
+      type: boolean
+      default: false
+      
+    - name: public_url
+      type: string
+      max_length: 500
+      
+    - name: share_token
+      type: string
+      max_length: 100
+      unique: true
+      description: Token for sharing
+      
+    - name: share_token_expires
+      type: timestamp
+
+    # Generated Documents
+    - name: pdf_url
+      type: string
+      max_length: 500
+      description: PDF transcript URL
+      
+    - name: pdf_generated_at
+      type: timestamp
+      
+    - name: json_url
+      type: string
+      max_length: 500
+      description: JSON data export
+
+    # Privacy
+    - name: visible_sections
+      type: jsonb
+      description: Which sections are visible
+      schema:
+        credentials: boolean
+        courses: boolean
+        ceu: boolean
+        skills: boolean
+        scores: boolean
+        
+    - name: anonymize_scores
+      type: boolean
+      default: false
+
+    # Metadata
+    - name: issuing_organization_id
+      type: uuid
+      foreign_key: organization.id
+      
+    - name: issued_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: issued_at
+      type: timestamp
+      
+    - name: created_at
+      type: timestamp
+      auto: true
+      
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_current
+      formula: "last_updated > NOW() - INTERVAL '30 days'"
+      
+    - name: share_link_valid
+      formula: "share_token IS NOT NULL AND (share_token_expires IS NULL OR share_token_expires > NOW())"
+
+  relationships:
+    - name: holder
+      type: belongs_to
+      entity: credential_holder
+      foreign_key: holder_id
+      
+    - name: issuing_organization
+      type: belongs_to
+      entity: organization
+      foreign_key: issuing_organization_id
+      
+    - name: issuer
+      type: belongs_to
+      entity: user
+      foreign_key: issued_by
+
+  indexes:
+    - fields: [holder_id]
+      unique: true
+      name: idx_holder_transcript
+      
+    - fields: [verification_code]
+      unique: true
+      name: idx_verification_code
+      
+    - fields: [share_token]
+      unique: true
+      name: idx_share_token
+
+  operations:
+    - name: regenerate
+      description: Regenerate transcript with latest data
+      triggers:
+        - credential_issued
+        - credential_revoked
+        - course_completed
+        - ceu_approved
+        
+    - name: generate_pdf
+      description: Generate PDF version
+      
+    - name: create_share_link
+      description: Create shareable link with expiration
+      
+    - name: verify
+      description: Verify transcript authenticity
+
+  audit:
+    enabled: true
+    track_changes: true
+    track_access: true

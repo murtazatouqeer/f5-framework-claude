@@ -1,0 +1,608 @@
+name: Transfer Rules
+display_name: Transfer Business Rules / Quy tắc nghiệp vụ chuyển khoản
+description: |
+  Business rules governing fund transfers including limits, timing,
+  fees, validation, and compliance requirements for internal,
+  domestic, and international transfers.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# LIMIT RULES
+# =============================================================================
+limit_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-001: Daily Transfer Limit
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-001
+    name: Daily Transfer Limit
+    name_vi: Hạn mức chuyển khoản ngày
+    priority: critical
+    category: limits
+
+    description: |
+      Total transfers per day cannot exceed daily limit.
+
+    rule: |
+      IF daily_transfer_used + transfer_amount > daily_transfer_limit
+      THEN decline_transfer('DAILY_LIMIT_EXCEEDED')
+
+    default_limits:
+      basic_kyc: 20000000
+      standard_kyc: 500000000
+      enhanced_kyc: 2000000000
+
+    validation:
+      check_before: authorization
+      accumulation: all_transfer_types
+      reset_time: "00:00"
+
+    exception_handling:
+      temporary_increase:
+        allowed: true
+        max_duration: 7_days
+        max_multiplier: 2
+        approval: automatic_with_otp
+      permanent_increase:
+        allowed: true
+        approval: manual_review
+        documents_required: ["income_proof", "purpose_statement"]
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-002: Per-Transaction Limit
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-002
+    name: Per-Transaction Limit
+    name_vi: Hạn mức mỗi giao dịch
+    priority: critical
+    category: limits
+
+    description: |
+      Maximum amount for a single transfer transaction.
+
+    limits_by_type:
+      internal:
+        default: 500000000
+        max_increase: 1000000000
+      domestic:
+        default: 200000000
+        max_increase: 500000000
+      international:
+        default: 100000000
+        max_increase: 500000000
+
+    rule: |
+      IF transfer_amount > per_transaction_limit[transfer_type]
+      THEN decline_transfer('TRANSACTION_LIMIT_EXCEEDED')
+
+    large_amount_handling:
+      threshold: 100000000
+      additional_requirements:
+        - enhanced_authentication
+        - purpose_verification
+        - aml_screening
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-003: Monthly Transfer Limit
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-003
+    name: Monthly Transfer Limit
+    name_vi: Hạn mức chuyển khoản tháng
+    priority: high
+    category: limits
+
+    description: |
+      Total transfers per month cannot exceed monthly limit.
+
+    rule: |
+      IF monthly_transfer_used + transfer_amount > monthly_transfer_limit
+      THEN decline_transfer('MONTHLY_LIMIT_EXCEEDED')
+
+    default_limits:
+      basic_kyc: 100000000
+      standard_kyc: 2000000000
+      enhanced_kyc: 10000000000
+
+    reset_schedule:
+      day: 1
+      time: "00:00"
+      timezone: "Asia/Ho_Chi_Minh"
+
+# =============================================================================
+# TIMING RULES
+# =============================================================================
+timing_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-010: Internal Transfer Timing
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-010
+    name: Internal Transfer Timing
+    name_vi: Thời gian chuyển nội bộ
+    priority: high
+    category: timing
+
+    description: |
+      Internal transfers process in real-time 24/7.
+
+    processing:
+      type: real_time
+      availability: "24/7/365"
+      expected_completion: immediate
+
+    rule: |
+      IF transfer_type = 'internal'
+      THEN process_immediately()
+           complete_within(seconds: 5)
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-011: Domestic Interbank Timing
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-011
+    name: Domestic Interbank Timing
+    name_vi: Thời gian chuyển liên ngân hàng
+    priority: high
+    category: timing
+
+    description: |
+      Domestic interbank transfers via NAPAS with time windows.
+
+    processing:
+      network: NAPAS
+      real_time_window:
+        start: "06:00"
+        end: "23:00"
+        timezone: "Asia/Ho_Chi_Minh"
+
+    rule: |
+      IF transfer_type = 'domestic'
+      THEN
+        IF current_time BETWEEN '06:00' AND '23:00'
+          process_real_time_napas()
+        ELSE
+          queue_for_next_day()
+          set_value_date(next_business_day)
+
+    cutoff_handling:
+      late_submission:
+        action: queue_for_next_day
+        notification: "Transfer will be processed next business day"
+
+    holidays:
+      action: next_business_day
+      notification: "Banking holiday - transfer queued"
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-012: International Transfer Timing
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-012
+    name: International Transfer Timing
+    name_vi: Thời gian chuyển quốc tế
+    priority: high
+    category: timing
+
+    description: |
+      International transfers via SWIFT with T+1 to T+3 settlement.
+
+    processing:
+      network: SWIFT
+      cutoff_time: "15:00"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    settlement_days:
+      same_day: "Submitted before 15:00 on business day"
+      t_plus_1: "Standard processing"
+      t_plus_3: "Depending on destination country"
+
+    rule: |
+      IF transfer_type = 'international'
+      THEN
+        IF current_time < '15:00' AND is_business_day
+          initiate_swift_same_day()
+        ELSE
+          initiate_swift_next_day()
+
+        set_expected_completion(T+1 to T+3)
+
+    destination_considerations:
+      - correspondent_bank_availability
+      - destination_country_holidays
+      - currency_settlement_cut_offs
+
+# =============================================================================
+# FEE RULES
+# =============================================================================
+fee_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-020: Transfer Fee Calculation
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-020
+    name: Transfer Fee Calculation
+    name_vi: Tính phí chuyển khoản
+    priority: high
+    category: fees
+
+    description: |
+      Fee structure for different transfer types.
+
+    fee_schedule:
+      internal:
+        fee: 0
+        description: "Free for same-bank transfers"
+
+      domestic:
+        tiered:
+          - max_amount: 10000000
+            fee: 5500
+          - max_amount: 50000000
+            fee: 8800
+          - max_amount: null  # above 50M
+            fee: 11000
+        description: "Tiered fees for NAPAS transfers"
+
+      international:
+        percentage: 0.001  # 0.1%
+        min_fee: 200000
+        max_fee: 1000000
+        additional_fees:
+          cable_charge: 150000
+          correspondent_fee: variable
+        description: "Percentage-based with min/max caps"
+
+    rule: |
+      SWITCH transfer_type:
+        CASE 'internal':
+          fee = 0
+        CASE 'domestic':
+          fee = calculate_tiered_fee(amount, domestic_tiers)
+        CASE 'international':
+          base_fee = MAX(MIN(amount * 0.001, 1000000), 200000)
+          fee = base_fee + cable_charge + correspondent_fee
+
+    fee_waivers:
+      conditions:
+        - customer_segment: [affluent, high_net_worth]
+          waiver: domestic_fees
+        - account_type: premium_checking
+          waiver: first_10_domestic_per_month
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-021: Fee Deduction Method
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-021
+    name: Fee Deduction Method
+    name_vi: Phương thức trừ phí
+    priority: medium
+    category: fees
+
+    description: |
+      How fees are charged (OUR, BEN, SHA for international).
+
+    options:
+      our:
+        name: "OUR - Sender pays all"
+        name_vi: "Người gửi trả tất cả phí"
+        deduction: "From sender's account"
+
+      ben:
+        name: "BEN - Beneficiary pays"
+        name_vi: "Người nhận trả phí"
+        deduction: "From transfer amount"
+
+      sha:
+        name: "SHA - Shared"
+        name_vi: "Chia sẻ phí"
+        deduction: "Sender pays bank fee, beneficiary pays correspondent"
+
+    default_by_type:
+      domestic: our
+      international: sha
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validation_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-030: Beneficiary Validation - New
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-030
+    name: New Beneficiary Validation
+    name_vi: Xác thực người nhận mới
+    priority: critical
+    category: validation
+
+    description: |
+      Additional validation for transfers to new beneficiaries.
+
+    rule: |
+      IF beneficiary.transfer_count = 0
+      THEN
+        require_otp()
+        apply_cooling_period_check()
+
+    cooling_period:
+      threshold_amount: 50000000
+      duration_hours: 24
+
+      rule: |
+        IF beneficiary.created_at > NOW() - 24 hours
+        AND transfer_amount > 50000000
+        THEN
+          block_transfer('COOLING_PERIOD_ACTIVE')
+          notify_customer('Large transfer to new beneficiary requires 24h waiting period')
+
+    name_verification:
+      supported_banks: NAPAS_members
+      action: verify_name_matches_account
+      mismatch_handling: require_confirmation
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-031: Account Status Validation
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-031
+    name: Account Status Validation
+    name_vi: Xác thực trạng thái tài khoản
+    priority: critical
+    category: validation
+
+    description: |
+      Validate source and destination account status.
+
+    rule: |
+      # Source account checks
+      IF source_account.status != 'active'
+        decline('SOURCE_ACCOUNT_INACTIVE')
+      IF source_account.allow_debit = false
+        decline('DEBIT_NOT_ALLOWED')
+
+      # Destination account checks (internal only)
+      IF transfer_type = 'internal'
+        IF dest_account.status NOT IN ['active', 'dormant']
+          decline('DESTINATION_ACCOUNT_UNAVAILABLE')
+        IF dest_account.allow_credit = false
+          decline('CREDIT_NOT_ALLOWED')
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-032: Balance Validation
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-032
+    name: Balance Validation
+    name_vi: Xác thực số dư
+    priority: critical
+    category: validation
+
+    description: |
+      Ensure sufficient funds before transfer.
+
+    rule: |
+      total_debit = transfer_amount + fee_amount
+
+      IF source_account.available_balance < total_debit
+      THEN decline('INSUFFICIENT_FUNDS')
+
+    hold_management:
+      action: place_hold
+      duration: until_completion_or_timeout
+      timeout: 24_hours
+
+# =============================================================================
+# AUTHENTICATION RULES
+# =============================================================================
+authentication_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-040: OTP Requirements
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-040
+    name: OTP Requirements
+    name_vi: Yêu cầu OTP
+    priority: critical
+    category: authentication
+
+    description: |
+      When OTP authentication is required for transfers.
+
+    otp_required:
+      - condition: "transfer_type = 'external'"
+        always: true
+      - condition: "amount > otp_threshold"
+        threshold: 10000000
+      - condition: "new_beneficiary"
+        always: true
+      - condition: "international"
+        always: true
+
+    otp_methods:
+      - type: sms
+        default: true
+      - type: smart_otp
+        app_generated: true
+      - type: hardware_token
+        for: enterprise_customers
+
+    otp_validity:
+      duration_seconds: 180
+      max_attempts: 3
+      lockout_duration: 300
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-041: Biometric Authentication
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-041
+    name: Biometric Authentication
+    name_vi: Xác thực sinh trắc học
+    priority: medium
+    category: authentication
+
+    description: |
+      Biometric authentication options for mobile transfers.
+
+    supported_methods:
+      - fingerprint
+      - face_recognition
+      - voice_recognition
+
+    usage:
+      low_value_transfers:
+        threshold: 5000000
+        biometric_sufficient: true
+      high_value_transfers:
+        threshold: 5000000
+        biometric_plus_otp: true
+
+# =============================================================================
+# COMPLIANCE RULES
+# =============================================================================
+compliance_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-050: AML Screening
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-050
+    name: AML Screening
+    name_vi: Sàng lọc chống rửa tiền
+    priority: critical
+    category: compliance
+
+    description: |
+      Anti-money laundering screening requirements.
+
+    screening_triggers:
+      - amount_above: 200000000
+      - cumulative_daily_above: 500000000
+      - international_transfer: true
+      - high_risk_country: true
+      - pep_involvement: true
+
+    rule: |
+      IF any screening_trigger is true
+      THEN
+        run_aml_screening()
+        IF flagged
+          hold_transfer()
+          notify_compliance()
+          await_clearance()
+
+    high_risk_countries:
+      list: fatf_grey_list
+      additional_requirements:
+        - enhanced_due_diligence
+        - purpose_documentation
+        - source_of_funds
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-051: Sanctions Screening
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-051
+    name: Sanctions Screening
+    name_vi: Sàng lọc danh sách trừng phạt
+    priority: critical
+    category: compliance
+
+    description: |
+      Screening against sanctions lists.
+
+    lists:
+      - OFAC_SDN
+      - UN_Consolidated
+      - EU_Sanctions
+      - Local_sanctions
+
+    rule: |
+      FOR all transfers:
+        screen_beneficiary_name()
+        screen_beneficiary_bank()
+        screen_correspondent_banks()
+
+        IF match_found
+          block_transfer()
+          escalate_to_compliance()
+          file_SAR_if_required()
+
+  # ---------------------------------------------------------------------------
+  # BR-TRF-052: Reporting Threshold
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-052
+    name: Large Transaction Reporting
+    name_vi: Báo cáo giao dịch lớn
+    priority: high
+    category: compliance
+
+    description: |
+      Regulatory reporting for large transactions.
+
+    thresholds:
+      cash_equivalent: 200000000
+      international: 500000000
+
+    rule: |
+      IF transfer_amount >= reporting_threshold
+      OR cumulative_daily >= reporting_threshold
+      THEN
+        flag_for_reporting()
+        generate_CTR()  # Currency Transaction Report
+
+# =============================================================================
+# SCHEDULING RULES
+# =============================================================================
+scheduling_rules:
+  # ---------------------------------------------------------------------------
+  # BR-TRF-060: Future-Dated Transfers
+  # ---------------------------------------------------------------------------
+  - id: BR-TRF-060
+    name: Future-Dated Transfers
+    name_vi: Chuyển khoản hẹn ngày
+    priority: medium
+    category: scheduling
+
+    description: |
+      Rules for scheduling future transfers.
+
+    constraints:
+      max_days_ahead: 365
+      min_days_ahead: 1
+      business_days_only: true
+
+    rule: |
+      IF scheduled_date > NOW() + 365 days
+        decline('SCHEDULE_TOO_FAR')
+      IF scheduled_date is weekend or holiday
+        adjust_to_next_business_day()
+        notify_customer()
+
+    execution:
+      time: "06:00"
+      timezone: "Asia/Ho_Chi_Minh"
+
+    cancellation:
+      allowed_until: scheduled_date - 1 day
+      cutoff_time: "17:00"
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  real_time_validation:
+    - "Daily/monthly limit accumulation"
+    - "Balance availability check"
+    - "Account status verification"
+
+  external_integrations:
+    - "NAPAS real-time switch"
+    - "SWIFT gateway"
+    - "AML screening service"
+    - "Sanctions screening service"
+    - "Name verification service"
+
+  batch_processes:
+    - "Daily limit reset"
+    - "Monthly limit reset"
+    - "Scheduled transfer execution"
+    - "Regulatory reporting"
+
+  notifications:
+    - "Transfer initiated"
+    - "Transfer completed"
+    - "Transfer failed"
+    - "Cooling period notification"
+    - "Limit warning"

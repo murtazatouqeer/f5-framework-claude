@@ -1,0 +1,512 @@
+name: playback_session_workflow
+display_name: Playback Session Workflow
+description: |
+  Workflow for managing video playback sessions including
+  authorization, streaming, progress tracking, and session lifecycle.
+
+domain: entertainment
+subdomain: streaming
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-STR-003
+trigger:
+  event: playback_request
+  source: video_player
+  conditions:
+    - user_authenticated: true
+    - content_selected: true
+
+participants:
+  roles:
+    - viewer
+    - system
+
+  systems:
+    - video_player
+    - authorization_service
+    - drm_service
+    - cdn_service
+    - analytics_service
+    - watch_history_service
+    - recommendation_engine
+
+stages:
+  - id: PS-001
+    name: Playback Authorization
+    description: Verify user can play requested content
+    actor: system
+
+    inputs:
+      - user_id
+      - profile_id
+      - content_id
+      - device_info
+
+    activities:
+      - id: PS-001-A
+        name: Verify Subscription
+        type: automated
+        action: Check active subscription
+        validations:
+          - subscription_active: true
+          - not_suspended: true
+          - not_expired: true
+
+      - id: PS-001-B
+        name: Check Content Entitlement
+        type: automated
+        action: Verify user can access content
+        checks:
+          - content_in_subscription_tier
+          - content_available_in_region
+          - content_within_maturity_rating
+          - content_license_valid
+
+      - id: PS-001-C
+        name: Validate Concurrent Streams
+        type: automated
+        action: Check concurrent stream limit
+        logic: |
+          active_streams < max_allowed_streams
+        on_limit:
+          - offer_stream_takeover
+          - show_device_list
+
+      - id: PS-001-D
+        name: Verify Device
+        type: automated
+        action: Validate device eligibility
+        checks:
+          - device_registered
+          - device_not_blocked
+          - drm_capability_check
+
+    outputs:
+      - authorization_token
+      - entitlement_info
+      - quality_cap
+
+    sla: 500_ms
+    decision_point:
+      authorized: PS-002
+      unauthorized: end_with_error
+    next_stage: PS-002
+
+  - id: PS-002
+    name: DRM License Acquisition
+    description: Obtain DRM license for playback
+    actor: system
+
+    inputs:
+      - authorization_token
+      - content_id
+      - device_capabilities
+
+    activities:
+      - id: PS-002-A
+        name: Select DRM System
+        type: automated
+        action: Choose appropriate DRM
+        selection:
+          safari: fairplay
+          chrome: widevine
+          edge: playready
+          android: widevine
+          ios: fairplay
+          smart_tv: varies
+
+      - id: PS-002-B
+        name: Generate License Challenge
+        type: automated
+        action: Create license request
+        includes:
+          - device_certificate
+          - content_key_request
+          - session_id
+
+      - id: PS-002-C
+        name: Acquire License
+        type: automated
+        action: Get decryption license
+        license_params:
+          - content_key
+          - license_duration
+          - output_restrictions
+          - hdcp_level
+
+      - id: PS-002-D
+        name: Validate License
+        type: automated
+        action: Verify license validity
+        checks:
+          - not_expired
+          - correct_content
+          - security_level_met
+
+    outputs:
+      - drm_license
+      - playback_policy
+
+    sla: 1_second
+    next_stage: PS-003
+
+  - id: PS-003
+    name: Stream Initialization
+    description: Initialize video stream and player
+    actor: system
+
+    inputs:
+      - content_id
+      - drm_license
+      - device_capabilities
+
+    activities:
+      - id: PS-003-A
+        name: Fetch Manifest
+        type: automated
+        action: Retrieve streaming manifest
+        manifest_types:
+          - HLS: m3u8
+          - DASH: mpd
+        selection: based_on_platform
+
+      - id: PS-003-B
+        name: Select Initial Quality
+        type: automated
+        action: Choose starting quality
+        factors:
+          - device_capability
+          - subscription_cap
+          - bandwidth_estimate
+          - user_preference
+
+      - id: PS-003-C
+        name: Configure ABR
+        type: automated
+        action: Set up adaptive bitrate
+        config:
+          - min_quality
+          - max_quality
+          - buffer_targets
+          - switching_rules
+
+      - id: PS-003-D
+        name: Load Resume Position
+        type: automated
+        action: Get watch progress
+        logic: |
+          IF watch_history exists
+          AND progress < 95%
+          THEN start_at progress_position
+          ELSE start_at 0
+
+      - id: PS-003-E
+        name: Create Playback Session
+        type: automated
+        action: Initialize session record
+        record:
+          - session_id
+          - start_time
+          - device_info
+          - initial_quality
+
+    outputs:
+      - manifest_url
+      - session_id
+      - resume_position
+      - abr_config
+
+    sla: 500_ms
+    next_stage: PS-004
+
+  - id: PS-004
+    name: Active Playback
+    description: Monitor and manage active playback
+    actor: system
+    type: continuous
+
+    inputs:
+      - session_id
+      - player_events
+
+    activities:
+      - id: PS-004-A
+        name: Track Progress
+        type: automated
+        action: Record playback progress
+        frequency: every_30_seconds
+        updates:
+          - current_position
+          - watch_duration
+          - quality_level
+
+      - id: PS-004-B
+        name: Session Heartbeat
+        type: automated
+        action: Maintain session alive
+        interval: 30_seconds
+        timeout: 2_minutes
+
+      - id: PS-004-C
+        name: Quality Monitoring
+        type: automated
+        action: Monitor stream quality
+        metrics:
+          - buffering_events
+          - quality_switches
+          - bitrate_average
+          - frame_drops
+
+      - id: PS-004-D
+        name: Handle Player Events
+        type: automated
+        action: Process player events
+        events:
+          play:
+            - update_status: playing
+          pause:
+            - update_status: paused
+            - save_position
+          seek:
+            - update_position
+            - log_seek_event
+          quality_change:
+            - log_quality_switch
+          buffer_start:
+            - log_buffer_event
+          buffer_end:
+            - calculate_buffer_duration
+          error:
+            - log_error
+            - attempt_recovery
+
+      - id: PS-004-E
+        name: Detect Completion
+        type: automated
+        action: Check for content completion
+        trigger: position > 90% duration
+        actions:
+          - mark_as_completed
+          - prepare_next_content
+
+    outputs:
+      - progress_updates
+      - quality_metrics
+      - event_log
+
+    sla: real_time
+    continuous: true
+    next_stage: PS-005
+
+  - id: PS-005
+    name: Session Features
+    description: Handle in-session features
+    actor: viewer
+
+    inputs:
+      - session_id
+
+    activities:
+      - id: PS-005-A
+        name: Skip Intro
+        type: manual
+        trigger: intro_marker_reached
+        action: Skip to intro end
+        condition: skip_intro_enabled
+
+      - id: PS-005-B
+        name: Change Audio Track
+        type: manual
+        action: Switch audio language
+        updates:
+          - audio_track_selection
+          - log_preference
+
+      - id: PS-005-C
+        name: Toggle Subtitles
+        type: manual
+        action: Enable/disable subtitles
+        updates:
+          - subtitle_track_selection
+          - log_preference
+
+      - id: PS-005-D
+        name: Adjust Quality
+        type: manual
+        action: Manual quality selection
+        options:
+          - auto
+          - SD
+          - HD
+          - FHD
+          - 4K
+        constraints: subscription_cap
+
+      - id: PS-005-E
+        name: Next Episode
+        type: manual
+        trigger: completion_or_button
+        action: Start next episode
+        auto_play: if_enabled
+        countdown: 10_seconds
+
+    outputs:
+      - feature_usage_log
+      - preference_updates
+
+    sla: real_time
+    parallel_with: PS-004
+
+  - id: PS-006
+    name: Session Termination
+    description: End playback session gracefully
+    actor: system
+
+    inputs:
+      - session_id
+      - termination_reason
+
+    activities:
+      - id: PS-006-A
+        name: Save Final Progress
+        type: automated
+        action: Persist watch progress
+        updates:
+          - final_position
+          - total_watch_time
+          - completion_status
+
+      - id: PS-006-B
+        name: Release Resources
+        type: automated
+        action: Clean up session resources
+        releases:
+          - drm_license
+          - concurrent_stream_slot
+          - cdn_connection
+
+      - id: PS-006-C
+        name: Calculate Session Metrics
+        type: automated
+        action: Compute session analytics
+        metrics:
+          - total_duration
+          - buffer_ratio
+          - average_quality
+          - error_count
+          - completion_percentage
+
+      - id: PS-006-D
+        name: Update Watch History
+        type: automated
+        action: Update user watch record
+        updates:
+          - last_watched_at
+          - progress_percent
+          - watch_count
+
+      - id: PS-006-E
+        name: Trigger Recommendations
+        type: automated
+        action: Update recommendation signals
+        signals:
+          - content_watched
+          - completion_status
+          - engagement_score
+
+      - id: PS-006-F
+        name: Close Session Record
+        type: automated
+        action: Finalize session data
+        record:
+          - end_time
+          - termination_reason
+          - session_status: completed
+
+    outputs:
+      - session_record
+      - updated_watch_history
+
+    sla: 5_seconds
+    next_stage: complete
+
+completion_criteria:
+  - session_closed
+  - progress_saved
+  - resources_released
+  - analytics_recorded
+
+exception_handling:
+  authorization_failure:
+    action: show_error_message
+    message: content_not_available
+    log: true
+
+  drm_failure:
+    action: retry_license
+    max_retries: 3
+    fallback: show_drm_error
+
+  stream_error:
+    action: attempt_recovery
+    recovery_steps:
+      - retry_manifest
+      - switch_cdn
+      - fallback_quality
+
+  network_timeout:
+    action: pause_and_notify
+    resume: on_reconnect
+
+  concurrent_limit:
+    action: prompt_takeover
+    options:
+      - take_over_other_device
+      - cancel_playback
+
+  session_timeout:
+    action: auto_terminate
+    save_progress: true
+    reason: inactivity
+
+quality_adaptation:
+  abr_algorithm: throughput_based
+  buffer_targets:
+    min_buffer: 10_seconds
+    target_buffer: 30_seconds
+    max_buffer: 60_seconds
+  quality_rules:
+    upgrade:
+      condition: buffer > 20s AND bandwidth > current_bitrate * 1.3
+      delay: 5_seconds
+    downgrade:
+      condition: buffer < 8s OR bandwidth < current_bitrate * 0.8
+      immediate: true
+
+metrics:
+  - name: startup_time
+    description: Time to first frame
+    target: "< 2 seconds"
+
+  - name: rebuffer_rate
+    description: Buffering events per hour
+    target: "< 0.5 events/hour"
+
+  - name: average_bitrate
+    description: Average streaming bitrate
+    target: "> 3 Mbps"
+
+  - name: completion_rate
+    description: Sessions reaching 90% completion
+    target: "> 60%"
+
+  - name: error_rate
+    description: Sessions with errors
+    target: "< 1%"
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

@@ -1,0 +1,417 @@
+# Prior Authorization Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Prior authorization request and management entity
+
+entity:
+  id: prior_authorization
+  name: Prior Authorization
+  name_ja: 事前承認
+  description: Prior authorization request management
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: pa_id
+      type: uuid
+      primary_key: true
+      description: Unique PA request ID
+      
+    - name: pa_number
+      type: string
+      length: 50
+      unique: true
+      description: PA reference number from payer
+      
+    - name: rx_number
+      type: string
+      references: prescription
+      description: Associated prescription
+
+    # Patient Information
+    - name: patient_id
+      type: uuid
+      required: true
+      references: patient_profile
+      description: Patient requiring PA
+      
+    - name: patient_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: patient_dob
+      type: date
+      required: true
+
+    # Insurance Information
+    - name: plan_id
+      type: uuid
+      required: true
+      references: insurance_plan
+      description: Insurance plan
+      
+    - name: plan_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: bin
+      type: string
+      length: 6
+      
+    - name: pcn
+      type: string
+      length: 10
+      
+    - name: group_number
+      type: string
+      length: 20
+      
+    - name: member_id
+      type: string
+      length: 50
+      required: true
+
+    # Drug Information
+    - name: ndc
+      type: string
+      length: 11
+      required: true
+      references: drug
+      
+    - name: drug_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: drug_strength
+      type: string
+      length: 100
+      
+    - name: quantity_requested
+      type: decimal
+      precision: 10
+      scale: 2
+      required: true
+      
+    - name: days_supply
+      type: integer
+      required: true
+
+    # Prescriber Information
+    - name: prescriber_npi
+      type: string
+      length: 10
+      required: true
+      
+    - name: prescriber_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: prescriber_phone
+      type: string
+      length: 20
+      
+    - name: prescriber_fax
+      type: string
+      length: 20
+
+    # Clinical Information
+    - name: diagnosis_codes
+      type: json
+      description: ICD-10 diagnosis codes
+      
+    - name: diagnosis_description
+      type: text
+      description: Clinical diagnosis narrative
+      
+    - name: medical_necessity
+      type: text
+      description: Medical necessity statement
+      
+    - name: alternative_drugs_tried
+      type: json
+      description: Previous medications tried and failed
+      
+    - name: clinical_notes
+      type: text
+      description: Additional clinical information
+      
+    - name: supporting_documents
+      type: json
+      description: Attached supporting documents
+
+    # Request Details
+    - name: request_type
+      type: enum
+      values: [new, renewal, appeal, exception]
+      required: true
+      description: Type of PA request
+      
+    - name: urgency
+      type: enum
+      values: [standard, urgent, emergency]
+      default: standard
+      description: Request urgency
+      
+    - name: submission_method
+      type: enum
+      values: [electronic, fax, phone, portal]
+      required: true
+      description: How PA was submitted
+
+    # Dates
+    - name: request_date
+      type: timestamp
+      required: true
+      auto: create
+      description: Date PA was requested
+      
+    - name: submitted_date
+      type: timestamp
+      description: Date PA was submitted to payer
+      
+    - name: decision_date
+      type: timestamp
+      description: Date decision was received
+      
+    - name: effective_date
+      type: date
+      description: PA effective date if approved
+      
+    - name: expiration_date
+      type: date
+      description: PA expiration date
+
+    # Decision
+    - name: status
+      type: enum
+      values: [
+        draft, submitted, pending_info,
+        approved, denied, partial_approval,
+        expired, cancelled, appealed
+      ]
+      default: draft
+      
+    - name: decision
+      type: enum
+      values: [pending, approved, denied, partial]
+      default: pending
+      
+    - name: approved_quantity
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Approved quantity if partial
+      
+    - name: approved_days_supply
+      type: integer
+      description: Approved days supply
+      
+    - name: approval_duration_days
+      type: integer
+      description: How long PA is valid
+      
+    - name: denial_reason
+      type: text
+      description: Reason for denial
+      
+    - name: denial_code
+      type: string
+      length: 50
+      description: Payer denial code
+
+    # Appeal Information
+    - name: appeal_available
+      type: boolean
+      default: false
+      description: Appeal option available
+      
+    - name: appeal_deadline
+      type: date
+      description: Deadline to file appeal
+      
+    - name: original_pa_id
+      type: uuid
+      description: Original PA if this is appeal
+
+    # Staff
+    - name: initiated_by
+      type: uuid
+      required: true
+      description: Staff who initiated PA
+      
+    - name: submitted_by
+      type: uuid
+      description: Staff who submitted PA
+      
+    - name: last_updated_by
+      type: uuid
+      description: Last staff to update
+
+    # Communication
+    - name: payer_contact
+      type: string
+      description: Payer contact person
+      
+    - name: payer_reference
+      type: string
+      description: Payer tracking number
+      
+    - name: notes
+      type: text
+      description: Internal notes
+      
+    - name: communication_log
+      type: json
+      description: Log of communications with payer
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  state_machine:
+    initial: draft
+    states:
+      draft:
+        description: PA request being prepared
+        transitions:
+          - to: submitted
+            event: submit
+          - to: cancelled
+            event: cancel
+            
+      submitted:
+        description: PA submitted to payer
+        transitions:
+          - to: pending_info
+            event: info_requested
+          - to: approved
+            event: approve
+          - to: denied
+            event: deny
+          - to: partial_approval
+            event: partial_approve
+            
+      pending_info:
+        description: Awaiting additional information
+        transitions:
+          - to: submitted
+            event: info_provided
+          - to: cancelled
+            event: cancel
+          - to: denied
+            event: deny
+            
+      approved:
+        description: PA approved
+        transitions:
+          - to: expired
+            event: expire
+            guard: past_expiration_date
+            
+      denied:
+        description: PA denied
+        transitions:
+          - to: appealed
+            event: appeal
+            guard: within_appeal_period
+            
+      partial_approval:
+        description: PA partially approved
+        transitions:
+          - to: appealed
+            event: appeal
+          - to: expired
+            event: expire
+            
+      appealed:
+        description: Appeal submitted
+        transitions:
+          - to: approved
+            event: appeal_approved
+          - to: denied
+            event: appeal_denied
+            
+      expired:
+        description: PA expired
+        terminal: true
+        
+      cancelled:
+        description: PA cancelled
+        terminal: true
+
+  relationships:
+    - name: patient
+      type: many_to_one
+      target: patient_profile
+      foreign_key: patient_id
+      
+    - name: insurance_plan
+      type: many_to_one
+      target: insurance_plan
+      foreign_key: plan_id
+      
+    - name: prescription
+      type: many_to_one
+      target: prescription
+      foreign_key: rx_number
+      
+    - name: drug
+      type: many_to_one
+      target: drug
+      foreign_key: ndc
+      
+    - name: appeal
+      type: one_to_one
+      target: prior_authorization
+      foreign_key: original_pa_id
+      description: If this is an appeal
+
+  indexes:
+    - fields: [pa_number]
+      unique: true
+      name: idx_pa_number
+      
+    - fields: [patient_id]
+      name: idx_pa_patient
+      
+    - fields: [rx_number]
+      name: idx_pa_rx
+      
+    - fields: [status]
+      name: idx_pa_status
+      
+    - fields: [decision]
+      name: idx_pa_decision
+      
+    - fields: [expiration_date]
+      name: idx_pa_expiration
+      
+    - fields: [request_date]
+      name: idx_pa_request_date
+
+  validations:
+    - field: expiration_date
+      rule: after
+      compare_field: effective_date
+      message: "Expiration must be after effective date"
+      
+    - field: appeal_deadline
+      rule: future_date_if
+      condition: "status == 'denied'"
+      message: "Appeal deadline must be in future"
+
+  audit:
+    enabled: true
+    events: [create, update, status_change, submit, decision]
+    retention_days: 2555
+    hipaa_compliant: true

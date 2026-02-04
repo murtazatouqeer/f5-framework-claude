@@ -1,0 +1,542 @@
+name: agent-use-cases
+display_name: Travel Agent Use Cases
+display_name_vi: Ca sử dụng của Đại lý du lịch
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Use cases for travel agents (B2B users) who book travel
+  on behalf of customers through the agent portal.
+
+actor:
+  name: Travel Agent
+  type: primary
+  description: |
+    B2B user representing a travel agency who searches,
+    books, and manages travel on behalf of end customers.
+  characteristics:
+    - licensed_agent: required
+    - agency_account: active
+    - credit_terms: established
+    - commission_entitled: yes
+  sub_types:
+    - retail_agent: walk_in_customers
+    - corporate_agent: business_travel
+    - wholesale_agent: other_agencies
+    - online_agent: sub_agents
+
+use_cases:
+  # ===== SEARCH & BOOKING USE CASES =====
+  - id: UC-AGT-001
+    name: Agent Flight Search
+    display_name_vi: Tìm chuyến bay (Đại lý)
+    category: search
+    description: |
+      Agent searches flights with access to negotiated
+      rates and additional inventory.
+    preconditions:
+      - agent_logged_in
+      - agency_account_active
+    trigger: agent_initiates_search
+    main_flow:
+      1: Access agent portal
+      2: Enter search criteria
+      3: View results with:
+          - Net rates
+          - Commission info
+          - Markup options
+      4: Compare published vs negotiated fares
+      5: Apply filters and sort
+      6: View fare rules detail
+    agent_specific_features:
+      - net_fare_display
+      - commission_visibility
+      - markup_calculator
+      - GDS_command_entry: optional
+    postconditions:
+      - results_with_agent_pricing
+    business_rules:
+      - BR-PRC-M001
+
+  - id: UC-AGT-002
+    name: Book for Customer
+    display_name_vi: Đặt cho khách hàng
+    category: booking
+    description: |
+      Agent creates booking on behalf of a customer
+      with agency billing or customer payment.
+    preconditions:
+      - agent_logged_in
+      - product_selected
+    trigger: agent_proceeds_to_book
+    main_flow:
+      1: Enter customer/passenger details
+      2: Add frequent flyer numbers
+      3: Select fare and add services
+      4: Review booking
+      5: Select payment method:
+          - Agency credit
+          - Customer card
+          - Bank transfer
+      6: Apply markup if applicable
+      7: Confirm booking
+      8: Generate customer documents
+      9: Send confirmation to customer
+    alternative_flows:
+      - id: AF-001
+        name: Corporate booking
+        condition: corporate_customer
+        steps:
+          - Select corporate profile
+          - Apply corporate rates
+          - Route for approval if required
+
+      - id: AF-002
+        name: On-hold booking
+        condition: fare_allows_hold
+        steps:
+          - Create on-hold booking
+          - Set ticketing deadline
+          - Await customer payment
+    postconditions:
+      - booking_created
+      - agency_commission_recorded
+      - customer_documents_available
+    business_rules:
+      - BR-BK-S002
+
+  - id: UC-AGT-003
+    name: Create Group Booking
+    display_name_vi: Đặt đoàn
+    category: booking
+    description: |
+      Agent requests and manages group bookings
+      for 10+ passengers.
+    preconditions:
+      - agent_logged_in
+      - group_minimum_met: 10+ passengers
+    trigger: agent_requests_group_booking
+    main_flow:
+      1: Submit group request with:
+          - Travel details
+          - Passenger count
+          - Preferred airlines/hotels
+      2: Receive quotes from suppliers
+      3: Present options to customer
+      4: Confirm group booking
+      5: Collect deposit
+      6: Submit passenger names by deadline
+      7: Issue tickets
+      8: Manage group rooming list
+    group_specific:
+      - name_change_flexibility
+      - free_places_calculation
+      - deposit_tracking
+      - rooming_list_management
+    postconditions:
+      - group_booking_confirmed
+      - deposit_collected
+    business_rules:
+      - BR-BK-S001
+
+  - id: UC-AGT-004
+    name: Apply Markup
+    display_name_vi: Áp dụng phí dịch vụ
+    category: pricing
+    description: |
+      Agent applies markup/service fee to booking
+      for customer invoicing.
+    preconditions:
+      - booking_in_progress
+      - agency_markup_enabled
+    trigger: agent_adds_markup
+    main_flow:
+      1: View net cost
+      2: Enter markup amount or percentage
+      3: Preview customer-facing price
+      4: Confirm markup
+      5: Generate customer invoice
+    markup_options:
+      - fixed_amount
+      - percentage
+      - per_passenger
+      - per_segment
+    controls:
+      - maximum_markup_limit: configurable
+      - markup_audit_trail: maintained
+    postconditions:
+      - markup_applied
+      - customer_price_calculated
+
+  # ===== MANAGEMENT USE CASES =====
+  - id: UC-AGT-010
+    name: Manage Queue
+    display_name_vi: Quản lý hàng đợi
+    category: management
+    description: |
+      Agent monitors and acts on booking queues
+      for schedule changes, ticketing deadlines, etc.
+    preconditions:
+      - agent_logged_in
+    trigger: agent_reviews_queues
+    main_flow:
+      1: Access queue dashboard
+      2: View queue categories:
+          - Ticketing deadlines
+          - Schedule changes
+          - Price changes
+          - Pending confirmations
+          - Payment pending
+      3: Select queue item
+      4: Take required action
+      5: Mark as resolved
+    queue_types:
+      - Q1: general_messages
+      - Q2: schedule_changes
+      - Q3: ticketing_reminders
+      - Q4: waitlist_confirmations
+      - Q5: payments_pending
+    postconditions:
+      - queue_items_processed
+
+  - id: UC-AGT-011
+    name: Issue Tickets
+    display_name_vi: Xuất vé
+    category: ticketing
+    description: |
+      Agent issues e-tickets for confirmed bookings
+      after payment received.
+    preconditions:
+      - booking_confirmed
+      - payment_received
+      - within_ticketing_deadline
+    trigger: agent_issues_tickets
+    main_flow:
+      1: Access booking
+      2: Verify payment status
+      3: Verify passenger details
+      4: Initiate ticketing
+      5: Receive ticket numbers
+      6: Update booking record
+      7: Send e-ticket to customer
+    alternative_flows:
+      - id: AF-001
+        name: Split ticketing
+        condition: mixed_fare_rules
+        steps:
+          - Identify segments to split
+          - Issue multiple tickets
+          - Link ticket records
+    postconditions:
+      - tickets_issued
+      - eticket_sent_to_customer
+    business_rules:
+      - BR-BK-T001
+
+  - id: UC-AGT-012
+    name: Process Refund
+    display_name_vi: Xử lý hoàn vé
+    category: post_booking
+    description: |
+      Agent processes ticket refund request
+      and applies to agency credit.
+    preconditions:
+      - ticket_issued
+      - refund_eligible
+    trigger: customer_requests_refund
+    main_flow:
+      1: Access booking/ticket
+      2: Check refund eligibility
+      3: Calculate refund amount
+      4: Submit refund request
+      5: Await airline processing
+      6: Receive refund confirmation
+      7: Credit to agency account
+      8: Refund to customer
+    refund_handling:
+      - airline_refund_to_agency
+      - agency_refunds_customer
+      - commission_clawback: if_applicable
+    postconditions:
+      - refund_processed
+      - agency_credited
+      - customer_refunded
+
+  - id: UC-AGT-013
+    name: Reissue Ticket
+    display_name_vi: Xuất vé lại
+    category: ticketing
+    description: |
+      Agent processes ticket exchange/reissue
+      for itinerary changes.
+    preconditions:
+      - ticket_issued
+      - change_requested
+      - fare_rules_allow
+    trigger: customer_requests_change
+    main_flow:
+      1: Access existing ticket
+      2: Search new itinerary
+      3: Calculate exchange fees
+      4: Calculate fare difference
+      5: Collect additional payment
+      6: Reissue ticket
+      7: Void/refund original coupons
+      8: Send new itinerary to customer
+    considerations:
+      - residual_value_calculation
+      - tax_recalculation
+      - penalty_application
+    postconditions:
+      - new_ticket_issued
+      - old_ticket_exchanged
+
+  # ===== REPORTING USE CASES =====
+  - id: UC-AGT-020
+    name: View Sales Report
+    display_name_vi: Xem báo cáo bán hàng
+    category: reporting
+    description: |
+      Agent views sales performance and
+      commission reports.
+    preconditions:
+      - agent_logged_in
+      - reporting_access_enabled
+    trigger: agent_accesses_reports
+    main_flow:
+      1: Access reporting module
+      2: Select report type
+      3: Set date range
+      4: Apply filters (product, supplier)
+      5: Generate report
+      6: View/download results
+    report_types:
+      - sales_summary
+      - booking_list
+      - commission_report
+      - refund_report
+      - cancellation_report
+      - supplier_breakdown
+    export_formats:
+      - PDF
+      - Excel
+      - CSV
+    postconditions:
+      - report_generated
+
+  - id: UC-AGT-021
+    name: Track Commission
+    display_name_vi: Theo dõi hoa hồng
+    category: reporting
+    description: |
+      Agent tracks earned commission and
+      payment status.
+    preconditions:
+      - agent_logged_in
+    trigger: agent_checks_commission
+    main_flow:
+      1: Access commission dashboard
+      2: View:
+          - Earned commission
+          - Pending commission
+          - Paid commission
+      3: Drill down by booking
+      4: View payment schedule
+      5: Export commission statement
+    commission_status:
+      - pending: booking_confirmed
+      - confirmed: ticket_issued
+      - clawback: if_refunded
+      - paid: settlement_complete
+    postconditions:
+      - commission_status_viewed
+
+  # ===== ACCOUNT MANAGEMENT =====
+  - id: UC-AGT-030
+    name: Manage Sub-agents
+    display_name_vi: Quản lý đại lý con
+    category: account
+    description: |
+      Agency admin manages sub-agent accounts
+      and permissions.
+    preconditions:
+      - admin_access
+    trigger: admin_manages_users
+    main_flow:
+      1: Access user management
+      2: Add/edit/deactivate sub-agents
+      3: Set permissions
+      4: Set booking limits
+      5: Configure commission splits
+      6: Save changes
+    permissions:
+      - search_only
+      - book_with_approval
+      - book_without_approval
+      - issue_tickets
+      - process_refunds
+      - view_reports
+    postconditions:
+      - user_account_managed
+
+  - id: UC-AGT-031
+    name: Manage Credit
+    display_name_vi: Quản lý tín dụng
+    category: account
+    description: |
+      Agency monitors and manages credit
+      limit and balance.
+    preconditions:
+      - agency_admin_access
+    trigger: admin_checks_credit
+    main_flow:
+      1: Access credit dashboard
+      2: View:
+          - Credit limit
+          - Available credit
+          - Pending charges
+          - Payment due
+      3: Request credit increase
+      4: Make payment
+      5: View transaction history
+    credit_alerts:
+      - low_balance_warning
+      - credit_limit_reached
+      - payment_overdue
+    postconditions:
+      - credit_status_understood
+
+  # ===== CUSTOMER MANAGEMENT =====
+  - id: UC-AGT-040
+    name: Manage Customer Profile
+    display_name_vi: Quản lý hồ sơ khách
+    category: customer
+    description: |
+      Agent creates and maintains customer
+      profiles for efficient rebooking.
+    preconditions:
+      - agent_logged_in
+    trigger: agent_manages_customer
+    main_flow:
+      1: Search or create customer
+      2: Enter/update details:
+          - Personal information
+          - Contact details
+          - Passport info
+          - Loyalty programs
+          - Preferences
+      3: View booking history
+      4: Save profile
+    benefits:
+      - faster_booking
+      - preference_recall
+      - loyalty_tracking
+    postconditions:
+      - customer_profile_saved
+
+  - id: UC-AGT-041
+    name: Manage Corporate Account
+    display_name_vi: Quản lý tài khoản doanh nghiệp
+    category: customer
+    description: |
+      Agent manages corporate customer accounts
+      with negotiated rates and policies.
+    preconditions:
+      - corporate_module_access
+    trigger: agent_manages_corporate
+    main_flow:
+      1: Access corporate account
+      2: View negotiated rates
+      3: Manage authorized travelers
+      4: Set approval workflows
+      5: View corporate reporting
+      6: Apply corporate policy
+    corporate_features:
+      - negotiated_rates
+      - policy_enforcement
+      - approval_routing
+      - consolidated_billing
+      - travel_reporting
+    postconditions:
+      - corporate_account_managed
+
+  # ===== SPECIAL SERVICES =====
+  - id: UC-AGT-050
+    name: Book Special Service
+    display_name_vi: Đặt dịch vụ đặc biệt
+    category: special
+    description: |
+      Agent books special assistance services
+      for passengers with specific needs.
+    preconditions:
+      - booking_in_progress
+    trigger: passenger_needs_assistance
+    main_flow:
+      1: Identify assistance type (wheelchair, medical, UM)
+      2: Check airline availability
+      3: Submit SSR request
+      4: Receive confirmation
+      5: Document in booking
+      6: Inform customer of arrangements
+    ssr_types:
+      - WCHR: wheelchair_to_gate
+      - WCHS: wheelchair_to_seat
+      - WCHC: immobile_passenger
+      - DEAF: hearing_impaired
+      - BLND: visually_impaired
+      - UMNR: unaccompanied_minor
+      - MEDA: medical_case
+    postconditions:
+      - special_service_confirmed
+
+  - id: UC-AGT-051
+    name: Apply Waiver
+    display_name_vi: Áp dụng miễn giảm
+    category: special
+    description: |
+      Agent applies fee waiver based on
+      authority level or supplier authorization.
+    preconditions:
+      - waiver_justified
+      - authority_level_sufficient
+    trigger: waiver_needed
+    main_flow:
+      1: Identify waiver requirement
+      2: Check waiver authority
+      3: Request supplier waiver if needed
+      4: Document justification
+      5: Apply waiver
+      6: Complete transaction
+    waiver_types:
+      - change_fee_waiver
+      - cancellation_fee_waiver
+      - penalty_waiver
+      - upgrade_waiver
+    authority_levels:
+      - agent: limited_amount
+      - supervisor: higher_amount
+      - manager: unlimited
+      - supplier: requires_authorization
+    postconditions:
+      - waiver_applied
+      - audit_trail_created
+
+metrics:
+  - name: bookings_per_agent
+    description: Number of bookings created by agent
+
+  - name: average_booking_value
+    description: Average revenue per booking
+
+  - name: ticketing_compliance
+    description: Percentage ticketed before deadline
+
+  - name: queue_turnaround
+    description: Average time to process queue items
+
+  - name: refund_processing_time
+    description: Average time to process refunds
+
+  - name: commission_earned
+    description: Total commission earned by agent

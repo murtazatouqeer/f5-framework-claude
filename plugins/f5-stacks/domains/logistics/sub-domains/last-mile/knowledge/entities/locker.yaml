@@ -1,0 +1,353 @@
+name: Locker
+display_name: Smart Locker
+description: |
+  Smart locker location for self-service package pickup.
+  Manages compartments, availability, and access codes.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: lockers
+  primary_key: id
+  indexes:
+    - columns: [locker_id]
+      unique: true
+    - columns: [zone_id]
+    - columns: [status]
+    - columns: [location]
+      type: spatial
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: locker_id
+    type: string
+    description: Human-readable locker ID
+    pattern: "LKR-[A-Z]{2}-[0-9]{4}"
+    example: "LKR-HCM-0001"
+    required: true
+    unique: true
+
+  - name: name
+    type: string
+    description: Locker display name
+    max_length: 100
+    example: "Vincom Center Q1"
+
+  # Status
+  - name: status
+    type: enum
+    description: Locker operational status
+    values:
+      - active
+      - maintenance
+      - offline
+      - retired
+    default: active
+
+  - name: is_online
+    type: boolean
+    description: Locker is connected
+    default: true
+
+  - name: last_heartbeat
+    type: timestamp
+    description: Last communication with locker
+
+  # Location
+  - name: address
+    type: object
+    description: Locker location
+    properties:
+      address_line1:
+        type: string
+      address_line2:
+        type: string
+      city:
+        type: string
+      district:
+        type: string
+      postal_code:
+        type: string
+      lat:
+        type: decimal
+        precision: 10
+        scale: 8
+      lng:
+        type: decimal
+        precision: 11
+        scale: 8
+
+  - name: zone_id
+    type: uuid
+    description: Delivery zone
+
+  - name: location_type
+    type: enum
+    description: Type of location
+    values:
+      - shopping_mall
+      - office_building
+      - residential
+      - mrt_station
+      - bus_terminal
+      - convenience_store
+      - gas_station
+      - standalone
+      - university
+      - hospital
+
+  - name: location_name
+    type: string
+    description: Building/location name
+    max_length: 100
+
+  - name: floor
+    type: string
+    description: Floor number
+    max_length: 10
+
+  - name: location_details
+    type: text
+    description: How to find the locker
+    max_length: 500
+
+  # Operating hours
+  - name: is_24_hours
+    type: boolean
+    description: 24/7 access available
+    default: false
+
+  - name: operating_hours
+    type: object
+    description: Access hours
+    properties:
+      monday: { open: time, close: time }
+      tuesday: { open: time, close: time }
+      wednesday: { open: time, close: time }
+      thursday: { open: time, close: time }
+      friday: { open: time, close: time }
+      saturday: { open: time, close: time }
+      sunday: { open: time, close: time }
+
+  # Compartments
+  - name: compartments
+    type: array
+    description: Available compartments
+    items:
+      type: object
+      properties:
+        compartment_id:
+          type: string
+        size:
+          type: enum
+          values: [small, medium, large, extra_large]
+        dimensions:
+          type: object
+          properties:
+            height_cm: { type: decimal }
+            width_cm: { type: decimal }
+            depth_cm: { type: decimal }
+        status:
+          type: enum
+          values: [available, occupied, reserved, maintenance, broken]
+        current_delivery_id:
+          type: uuid
+        reserved_until:
+          type: timestamp
+
+  - name: total_compartments
+    type: integer
+    description: Total number of compartments
+
+  - name: compartment_counts
+    type: object
+    description: Count by size
+    properties:
+      small: { type: integer }
+      medium: { type: integer }
+      large: { type: integer }
+      extra_large: { type: integer }
+
+  - name: available_counts
+    type: object
+    description: Available by size
+    computed: true
+
+  # Features
+  - name: has_refrigeration
+    type: boolean
+    description: Has refrigerated compartments
+    default: false
+
+  - name: refrigerated_compartments
+    type: integer
+    description: Number of cold compartments
+    default: 0
+
+  - name: has_return_slot
+    type: boolean
+    description: Accepts returns
+    default: true
+
+  - name: has_outbound
+    type: boolean
+    description: Accepts outbound shipments
+    default: false
+
+  - name: has_camera
+    type: boolean
+    description: Security camera present
+    default: true
+
+  - name: has_accessibility
+    type: boolean
+    description: Wheelchair accessible
+    default: false
+
+  # Technical
+  - name: model
+    type: string
+    description: Locker hardware model
+
+  - name: manufacturer
+    type: string
+    description: Manufacturer name
+
+  - name: firmware_version
+    type: string
+    description: Current firmware
+
+  - name: api_endpoint
+    type: string
+    description: API endpoint for control
+
+  - name: authentication_key
+    type: string
+    description: API authentication key
+    encrypted: true
+
+  # Capacity
+  - name: daily_capacity
+    type: integer
+    description: Max daily deposits
+
+  - name: current_occupancy
+    type: integer
+    description: Currently occupied
+    default: 0
+
+  - name: occupancy_rate
+    type: decimal
+    description: Current occupancy percentage
+    computed: "(current_occupancy / total_compartments) * 100"
+
+  # Access
+  - name: access_methods
+    type: array
+    description: Supported access methods
+    items:
+      type: enum
+      values: [pin_code, qr_code, barcode, app, sms]
+
+  - name: default_hold_hours
+    type: integer
+    description: Default package hold time
+    default: 48
+
+  - name: max_hold_hours
+    type: integer
+    description: Maximum hold time
+    default: 72
+
+  - name: overdue_fee_per_hour
+    type: decimal
+    description: Fee after free period
+    precision: 6
+    scale: 2
+
+  # Performance
+  - name: total_deliveries
+    type: integer
+    description: Lifetime deliveries
+    default: 0
+
+  - name: average_pickup_hours
+    type: decimal
+    description: Average time to pickup
+    precision: 5
+    scale: 2
+
+  - name: pickup_success_rate
+    type: decimal
+    description: Successful pickup rate
+    precision: 5
+    scale: 2
+
+  # Contact
+  - name: support_phone
+    type: string
+    description: Support hotline
+
+  - name: partner_id
+    type: uuid
+    description: Location partner/owner
+
+  # Audit
+  - name: installed_at
+    type: date
+    description: Installation date
+
+  - name: last_maintenance
+    type: date
+    description: Last maintenance date
+
+  - name: next_maintenance
+    type: date
+    description: Next scheduled maintenance
+
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: zone
+    type: belongs_to
+    entity: DeliveryZone
+    foreign_key: zone_id
+
+  - name: deliveries
+    type: has_many
+    entity: Delivery
+    conditions:
+      delivery_method: locker
+
+events:
+  - name: locker.compartment_deposited
+    description: Package deposited
+    payload: [locker_id, compartment_id, delivery_id]
+
+  - name: locker.compartment_picked_up
+    description: Package picked up
+    payload: [locker_id, compartment_id, delivery_id]
+
+  - name: locker.offline
+    description: Locker went offline
+    payload: [locker_id]
+
+  - name: locker.full
+    description: All compartments occupied
+    payload: [locker_id]

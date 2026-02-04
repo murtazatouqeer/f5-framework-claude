@@ -1,0 +1,661 @@
+# Grading Workflow
+# F5 Framework v2.0 - Education/Assessment
+# Complete workflow for grading exam attempts
+
+workflow:
+  id: grading
+  name: Grading Workflow
+  name_ja: 採点ワークフロー
+  description: End-to-end workflow for grading exam attempts and generating results
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+  
+  trigger:
+    type: event
+    event: exam_attempt_submitted
+    
+  actors:
+    - id: system
+      name: System
+      name_ja: システム
+      responsibilities:
+        - Auto-grade objective questions
+        - Calculate scores
+        - Generate results
+        
+    - id: grader
+      name: Grader
+      name_ja: 採点者
+      responsibilities:
+        - Grade subjective questions
+        - Apply rubrics
+        - Provide feedback
+        
+    - id: reviewer
+      name: Second Grader/Reviewer
+      name_ja: 二次採点者
+      responsibilities:
+        - Double-grade high-stakes responses
+        - Resolve scoring conflicts
+        
+    - id: supervisor
+      name: Grading Supervisor
+      name_ja: 採点監督者
+      responsibilities:
+        - Final conflict resolution
+        - Quality assurance
+        - Score approval
+
+  stages:
+    # ==========================================
+    # Stage 1: Auto-Grading
+    # ==========================================
+    - id: auto_grading
+      name: Auto-Grading
+      name_ja: 自動採点
+      description: Automatically grade objective questions
+      
+      steps:
+        - id: identify_auto_gradable
+          name: Identify Auto-Gradable Questions
+          name_ja: 自動採点可能問題識別
+          actor: system
+          action:
+            type: filter
+            entity: response
+            condition: |
+              question.question_type IN [
+                'multiple_choice', 'multiple_select', 'true_false',
+                'matching', 'ordering', 'fill_blank', 'numeric', 'hotspot'
+              ]
+            outputs:
+              - auto_gradable_responses
+              
+        - id: grade_multiple_choice
+          name: Grade Multiple Choice
+          name_ja: 選択問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [multiple_choice, true_false]
+            algorithm: exact_match
+            validation:
+              rules: [SCR-001, SCR-003]
+              
+        - id: grade_multiple_select
+          name: Grade Multiple Select
+          name_ja: 複数選択問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [multiple_select]
+            algorithm: partial_credit_if_enabled
+            validation:
+              rules: [SCR-002]
+              
+        - id: grade_matching
+          name: Grade Matching
+          name_ja: マッチング問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [matching]
+            algorithm: pair_matching
+            validation:
+              rules: [SCR-004]
+              
+        - id: grade_ordering
+          name: Grade Ordering
+          name_ja: 並び替え問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [ordering]
+            algorithm: sequence_comparison
+            validation:
+              rules: [SCR-005]
+              
+        - id: grade_fill_blank
+          name: Grade Fill in Blank
+          name_ja: 穴埋め問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [fill_blank]
+            algorithm: text_match
+            options:
+              - case_sensitive: per_blank_setting
+              - trim_whitespace: true
+            validation:
+              rules: [SCR-006]
+              
+        - id: grade_numeric
+          name: Grade Numeric
+          name_ja: 数値問題採点
+          actor: system
+          action:
+            type: auto_grade
+            question_types: [numeric]
+            algorithm: tolerance_check
+            validation:
+              rules: [SCR-007]
+              
+        - id: update_auto_scores
+          name: Update Auto Scores
+          name_ja: 自動スコア更新
+          actor: system
+          action:
+            type: bulk_update
+            entity: response
+            set_fields:
+              - grading_status: auto_graded
+              - graded_at: now()
+            calculate:
+              - attempt.auto_graded_points: sum(auto_graded_responses.points_earned)
+              
+      transition:
+        on_complete: manual_grading_queue
+        skip_if: no_manual_grading_required
+        skip_to: score_calculation
+        
+    # ==========================================
+    # Stage 2: Manual Grading Queue
+    # ==========================================
+    - id: manual_grading_queue
+      name: Manual Grading Queue
+      name_ja: 手動採点キュー
+      description: Queue and assign manual grading tasks
+      condition: has_manual_grading_questions
+      
+      steps:
+        - id: identify_manual_grade
+          name: Identify Manual Grade Questions
+          name_ja: 手動採点問題識別
+          actor: system
+          action:
+            type: filter
+            entity: response
+            condition: |
+              question.question_type IN ['essay', 'short_answer']
+              OR question.grading_type = 'manual'
+            outputs:
+              - manual_grade_responses
+              
+        - id: create_grading_tasks
+          name: Create Grading Tasks
+          name_ja: 採点タスク作成
+          actor: system
+          action:
+            type: create_batch
+            entity: grading_task
+            for_each: manual_grade_responses
+            fields:
+              - response_id
+              - question_id
+              - rubric_id: question.rubric_id
+              - status: pending
+              - priority: calculated_priority
+              
+        - id: assign_graders
+          name: Assign Graders
+          name_ja: 採点者割り当て
+          actor: system
+          action:
+            type: assign
+            strategy: round_robin
+            criteria:
+              - grader_availability
+              - subject_expertise
+              - current_workload
+            balance_workload: true
+            
+      transition:
+        on_complete: manual_grading
+        
+    # ==========================================
+    # Stage 3: Manual Grading
+    # ==========================================
+    - id: manual_grading
+      name: Manual Grading
+      name_ja: 手動採点
+      description: Grade subjective questions manually
+      
+      steps:
+        - id: display_response
+          name: Display Response
+          name_ja: 回答表示
+          actor: grader
+          action:
+            type: display
+            content:
+              - question_text
+              - candidate_response
+              - rubric_if_available
+              - model_answer_if_available
+            anonymize: candidate_identity
+            
+        - id: apply_rubric
+          name: Apply Rubric
+          name_ja: ルーブリック適用
+          actor: grader
+          condition: question.rubric_id IS NOT NULL
+          action:
+            type: rubric_scoring
+            entity: grading_rubric
+            for_each: criterion
+            input:
+              - level_selection
+              - points
+              - feedback
+            validation:
+              rules: [SCR-022, SCR-023]
+              
+        - id: assign_score
+          name: Assign Score
+          name_ja: スコア付与
+          actor: grader
+          action:
+            type: update
+            entity: response
+            fields:
+              - points_earned
+              - grader_feedback
+              - rubric_scores
+              - grading_status: manually_graded
+              - graded_by: current_grader
+              - graded_at: now()
+              
+        - id: check_double_grading
+          name: Check Double Grading Requirement
+          name_ja: ダブルチェック要件確認
+          actor: system
+          action:
+            type: evaluate
+            condition: |
+              question.rubric.require_double_grading = true
+              OR exam.exam_type = 'certification'
+            validation:
+              rules: [SCR-050]
+            on_true: second_grading
+            on_false: complete_grading_task
+            
+      transition:
+        on_complete: second_grading
+        skip_if: NOT requires_double_grading
+        skip_to: score_calculation
+        
+    # ==========================================
+    # Stage 4: Second Grading
+    # ==========================================
+    - id: second_grading
+      name: Second Grading
+      name_ja: 二次採点
+      description: Double-grading for quality assurance
+      condition: requires_double_grading
+      
+      steps:
+        - id: assign_second_grader
+          name: Assign Second Grader
+          name_ja: 二次採点者割り当て
+          actor: system
+          action:
+            type: assign
+            entity: grader
+            constraint: different_from_first_grader
+            blind: first_grader_scores_hidden
+            
+        - id: second_grade_response
+          name: Second Grade Response
+          name_ja: 二次採点実施
+          actor: reviewer
+          action:
+            type: grade
+            same_as: manual_grading.apply_rubric
+            blind_to: first_grade
+            
+        - id: compare_scores
+          name: Compare Scores
+          name_ja: スコア比較
+          actor: system
+          action:
+            type: compare
+            values: [first_grade_score, second_grade_score]
+            threshold: rubric.score_variance_threshold
+            validation:
+              rules: [SCR-051]
+              
+        - id: handle_variance
+          name: Handle Score Variance
+          name_ja: スコア差異処理
+          actor: system
+          action:
+            type: decision
+            condition: score_variance > threshold
+            on_true: conflict_resolution
+            on_false: finalize_score
+            
+        - id: finalize_score
+          name: Finalize Score
+          name_ja: スコア確定
+          actor: system
+          action:
+            type: calculate
+            algorithm: average_of_grades
+            set_fields:
+              - points_earned: calculated_score
+              - grading_status: reviewed
+              
+      transition:
+        on_complete: score_calculation
+        on_variance: conflict_resolution
+        
+    # ==========================================
+    # Stage 5: Conflict Resolution
+    # ==========================================
+    - id: conflict_resolution
+      name: Conflict Resolution
+      name_ja: 採点相違解決
+      description: Resolve grading conflicts
+      condition: grading_conflict_exists
+      
+      steps:
+        - id: display_conflict
+          name: Display Conflict
+          name_ja: 相違表示
+          actor: supervisor
+          action:
+            type: display
+            content:
+              - question_and_response
+              - first_grade_details
+              - second_grade_details
+              - variance_amount
+              
+        - id: supervisor_review
+          name: Supervisor Review
+          name_ja: 監督者レビュー
+          actor: supervisor
+          action:
+            type: review
+            options:
+              - accept_first_grade
+              - accept_second_grade
+              - assign_new_score
+              - request_regrading
+            require_justification: true
+            
+        - id: resolve_conflict
+          name: Resolve Conflict
+          name_ja: 相違解決
+          actor: supervisor
+          action:
+            type: update
+            entity: response
+            set_fields:
+              - points_earned: resolved_score
+              - grading_status: reviewed
+              - resolution_notes: justification
+            validation:
+              rules: [SCR-052]
+              
+      transition:
+        on_complete: score_calculation
+        
+    # ==========================================
+    # Stage 6: Score Calculation
+    # ==========================================
+    - id: score_calculation
+      name: Score Calculation
+      name_ja: スコア計算
+      description: Calculate final scores and results
+      
+      steps:
+        - id: verify_all_graded
+          name: Verify All Graded
+          name_ja: 全採点完了確認
+          actor: system
+          action:
+            type: verify
+            condition: |
+              COUNT(responses WHERE grading_status = 'pending') = 0
+            on_failure:
+              action: wait_for_grading
+              
+        - id: calculate_raw_score
+          name: Calculate Raw Score
+          name_ja: 素点計算
+          actor: system
+          action:
+            type: calculate
+            formula: "SUM(responses.points_earned)"
+            output: raw_score
+            validation:
+              rules: [SCR-030]
+              
+        - id: calculate_percentage
+          name: Calculate Percentage
+          name_ja: パーセンテージ計算
+          actor: system
+          action:
+            type: calculate
+            formula: "(raw_score / total_possible) * 100"
+            output: percentage_score
+            
+        - id: apply_scaling
+          name: Apply Score Scaling
+          name_ja: スコアスケーリング
+          actor: system
+          condition: exam.scoring_type = 'scaled'
+          action:
+            type: calculate
+            formula: scaling_formula
+            output: scaled_score
+            validation:
+              rules: [SCR-031]
+              
+        - id: apply_negative_marking
+          name: Apply Negative Marking
+          name_ja: 減点適用
+          actor: system
+          condition: exam.negative_marking
+          action:
+            type: adjust
+            minimum_score: 0
+            validation:
+              rules: [SCR-040]
+              
+        - id: determine_pass_fail
+          name: Determine Pass/Fail
+          name_ja: 合否判定
+          actor: system
+          action:
+            type: evaluate
+            criteria:
+              - passing_percentage: exam.passing_percentage
+              - passing_score: exam.passing_score
+            output: passed
+            validation:
+              rules: [SCR-032]
+              
+        - id: assign_grade
+          name: Assign Grade
+          name_ja: 成績付与
+          actor: system
+          condition: exam.scoring_type = 'grade'
+          action:
+            type: lookup
+            table: exam.grade_boundaries
+            input: percentage_score
+            output: grade
+            validation:
+              rules: [SCR-033]
+              
+      transition:
+        on_complete: result_generation
+        
+    # ==========================================
+    # Stage 7: Result Generation
+    # ==========================================
+    - id: result_generation
+      name: Result Generation
+      name_ja: 結果生成
+      description: Generate and store exam results
+      
+      steps:
+        - id: create_result
+          name: Create Result Record
+          name_ja: 結果レコード作成
+          actor: system
+          action:
+            type: create
+            entity: exam_result
+            fields:
+              - attempt_id
+              - exam_id
+              - candidate_id
+              - raw_score
+              - percentage_score
+              - scaled_score
+              - passed
+              - grade
+              - calculated_at: now()
+              
+        - id: generate_breakdown
+          name: Generate Score Breakdown
+          name_ja: スコア内訳生成
+          actor: system
+          action:
+            type: calculate
+            breakdowns:
+              - by_section
+              - by_category
+              - by_question_type
+              - by_difficulty
+              - by_bloom_level
+              
+        - id: generate_analytics
+          name: Generate Analytics
+          name_ja: 分析生成
+          actor: system
+          action:
+            type: analyze
+            metrics:
+              - time_analysis
+              - learning_objective_scores
+              - strengths_weaknesses
+              - recommendations
+              
+        - id: update_attempt_status
+          name: Update Attempt Status
+          name_ja: 受験ステータス更新
+          actor: system
+          action:
+            type: update
+            entity: exam_attempt
+            set_fields:
+              - status: graded
+              - raw_score
+              - percentage_score
+              - passed
+              - grade
+              
+        - id: generate_certificate
+          name: Generate Certificate
+          name_ja: 証明書生成
+          actor: system
+          condition: passed AND exam.exam_type = 'certification'
+          action:
+            type: generate
+            entity: certificate
+            include:
+              - candidate_name
+              - exam_title
+              - score
+              - completion_date
+              - certificate_number
+              
+      transition:
+        on_complete: result_release
+        
+    # ==========================================
+    # Stage 8: Result Release
+    # ==========================================
+    - id: result_release
+      name: Result Release
+      name_ja: 結果公開
+      description: Release results to candidate
+      
+      steps:
+        - id: check_release_policy
+          name: Check Release Policy
+          name_ja: 公開ポリシー確認
+          actor: system
+          action:
+            type: evaluate
+            policy: exam.show_score
+            options:
+              - immediately: release_now
+              - after_deadline: schedule_release
+              - manual_release: queue_for_approval
+              - never: complete_without_release
+              
+        - id: release_results
+          name: Release Results
+          name_ja: 結果公開
+          actor: system
+          action:
+            type: update
+            entity: exam_result
+            set_fields:
+              - released: true
+              - released_at: now()
+            validation:
+              rules: [SCR-060]
+              
+        - id: notify_candidate
+          name: Notify Candidate
+          name_ja: 受験者通知
+          actor: system
+          action:
+            type: notify
+            method: [email, in_app]
+            template: exam_results
+            include:
+              - exam_title
+              - score
+              - passed_status
+              - feedback_if_enabled
+              - certificate_link_if_applicable
+              
+  completion:
+    status: graded
+    outputs:
+      - result_id
+      - score
+      - passed
+      - grade
+      
+  error_handling:
+    - stage: auto_grading
+      on_failure:
+        action: log_error
+        retry: 3
+        fallback: queue_for_manual
+        
+    - stage: manual_grading
+      on_timeout:
+        action: escalate
+        notify: supervisor
+        
+  metrics:
+    tracked:
+      - grading_time_per_response
+      - auto_grade_accuracy
+      - inter_rater_reliability
+      - conflict_rate
+    sla:
+      - name: auto_grading_completion
+        target_seconds: 30
+      - name: manual_grading_turnaround
+        target_hours: 48

@@ -1,0 +1,409 @@
+# Pre-Visit Workflow
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Workflow for patient preparation before telehealth visit
+
+workflow:
+  id: pre-visit-workflow
+  name: Pre-Visit Preparation
+  name_ja: 診療前準備
+  description: Patient preparation workflow before telehealth visit
+  domain: healthcare
+  subdomain: telemedicine
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - scheduled_trigger: 30 minutes before appointment
+      - patient_clicks_join_early
+      - provider_initiates_early_start
+
+  actors:
+    - id: patient
+      role: Patient
+      
+    - id: system
+      role: Pre-Visit System
+      
+    - id: staff
+      role: Clinical Staff
+      description: MA, nurse, or check-in staff
+
+  preconditions:
+    - Appointment exists and is confirmed
+    - Appointment time within pre-visit window
+    - Patient has access to visit link
+
+  steps:
+    - step: 1
+      id: send_pre_visit_notification
+      name: Send Pre-Visit Notification
+      actor: system
+      description: Notify patient to begin pre-visit process
+      
+      trigger: 30 minutes before scheduled_start
+      
+      actions:
+        - Send SMS with pre-visit link
+        - Send push notification (if app)
+        - Display banner in patient portal
+        
+      notification_content:
+        subject: "Your telehealth visit starts in 30 minutes"
+        body: |
+          Please complete your pre-visit check-in now.
+          This includes verifying your identity, signing consent,
+          and testing your device.
+        cta_button: "Start Check-in"
+        link: pre_visit_url
+        
+      next_step: 2
+
+    - step: 2
+      id: verify_identity
+      name: Verify Patient Identity
+      actor: patient
+      description: Confirm patient identity for HIPAA compliance
+      
+      methods:
+        photo_id:
+          description: Upload or show photo ID
+          steps:
+            - Capture/upload government ID
+            - System validates (or staff reviews)
+            - Match to patient record
+            
+        knowledge_based:
+          description: Security questions for established patients
+          questions:
+            - Date of birth
+            - Last 4 SSN or member ID
+            - Address verification
+            - Recent visit date
+            
+        patient_portal_auth:
+          description: Already authenticated via secure portal
+          requirements:
+            - MFA completed
+            - Session active
+            
+      business_rules:
+        - HIPAA identity verification requirement
+        
+      on_verification_fail:
+        max_attempts: 3
+        action: |
+          Lock verification
+          Notify staff
+          Offer phone verification option
+          
+      next_step: 3
+
+    - step: 3
+      id: collect_consent
+      name: Collect Telehealth Consent
+      actor: patient
+      description: Obtain informed consent for telehealth
+      
+      consent_types:
+        general_telehealth:
+          required: true
+          if_not_on_file: Present for signature
+          if_expired: Re-present
+          content:
+            - Nature of telehealth
+            - Risks and limitations
+            - Privacy protections
+            - Right to refuse
+            - Emergency procedures
+            
+        recording_consent:
+          required_if: recording_enabled
+          separate: true
+          
+      ui_elements:
+        - Scrollable consent document
+        - Key points summary
+        - Signature pad
+        - "I have read and agree" checkbox
+        
+      validations:
+        - Must scroll through document (or click "read all")
+        - Must check agreement box
+        - Must provide signature
+        
+      database_operations:
+        - CREATE or UPDATE tele_consent record
+        - SET consent_verified = true on tele_visit
+        
+      next_step: 4
+
+    - step: 4
+      id: device_check
+      name: Device and Connectivity Check
+      actor: patient
+      description: Verify patient's device is ready for video visit
+      
+      checks:
+        browser_check:
+          verify: Supported browser and version
+          action_if_fail: Recommend supported browser
+          
+        camera_check:
+          verify: Camera accessible and working
+          test: Show preview video
+          action_if_fail: |
+            Request camera permission
+            Troubleshooting steps
+            
+        microphone_check:
+          verify: Microphone accessible and picking up audio
+          test: Audio level visualization
+          action_if_fail: |
+            Request microphone permission
+            Check default device
+            
+        speaker_check:
+          verify: Audio output working
+          test: Play test sound
+          action_if_fail: Check volume and output device
+          
+        bandwidth_check:
+          verify: Upload and download speed sufficient
+          minimum: 1.5 Mbps each
+          test: Speed test
+          action_if_fail: |
+            Warning about potential quality issues
+            Suggest closer to router
+            Offer audio-only option
+            
+      business_rules:
+        - BR-TEC-001: Minimum video quality standards
+        
+      ui_elements:
+        - Camera preview window
+        - Audio level meter
+        - Test sound button
+        - Speed test indicator
+        - Overall status (pass/fail/warning)
+        
+      database_operations:
+        - CREATE device_check record
+        
+      on_all_pass:
+        display: "Your device is ready!"
+        next_step: 5
+        
+      on_critical_fail:
+        display: "We need to resolve these issues before your visit"
+        offer:
+          - Troubleshooting guide
+          - Call support
+          - Audio-only fallback
+          - Reschedule
+        next_step: 4a
+
+    - step: 4a
+      id: troubleshoot_device
+      name: Device Troubleshooting
+      actor: patient
+      description: Help patient resolve device issues
+      
+      troubleshooting_flows:
+        camera_not_working:
+          - Check camera permissions in browser
+          - Check camera permissions in OS
+          - Close other apps using camera
+          - Try different browser
+          - Restart device
+          
+        microphone_not_working:
+          - Check microphone permissions
+          - Check default input device
+          - Close other apps
+          - Try different browser
+          
+        bandwidth_low:
+          - Move closer to router
+          - Disconnect other devices
+          - Close bandwidth-heavy apps
+          - Consider audio-only
+          
+      escalation:
+        if: Patient cannot resolve
+        offer: Technical support callback
+        
+      next_step: 4 (retry) or 5 (with warnings)
+
+    - step: 5
+      id: collect_vitals
+      name: Collect Patient Vitals
+      actor: patient
+      description: Patient-reported or device-synced vitals
+      
+      vital_collection:
+        patient_reported:
+          fields:
+            - temperature: optional
+            - blood_pressure: if_has_device
+            - weight: if_has_scale
+            - pulse_ox: if_has_device
+            - pain_level: scale 0-10
+            
+        device_synced:
+          auto_pull: Recent readings from remote_monitoring_devices
+          timeframe: Last 24 hours
+          
+      ui_elements:
+        - Vital entry fields
+        - Device sync button
+        - "Skip" option for non-critical
+        
+      database_operations:
+        - CREATE vital_reading records
+        - ASSOCIATE with visit_id
+        
+      next_step: 6
+
+    - step: 6
+      id: pre_visit_questionnaire
+      name: Pre-Visit Questionnaire
+      actor: patient
+      description: Collect additional clinical information
+      
+      questionnaire_content:
+        symptom_review:
+          - Chief complaint details
+          - Duration of symptoms
+          - What makes it better/worse
+          - Prior treatment attempted
+          
+        medication_review:
+          - Current medications
+          - Recent changes
+          - Adherence issues
+          - Side effects
+          
+        allergy_update:
+          - Confirm or update allergies
+          
+        social_history_update:
+          - Smoking status
+          - Alcohol use (if relevant)
+          
+        provider_questions:
+          - Custom questions from provider
+          
+      conditional_questions:
+        based_on: Visit type and chief complaint
+        example: Mental health visit adds mood assessment
+        
+      database_operations:
+        - STORE questionnaire_responses
+        - ASSOCIATE with visit
+        
+      next_step: 7
+
+    - step: 7
+      id: enter_waiting_room
+      name: Enter Virtual Waiting Room
+      actor: patient
+      description: Patient enters waiting room queue
+      
+      actions:
+        - Add patient to provider's waiting_room queue
+        - Display waiting room interface
+        - Start estimated wait timer
+        
+      waiting_room_ui:
+        display:
+          - Queue position (if enabled)
+          - Estimated wait time (if enabled)
+          - Provider custom message
+          - Educational content/video
+          - Preparation tips
+          
+        controls:
+          - Leave waiting room
+          - Update device settings
+          - Chat with staff (if available)
+          
+      database_operations:
+        - UPDATE tele_visit SET status = 'waiting'
+        - ADD to virtual_waiting_room.queue
+        
+      next_step: 8
+
+    - step: 8
+      id: notify_provider
+      name: Notify Provider
+      actor: system
+      description: Alert provider that patient is ready
+      
+      actions:
+        - Add notification to provider dashboard
+        - Update waiting room count
+        - Send alert if configured
+        
+      notification_content:
+        title: "Patient Ready"
+        body: "{patient_name} is in your waiting room for {visit_type}"
+        actions:
+          - "Admit Patient"
+          - "Send Message"
+          - "View Chart"
+          
+      provider_dashboard:
+        show:
+          - Patient in queue
+          - Time waiting
+          - Pre-visit summary
+          - Device check status
+          - Consent status
+          
+      next_step: complete (await provider admission)
+
+  completion:
+    status: patient_ready_in_waiting_room
+    outputs:
+      - device_check_passed: boolean
+      - consent_verified: boolean
+      - vitals_collected: array
+      - questionnaire_completed: boolean
+      - wait_start_time: datetime
+      
+    next_workflow: video-consultation-workflow
+    trigger: provider_admits_patient
+
+  timeout_handling:
+    patient_no_show:
+      trigger: 15 minutes after scheduled_start
+      action: |
+        Notify provider
+        Attempt contact (SMS/call)
+        Mark as no_show if no response in 10 min
+        
+    waiting_room_timeout:
+      trigger: 30 minutes in waiting room
+      action: |
+        Alert staff
+        Notify patient of delay
+        Offer to reschedule
+
+  error_handling:
+    pre_visit_incomplete:
+      action: |
+        Allow partial completion
+        Note incomplete items
+        Provider decides to proceed or not
+
+  metrics:
+    track:
+      - pre_visit_completion_rate
+      - average_pre_visit_duration
+      - device_check_pass_rate
+      - consent_completion_rate
+      - wait_time_in_waiting_room
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555

@@ -1,0 +1,498 @@
+name: package-booking-workflow
+display_name: Package Booking Workflow
+display_name_vi: Quy trình đặt gói du lịch
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  End-to-end workflow for booking travel packages combining
+  flights, hotels, and activities with bundled pricing.
+
+workflow:
+  id: WF-PKG-BOOK
+  name: Package Booking
+  type: sequential_with_branches
+
+  trigger:
+    type: user_action
+    action: package_search_initiated
+
+  actors:
+    - traveler: Primary booker
+    - system: OTA platform
+    - flight_supplier: GDS/airline
+    - hotel_supplier: Aggregator/direct
+    - activity_supplier: Tours provider
+    - payment_gateway: Payment processor
+
+  states:
+    - searching
+    - results_displayed
+    - package_selected
+    - customizing
+    - traveler_details
+    - extras_selection
+    - review_pending
+    - payment_pending
+    - payment_processing
+    - booking_components
+    - fully_confirmed
+    - documents_generated
+    - failed
+    - abandoned
+
+steps:
+  - id: STEP-01
+    name: Package Search
+    description: Initiate package search
+    state: searching
+    actor: traveler
+    inputs:
+      required:
+        - origin: departure city
+        - destination: package destination
+        - departure_date
+        - return_date
+        - travelers: adults, children, infants
+      optional:
+        - flexibility: +/- days
+        - hotel_star_rating: minimum
+        - budget_range
+        - interests: beach, culture, adventure
+    package_types:
+      - dynamic_package: flight + hotel combined
+      - pre_built_package: fixed itinerary
+      - custom_package: build your own
+    validations:
+      - valid_destination
+      - minimum_stay: 2 nights
+      - traveler_configuration
+    outputs:
+      - search_id
+      - search_parameters
+    next: STEP-02
+
+  - id: STEP-02
+    name: Package Assembly
+    description: System assembles package options
+    state: searching
+    actor: system
+
+    for_dynamic_packages:
+      actions:
+        - search_flights:
+            parallel: true
+            sources: [gds, direct]
+        - search_hotels:
+            parallel: true
+            sources: [aggregators, direct]
+        - combine_components:
+            method: best_value_matrix
+        - calculate_package_price:
+            includes: bundled_discount
+        - rank_packages
+
+    for_pre_built_packages:
+      actions:
+        - query_package_inventory
+        - check_availability
+        - apply_promotional_pricing
+
+    processing:
+      - apply_package_margin
+      - calculate_savings_display
+      - cache_combinations
+    outputs:
+      - package_options: list
+      - savings_per_package
+    timeout: 20s
+    next: STEP-03
+
+  - id: STEP-03
+    name: Results Display
+    description: Present package options
+    state: results_displayed
+    actor: system
+    display:
+      - default_sort: best_value
+      - savings_highlight: vs_booking_separately
+      - package_cards:
+          - destination_image
+          - flight_summary
+          - hotel_name_and_rating
+          - total_price_per_person
+          - savings_amount
+          - key_inclusions
+      - filters: [price, hotel_rating, flight_times, airline]
+    comparison_tool:
+      - enable: true
+      - max_compare: 3
+    wait_for: user_selection
+    timeout: 30m
+    next: STEP-04 | STEP-01 (modify_search) | END (abandon)
+
+  - id: STEP-04
+    name: Package Selection
+    description: Select package option
+    state: package_selected
+    actor: traveler
+    inputs:
+      - selected_package_id
+    actions:
+      - verify_flight_availability:
+          type: real_time
+      - verify_hotel_availability:
+          type: real_time
+      - recalculate_price:
+          if: any_change
+    display:
+      - full_package_details
+      - flight_itinerary
+      - hotel_details
+      - included_services
+      - price_breakdown
+    outputs:
+      - confirmed_package
+      - component_details
+    on_unavailable: STEP-03 (show_alternatives)
+    next: STEP-05
+
+  - id: STEP-05
+    name: Package Customization
+    description: Allow customization of package
+    state: customizing
+    actor: traveler
+    customization_options:
+      flight:
+        - alternative_times
+        - cabin_upgrade
+        - different_airline
+      hotel:
+        - room_upgrade
+        - different_property_same_area
+        - meal_plan_upgrade
+      activities:
+        - add_tours
+        - add_transfers
+        - add_experiences
+    pricing_impact:
+      - show_price_change_live
+      - recalculate_on_each_change
+    inputs:
+      - customizations: list
+    actions:
+      - verify_each_change
+      - update_total_price
+      - maintain_package_discount: where_possible
+    outputs:
+      - customized_package
+      - final_price
+    next: STEP-06
+
+  - id: STEP-06
+    name: Traveler Details
+    description: Collect all traveler information
+    state: traveler_details
+    actor: traveler
+    for_each: traveler
+    inputs:
+      required:
+        - first_name
+        - last_name
+        - date_of_birth
+        - gender
+        - nationality
+        - passport_number: for_international
+        - passport_expiry: for_international
+      optional:
+        - frequent_flyer
+        - hotel_loyalty
+        - meal_preference
+        - seat_preference
+        - special_needs
+    contact_details:
+      - lead_traveler_email
+      - lead_traveler_phone
+      - emergency_contact
+    validations:
+      - all_travelers_complete
+      - passport_validity
+      - age_matches_type
+    outputs:
+      - traveler_list
+      - contact_info
+    next: STEP-07
+
+  - id: STEP-07
+    name: Extras & Add-ons
+    description: Offer package enhancements
+    state: extras_selection
+    actor: traveler
+    offers:
+      flight_extras:
+        - extra_baggage
+        - seat_selection
+        - lounge_access
+      hotel_extras:
+        - room_upgrade
+        - early_check_in
+        - late_checkout
+        - spa_credits
+      travel_services:
+        - airport_transfers
+        - travel_insurance
+        - visa_assistance
+        - sim_card
+      experiences:
+        - day_tours
+        - activities
+        - restaurant_reservations
+        - show_tickets
+    display:
+      - grouped_by_category
+      - popular_combinations
+      - savings_on_bundles
+    inputs:
+      - selected_extras
+    outputs:
+      - extras_list
+      - updated_total
+    next: STEP-08
+
+  - id: STEP-08
+    name: Review Package
+    description: Comprehensive booking review
+    state: review_pending
+    actor: traveler
+    display:
+      itinerary_view:
+        - day_by_day_timeline
+        - all_components_listed
+      pricing_view:
+        - flight_cost
+        - hotel_cost
+        - extras_cost
+        - taxes_and_fees
+        - total_savings
+        - grand_total
+      policies:
+        - cancellation_policy: tiered_timeline
+        - change_policy
+        - payment_terms
+      documents_preview:
+        - what_you_receive
+    inputs:
+      - terms_accepted
+      - cancellation_acknowledged
+    next: STEP-09
+
+  - id: STEP-09
+    name: Payment Selection
+    description: Choose payment option
+    state: payment_pending
+    actor: traveler
+    payment_options:
+      full_payment:
+        - description: Pay in full now
+        - discount: may_apply
+      deposit_payment:
+        - deposit_percentage: 20-30%
+        - balance_due: 30_days_before
+        - conditions: for_advance_bookings
+      installments:
+        - plans: [3, 6, 12 months]
+        - interest: partner_dependent
+        - eligibility: credit_check
+    inputs:
+      - payment_option
+      - payment_method
+      - card_details
+    next: STEP-10
+
+  - id: STEP-10
+    name: Payment Processing
+    description: Process package payment
+    state: payment_processing
+    actor: system
+    actions:
+      - fraud_screening
+      - 3ds_authentication: if_required
+      - process_payment:
+          full: auth_and_capture
+          deposit: auth_and_capture_partial
+      - store_payment_record
+    on_success:
+      - payment_confirmed
+    on_failure:
+      - offer_retry
+      - log_failure
+    outputs:
+      - payment_reference
+      - amount_paid
+      - balance_remaining
+    next: STEP-11 | STEP-09 (retry)
+
+  - id: STEP-11
+    name: Component Booking
+    description: Book each package component
+    state: booking_components
+    actor: system
+
+    parallel_booking:
+      flight:
+        - create_pnr
+        - add_passengers
+        - add_services
+        - confirm_booking
+        output: flight_confirmation
+
+      hotel:
+        - send_reservation_request
+        - await_confirmation
+        - store_confirmation
+        output: hotel_confirmation
+
+      activities:
+        - for_each: activity
+        - send_booking_request
+        - await_confirmation
+        output: activity_confirmations
+
+    consolidation:
+      - verify_all_confirmed
+      - create_package_record
+      - link_components
+
+    on_partial_failure:
+      - assess_impact
+      - offer_alternatives: for_failed_component
+      - allow_cancel_refund: full_package
+
+    outputs:
+      - package_booking_id
+      - component_references
+      - overall_status
+    next: STEP-12
+
+  - id: STEP-12
+    name: Document Generation
+    description: Generate all travel documents
+    state: documents_generated
+    actor: system
+    documents:
+      - package_confirmation:
+          content: all_components_summary
+          format: pdf
+      - flight_etickets:
+          per_passenger: true
+          format: pdf
+      - hotel_vouchers:
+          per_property: true
+          format: pdf
+      - activity_vouchers:
+          per_activity: true
+          format: pdf
+      - master_itinerary:
+          format: pdf_and_html
+          includes:
+            - day_by_day_schedule
+            - all_confirmation_numbers
+            - contact_information
+            - emergency_numbers
+      - payment_receipt:
+          format: pdf
+    calendar_integration:
+      - ics_file: all_events
+      - google_calendar_link
+      - apple_calendar_link
+    outputs:
+      - document_urls
+      - calendar_links
+    next: STEP-13
+
+  - id: STEP-13
+    name: Confirmation Delivery
+    description: Send all confirmations
+    state: documents_generated
+    actor: system
+    actions:
+      - send_confirmation_email:
+          attachments: all_documents
+          content:
+            - booking_summary
+            - next_steps
+            - manage_booking_link
+      - send_sms_confirmation
+      - push_notification: if_app_user
+      - add_to_trip_library
+    schedule_communications:
+      - deposit_reminder: if_applicable
+      - balance_due_reminder: 35_days_before
+      - pre_travel_info: 7_days_before
+      - day_before_reminder: 1_day_before
+    outputs:
+      - delivery_status
+      - scheduled_reminders
+    next: END
+
+balance_collection:
+  trigger: 30_days_before_departure
+  actions:
+    - send_balance_reminder
+    - provide_payment_link
+    - auto_charge: if_authorized
+  on_non_payment:
+    - send_final_reminder: 7_days_grace
+    - cancel_booking: if_not_paid
+    - apply_cancellation_policy
+
+error_handling:
+  - component: flight
+    error: unavailable_after_payment
+    action: find_alternative_refund_difference
+
+  - component: hotel
+    error: no_longer_available
+    action: offer_equivalent_upgrade_or_refund
+
+  - overall: partial_booking_failure
+    action: offer_complete_refund_or_alternatives
+
+cancellation_policy:
+  tiers:
+    - days_before: "> 60"
+      penalty: deposit_only (10-20%)
+    - days_before: "30-60"
+      penalty: 50%
+    - days_before: "15-30"
+      penalty: 75%
+    - days_before: "< 15"
+      penalty: 100%
+  exceptions:
+    - force_majeure: special_handling
+    - airline_cancellation: per_component_policy
+
+sla:
+  - step: STEP-02
+    max_time: 20s
+
+  - step: STEP-11
+    max_time: 120s
+
+  - overall:
+    target: < 8 minutes
+    p95: < 12 minutes
+
+metrics:
+  - name: package_conversion_rate
+    target: "> 4%"
+
+  - name: average_package_value
+    target: monitoring
+
+  - name: component_success_rate
+    target: "> 98%"
+
+  - name: customer_satisfaction
+    target: "> 4.5/5"

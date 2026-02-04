@@ -1,0 +1,624 @@
+name: decision_workflow
+display_name: Underwriting Decision Workflow
+description: |
+  End-to-end workflow for making and communicating underwriting decisions
+  including approvals, counter-offers, and declines.
+
+domain: insurance
+subdomain: underwriting
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-UW-004
+trigger:
+  event: ready_for_decision
+  source: underwriting_case
+  conditions:
+    - risk_assessment_complete: true
+    - all_evidence_received: true
+    - all_referrals_complete: true
+
+participants:
+  roles:
+    - underwriter
+    - senior_underwriter
+    - chief_underwriter
+    - committee
+    - applicant
+    - agent
+
+  systems:
+    - underwriting_system
+    - decision_engine
+    - communication_system
+    - document_generation
+
+stages:
+  - id: DW-001
+    name: Decision Preparation
+    description: Gather all inputs for decision making
+    actor: system
+
+    inputs:
+      - underwriting_case
+      - risk_assessment
+      - medical_underwriting
+      - financial_underwriting
+      - reinsurance_status
+
+    activities:
+      - id: DW-001-A
+        name: Consolidate Assessments
+        type: automated
+        action: Compile all assessment results
+        includes:
+          - risk_classification
+          - medical_terms
+          - financial_terms
+          - any_exclusions
+          - any_loadings
+
+      - id: DW-001-B
+        name: Calculate Combined Terms
+        type: automated
+        action: Combine all terms into final proposal
+        formula: |
+          Total_Loading = Medical_Loading + Lifestyle_Loading + Occupation_Loading
+          Combined_Exclusions = Union(Medical_Exclusions, Activity_Exclusions)
+          Approved_Sum = MIN(Requested, Financial_Justified, RI_Capacity)
+
+      - id: DW-001-C
+        name: Determine Decision Type
+        type: automated
+        action: Classify expected decision type
+        types:
+          accept_standard:
+            condition: no_loading_no_exclusion
+          accept_preferred:
+            condition: preferred_risk_class
+          accept_rated:
+            condition: loading_only
+          accept_with_exclusion:
+            condition: exclusion_only
+          accept_rated_exclusion:
+            condition: loading_and_exclusion
+          counter_offer:
+            condition: terms_differ_significantly
+          postpone:
+            condition: temporary_condition
+          decline:
+            condition: unacceptable_risk
+
+      - id: DW-001-D
+        name: Determine Authority Required
+        type: automated
+        action: Identify approval authority
+        rules:
+          underwriter:
+            - accept_standard
+            - accept_preferred
+            - loading_up_to_50
+          senior_underwriter:
+            - loading_51_to_100
+            - single_exclusion
+            - decline
+          chief_underwriter:
+            - loading_101_to_150
+            - multiple_exclusions
+            - high_value
+          committee:
+            - loading_above_150
+            - guideline_exceptions
+            - very_high_value
+
+    outputs:
+      - decision_package
+      - proposed_terms
+      - decision_type
+      - authority_required
+
+    sla: 15_minutes
+    next_stage: DW-002
+
+  - id: DW-002
+    name: Underwriter Decision
+    description: Underwriter makes or prepares decision
+    actor: underwriter
+
+    inputs:
+      - decision_package
+      - proposed_terms
+      - authority_level
+
+    activities:
+      - id: DW-002-A
+        name: Review Decision Package
+        type: manual
+        action: Review all inputs and proposed terms
+        checklist:
+          - risk_assessment_accuracy
+          - terms_appropriateness
+          - authority_correctness
+
+      - id: DW-002-B
+        name: Make Decision
+        type: decision
+        conditions:
+          within_authority:
+            options:
+              approve:
+                action: finalize_decision
+              modify:
+                action: adjust_terms
+              request_info:
+                action: return_for_info
+          exceeds_authority:
+            action: prepare_for_escalation
+
+      - id: DW-002-C
+        name: Document Decision Rationale
+        type: manual
+        action: Record decision reasoning
+        includes:
+          - key_risk_factors
+          - terms_justification
+          - any_concerns_noted
+
+      - id: DW-002-D
+        name: Route Appropriately
+        type: automated
+        action: Route based on decision
+        routing:
+          approved_within_authority: DW-005
+          escalation_required: DW-003
+          information_needed: back_to_assessment
+
+    outputs:
+      - decision_or_recommendation
+      - rationale
+      - routing_destination
+
+    sla: 2_hours
+    next_stage: varies
+
+  - id: DW-003
+    name: Senior/Chief Review
+    description: Higher authority reviews and decides
+    actor: senior_underwriter_or_chief
+
+    conditions:
+      triggered_when:
+        - decision_exceeds_underwriter_authority
+        - decline_recommendation
+        - high_value_case
+        - complex_terms
+
+    inputs:
+      - decision_package
+      - underwriter_recommendation
+      - case_summary
+
+    activities:
+      - id: DW-003-A
+        name: Review Recommendation
+        type: manual
+        action: Evaluate underwriter's recommendation
+        considerations:
+          - assessment_quality
+          - terms_appropriateness
+          - risk_appetite_alignment
+
+      - id: DW-003-B
+        name: Make Decision
+        type: decision
+        options:
+          approve_recommendation:
+            action: accept_as_proposed
+          modify_recommendation:
+            action: adjust_terms
+            documentation: modification_rationale
+          reject_recommendation:
+            action: different_decision
+            documentation: rejection_rationale
+          escalate_further:
+            condition: exceeds_own_authority
+            action: route_to_committee
+
+      - id: DW-003-C
+        name: Sign Off
+        type: manual
+        action: Formally approve decision
+        requires:
+          - electronic_signature
+          - timestamp
+          - authority_confirmation
+
+    outputs:
+      - approved_decision
+      - approved_terms
+      - authority_sign_off
+
+    sla: 4_hours
+    next_stage: DW-004_or_DW-005
+
+  - id: DW-004
+    name: Committee Review
+    description: Underwriting committee reviews exceptional cases
+    actor: committee
+
+    conditions:
+      triggered_when:
+        - exceeds_chief_authority
+        - guideline_exception_requested
+        - very_high_value
+        - reinsurer_disagreement
+
+    inputs:
+      - case_presentation
+      - recommendations
+      - reinsurance_position
+
+    activities:
+      - id: DW-004-A
+        name: Present Case
+        type: manual
+        action: Chief underwriter presents case
+        includes:
+          - case_summary
+          - risk_analysis
+          - recommendation
+          - reinsurance_status
+
+      - id: DW-004-B
+        name: Committee Discussion
+        type: manual
+        action: Committee deliberates
+        participants:
+          - chief_underwriter
+          - medical_director
+          - chief_actuary
+          - head_of_reinsurance
+        discussion_points:
+          - risk_assessment
+          - terms_appropriateness
+          - reinsurance_implications
+          - precedent_considerations
+
+      - id: DW-004-C
+        name: Committee Vote
+        type: manual
+        action: Committee makes decision
+        voting:
+          quorum: 3_members
+          decision: majority
+        options:
+          - approve_as_recommended
+          - approve_with_modifications
+          - decline
+          - defer_for_more_information
+
+      - id: DW-004-D
+        name: Document Committee Decision
+        type: manual
+        action: Record committee minutes
+        includes:
+          - attendees
+          - discussion_summary
+          - vote_result
+          - conditions_if_any
+          - dissenting_opinions
+
+    outputs:
+      - committee_decision
+      - meeting_minutes
+      - approved_terms
+
+    sla: 24_hours
+    meeting_frequency: weekly
+    emergency: within_24_hours
+    next_stage: DW-005
+
+  - id: DW-005
+    name: Decision Finalization
+    description: Finalize decision and prepare documentation
+    actor: system
+
+    inputs:
+      - approved_decision
+      - final_terms
+      - authority_approval
+
+    activities:
+      - id: DW-005-A
+        name: Lock Decision
+        type: automated
+        action: Create immutable decision record
+        includes:
+          - decision_type
+          - final_terms
+          - approver
+          - timestamp
+
+      - id: DW-005-B
+        name: Calculate Final Premium
+        type: automated
+        action: Compute premium with all terms
+        calculation:
+          base_premium: from_rating_tables
+          loading_premium: base × loading_percent
+          total_premium: base + loading
+          modal_premium: total ÷ frequency_factor
+
+      - id: DW-005-C
+        name: Generate Decision Letter
+        type: automated
+        action: Create appropriate decision letter
+        templates:
+          accept_standard: UW-LTR-001
+          accept_rated: UW-LTR-002
+          accept_exclusion: UW-LTR-003
+          decline: UW-LTR-004
+          counter_offer: UW-LTR-005
+          postpone: UW-LTR-006
+
+      - id: DW-005-D
+        name: Prepare Policy Documents
+        type: automated
+        condition: acceptance_decision
+        action: Generate policy documents
+        includes:
+          - policy_schedule
+          - exclusion_endorsements
+          - terms_and_conditions
+
+      - id: DW-005-E
+        name: Update Systems
+        type: automated
+        action: Update all related systems
+        updates:
+          - underwriting_case_status
+          - policy_admin_if_accepted
+          - reinsurance_bordereaux
+          - management_information
+
+    outputs:
+      - decision_record
+      - decision_letter
+      - policy_documents_if_applicable
+      - system_updates
+
+    sla: 30_minutes
+    next_stage: DW-006
+
+  - id: DW-006
+    name: Decision Communication
+    description: Communicate decision to applicant
+    actor: underwriter
+
+    inputs:
+      - decision_letter
+      - policy_documents
+      - applicant_contact
+
+    activities:
+      - id: DW-006-A
+        name: Quality Check Letter
+        type: manual
+        action: Review decision letter for accuracy
+        checks:
+          - applicant_details
+          - decision_correct
+          - terms_accurate
+          - professional_tone
+
+      - id: DW-006-B
+        name: Send Decision
+        type: automated
+        action: Dispatch decision communication
+        channels:
+          primary: email
+          secondary: post
+          copy_to: agent
+        timing:
+          acceptance: immediate
+          decline: within_24_hours
+          counter_offer: immediate
+
+      - id: DW-006-C
+        name: Notify Agent
+        type: automated
+        action: Inform agent of decision
+        includes:
+          - decision_summary
+          - next_steps
+          - response_deadline_if_applicable
+
+      - id: DW-006-D
+        name: Set Follow-up
+        type: automated
+        action: Schedule follow-up activities
+        follow_ups:
+          acceptance:
+            task: confirm_policy_issuance
+            timing: after_first_premium
+          counter_offer:
+            task: track_response
+            deadline: 30_days
+          decline:
+            task: close_case
+            timing: immediate
+
+    outputs:
+      - communication_sent
+      - tracking_reference
+      - follow_up_scheduled
+
+    sla: 4_hours
+    next_stage: DW-007
+
+  - id: DW-007
+    name: Response Handling
+    description: Handle applicant response to decision
+    actor: underwriter
+
+    conditions:
+      applicable_for:
+        - counter_offers
+        - acceptance_with_terms
+
+    inputs:
+      - applicant_response
+      - decision_details
+
+    activities:
+      - id: DW-007-A
+        name: Receive Response
+        type: manual
+        action: Process applicant response
+        response_types:
+          - acceptance
+          - rejection
+          - negotiation
+          - no_response
+
+      - id: DW-007-B
+        name: Process Acceptance
+        type: conditional
+        condition: response_is_acceptance
+        actions:
+          - verify_acceptance_form
+          - confirm_understanding
+          - trigger_policy_issuance
+        next: policy_issuance_workflow
+
+      - id: DW-007-C
+        name: Process Rejection
+        type: conditional
+        condition: response_is_rejection
+        actions:
+          - document_rejection_reason
+          - close_case
+          - update_statistics
+
+      - id: DW-007-D
+        name: Handle Negotiation
+        type: conditional
+        condition: response_is_negotiation
+        actions:
+          - review_counter_proposal
+          - assess_feasibility
+          - escalate_if_needed
+          - respond_to_applicant
+
+      - id: DW-007-E
+        name: Handle No Response
+        type: conditional
+        condition: deadline_passed_no_response
+        actions:
+          - send_reminder
+          - extend_deadline_if_appropriate
+          - expire_offer_if_final
+
+    outputs:
+      - response_processed
+      - case_status_updated
+      - next_action_determined
+
+    sla: 1_day
+    next_stage: varies
+
+  - id: DW-008
+    name: Decision Closure
+    description: Close underwriting case after decision completion
+    actor: system
+
+    inputs:
+      - final_outcome
+      - case_details
+
+    activities:
+      - id: DW-008-A
+        name: Update Final Status
+        type: automated
+        action: Set final case status
+        statuses:
+          - policy_issued
+          - declined
+          - withdrawn
+          - expired
+          - postponed
+
+      - id: DW-008-B
+        name: Archive Case
+        type: automated
+        action: Archive case documentation
+        retention:
+          accepted: per_policy_retention
+          declined: 7_years
+          withdrawn: 3_years
+
+      - id: DW-008-C
+        name: Update Statistics
+        type: automated
+        action: Update underwriting statistics
+        metrics:
+          - decision_distribution
+          - turnaround_times
+          - loading_distribution
+          - decline_reasons
+
+      - id: DW-008-D
+        name: Trigger Related Processes
+        type: automated
+        action: Initiate downstream processes
+        triggers:
+          policy_issued:
+            - policy_administration
+            - commission_processing
+            - welcome_communication
+          declined:
+            - feedback_if_requested
+            - alternative_products
+
+    outputs:
+      - case_closed
+      - archive_reference
+      - statistics_updated
+
+    sla: immediate
+    next_stage: complete
+
+completion_criteria:
+  - decision_made: true
+  - communicated: true
+  - response_processed: if_applicable
+  - case_closed: true
+
+exception_handling:
+  appeal_received:
+    action: reopen_case
+    process: appeal_review_workflow
+
+  new_information:
+    action: assess_impact
+    options:
+      - modify_decision
+      - maintain_decision
+
+  system_failure:
+    action: manual_processing
+    notification: it_support
+
+metrics:
+  - decision_turnaround_time
+  - acceptance_rate
+  - decline_rate
+  - counter_offer_acceptance
+  - loading_distribution
+  - authority_usage
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

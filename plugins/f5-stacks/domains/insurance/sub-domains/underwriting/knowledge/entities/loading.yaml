@@ -1,0 +1,345 @@
+name: loading
+display_name: Loading
+description: |
+  Underwriting loading (extra premium) applied to an insurance policy
+  due to identified risk factors, occupational hazards, or other reasons.
+
+domain: insurance
+subdomain: underwriting
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique loading identifier
+
+    - name: case_id
+      type: uuid
+      required: true
+      foreign_key: underwriting_cases.id
+      description: Reference to underwriting case
+
+    - name: loading_number
+      type: string
+      format: "LD-{case_number}-{NN}"
+      unique: true
+      generated: true
+      description: Loading reference number
+
+  type:
+    - name: loading_type
+      type: enum
+      values:
+        - percentage
+        - flat_extra
+        - temporary_percentage
+        - temporary_flat
+      required: true
+      description: Type of loading
+
+    - name: duration_type
+      type: enum
+      values:
+        - permanent
+        - temporary
+        - reducing
+      default: permanent
+      description: Loading duration
+
+  status:
+    - name: status
+      type: enum
+      values:
+        - proposed
+        - approved
+        - applied
+        - expired
+        - removed
+      default: proposed
+      description: Loading status
+
+  reason:
+    - name: reason_code
+      type: string
+      required: true
+      description: Reason code for loading
+
+    - name: reason_description
+      type: string
+      required: true
+      description: Reason description
+
+    - name: risk_factor_id
+      type: uuid
+      foreign_key: risk_factors.id
+      description: Related risk factor
+
+    - name: risk_factor_severity
+      type: enum
+      values:
+        - mild
+        - moderate
+        - severe
+      description: Severity of risk factor
+
+    - name: detailed_notes
+      type: text
+      description: Detailed justification
+
+  amount:
+    - name: loading_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage loading (e.g., 50 for 50%)
+
+    - name: flat_extra_amount
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Flat extra amount (per 1000 sum)
+
+    - name: flat_extra_per
+      type: decimal
+      default: 1000
+      description: Denominator for flat extra
+
+    - name: currency
+      type: string
+      default: VND
+      description: Currency for flat extra
+
+    - name: premium_impact_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: true
+      description: Additional premium amount
+
+    - name: premium_impact_annual
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: true
+      description: Annual additional premium
+
+  application:
+    - name: applies_to_coverages
+      type: array
+      items:
+        type: object
+        properties:
+          coverage_code:
+            type: string
+          coverage_name:
+            type: string
+          loading_applied:
+            type: boolean
+      description: Coverages affected by loading
+
+    - name: applies_to_all_coverages
+      type: boolean
+      default: true
+      description: Whether applies to all coverages
+
+    - name: base_for_calculation
+      type: enum
+      values:
+        - sum_insured
+        - base_premium
+        - total_premium
+      default: base_premium
+      description: Base for loading calculation
+
+  duration:
+    - name: start_date
+      type: date
+      description: Loading start date
+
+    - name: end_date
+      type: date
+      description: Loading end date (for temporary)
+
+    - name: duration_years
+      type: integer
+      description: Duration in years (for temporary)
+
+    - name: review_date
+      type: date
+      description: Review date for temporary loading
+
+    - name: review_criteria
+      type: text
+      description: Criteria for review/removal
+
+  reducing_schedule:
+    - name: reducing_schedule
+      type: array
+      items:
+        type: object
+        properties:
+          year:
+            type: integer
+          loading_percent:
+            type: decimal
+          effective_date:
+            type: date
+      description: Schedule for reducing loadings
+
+  approval:
+    - name: proposed_by
+      type: uuid
+      foreign_key: users.id
+      description: Underwriter who proposed
+
+    - name: proposed_at
+      type: timestamp
+      description: Proposal timestamp
+
+    - name: approved_by
+      type: uuid
+      foreign_key: users.id
+      description: Approver
+
+    - name: approved_at
+      type: timestamp
+      description: Approval timestamp
+
+    - name: authority_level
+      type: enum
+      values:
+        - underwriter
+        - senior_underwriter
+        - chief_underwriter
+        - committee
+      description: Authority level for approval
+
+    - name: approval_notes
+      type: text
+      description: Approval notes
+
+  calculation:
+    - name: calculation_method
+      type: text
+      description: How loading is calculated
+
+    - name: calculation_example
+      type: text
+      description: Example calculation
+
+  audit:
+    - name: created_at
+      type: timestamp
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+
+    - name: removed_at
+      type: timestamp
+      description: If removed, when
+
+    - name: removal_reason
+      type: text
+      description: Reason for removal
+
+relationships:
+  - name: underwriting_case
+    type: belongs_to
+    entity: underwriting_case
+    foreign_key: case_id
+    description: Parent underwriting case
+
+  - name: risk_factor
+    type: belongs_to
+    entity: risk_factor
+    foreign_key: risk_factor_id
+    description: Related risk factor
+
+  - name: decision
+    type: belongs_to
+    entity: underwriting_decision
+    foreign_key: decision_id
+    description: Associated decision
+
+  - name: proposer
+    type: belongs_to
+    entity: user
+    foreign_key: proposed_by
+    description: Proposing underwriter
+
+  - name: approver
+    type: belongs_to
+    entity: user
+    foreign_key: approved_by
+    description: Approving authority
+
+loading_guidelines:
+  percentage_loading:
+    description: Increases base premium by percentage
+    calculation: "Additional Premium = Base Premium × (Loading% / 100)"
+    example:
+      base_premium: 10000000
+      loading_percent: 50
+      additional_premium: 5000000
+      total_premium: 15000000
+
+  flat_extra:
+    description: Fixed amount per 1000 sum insured
+    calculation: "Additional Premium = (Sum Insured / 1000) × Flat Extra"
+    example:
+      sum_insured: 1000000000
+      flat_extra_per_1000: 2.5
+      additional_premium: 2500000
+
+  temporary_loading:
+    description: Loading for limited duration
+    typical_durations:
+      - "1-2 years: Recent surgery, acute illness"
+      - "3-5 years: Recovering conditions"
+      - "Until age 50/60: Certain risk factors"
+    review_process: "Annual review or per criteria"
+
+  reducing_loading:
+    description: Loading that reduces over time
+    example:
+      year_1: 100%
+      year_2: 75%
+      year_3: 50%
+      year_4: 25%
+      year_5_onwards: 0%
+
+authority_matrix:
+  underwriter:
+    max_percentage: 50
+    max_flat_extra: 5
+    can_apply_temporary: true
+  senior_underwriter:
+    max_percentage: 100
+    max_flat_extra: 10
+    can_apply_temporary: true
+  chief_underwriter:
+    max_percentage: 150
+    max_flat_extra: 15
+    can_apply_temporary: true
+  committee:
+    max_percentage: 200
+    max_flat_extra: unlimited
+    can_apply_temporary: true
+
+indexes:
+  - columns: [case_id]
+  - columns: [status]
+  - columns: [loading_type]
+  - columns: [reason_code]
+  - columns: [end_date]
+
+business_rules:
+  - rule: Combined loadings cannot exceed 200%
+  - rule: Flat extra typically for mortality risk only
+  - rule: Temporary loadings require review date
+  - rule: All loadings require approval

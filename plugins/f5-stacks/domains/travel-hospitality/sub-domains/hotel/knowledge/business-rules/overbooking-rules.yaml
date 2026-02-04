@@ -1,0 +1,471 @@
+name: overbooking-rules
+display_name: Overbooking & Walk Business Rules
+display_name_vi: Quy tắc đặt vượt và chuyển khách
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Business rules for managing intentional overbooking strategy,
+  walk procedures, and compensation when guests cannot be accommodated.
+
+description_vi: |
+  Quy tắc nghiệp vụ quản lý chiến lược đặt vượt có chủ đích,
+  quy trình chuyển khách và bồi thường khi không thể tiếp nhận khách.
+
+rule_categories:
+  - overbooking_limits
+  - walk_priority
+  - walk_procedure
+  - compensation
+  - recovery
+
+rules:
+  # ===== OVERBOOKING LIMIT RULES =====
+  - id: BR-OB-L001
+    name: Maximum Overbooking Percentage
+    name_vi: Tỷ lệ đặt vượt tối đa
+    category: overbooking_limits
+    priority: critical
+    description: |
+      Set maximum overbooking level based on historical data.
+    condition: |
+      overbooked_rooms <= (sellable_rooms * max_overbooking_rate)
+    action: |
+      CALCULATE max_overbooking based on:
+        - Historical no_show_rate (last 90 days)
+        - Historical cancellation_rate
+        - Day_of_week patterns
+        - Seasonal factors
+
+      DEFAULT limits:
+        weekday: 5-8%
+        weekend: 3-5%
+        peak_periods: 2-3%
+        events: 0-2%
+
+      IF limit_reached:
+        STOP_SELL immediately
+    applies_to: [inventory]
+    enforcement: automatic
+
+  - id: BR-OB-L002
+    name: Room Type Specific Limits
+    name_vi: Giới hạn theo loại phòng
+    category: overbooking_limits
+    priority: high
+    description: |
+      Different overbooking limits by room type.
+    condition: |
+      room_type.overbooking_limit varies
+    action: |
+      SET limits per room_type:
+        standard: higher_tolerance (up to 10%)
+        deluxe: moderate (up to 5%)
+        suites: minimal (up to 2%)
+        villas: no_overbooking
+
+      ENSURE upgrade_path available for overbooked rooms
+    applies_to: [inventory, room_type]
+    enforcement: automatic
+
+  - id: BR-OB-L003
+    name: Group Block Consideration
+    name_vi: Xem xét khối đoàn
+    category: overbooking_limits
+    priority: high
+    description: |
+      Adjust overbooking when group blocks exist.
+    condition: |
+      group_blocks > 0 for date
+    action: |
+      REDUCE overbooking_allowance by:
+        - Group pickup uncertainty factor
+        - Days until cutoff
+
+      IF after_cutoff:
+        RELEASE unsold_group_rooms
+        RECALCULATE overbooking_capacity
+    applies_to: [inventory]
+    enforcement: automatic
+
+  - id: BR-OB-L004
+    name: Channel-Specific Overbooking
+    name_vi: Đặt vượt theo kênh
+    category: overbooking_limits
+    priority: medium
+    description: |
+      Manage overbooking exposure by distribution channel.
+    condition: |
+      channel.overbooking_exposure within limit
+    action: |
+      ALLOCATE overbooking_risk across channels:
+        direct: higher_tolerance (guaranteed walk_handling)
+        ota: lower_tolerance (reputation impact)
+        wholesale: moderate (contract_dependent)
+
+      TRACK walk_source for optimization
+    applies_to: [inventory, channel]
+    enforcement: automatic
+
+  # ===== WALK PRIORITY RULES =====
+  - id: BR-OB-P001
+    name: Walk Priority Hierarchy
+    name_vi: Thứ tự ưu tiên chuyển khách
+    category: walk_priority
+    priority: critical
+    description: |
+      Determine which guests to walk when overbooked.
+    condition: |
+      available_rooms < arriving_reservations
+    action: |
+      PRIORITIZE to keep (not walk):
+        1. VIP guests (diamond, platinum, celebrity)
+        2. Repeat guests (5+ stays)
+        3. Long stays (7+ nights)
+        4. Direct bookings
+        5. High-rate bookings
+        6. Guaranteed reservations
+
+      CONSIDER for walk (in order):
+        1. Non-guaranteed reservations
+        2. Single-night stays
+        3. Low-rate bookings
+        4. First-time guests
+        5. OTA bookings (non-prepaid)
+
+      NEVER walk:
+        - Prepaid bookings (complex refund)
+        - Company guaranteed (contract)
+        - Previous walk victims
+    applies_to: [reservation]
+    enforcement: manual_with_system_support
+
+  - id: BR-OB-P002
+    name: Same-Day Booking Protection
+    name_vi: Bảo vệ đặt phòng trong ngày
+    category: walk_priority
+    priority: high
+    description: |
+      Special handling for same-day bookings when overbooked.
+    condition: |
+      booking_date = arrival_date AND overbooking_exists
+    action: |
+      IF overbooked:
+        ALERT front_desk before accepting
+        REQUIRE manager_approval to book
+        CONFIRM alternative_property available
+        DISCLOSE potential_walk_risk to guest
+    applies_to: [reservation]
+    enforcement: warning
+
+  - id: BR-OB-P003
+    name: Loyalty Member Protection
+    name_vi: Bảo vệ thành viên thân thiết
+    category: walk_priority
+    priority: critical
+    description: |
+      Loyalty members should rarely be walked.
+    condition: |
+      guest.loyalty_tier >= 'gold'
+    action: |
+      PROTECT from walk except extreme_circumstances
+
+      IF must_walk loyalty_member:
+        REQUIRE gm_approval
+        APPLY enhanced_compensation
+        PERSONAL apology from management
+        BONUS points compensation
+    applies_to: [reservation, guest_profile]
+    enforcement: automatic
+
+  # ===== WALK PROCEDURE RULES =====
+  - id: BR-OB-W001
+    name: Walk Notification Timing
+    name_vi: Thời điểm thông báo chuyển khách
+    category: walk_procedure
+    priority: critical
+    description: |
+      Notify walked guests as early as possible.
+    condition: |
+      walk_identified = TRUE
+    action: |
+      NOTIFY guest at earliest opportunity:
+        - Same day morning: if known
+        - Before travel: if possible
+        - At arrival: last resort
+
+      AVOID: guest_discovers at check-in counter
+
+      notification_methods:
+        1. Phone call (preferred)
+        2. Email with call follow-up
+        3. SMS for urgent cases
+    applies_to: [reservation]
+    enforcement: manual_with_reminders
+
+  - id: BR-OB-W002
+    name: Alternative Property Requirements
+    name_vi: Yêu cầu cơ sở thay thế
+    category: walk_procedure
+    priority: critical
+    description: |
+      Ensure suitable alternative accommodation.
+    condition: |
+      walk_property must meet standards
+    action: |
+      ARRANGE accommodation at:
+        - Comparable or better quality
+        - Same star rating or higher
+        - Reasonable distance (within 5km typically)
+        - Available amenities match or exceed
+
+      VERIFY:
+        - Room confirmed at walk_property
+        - Similar room type available
+        - Rate negotiated (usually net_rate)
+
+      AVOID:
+        - Downgrade in quality
+        - Distant location
+        - Property with poor reviews
+    applies_to: [walk_procedure]
+    enforcement: manual_verification
+
+  - id: BR-OB-W003
+    name: Transportation Arrangement
+    name_vi: Bố trí vận chuyển
+    category: walk_procedure
+    priority: high
+    description: |
+      Provide transportation to alternative property.
+    condition: |
+      guest_walked = TRUE
+    action: |
+      ARRANGE:
+        - Complimentary transportation to walk_property
+        - Return transportation for next_day (if returning)
+
+      OPTIONS:
+        - Hotel car (preferred)
+        - Taxi/Uber (hotel pays)
+        - Shuttle service
+
+      ENSURE guest doesn't pay for transport
+    applies_to: [walk_procedure]
+    enforcement: mandatory
+
+  - id: BR-OB-W004
+    name: Walk Documentation
+    name_vi: Lập hồ sơ chuyển khách
+    category: walk_procedure
+    priority: high
+    description: |
+      Document all walk incidents thoroughly.
+    condition: |
+      walk_occurs = TRUE
+    action: |
+      RECORD:
+        - Reservation details
+        - Walk reason
+        - Walk property used
+        - Compensation provided
+        - Guest reaction
+        - Staff handling
+        - Manager approval
+        - Recovery actions
+
+      GENERATE walk_report for management
+      UPDATE guest_profile with incident
+    applies_to: [walk_procedure]
+    enforcement: mandatory
+
+  # ===== COMPENSATION RULES =====
+  - id: BR-OB-C001
+    name: Standard Walk Compensation
+    name_vi: Bồi thường chuyển khách tiêu chuẩn
+    category: compensation
+    priority: critical
+    description: |
+      Minimum compensation for walked guests.
+    condition: |
+      guest_walked = TRUE
+    action: |
+      PROVIDE minimum:
+        1. Free night at walk_property (hotel pays)
+        2. Transportation to/from walk_property
+        3. Phone calls to inform contacts
+        4. Apology letter from management
+
+      OPTIONAL additions:
+        - Future_stay discount (20-30%)
+        - Loyalty points bonus
+        - Welcome amenity on return
+    applies_to: [walk_procedure]
+    enforcement: mandatory
+
+  - id: BR-OB-C002
+    name: Enhanced Walk Compensation
+    name_vi: Bồi thường nâng cao
+    category: compensation
+    priority: high
+    description: |
+      Additional compensation for premium guests.
+    condition: |
+      guest.is_vip OR guest.is_loyalty_member OR
+      reservation.rate >= rack_rate
+    action: |
+      PROVIDE enhanced package:
+        1. All standard compensation PLUS
+        2. Upgrade at walk_property
+        3. Dinner credit ($50-100)
+        4. Future stay: free_night + upgrade
+        5. Double loyalty points
+        6. Personal GM apology call
+
+      FOR repeated_walk_victims:
+        - Significant additional compensation
+        - VIP status upgrade consideration
+    applies_to: [walk_procedure, guest_profile]
+    enforcement: mandatory
+
+  - id: BR-OB-C003
+    name: Rate Responsibility
+    name_vi: Trách nhiệm giá
+    category: compensation
+    priority: critical
+    description: |
+      Paying for rate difference at walk property.
+    condition: |
+      walk_property.rate != original_rate
+    action: |
+      IF walk_property.rate > original_rate:
+        HOTEL pays difference
+        GUEST pays original_rate only
+
+      IF walk_property.rate < original_rate:
+        GUEST pays walk_property rate
+        CONSIDER additional_compensation for inconvenience
+
+      DOCUMENT rate_subsidy for accounting
+    applies_to: [walk_procedure, folio]
+    enforcement: automatic
+
+  - id: BR-OB-C004
+    name: Multi-Night Walk Handling
+    name_vi: Xử lý chuyển khách nhiều đêm
+    category: compensation
+    priority: high
+    description: |
+      Handle walks for multi-night reservations.
+    condition: |
+      reservation.nights > 1 AND walk_occurs
+    action: |
+      OPTION 1 - Walk entire stay:
+        - All nights at walk_property
+        - Single compensation package
+        - Transportation both ways
+
+      OPTION 2 - Partial walk (preferred):
+        - Walk night(s) at alternative
+        - Return to original property when available
+        - Upgrade on return
+        - Compensation per night walked
+
+      COMMUNICATE plan clearly to guest
+    applies_to: [walk_procedure, reservation]
+    enforcement: manual_decision
+
+  # ===== RECOVERY RULES =====
+  - id: BR-OB-R001
+    name: Guest Recovery Follow-up
+    name_vi: Theo dõi phục hồi khách
+    category: recovery
+    priority: high
+    description: |
+      Follow up with walked guests for recovery.
+    condition: |
+      walk_occurred within_last_30_days
+    action: |
+      FOLLOW_UP schedule:
+        - Day of walk: confirmation call at walk_property
+        - Next day: GM apology call
+        - Within 7 days: apology letter + compensation voucher
+        - Within 30 days: special_offer for return stay
+
+      TRACK guest_sentiment
+      ADJUST future_compensation if needed
+    applies_to: [walk_procedure, guest_profile]
+    enforcement: reminder_driven
+
+  - id: BR-OB-R002
+    name: Walk Pattern Analysis
+    name_vi: Phân tích mẫu chuyển khách
+    category: recovery
+    priority: medium
+    description: |
+      Analyze walk patterns to improve forecasting.
+    condition: |
+      walks_occurred in period
+    action: |
+      ANALYZE:
+        - Walk frequency by day_of_week
+        - Walk frequency by season
+        - No_show rates vs predictions
+        - Cancellation patterns
+        - Channel-specific patterns
+
+      ADJUST:
+        - Overbooking percentages
+        - Forecasting models
+        - Channel allocations
+
+      REPORT monthly to revenue_management
+    applies_to: [analytics]
+    enforcement: scheduled
+
+  - id: BR-OB-R003
+    name: Walk Cost Tracking
+    name_vi: Theo dõi chi phí chuyển khách
+    category: recovery
+    priority: medium
+    description: |
+      Track and allocate walk costs properly.
+    condition: |
+      walk_compensation_incurred
+    action: |
+      TRACK costs:
+        - Room cost at walk_property
+        - Transportation costs
+        - Meal/amenity credits
+        - Future stay discounts (estimate)
+        - Staff time
+
+      COMPARE vs:
+        - No_show revenue captured
+        - Revenue from overbooking
+
+      CALCULATE net_overbooking_benefit
+    applies_to: [finance, analytics]
+    enforcement: automatic
+
+prevention_strategies:
+  forecast_improvement:
+    - better_no_show_prediction
+    - seasonal_factor_adjustment
+    - event_impact_modeling
+    - channel_behavior_analysis
+
+  operational:
+    - early_arrival_encouragement
+    - same_day_reconfirmation_calls
+    - upgrade_path_management
+    - room_type_flexibility
+
+partner_agreements:
+  walk_property_requirements:
+    - pre_negotiated_rates
+    - guaranteed_availability
+    - quality_standards_agreement
+    - reciprocal_arrangements
+    - communication_protocols

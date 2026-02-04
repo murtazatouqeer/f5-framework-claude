@@ -1,0 +1,370 @@
+name: salary-rules
+display_name: Salary Calculation Rules
+description: |
+  Business rules for salary calculation including base salary, allowances,
+  proration, and component validation per Vietnam Labor Code.
+
+domain: hr-management
+subdomain: payroll
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Minimum Wage Rules
+  - id: SAL-001
+    name: minimum_wage_compliance
+    description: Base salary must meet or exceed regional minimum wage
+    category: compliance
+    priority: critical
+
+    condition: |
+      employee.employment_type IN ('full_time', 'part_time') AND
+      employee.contract_type IN ('indefinite', 'definite')
+
+    validation:
+      field: base_salary
+      operator: gte
+      value: regional_minimum_wage[employee.wage_region]
+
+    regional_minimum_wages_2024:
+      region_1: 4680000
+      region_2: 4160000
+      region_3: 3640000
+      region_4: 3250000
+
+    error_message: "Base salary {base_salary} is below minimum wage {min_wage} for {region}"
+
+    actions:
+      on_violation:
+        - alert: hr_manager
+        - block: payroll_processing
+        - log: compliance_violation
+
+    compliance:
+      - standard: Vietnam_Labor_Code
+        article: Article_91
+      - standard: Decree_38_2022
+
+  - id: SAL-002
+    name: probation_salary_minimum
+    description: Probation salary must be at least 85% of official salary
+    category: compliance
+    priority: critical
+
+    condition: |
+      employee.employment_status = 'probation'
+
+    validation:
+      field: probation_salary
+      operator: gte
+      formula: "base_salary * 0.85"
+
+    error_message: "Probation salary must be at least 85% of base salary"
+
+    compliance:
+      - standard: Vietnam_Labor_Code
+        article: Article_26
+
+  # Proration Rules
+  - id: SAL-003
+    name: salary_proration_new_hire
+    description: Prorate salary for employees joining mid-period
+    category: calculation
+    priority: high
+
+    condition: |
+      employee.hire_date > period.start_date AND
+      employee.hire_date <= period.end_date
+
+    calculation:
+      formula: |
+        proration_factor = working_days_from_hire / period.working_days
+        prorated_salary = base_salary * proration_factor
+
+    applies_to:
+      - base_salary
+      - fixed_allowances
+
+    exceptions:
+      - one_time_bonuses
+      - reimbursements
+
+  - id: SAL-004
+    name: salary_proration_termination
+    description: Prorate salary for employees leaving mid-period
+    category: calculation
+    priority: high
+
+    condition: |
+      employee.termination_date >= period.start_date AND
+      employee.termination_date < period.end_date
+
+    calculation:
+      formula: |
+        proration_factor = working_days_until_termination / period.working_days
+        prorated_salary = base_salary * proration_factor
+
+    additional_processing:
+      - calculate_final_settlement
+      - include_unused_leave_payment
+      - process_outstanding_loans
+
+  - id: SAL-005
+    name: salary_proration_unpaid_leave
+    description: Deduct salary for unpaid leave days
+    category: calculation
+    priority: high
+
+    condition: |
+      employee.unpaid_leave_days > 0
+
+    calculation:
+      formula: |
+        daily_rate = base_salary / period.working_days
+        deduction = daily_rate * unpaid_leave_days
+        adjusted_salary = base_salary - deduction
+
+  # Allowance Rules
+  - id: SAL-006
+    name: meal_allowance_tax_exemption
+    description: Meal allowance tax-exempt up to 730,000 VND/month
+    category: tax_treatment
+    priority: medium
+
+    condition: |
+      earning.code = 'MEAL'
+
+    calculation:
+      tax_exempt_limit: 730000
+      formula: |
+        IF meal_allowance <= 730000 THEN
+          taxable_amount = 0
+          non_taxable_amount = meal_allowance
+        ELSE
+          taxable_amount = meal_allowance - 730000
+          non_taxable_amount = 730000
+        END
+
+    compliance:
+      - standard: Circular_111
+        section: Non-taxable_income
+
+  - id: SAL-007
+    name: responsibility_allowance_si_base
+    description: Responsibility allowance included in SI contribution base
+    category: insurance_treatment
+    priority: medium
+
+    condition: |
+      earning.code = 'RESPONSIBILITY' AND
+      earning.is_regular = true
+
+    treatment:
+      si_contributable: true
+      include_in_si_base: true
+
+  - id: SAL-008
+    name: position_allowance_si_base
+    description: Position allowance included in SI contribution base
+    category: insurance_treatment
+    priority: medium
+
+    condition: |
+      earning.code = 'POSITION' AND
+      earning.is_regular = true
+
+    treatment:
+      si_contributable: true
+      include_in_si_base: true
+
+  # Salary Structure Rules
+  - id: SAL-009
+    name: salary_component_validation
+    description: Validate salary structure components are complete
+    category: validation
+    priority: high
+
+    required_components:
+      - code: BASIC
+        name: Base Salary
+        required: true
+
+    optional_components:
+      - code: HOUSING
+        name: Housing Allowance
+      - code: TRANSPORT
+        name: Transport Allowance
+      - code: MEAL
+        name: Meal Allowance
+      - code: PHONE
+        name: Phone Allowance
+      - code: RESPONSIBILITY
+        name: Responsibility Allowance
+      - code: POSITION
+        name: Position Allowance
+
+    validation:
+      - rule: base_salary_required
+        message: "Base salary component is mandatory"
+
+      - rule: no_negative_components
+        message: "Salary components cannot be negative"
+
+      - rule: total_matches_sum
+        message: "Total salary must equal sum of components"
+
+  # Salary Revision Rules
+  - id: SAL-010
+    name: salary_revision_effective_date
+    description: Salary revision must have valid effective date
+    category: process
+    priority: high
+
+    validation:
+      - rule: effective_date_not_past
+        condition: "effective_date >= current_date OR is_backdated_with_approval"
+        message: "Effective date cannot be in past without approval"
+
+      - rule: effective_date_reasonable
+        condition: "effective_date <= current_date + 90_days"
+        message: "Effective date too far in future"
+
+    backdated_rules:
+      max_retroactive_months: 3
+      requires_approval: true
+      approver_level: hr_director
+
+  - id: SAL-011
+    name: salary_revision_percentage_limit
+    description: Large salary changes require additional approval
+    category: approval
+    priority: medium
+
+    thresholds:
+      - change_percentage: 20
+        approval_level: hr_manager
+
+      - change_percentage: 30
+        approval_level: hr_director
+
+      - change_percentage: 50
+        approval_level: ceo
+
+    calculation:
+      formula: |
+        change_percentage = ABS((new_salary - old_salary) / old_salary) * 100
+
+  # Payment Rules
+  - id: SAL-012
+    name: salary_payment_timing
+    description: Salary must be paid within agreed period
+    category: compliance
+    priority: critical
+
+    rules:
+      - monthly_salary:
+          deadline: "By the 10th of following month"
+          grace_period: 5_days
+
+      - final_settlement:
+          deadline: "Within 14 days of termination"
+          exception: "Complex cases within 30 days"
+
+    compliance:
+      - standard: Vietnam_Labor_Code
+        article: Article_97
+
+  - id: SAL-013
+    name: salary_payment_method
+    description: Payment method must match employee preference
+    category: process
+    priority: medium
+
+    allowed_methods:
+      - bank_transfer:
+          default: true
+          requires: valid_bank_account
+
+      - cash:
+          allowed: true
+          requires: employee_request
+          documentation: required
+
+      - check:
+          allowed: true
+          requires: employee_request
+
+  # Rounding Rules
+  - id: SAL-014
+    name: salary_rounding
+    description: Salary amounts rounded to nearest VND
+    category: calculation
+    priority: low
+
+    rounding_rules:
+      gross_salary: round_to_nearest_1000
+      net_salary: round_to_nearest_1000
+      tax: round_down_to_nearest_1000
+      insurance: round_to_nearest_1000
+      individual_components: round_to_nearest_100
+
+  # Audit Rules
+  - id: SAL-015
+    name: salary_change_audit
+    description: All salary changes must be audited
+    category: audit
+    priority: high
+
+    audit_requirements:
+      track_fields:
+        - base_salary
+        - total_compensation
+        - effective_date
+        - changed_by
+        - change_reason
+
+      retention: 10_years
+
+      required_documentation:
+        - approval_form
+        - justification
+        - comparison_report
+
+rule_dependencies:
+  SAL-001:
+    blocks: [SAL-003, SAL-004, SAL-005]
+    reason: "Minimum wage must be validated before proration"
+
+  SAL-009:
+    blocks: [SAL-006, SAL-007, SAL-008]
+    reason: "Structure must be valid before treatment rules"
+
+execution_order:
+  - phase: validation
+    rules: [SAL-001, SAL-002, SAL-009]
+
+  - phase: calculation
+    rules: [SAL-003, SAL-004, SAL-005, SAL-014]
+
+  - phase: treatment
+    rules: [SAL-006, SAL-007, SAL-008]
+
+  - phase: approval
+    rules: [SAL-010, SAL-011]
+
+  - phase: payment
+    rules: [SAL-012, SAL-013]
+
+  - phase: audit
+    rules: [SAL-015]
+
+compliance_summary:
+  - standard: Vietnam_Labor_Code_2019
+    articles: [26, 91, 97]
+
+  - standard: Decree_38_2022
+    subject: Regional_minimum_wages
+
+  - standard: Circular_111
+    subject: Tax_treatment_of_allowances

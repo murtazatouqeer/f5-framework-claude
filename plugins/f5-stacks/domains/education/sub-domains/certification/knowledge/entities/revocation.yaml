@@ -1,0 +1,317 @@
+# Revocation Entity
+# F5 Framework v2.0 - Education/Certification
+# Certificate revocation tracking
+
+entity:
+  id: revocation
+  name: Revocation
+  name_ja: 取り消し
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    Records the revocation of certificates or badges, including the reason,
+    evidence, appeal process, and notification status.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+      
+    - name: revocation_id
+      type: string
+      format: "REV-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    # Credential Reference
+    - name: credential_type
+      type: enum
+      values: [certificate, badge]
+      required: true
+      
+    - name: certificate_id
+      type: uuid
+      foreign_key: certificate.id
+      indexed: true
+      
+    - name: badge_id
+      type: uuid
+      foreign_key: badge.id
+      indexed: true
+      
+    - name: holder_id
+      type: uuid
+      foreign_key: credential_holder.id
+      required: true
+      indexed: true
+
+    # Status
+    - name: status
+      type: enum
+      values: [pending, under_review, effective, appealed, reversed, cancelled]
+      default: pending
+      indexed: true
+
+    # Type
+    - name: revocation_type
+      type: enum
+      values: [voluntary, administrative, disciplinary, fraud, error, expired_unreneved, death, organization_closure]
+      required: true
+      indexed: true
+      
+    - name: severity
+      type: enum
+      values: [low, medium, high, critical]
+      default: medium
+
+    # Reason
+    - name: reason_code
+      type: string
+      max_length: 50
+      required: true
+      indexed: true
+      
+    - name: reason_description
+      type: text
+      required: true
+      
+    - name: detailed_findings
+      type: text
+
+    # Evidence
+    - name: evidence
+      type: jsonb
+      description: Supporting evidence
+      schema:
+        - evidence_type: string
+          description: string
+          file_url: string
+          date_obtained: date
+          
+    - name: investigation_report_url
+      type: string
+      max_length: 500
+
+    # Dates
+    - name: initiated_at
+      type: timestamp
+      required: true
+      indexed: true
+      
+    - name: effective_date
+      type: date
+      indexed: true
+      description: When revocation takes effect
+      
+    - name: revoked_at
+      type: timestamp
+      description: Actual revocation timestamp
+
+    # Process
+    - name: initiated_by
+      type: uuid
+      foreign_key: user.id
+      required: true
+      
+    - name: reviewed_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: approved_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: approved_at
+      type: timestamp
+
+    # Notification
+    - name: holder_notified
+      type: boolean
+      default: false
+      
+    - name: notification_sent_at
+      type: timestamp
+      
+    - name: notification_method
+      type: enum
+      values: [email, mail, both]
+      default: email
+      
+    - name: notification_acknowledged
+      type: boolean
+      default: false
+      
+    - name: acknowledged_at
+      type: timestamp
+
+    # Appeal
+    - name: appeal_deadline
+      type: date
+      description: Last day to appeal
+      
+    - name: appeal_submitted
+      type: boolean
+      default: false
+      
+    - name: appeal_submitted_at
+      type: timestamp
+      
+    - name: appeal_reason
+      type: text
+      
+    - name: appeal_evidence
+      type: jsonb
+      
+    - name: appeal_reviewed_by
+      type: uuid
+      foreign_key: user.id
+      
+    - name: appeal_decision
+      type: enum
+      values: [pending, upheld, reversed, modified]
+      
+    - name: appeal_decision_at
+      type: timestamp
+      
+    - name: appeal_decision_notes
+      type: text
+
+    # Reinstatement
+    - name: can_reinstate
+      type: boolean
+      default: false
+      
+    - name: reinstatement_conditions
+      type: text
+      
+    - name: reinstated_at
+      type: timestamp
+      
+    - name: reinstated_by
+      type: uuid
+      foreign_key: user.id
+
+    # External Notification
+    - name: verifiers_notified
+      type: boolean
+      default: false
+      description: Registered verifiers notified
+      
+    - name: registries_updated
+      type: boolean
+      default: false
+      description: External registries updated
+      
+    - name: public_notice
+      type: boolean
+      default: false
+      description: Posted on public registry
+
+    # Metadata
+    - name: notes
+      type: text
+      description: Internal notes
+      
+    - name: created_at
+      type: timestamp
+      auto: true
+      
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_appealable
+      formula: "status = 'effective' AND appeal_deadline >= CURRENT_DATE AND NOT appeal_submitted"
+      
+    - name: days_until_appeal_deadline
+      formula: "DATEDIFF(appeal_deadline, CURRENT_DATE)"
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: under_review
+        event: start_review
+        
+      - from: under_review
+        to: effective
+        event: execute
+        
+      - from: under_review
+        to: cancelled
+        event: cancel
+        
+      - from: effective
+        to: appealed
+        event: appeal
+        condition: "appeal_deadline >= CURRENT_DATE"
+        
+      - from: appealed
+        to: effective
+        event: uphold
+        
+      - from: appealed
+        to: reversed
+        event: reverse
+
+  relationships:
+    - name: certificate
+      type: belongs_to
+      entity: certificate
+      foreign_key: certificate_id
+      
+    - name: badge
+      type: belongs_to
+      entity: badge
+      foreign_key: badge_id
+      
+    - name: holder
+      type: belongs_to
+      entity: credential_holder
+      foreign_key: holder_id
+      
+    - name: initiator
+      type: belongs_to
+      entity: user
+      foreign_key: initiated_by
+      
+    - name: approver
+      type: belongs_to
+      entity: user
+      foreign_key: approved_by
+
+  validations:
+    - rule: "certificate_id IS NOT NULL OR badge_id IS NOT NULL"
+      message: Must reference either certificate or badge
+      
+    - field: effective_date
+      rule: "effective_date >= CURRENT_DATE"
+      when: "status = 'pending'"
+      message: Effective date cannot be in the past
+
+  reason_codes:
+    - code: VOL01
+      type: voluntary
+      description: Holder requested revocation
+    - code: ADM01
+      type: administrative
+      description: Failed to meet renewal requirements
+    - code: DSC01
+      type: disciplinary
+      description: Violation of code of conduct
+    - code: FRD01
+      type: fraud
+      description: Fraudulent application or exam behavior
+    - code: ERR01
+      type: error
+      description: Certificate issued in error
+
+  audit:
+    enabled: true
+    track_changes: true
+    retention_years: 10

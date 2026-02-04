@@ -1,0 +1,252 @@
+# Grading Rubric Entity
+# F5 Framework v2.0 - Education/Assessment
+# Rubric-based grading structure for subjective questions
+
+entity:
+  id: grading_rubric
+  name: Grading Rubric
+  name_ja: 採点基準
+  description: Structured rubric for consistent grading of subjective questions
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    rubric_code:
+      type: string
+      max_length: 50
+      unique: true
+      pattern: "^RUB-[A-Z]{3}-[0-9]{4}$"
+      
+    # Basic Information
+    name:
+      type: string
+      max_length: 200
+      required: true
+      
+    description:
+      type: text
+      
+    # Type
+    rubric_type:
+      type: enum
+      values:
+        - analytic      # Multiple criteria scored separately
+        - holistic      # Single overall score
+        - single_point  # Pass/fail on criteria
+        - checklist     # Binary criteria
+      default: analytic
+      
+    # Status
+    status:
+      type: enum
+      values: [draft, active, archived]
+      default: draft
+      
+    # Scoring Configuration
+    total_points:
+      type: decimal
+      precision: 6
+      scale: 2
+      computed: true
+      description: Sum of max points from all criteria
+      
+    scale_type:
+      type: enum
+      values:
+        - points        # Specific point values
+        - percentage    # Percentage-based
+        - levels        # Descriptive levels (1-4, etc.)
+      default: points
+      
+    # Criteria (for analytic rubrics)
+    criteria:
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: uuid
+          name:
+            type: string
+            max_length: 200
+          description:
+            type: text
+          weight:
+            type: decimal
+            description: Weight for weighted scoring
+          max_points:
+            type: decimal
+          display_order:
+            type: integer
+          levels:
+            type: array
+            items:
+              type: object
+              properties:
+                id: uuid
+                name: string
+                description: text
+                points: decimal
+                display_order: integer
+                
+    # Holistic Levels (for holistic rubrics)
+    holistic_levels:
+      type: array
+      items:
+        type: object
+        properties:
+          id: uuid
+          name: string
+          description: text
+          min_score: decimal
+          max_score: decimal
+          display_order: integer
+          
+    # Checklist Items (for checklist rubrics)
+    checklist_items:
+      type: array
+      items:
+        type: object
+        properties:
+          id: uuid
+          description: text
+          points: decimal
+          required: boolean
+          
+    # Grade Mapping
+    grade_boundaries:
+      type: array
+      items:
+        type: object
+        properties:
+          grade: string
+          min_percentage: decimal
+          max_percentage: decimal
+          description: string
+      example:
+        - grade: "A"
+          min_percentage: 90
+          max_percentage: 100
+        - grade: "B"
+          min_percentage: 80
+          max_percentage: 89.99
+          
+    # Calibration
+    anchor_samples:
+      type: array
+      items:
+        type: object
+        properties:
+          id: uuid
+          score: decimal
+          level: string
+          sample_response: text
+          explanation: text
+      description: Example responses for grader calibration
+      
+    # Inter-rater Reliability
+    require_double_grading:
+      type: boolean
+      default: false
+      
+    score_variance_threshold:
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Max allowed difference between graders
+      
+    # Ownership
+    created_by:
+      type: uuid
+      references: user
+      required: true
+      
+    organization_id:
+      type: uuid
+      references: organization
+      
+    # Visibility
+    visibility:
+      type: enum
+      values: [private, shared, public]
+      default: private
+      
+    # Usage Statistics
+    usage_count:
+      type: integer
+      default: 0
+      
+    average_grading_time_seconds:
+      type: integer
+      
+    # Metadata
+    subject_area:
+      type: string
+      max_length: 100
+      
+    tags:
+      type: array
+      items: string
+      
+    # Timestamps
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  computed_fields:
+    criteria_count:
+      formula: "criteria.length"
+      type: integer
+      
+    is_weighted:
+      formula: "criteria.any(c => c.weight != null)"
+      type: boolean
+
+  relationships:
+    creator:
+      type: belongs_to
+      entity: user
+      foreign_key: created_by
+      
+    organization:
+      type: belongs_to
+      entity: organization
+      foreign_key: organization_id
+      
+    questions:
+      type: has_many
+      entity: question
+      foreign_key: rubric_id
+
+  indexes:
+    - columns: [rubric_code]
+      unique: true
+    - columns: [status, rubric_type]
+    - columns: [created_by]
+    - columns: [organization_id, status]
+
+  validations:
+    - name: criteria_required_for_analytic
+      condition: "rubric_type != 'analytic' OR criteria.length > 0"
+      message: "Analytic rubrics must have at least one criterion"
+      
+    - name: levels_required_for_holistic
+      condition: "rubric_type != 'holistic' OR holistic_levels.length > 0"
+      message: "Holistic rubrics must have at least one level"
+      
+    - name: checklist_items_required
+      condition: "rubric_type != 'checklist' OR checklist_items.length > 0"
+      message: "Checklist rubrics must have at least one item"
+
+  audit:
+    enabled: true
+    track_changes: true

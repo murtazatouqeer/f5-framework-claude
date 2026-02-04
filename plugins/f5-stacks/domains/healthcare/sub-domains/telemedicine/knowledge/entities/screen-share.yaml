@@ -1,0 +1,223 @@
+# ScreenShare Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Screen sharing sessions during telehealth visits
+
+entity:
+  id: screen-share
+  name: ScreenShare
+  name_ja: 画面共有
+  description: Screen sharing sessions for sharing documents, images, and test results
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: session_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: video_session.id
+      description: Video session containing this share
+
+    - name: visit_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: tele_visit.id
+      description: Associated telehealth visit
+
+    # Sharer
+    - name: sharer_id
+      type: uuid
+      required: true
+      foreign_key: user.id
+      description: User sharing their screen
+
+    - name: sharer_role
+      type: enum
+      values:
+        - provider
+        - patient
+        - specialist
+      required: true
+      description: Role of person sharing
+
+    # Share Configuration
+    - name: share_type
+      type: enum
+      values:
+        - full_screen
+        - application
+        - browser_tab
+        - document
+        - image
+      required: true
+      description: What is being shared
+
+    - name: status
+      type: enum
+      values:
+        - starting
+        - active
+        - paused
+        - ended
+        - failed
+      required: true
+      default: starting
+      indexed: true
+      description: Share status
+
+    # Content Info
+    - name: content_description
+      type: string
+      nullable: true
+      max_length: 500
+      description: Description of shared content
+
+    - name: content_category
+      type: enum
+      values:
+        - lab_results
+        - imaging
+        - medical_record
+        - educational
+        - prescription
+        - referral
+        - other
+      nullable: true
+      description: Category of shared content
+
+    - name: application_name
+      type: string
+      nullable: true
+      description: Application being shared (if app share)
+
+    # PHI Considerations
+    - name: contains_phi
+      type: boolean
+      default: true
+      description: Shared content contains PHI
+
+    - name: phi_acknowledged
+      type: boolean
+      default: false
+      description: PHI warning acknowledged
+
+    # Recording
+    - name: recording_included
+      type: boolean
+      default: false
+      description: Screen share included in recording
+
+    # Timing
+    - name: started_at
+      type: datetime
+      nullable: true
+      description: When sharing started
+
+    - name: ended_at
+      type: datetime
+      nullable: true
+      description: When sharing ended
+
+    - name: duration_seconds
+      type: integer
+      nullable: true
+      computed: true
+      description: Total duration
+
+    # Quality
+    - name: resolution
+      type: string
+      nullable: true
+      description: Share resolution
+
+    - name: frame_rate
+      type: integer
+      nullable: true
+      description: Share frame rate
+
+    # Snapshots (if captured)
+    - name: snapshots
+      type: jsonb
+      default: "[]"
+      description: |
+        Captured snapshots:
+        [{
+          timestamp: datetime,
+          url: string,
+          description: string,
+          added_to_record: bool
+        }]
+
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+
+  relationships:
+    - name: session
+      type: belongs_to
+      entity: video_session
+      foreign_key: session_id
+
+    - name: visit
+      type: belongs_to
+      entity: tele_visit
+      foreign_key: visit_id
+
+    - name: sharer
+      type: belongs_to
+      entity: user
+      foreign_key: sharer_id
+
+  state_machine:
+    field: status
+    initial: starting
+    transitions:
+      - from: starting
+        to: active
+        trigger: share_established
+        action: set_started_at
+        
+      - from: active
+        to: paused
+        trigger: pause_share
+        
+      - from: paused
+        to: active
+        trigger: resume_share
+        
+      - from: [active, paused]
+        to: ended
+        trigger: stop_share
+        action: set_ended_at
+        
+      - from: starting
+        to: failed
+        trigger: share_failed
+
+  indexes:
+    - name: idx_screenshare_session
+      columns: [session_id]
+      
+    - name: idx_screenshare_visit
+      columns: [visit_id]
+
+  validations:
+    - name: phi_acknowledged_if_contains
+      rule: contains_phi == false OR phi_acknowledged == true
+      message: PHI acknowledgment required before sharing
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - content_category
+      - snapshots
+    retention_days: 2555

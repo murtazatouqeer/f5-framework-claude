@@ -1,0 +1,498 @@
+# Prescription Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Prescription order and management entity
+
+entity:
+  id: prescription
+  name: Prescription
+  name_ja: 処方箋
+  description: Prescription order from prescriber for patient medication
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: rx_number
+      type: string
+      primary_key: true
+      description: Unique prescription number
+      format: "RX-YYYYMMDD-NNNNNN"
+      
+    - name: original_rx_number
+      type: string
+      description: Original Rx number if transferred
+      
+    - name: external_rx_id
+      type: string
+      description: External system prescription ID (e-prescribing)
+      
+    - name: message_id
+      type: string
+      description: Surescripts message ID
+
+    # Patient Information
+    - name: patient_id
+      type: uuid
+      required: true
+      references: patient_profile
+      description: Patient receiving medication
+      
+    - name: patient_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: patient_dob
+      type: date
+      required: true
+      description: Patient date of birth for verification
+      
+    - name: patient_address
+      type: json
+      description: Patient address at time of Rx
+
+    # Prescriber Information
+    - name: prescriber_npi
+      type: string
+      length: 10
+      required: true
+      description: Prescriber NPI number
+      
+    - name: prescriber_dea
+      type: string
+      length: 9
+      description: Prescriber DEA number (required for controlled)
+      
+    - name: prescriber_name
+      type: string
+      length: 255
+      required: true
+      
+    - name: prescriber_phone
+      type: string
+      length: 20
+      
+    - name: prescriber_address
+      type: json
+      description: Prescriber address
+
+    # Drug Information
+    - name: ndc
+      type: string
+      length: 11
+      required: true
+      references: drug
+      description: Prescribed drug NDC
+      
+    - name: drug_name
+      type: string
+      length: 255
+      required: true
+      description: Prescribed drug name
+      
+    - name: drug_strength
+      type: string
+      length: 100
+      required: true
+      
+    - name: drug_form
+      type: string
+      length: 100
+      required: true
+      
+    - name: dea_schedule
+      type: enum
+      values: [unscheduled, II, III, IV, V]
+      default: unscheduled
+
+    # Prescription Details
+    - name: quantity_prescribed
+      type: decimal
+      precision: 10
+      scale: 2
+      required: true
+      description: Quantity prescribed
+      
+    - name: quantity_unit
+      type: string
+      length: 20
+      default: "EA"
+      description: Unit of quantity
+      
+    - name: days_supply
+      type: integer
+      required: true
+      description: Days supply for quantity
+      
+    - name: sig_code
+      type: string
+      length: 50
+      description: Standard sig code
+      
+    - name: sig_text
+      type: text
+      required: true
+      description: Full directions (sig)
+      example: "Take 1 tablet by mouth twice daily with food"
+      
+    - name: sig_text_ja
+      type: text
+      description: Japanese directions
+
+    # Refill Information
+    - name: refills_authorized
+      type: integer
+      default: 0
+      description: Number of refills authorized
+      constraints:
+        max_controlled_iii_v: 5
+        max_controlled_ii: 0
+        max_non_controlled: 11
+        
+    - name: refills_remaining
+      type: integer
+      default: 0
+      description: Refills remaining
+      
+    - name: refill_quantity
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Quantity per refill (if different)
+      
+    - name: prn
+      type: boolean
+      default: false
+      description: PRN (as needed) prescription
+
+    # Dispensing Instructions
+    - name: daw_code
+      type: enum
+      values: ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"]
+      default: "0"
+      description: Dispense As Written code
+      mapping:
+        "0": "No product selection indicated"
+        "1": "Substitution not allowed by prescriber"
+        "2": "Substitution allowed, patient requested brand"
+        "3": "Substitution allowed, pharmacist selected brand"
+        "4": "Substitution allowed, generic not in stock"
+        "5": "Substitution allowed, brand dispensed as generic"
+        "6": "Override"
+        "7": "Substitution not allowed, brand mandated by law"
+        "8": "Substitution allowed, generic not available"
+        "9": "Other"
+        
+    - name: brand_medically_necessary
+      type: boolean
+      default: false
+      description: Brand medically necessary (DAW 1)
+
+    # Dates
+    - name: written_date
+      type: date
+      required: true
+      description: Date prescription was written
+      
+    - name: effective_date
+      type: date
+      description: Date prescription becomes valid
+      
+    - name: expiration_date
+      type: date
+      required: true
+      description: Prescription expiration date
+      calculation: |
+        Non-controlled: written_date + 1 year
+        Schedule II: written_date + varies by state (typically 90 days)
+        Schedule III-V: written_date + 6 months
+        
+    - name: fill_by_date
+      type: date
+      description: Date Rx must be filled by
+
+    # Source Information
+    - name: origin_type
+      type: enum
+      values: [electronic, fax, phone, written, transfer_in]
+      required: true
+      description: How prescription was received
+      
+    - name: electronic_source
+      type: string
+      description: E-prescribing source (Surescripts, etc.)
+      
+    - name: fax_image_id
+      type: string
+      description: Reference to faxed prescription image
+      
+    - name: hard_copy_location
+      type: string
+      description: Physical location of hard copy
+
+    # Prior Authorization
+    - name: pa_required
+      type: boolean
+      default: false
+      description: Prior authorization required
+      
+    - name: pa_number
+      type: string
+      description: Prior authorization number
+      
+    - name: pa_status
+      type: enum
+      values: [not_required, pending, approved, denied, expired]
+      default: not_required
+
+    # Special Handling
+    - name: compound
+      type: boolean
+      default: false
+      description: Compound prescription
+      
+    - name: compound_id
+      type: uuid
+      references: compound
+      description: Reference to compound formula
+      
+    - name: ltc_indicator
+      type: boolean
+      default: false
+      description: Long-term care prescription
+      
+    - name: hospice_indicator
+      type: boolean
+      default: false
+      description: Hospice prescription
+
+    # Status
+    - name: status
+      type: enum
+      values: [
+        received, entered, pending_verification, verified,
+        pending_fill, filled, pending_rph_check, ready,
+        sold, transferred_out, cancelled, expired, on_hold,
+        pending_pa, pa_denied
+      ]
+      default: received
+      
+    - name: hold_reason
+      type: string
+      description: Reason for hold status
+      
+    - name: cancel_reason
+      type: string
+      description: Reason for cancellation
+
+    # Audit
+    - name: entered_by
+      type: uuid
+      required: true
+      description: User who entered prescription
+      
+    - name: verified_by
+      type: uuid
+      description: Pharmacist who verified entry
+      
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  state_machine:
+    initial: received
+    states:
+      received:
+        description: Prescription received, not yet entered
+        transitions:
+          - to: entered
+            event: data_entry_complete
+            
+      entered:
+        description: Data entry complete, pending verification
+        transitions:
+          - to: pending_verification
+            event: submit_for_verification
+          - to: cancelled
+            event: cancel
+            
+      pending_verification:
+        description: Awaiting pharmacist verification of entry
+        transitions:
+          - to: verified
+            event: verify
+            guard: pharmacist_only
+          - to: entered
+            event: reject
+            
+      verified:
+        description: Entry verified, ready for DUR/processing
+        transitions:
+          - to: pending_fill
+            event: dur_passed
+          - to: on_hold
+            event: dur_failed
+          - to: pending_pa
+            event: pa_required
+            
+      pending_pa:
+        description: Awaiting prior authorization
+        transitions:
+          - to: verified
+            event: pa_approved
+          - to: pa_denied
+            event: pa_denied
+          - to: cancelled
+            event: cancel
+            
+      pa_denied:
+        description: Prior authorization denied
+        terminal: true
+        
+      pending_fill:
+        description: Ready for filling
+        transitions:
+          - to: filled
+            event: fill_complete
+          - to: on_hold
+            event: hold
+          - to: cancelled
+            event: cancel
+            
+      filled:
+        description: Filled, pending pharmacist check
+        transitions:
+          - to: pending_rph_check
+            event: submit_for_check
+            
+      pending_rph_check:
+        description: Awaiting final pharmacist verification
+        transitions:
+          - to: ready
+            event: verify
+            guard: pharmacist_only
+          - to: filled
+            event: reject
+            
+      ready:
+        description: Ready for patient pickup
+        transitions:
+          - to: sold
+            event: dispense
+          - to: ready
+            event: will_call_return
+            
+      sold:
+        description: Dispensed to patient
+        terminal: true
+        
+      on_hold:
+        description: On hold for issue resolution
+        transitions:
+          - to: verified
+            event: resolve
+          - to: cancelled
+            event: cancel
+            
+      transferred_out:
+        description: Transferred to another pharmacy
+        terminal: true
+        
+      cancelled:
+        description: Prescription cancelled
+        terminal: true
+        
+      expired:
+        description: Prescription expired
+        terminal: true
+
+  relationships:
+    - name: patient
+      type: many_to_one
+      target: patient_profile
+      foreign_key: patient_id
+      
+    - name: drug
+      type: many_to_one
+      target: drug
+      foreign_key: ndc
+      
+    - name: dispenses
+      type: one_to_many
+      target: dispense
+      description: Dispensing records for this Rx
+      
+    - name: refills
+      type: one_to_many
+      target: refill
+      description: Refill requests
+      
+    - name: claims
+      type: one_to_many
+      target: claim
+      description: Insurance claims
+      
+    - name: prior_auth
+      type: many_to_one
+      target: prior_authorization
+      foreign_key: pa_number
+
+  indexes:
+    - fields: [rx_number]
+      unique: true
+      name: idx_rx_number
+      
+    - fields: [patient_id]
+      name: idx_rx_patient
+      
+    - fields: [prescriber_npi]
+      name: idx_rx_prescriber
+      
+    - fields: [ndc]
+      name: idx_rx_drug
+      
+    - fields: [status]
+      name: idx_rx_status
+      
+    - fields: [written_date]
+      name: idx_rx_written_date
+      
+    - fields: [expiration_date]
+      name: idx_rx_expiration
+      
+    - fields: [created_at]
+      name: idx_rx_created
+
+  validations:
+    - field: prescriber_dea
+      rule: required_if
+      condition: "dea_schedule != 'unscheduled'"
+      message: "DEA number required for controlled substances"
+      
+    - field: refills_authorized
+      rule: max_value
+      condition: "dea_schedule == 'II'"
+      value: 0
+      message: "Schedule II prescriptions cannot have refills"
+      
+    - field: refills_authorized
+      rule: max_value
+      condition: "dea_schedule in ['III', 'IV', 'V']"
+      value: 5
+      message: "Schedule III-V limited to 5 refills"
+      
+    - field: expiration_date
+      rule: future_date
+      message: "Prescription must not be expired"
+
+  audit:
+    enabled: true
+    events: [create, update, status_change, verify, dispense]
+    retention_days: 2555
+    hipaa_compliant: true
+    fields: [status, quantity_prescribed, refills_remaining, verified_by]

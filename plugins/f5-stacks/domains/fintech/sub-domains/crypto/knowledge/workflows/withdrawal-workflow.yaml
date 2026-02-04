@@ -1,0 +1,507 @@
+name: WithdrawalWorkflow
+display_name: Withdrawal Workflow / Quy trình rút tiền
+description: |
+  End-to-end workflow for cryptocurrency withdrawals from initiation
+  to blockchain confirmation.
+
+domain: fintech
+sub_domain: crypto
+workflow_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: User initiates withdrawal request
+  outcome: Funds transferred to external wallet
+  typical_duration: 5 minutes to 24 hours
+  actors:
+    - user
+    - security_service
+    - risk_engine
+    - compliance_service
+    - withdrawal_processor
+    - signing_service
+    - notification_service
+
+# =============================================================================
+# WORKFLOW STEPS
+# =============================================================================
+steps:
+  # Step 1: Withdrawal Request
+  - id: WF-WDR-01
+    name: Submit Withdrawal Request
+    name_vi: Gửi yêu cầu rút tiền
+    actor: user
+    trigger: User submits withdrawal form
+    description: |
+      User initiates withdrawal by specifying destination,
+      amount, and network.
+    inputs:
+      - asset_id
+      - amount
+      - to_address
+      - address_tag (if required)
+      - network
+    validations:
+      - Address format valid for network
+      - Amount >= minimum withdrawal
+      - Amount <= per-transaction limit
+      - Network enabled for withdrawals
+    actions:
+      - Create withdrawal record (status: pending_verification)
+      - Lock withdrawal amount + fee from balance
+    next_step: WF-WDR-02
+
+  # Step 2: Security Verification
+  - id: WF-WDR-02
+    name: Security Verification
+    name_vi: Xác minh bảo mật
+    actor: security_service
+    trigger: Withdrawal request created
+    description: |
+      Verify user identity through multi-factor authentication.
+    actions:
+      - Request 2FA verification
+      - Verify email confirmation (if required)
+      - Check password (if recently changed)
+      - Validate device trust
+    verifications:
+      2fa:
+        required: true
+        methods: [authenticator, sms, email]
+        expiry: 5 minutes
+      email:
+        required_when: amount > email_threshold
+        expiry: 30 minutes
+      device:
+        required_when: new_device
+    on_success: WF-WDR-03
+    on_failure:
+      max_attempts: 3
+      action: Cancel withdrawal, unlock balance
+      notification: Security alert to user
+
+  # Step 3: Address Validation
+  - id: WF-WDR-03
+    name: Address Validation
+    name_vi: Xác thực địa chỉ
+    actor: system
+    trigger: Security verification passed
+    description: |
+      Validate destination address and check cooling period.
+    actions:
+      - Verify address checksum
+      - Check if address is blacklisted
+      - Check if internal address
+      - Apply cooling period for new addresses
+    checks:
+      address_format:
+        action: Validate network-specific format
+      blacklist:
+        source: [ofac, chainalysis, internal]
+        action: Block if match
+      whitelist:
+        check: Address in user whitelist
+        cooling_period: Skip if whitelisted
+      cooling_period:
+        duration: 24 hours for new addresses
+        bypass: Whitelisted addresses
+      internal:
+        check: Is platform deposit address
+        action: Convert to internal transfer
+    on_success: WF-WDR-04
+    on_failure:
+      blacklisted: Reject, report to compliance
+      cooling_period: Hold until period expires
+      invalid: Reject, notify user
+
+  # Step 4: Risk Assessment
+  - id: WF-WDR-04
+    name: Risk Assessment
+    name_vi: Đánh giá rủi ro
+    actor: risk_engine
+    trigger: Address validated
+    description: |
+      Assess withdrawal risk and determine if manual review needed.
+    actions:
+      - Calculate risk score
+      - Check velocity limits
+      - Apply user-specific rules
+      - Determine approval path
+    risk_factors:
+      new_address: +20
+      large_amount: +15
+      new_account: +25
+      unusual_time: +10
+      multiple_pending: +15
+      high_risk_destination: +30
+    risk_thresholds:
+      auto_approve: score < 30
+      review_required: 30 <= score < 70
+      manual_required: score >= 70
+    on_success:
+      low_risk: WF-WDR-06 (skip manual review)
+      high_risk: WF-WDR-05 (manual review)
+    on_failure:
+      action: Hold for compliance review
+
+  # Step 5: Manual Review (Conditional)
+  - id: WF-WDR-05
+    name: Manual Review
+    name_vi: Xét duyệt thủ công
+    actor: compliance_officer
+    trigger: High risk score OR amount exceeds threshold
+    description: |
+      Compliance officer reviews and approves/rejects withdrawal.
+    inputs:
+      - withdrawal_details
+      - user_profile
+      - risk_assessment
+      - transaction_history
+    actions:
+      - Review withdrawal details
+      - Verify source of funds if needed
+      - Approve or reject with reason
+      - Document decision
+    sla: 24 hours
+    outcomes:
+      approved: WF-WDR-06
+      rejected:
+        action: Cancel withdrawal
+        unlock_balance: true
+        notify_user: true
+        log_reason: required
+
+  # Step 6: Processing Queue
+  - id: WF-WDR-06
+    name: Queue for Processing
+    name_vi: Xếp hàng xử lý
+    actor: withdrawal_processor
+    trigger: Approval received
+    description: |
+      Add withdrawal to processing queue.
+    actions:
+      - Update status to 'approved'
+      - Add to processing queue
+      - Prioritize based on amount and time
+    queue_priority:
+      high: VIP users, urgent flag
+      normal: Standard processing
+      low: Batch processing eligible
+    batching:
+      enabled: true
+      window: 15 minutes
+      max_batch_size: 100
+    next_step: WF-WDR-07
+
+  # Step 7: Transaction Signing
+  - id: WF-WDR-07
+    name: Sign Transaction
+    name_vi: Ký giao dịch
+    actor: signing_service
+    trigger: Withdrawal dequeued for processing
+    description: |
+      Create and sign blockchain transaction.
+    actions:
+      - Build transaction with current gas/fee estimate
+      - Sign with HSM/cold storage key
+      - Verify signature
+    security:
+      hot_wallet:
+        threshold: Per asset limit
+        signing: Automated
+      cold_wallet:
+        threshold: Above hot wallet limit
+        signing: Multi-sig required
+        signers: 3 of 5
+    outputs:
+      - signed_transaction
+      - estimated_fee
+    next_step: WF-WDR-08
+
+  # Step 8: Broadcast Transaction
+  - id: WF-WDR-08
+    name: Broadcast to Network
+    name_vi: Phát lên mạng
+    actor: withdrawal_processor
+    trigger: Transaction signed
+    description: |
+      Submit signed transaction to blockchain network.
+    actions:
+      - Update status to 'broadcasting'
+      - Submit to multiple nodes
+      - Record tx_hash
+      - Begin confirmation tracking
+    retry_policy:
+      max_attempts: 3
+      backoff: exponential
+      initial_delay: 30 seconds
+    on_success:
+      action: WF-WDR-09
+      update: Store tx_hash, broadcasted_at
+    on_failure:
+      action: Alert operations, manual intervention
+      unlock_balance: After max retries
+
+  # Step 9: Confirmation Tracking
+  - id: WF-WDR-09
+    name: Track Confirmations
+    name_vi: Theo dõi xác nhận
+    actor: blockchain_monitor
+    trigger: Transaction broadcast
+    description: |
+      Monitor blockchain for transaction confirmation.
+    actions:
+      - Update status to 'confirming'
+      - Monitor mempool/blockchain
+      - Track confirmation count
+      - Detect stuck transactions
+    monitoring:
+      mempool_check: Every 30 seconds
+      confirmation_check: Every block
+    stuck_detection:
+      threshold: 2x expected confirmation time
+      action: Check gas price, consider RBF
+    next_step:
+      if: confirmed
+      then: WF-WDR-10
+
+  # Step 10: Completion
+  - id: WF-WDR-10
+    name: Complete Withdrawal
+    name_vi: Hoàn thành rút tiền
+    actor: withdrawal_processor
+    trigger: Transaction confirmed
+    description: |
+      Finalize withdrawal and update records.
+    actions:
+      - Update status to 'completed'
+      - Record final tx_hash and block
+      - Debit locked balance (make permanent)
+      - Update user statistics
+      - Trigger notification
+    outputs:
+      - final_tx_hash
+      - block_number
+      - completed_at
+      - actual_fee
+    next_step: WF-WDR-11
+
+  # Step 11: Notification
+  - id: WF-WDR-11
+    name: Send Notification
+    name_vi: Gửi thông báo
+    actor: notification_service
+    trigger: Withdrawal completed
+    description: |
+      Notify user of successful withdrawal.
+    channels:
+      - push_notification
+      - email
+      - sms (optional, for large amounts)
+    content:
+      title: "Withdrawal Completed"
+      body: "{amount} {asset} sent to {address}"
+      data:
+        tx_hash: "..."
+        explorer_link: "..."
+        amount: "..."
+
+# =============================================================================
+# STATE TRANSITIONS
+# =============================================================================
+state_machine:
+  initial: pending_verification
+  states:
+    pending_verification:
+      description: Awaiting security verification
+      transitions:
+        - to: pending_approval
+          event: verification_passed
+        - to: cancelled
+          event: verification_failed
+
+    pending_approval:
+      description: Awaiting risk/compliance approval
+      transitions:
+        - to: approved
+          event: auto_approved
+        - to: pending_review
+          event: review_required
+        - to: rejected
+          event: rejected
+
+    pending_review:
+      description: Awaiting manual review
+      transitions:
+        - to: approved
+          event: review_approved
+        - to: rejected
+          event: review_rejected
+
+    approved:
+      description: Approved, queued for processing
+      transitions:
+        - to: processing
+          event: dequeued
+        - to: cancelled
+          event: user_cancelled
+
+    processing:
+      description: Transaction being created
+      transitions:
+        - to: broadcasting
+          event: signed
+
+    broadcasting:
+      description: Sent to blockchain
+      transitions:
+        - to: confirming
+          event: tx_detected
+        - to: failed
+          event: broadcast_failed
+
+    confirming:
+      description: Waiting for confirmations
+      transitions:
+        - to: completed
+          event: confirmed
+        - to: failed
+          event: confirmation_failed
+
+    completed:
+      description: Successfully withdrawn
+      terminal: true
+
+    cancelled:
+      description: Cancelled by user or system
+      terminal: true
+
+    rejected:
+      description: Rejected by compliance
+      terminal: true
+
+    failed:
+      description: Technical failure
+      terminal: true
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  - scenario: Insufficient Hot Wallet Balance
+    detection: Hot wallet balance < withdrawal amount
+    response:
+      - Queue for next batch
+      - Alert treasury to replenish
+      - Notify user of delay
+
+  - scenario: Network Congestion
+    detection: Gas price > threshold
+    response:
+      - Estimate higher fee
+      - Get user confirmation if fee changed significantly
+      - Use RBF if supported
+
+  - scenario: Transaction Stuck
+    detection: No confirmation after 2x expected time
+    response:
+      - Check mempool status
+      - Consider fee bump (RBF/CPFP)
+      - Alert operations
+
+  - scenario: Signing Failure
+    detection: HSM error or key unavailable
+    response:
+      - Retry with backup
+      - Alert security team
+      - Hold processing
+
+  - scenario: User Cancellation
+    detection: User cancels before broadcasting
+    response:
+      - Cancel withdrawal
+      - Unlock balance immediately
+      - Confirm cancellation
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - name: withdrawal_processing_time
+      description: End-to-end processing time
+      target: < 30 minutes (auto-approved)
+      alert: warning at > 1 hour
+
+    - name: manual_review_time
+      description: Time in manual review queue
+      target: < 24 hours
+      alert: warning at > 12 hours
+
+    - name: broadcast_success_rate
+      description: Successful broadcasts / total
+      target: > 99%
+      alert: critical at < 95%
+
+    - name: stuck_withdrawals
+      description: Withdrawals stuck > 1 hour
+      target: 0
+      alert: warning at > 5
+
+  alerts:
+    - name: High Failure Rate
+      condition: failure_rate > 5%
+      severity: critical
+      notification: PagerDuty
+
+    - name: Large Withdrawal
+      condition: amount > vip_threshold
+      severity: info
+      notification: Compliance team
+
+    - name: Hot Wallet Low
+      condition: balance < replenish_threshold
+      severity: warning
+      notification: Treasury team
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - withdrawal_initiated
+    - verification_completed
+    - risk_assessed
+    - manual_review_started
+    - manual_review_completed
+    - transaction_signed
+    - transaction_broadcast
+    - transaction_confirmed
+    - withdrawal_completed
+    - withdrawal_cancelled
+    - withdrawal_failed
+  sensitive_fields:
+    - to_address
+    - ip_address
+  retention: 10 years
+  immutable: true
+
+# =============================================================================
+# SLA REQUIREMENTS
+# =============================================================================
+sla:
+  auto_approved:
+    target: < 30 minutes
+    measurement: initiated_at to completed_at
+
+  manual_review:
+    target: < 24 hours
+    measurement: pending_review_at to review_completed_at
+
+  availability:
+    target: 99.9%
+    measurement: Uptime of withdrawal processing

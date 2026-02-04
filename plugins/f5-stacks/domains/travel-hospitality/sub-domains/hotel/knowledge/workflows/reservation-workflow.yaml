@@ -1,0 +1,446 @@
+name: reservation-workflow
+display_name: Reservation Workflow
+display_name_vi: Quy trình đặt phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  End-to-end workflow for hotel reservation from search through
+  confirmation, including validation, availability check, and
+  channel synchronization.
+
+description_vi: |
+  Quy trình đặt phòng khách sạn từ đầu đến cuối từ tìm kiếm đến
+  xác nhận, bao gồm xác thực, kiểm tra phòng trống và đồng bộ kênh.
+
+workflow:
+  id: WF-RES-BOOK
+  name: Reservation Booking
+  type: sequential_with_branches
+
+  trigger:
+    types:
+      - direct_website_search
+      - call_center_request
+      - front_desk_request
+      - ota_booking
+      - gds_booking
+      - group_booking
+
+  actors:
+    - guest: End customer
+    - agent: Reservation/front desk agent
+    - system: PMS/booking engine
+    - channel: Distribution channel
+    - revenue_manager: Rate approval
+
+  states:
+    - search_initiated
+    - availability_displayed
+    - room_selected
+    - rate_selected
+    - guest_details_entered
+    - validating
+    - guarantee_pending
+    - confirmed
+    - guaranteed
+    - failed
+
+steps:
+  - id: STEP-01
+    name: Search Initiation
+    name_vi: Bắt đầu tìm kiếm
+    description: Guest/agent initiates availability search
+    state: search_initiated
+    actor: guest | agent
+    inputs:
+      - property_id: required
+      - arrival_date: required
+      - departure_date: required
+      - room_count: default_1
+      - adults: required
+      - children: optional
+      - children_ages: if_children
+      - promo_code: optional
+      - corporate_code: optional
+    validations:
+      - departure_after_arrival
+      - dates_within_booking_window
+      - valid_occupancy_count
+    outputs:
+      - search_criteria
+      - search_id
+    next: STEP-02
+
+  - id: STEP-02
+    name: Availability Check
+    name_vi: Kiểm tra phòng trống
+    description: System checks inventory and returns options
+    state: availability_displayed
+    actor: system
+    process:
+      - query_inventory:
+          for_each: date in stay_range
+          check: available_rooms >= requested
+      - check_restrictions:
+          - min_los
+          - max_los
+          - cta
+          - ctd
+          - closed
+      - apply_rate_rules:
+          - rate_validity
+          - occupancy_rates
+          - promotions
+      - filter_room_types:
+          by: occupancy_suitable
+      - calculate_prices:
+          include: taxes, fees
+    outputs:
+      - available_room_types: array
+      - rate_options: per_room_type
+      - restrictions_applied: array
+    display:
+      - room_type_photos
+      - amenities
+      - rate_breakdown
+      - cancellation_policy
+    on_no_availability: STEP-02B
+    next: STEP-03
+
+  - id: STEP-02B
+    name: Alternative Suggestions
+    name_vi: Gợi ý thay thế
+    description: Offer alternatives when requested dates unavailable
+    state: availability_displayed
+    actor: system
+    process:
+      - search_alternative_dates:
+          range: +/- 3 days
+      - search_alternative_room_types:
+          allow_upgrades: true
+      - search_sister_properties:
+          if: chain_property
+    outputs:
+      - alternative_options: array
+    display:
+      - flexible_date_calendar
+      - alternative_room_types
+      - nearby_properties
+    next: STEP-03 (if_selected) | END (if_declined)
+
+  - id: STEP-03
+    name: Room Selection
+    name_vi: Chọn phòng
+    description: Guest/agent selects room type
+    state: room_selected
+    actor: guest | agent
+    inputs:
+      - room_type_id: required
+      - room_count: required
+      - room_preferences: optional
+    validations:
+      - room_type_available
+      - occupancy_within_limit
+    process:
+      - hold_inventory:
+          duration: 15_minutes
+          type: soft_hold
+    outputs:
+      - selected_room_type
+      - inventory_hold_id
+    next: STEP-04
+
+  - id: STEP-04
+    name: Rate Selection
+    name_vi: Chọn giá
+    description: Guest/agent selects rate plan
+    state: rate_selected
+    actor: guest | agent
+    display:
+      - rate_options_for_room_type
+      - rate_descriptions
+      - meal_plan_details
+      - cancellation_policies
+      - included_services
+    inputs:
+      - rate_plan_id: required
+    validations:
+      - rate_valid_for_dates
+      - rate_valid_for_room_type
+      - access_code_valid (if_required)
+      - corporate_account_valid (if_corporate)
+    process:
+      - calculate_total:
+          include:
+            - room_charges
+            - extra_person_charges
+            - taxes
+            - fees
+    outputs:
+      - rate_plan_selected
+      - price_breakdown
+      - total_amount
+    next: STEP-05
+
+  - id: STEP-05
+    name: Guest Details Entry
+    name_vi: Nhập thông tin khách
+    description: Collect guest and booking information
+    state: guest_details_entered
+    actor: guest | agent
+    inputs:
+      primary_guest:
+        - title: optional
+        - first_name: required
+        - last_name: required
+        - email: required
+        - phone: required
+        - address: optional
+      additional_guests:
+        - name: required_per_guest
+      special_requests:
+        - room_preferences: optional
+        - accessibility_needs: optional
+        - special_occasions: optional
+        - comments: optional
+      loyalty_info:
+        - loyalty_number: optional
+    auto_fill:
+      - from_guest_profile (if_logged_in)
+      - from_previous_stays
+    validations:
+      - email_format_valid
+      - phone_format_valid
+      - required_fields_complete
+    outputs:
+      - guest_details
+      - special_requests
+    next: STEP-06
+
+  - id: STEP-06
+    name: Booking Validation
+    name_vi: Xác thực đặt phòng
+    description: Final validation before confirmation
+    state: validating
+    actor: system
+    process:
+      - recheck_availability:
+          confirm: inventory_still_available
+      - validate_rate:
+          confirm: rate_still_valid
+      - check_blacklist:
+          confirm: guest_not_blacklisted
+      - apply_business_rules:
+          - BR-RES-B001 through BR-RES-B006
+          - BR-RES-V001 through BR-RES-V004
+      - calculate_final_price:
+          lock: exchange_rate (if_foreign_currency)
+    outputs:
+      - validation_result
+      - final_price
+      - deposit_required
+    on_validation_failure:
+      - display_error
+      - return_to_relevant_step
+    next: STEP-07
+
+  - id: STEP-07
+    name: Guarantee Collection
+    name_vi: Thu bảo đảm
+    description: Collect payment guarantee or deposit
+    state: guarantee_pending
+    actor: guest | agent
+    display:
+      - booking_summary
+      - cancellation_policy
+      - deposit_requirements
+      - terms_and_conditions
+    inputs:
+      guarantee_method:
+        type: enum
+        options:
+          - credit_card
+          - debit_card
+          - deposit
+          - company_guarantee
+          - travel_agent_voucher
+      card_details: (if_card)
+        - card_number: required (tokenized)
+        - expiry: required
+        - cvv: required (not_stored)
+        - cardholder_name: required
+      terms_accepted: required
+    process:
+      - IF credit_card:
+          authorize_card:
+            amount: first_night OR full_stay
+          on_success: continue
+          on_failure: request_alternative
+      - IF deposit:
+          collect_payment:
+            amount: per_policy
+          record_as: advance_deposit
+      - IF company_guarantee:
+          verify_company_account:
+            confirm: active_and_authorized
+    outputs:
+      - guarantee_type
+      - authorization_code (if_card)
+      - deposit_reference (if_deposit)
+    next: STEP-08
+
+  - id: STEP-08
+    name: Reservation Confirmation
+    name_vi: Xác nhận đặt phòng
+    description: Create and confirm reservation
+    state: confirmed
+    actor: system
+    process:
+      - create_reservation:
+          generate: confirmation_number
+          status: confirmed OR guaranteed
+      - commit_inventory:
+          convert: soft_hold to firm_booking
+          update: available_rooms
+      - create_folio:
+          status: pre_arrival
+          link: reservation
+      - link_guest_profile:
+          create_if_new: true
+          update_if_exists: true
+      - sync_to_channels:
+          update: inventory_counts
+          send: ARI_update
+      - log_booking:
+          source: booking_channel
+          timestamp: now
+    outputs:
+      - reservation_id
+      - confirmation_number
+      - folio_id
+    next: STEP-09
+
+  - id: STEP-09
+    name: Confirmation Delivery
+    name_vi: Gửi xác nhận
+    description: Send confirmation to guest
+    state: confirmed
+    actor: system
+    process:
+      - generate_confirmation_email:
+          include:
+            - confirmation_number
+            - stay_details
+            - rate_information
+            - cancellation_policy
+            - hotel_information
+            - directions
+            - special_requests_acknowledged
+      - send_email:
+          to: guest_email
+          cc: travel_agent (if_applicable)
+      - send_sms:
+          if: phone_provided
+          content: brief_confirmation
+      - update_crm:
+          record: booking_made
+    outputs:
+      - confirmation_sent: boolean
+      - delivery_timestamp
+    next: END
+
+special_flows:
+  group_booking:
+    trigger: room_count >= 10
+    steps:
+      - route_to_group_sales
+      - manual_rate_negotiation
+      - contract_generation
+      - group_block_creation
+      - name_list_collection
+
+  ota_booking:
+    trigger: source = OTA
+    steps:
+      - receive_reservation_xml
+      - parse_and_validate
+      - map_room_and_rate
+      - confirm_or_reject
+      - send_confirmation_to_channel
+
+  modification_flow:
+    trigger: modification_requested
+    steps:
+      - load_existing_reservation
+      - check_modification_eligibility
+      - apply_changes
+      - recalculate_charges
+      - collect_fee_or_difference
+      - confirm_modification
+
+  cancellation_flow:
+    trigger: cancellation_requested
+    steps:
+      - load_reservation
+      - check_cancellation_policy
+      - calculate_penalty
+      - confirm_with_guest
+      - process_cancellation
+      - release_inventory
+      - process_refund_or_charge
+      - sync_to_channels
+
+inventory_management:
+  soft_hold:
+    duration: 15_minutes
+    purpose: prevent_oversell_during_booking
+    release: automatic_on_timeout
+
+  firm_booking:
+    commit: on_confirmation
+    release: on_cancellation_or_no_show
+
+channel_synchronization:
+  trigger_events:
+    - booking_confirmed
+    - booking_modified
+    - booking_cancelled
+    - inventory_changed
+
+  update_content:
+    - availability_count
+    - rates (if_changed)
+    - restrictions
+
+  channels:
+    - channel_manager
+    - direct_connections
+    - gds
+
+error_handling:
+  - error: inventory_sold_out
+    action: suggest_alternatives
+
+  - error: card_declined
+    action: request_alternative_payment
+
+  - error: rate_expired
+    action: offer_current_rates
+
+  - error: system_error
+    action: retry_or_escalate
+
+metrics:
+  - name: booking_conversion_rate
+    calculation: bookings / searches
+
+  - name: average_booking_time
+    target: "< 5 minutes"
+
+  - name: abandonment_rate
+    target: "< 30%"
+
+  - name: channel_sync_latency
+    target: "< 30 seconds"

@@ -1,0 +1,515 @@
+name: StakingWorkflow
+display_name: Staking Workflow / Quy trình đặt cọc
+description: |
+  End-to-end workflow for cryptocurrency staking from position creation
+  to reward distribution and unstaking.
+
+domain: fintech
+sub_domain: crypto
+workflow_type: transaction
+version: "1.0"
+status: active
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: User initiates staking position
+  outcome: Rewards earned and distributed
+  typical_duration: Minutes (flexible) to months (locked)
+  actors:
+    - user
+    - staking_service
+    - reward_calculator
+    - blockchain_service (for native staking)
+    - notification_service
+
+# =============================================================================
+# STAKING TYPES
+# =============================================================================
+staking_types:
+  flexible:
+    description: No lock period, withdraw anytime
+    activation: Immediate
+    reward_start: Within 24 hours
+    apy_range: Lower (3-5%)
+    exit: Immediate
+
+  locked:
+    description: Fixed term with higher rewards
+    lock_periods: [30, 60, 90, 180, 365 days]
+    activation: Immediate
+    reward_start: Immediate
+    apy_range: Higher (5-12%)
+    exit: After lock period OR with penalty
+
+  native_pos:
+    description: On-chain proof-of-stake
+    activation: Next epoch
+    reward_start: After activation
+    apy_range: Varies by network
+    exit: Unbonding period required
+    validators: User selects or platform manages
+
+  defi:
+    description: DeFi protocol staking
+    activation: Immediate
+    reward_start: Immediate
+    apy_range: Variable, potentially higher
+    exit: Depends on protocol
+    risk: Smart contract risk
+
+# =============================================================================
+# WORKFLOW STEPS - STAKE
+# =============================================================================
+stake_workflow:
+  - id: WF-STK-01
+    name: Select Staking Product
+    name_vi: Chọn sản phẩm staking
+    actor: user
+    trigger: User accesses staking page
+    description: |
+      User browses and selects a staking product.
+    display_info:
+      - asset
+      - staking_type
+      - apy (current/estimated)
+      - lock_period
+      - min_amount
+      - available_capacity
+      - terms_and_conditions
+    actions:
+      - Show available products
+      - Filter by asset/type
+      - Display projected rewards
+    next_step: WF-STK-02
+
+  - id: WF-STK-02
+    name: Enter Staking Amount
+    name_vi: Nhập số lượng staking
+    actor: user
+    description: |
+      User specifies amount to stake.
+    inputs:
+      - amount
+      - lock_period (for locked staking)
+      - auto_restake (optional)
+    validations:
+      - amount >= min_stake
+      - amount <= max_stake
+      - amount <= available_balance
+      - product has capacity
+    display:
+      - Estimated daily reward
+      - Estimated total reward (for locked)
+      - Unlock date (for locked)
+      - Early withdrawal terms
+    next_step: WF-STK-03
+
+  - id: WF-STK-03
+    name: Review and Confirm
+    name_vi: Xem xét và xác nhận
+    actor: user
+    description: |
+      User reviews and confirms staking terms.
+    confirmation_display:
+      - Staking amount
+      - Product details
+      - Lock period and unlock date
+      - APY rate
+      - Reward distribution schedule
+      - Early withdrawal penalty
+      - Terms acknowledgment
+    user_actions:
+      - Accept terms checkbox
+      - Confirm button
+    next_step: WF-STK-04
+
+  - id: WF-STK-04
+    name: Lock Balance
+    name_vi: Khóa số dư
+    actor: staking_service
+    trigger: User confirms staking
+    description: |
+      Move funds from available to staking balance.
+    actions:
+      - Verify balance available
+      - Begin database transaction
+      - Debit available_balance
+      - Credit staking_balance
+      - Create staking position record
+      - Record staking transaction
+      - Commit transaction
+    outputs:
+      - staking_id
+      - locked_amount
+      - start_date
+      - expected_end_date (locked)
+    next_step: WF-STK-05 or WF-STK-06
+
+  - id: WF-STK-05
+    name: On-Chain Delegation
+    name_vi: Ủy quyền on-chain
+    actor: blockchain_service
+    trigger: Native PoS staking
+    description: |
+      Delegate tokens to validator on blockchain.
+    applies_to: [native_pos, eth2]
+    actions:
+      - Select validator (user choice or auto)
+      - Build delegation transaction
+      - Sign transaction
+      - Broadcast to network
+      - Track confirmation
+    outputs:
+      - delegation_tx_hash
+      - validator_address
+      - activation_epoch
+    timing:
+      ethereum: Activation queue (hours to days)
+      solana: Next epoch (~2 days)
+      cosmos: Immediate
+
+  - id: WF-STK-06
+    name: Activate Position
+    name_vi: Kích hoạt vị thế
+    actor: staking_service
+    trigger: Balance locked / delegation confirmed
+    description: |
+      Activate staking position for rewards.
+    actions:
+      - Update position status to 'active'
+      - Set activation timestamp
+      - Record APY at activation
+      - Initialize reward accrual
+      - Send confirmation notification
+    next_step: WF-STK-07
+
+  - id: WF-STK-07
+    name: Confirmation Notification
+    name_vi: Thông báo xác nhận
+    actor: notification_service
+    trigger: Position activated
+    description: |
+      Notify user of successful staking.
+    channels:
+      - push_notification
+      - email
+    content:
+      title: "Staking Activated"
+      body: "{amount} {asset} is now staking at {apy}% APY"
+      details:
+        - staking_id
+        - expected_rewards
+        - first_reward_date
+
+# =============================================================================
+# WORKFLOW STEPS - REWARD DISTRIBUTION
+# =============================================================================
+reward_workflow:
+  - id: WF-RWD-01
+    name: Calculate Rewards
+    name_vi: Tính phần thưởng
+    actor: reward_calculator
+    trigger: Scheduled job (daily/hourly)
+    description: |
+      Calculate rewards for all active positions.
+    frequency:
+      flexible: Hourly
+      locked: Daily
+      native_pos: Per epoch
+    formula:
+      simple: staked_amount * (apy / 365) * days
+      compound: staked_amount * ((1 + apy/365)^days - 1)
+    actions:
+      - Query all active positions
+      - Calculate reward for each
+      - Update pending_rewards
+      - Log reward transaction
+    output:
+      - total_rewards_calculated
+      - positions_processed
+
+  - id: WF-RWD-02
+    name: Distribute Rewards
+    name_vi: Phân phối phần thưởng
+    actor: staking_service
+    trigger: Reward calculation complete
+    description: |
+      Credit rewards to user balances or restake.
+    distribution_options:
+      to_balance:
+        - Credit reward_asset to available_balance
+        - Update position rewards_claimed
+      auto_restake:
+        - Add reward to staked_amount
+        - Update position with compound amount
+    actions:
+      - Process each position
+      - Apply distribution preference
+      - Create transaction records
+      - Update statistics
+
+  - id: WF-RWD-03
+    name: Reward Notification
+    name_vi: Thông báo phần thưởng
+    actor: notification_service
+    trigger: Rewards distributed
+    description: |
+      Notify users of reward distribution.
+    frequency: Daily summary or per-distribution
+    content:
+      title: "Staking Rewards Received"
+      body: "You earned {reward} {asset} from staking"
+
+# =============================================================================
+# WORKFLOW STEPS - CLAIM REWARDS
+# =============================================================================
+claim_workflow:
+  - id: WF-CLM-01
+    name: Initiate Claim
+    name_vi: Khởi tạo yêu cầu
+    actor: user
+    trigger: User requests reward claim
+    description: |
+      User manually claims pending rewards.
+    validations:
+      - pending_rewards > 0
+      - Not in claim cooldown
+    applies_to: Products with manual claim
+    next_step: WF-CLM-02
+
+  - id: WF-CLM-02
+    name: Process Claim
+    name_vi: Xử lý yêu cầu
+    actor: staking_service
+    description: |
+      Process reward claim and credit balance.
+    actions:
+      - Calculate final reward amount
+      - Deduct any fees
+      - Credit to available_balance
+      - Reset pending_rewards
+      - Update rewards_claimed total
+      - Create claim transaction
+    outputs:
+      - claimed_amount
+      - claim_transaction_id
+
+# =============================================================================
+# WORKFLOW STEPS - UNSTAKE
+# =============================================================================
+unstake_workflow:
+  - id: WF-UST-01
+    name: Initiate Unstake
+    name_vi: Khởi tạo hủy stake
+    actor: user
+    trigger: User requests unstaking
+    description: |
+      User initiates unstaking of position.
+    conditions:
+      flexible:
+        allowed: Always
+        effect: Immediate
+      locked:
+        allowed: After lock period OR with penalty
+        penalty: Configurable per product
+      native_pos:
+        allowed: Always
+        unbonding: Required (varies by network)
+    display:
+      - Amount to unstake
+      - Pending rewards to claim
+      - Early withdrawal penalty (if applicable)
+      - Unbonding period (if applicable)
+    next_step: WF-UST-02
+
+  - id: WF-UST-02
+    name: Penalty Calculation
+    name_vi: Tính phí phạt
+    actor: staking_service
+    trigger: Early withdrawal of locked position
+    description: |
+      Calculate penalty for early withdrawal.
+    applies_to: Locked positions before unlock date
+    penalty_types:
+      - Forfeit pending rewards
+      - Percentage of principal
+      - Reduced rewards rate retroactively
+    confirmation_required: true
+    display:
+      - Original stake amount
+      - Penalty amount
+      - Net amount to receive
+    user_actions:
+      - Confirm penalty acceptance
+      - Cancel unstaking
+    next_step: WF-UST-03
+
+  - id: WF-UST-03
+    name: Start Unbonding
+    name_vi: Bắt đầu hủy ràng buộc
+    actor: staking_service
+    trigger: Unstake confirmed
+    description: |
+      Begin unbonding period if required.
+    actions:
+      - Update position status to 'unstaking'
+      - Stop reward accrual
+      - Set unbonding_completes_at
+      - For native PoS: initiate on-chain unbonding
+    unbonding_periods:
+      flexible: 0 (immediate)
+      locked: 0 (after lock expires)
+      ethereum: ~1-5 days (withdrawal queue)
+      solana: ~2-3 days (epoch boundary)
+      cosmos: 21 days
+      polkadot: 28 days
+    next_step: WF-UST-04
+
+  - id: WF-UST-04
+    name: Complete Unstaking
+    name_vi: Hoàn thành hủy stake
+    actor: staking_service
+    trigger: Unbonding period complete
+    description: |
+      Release funds back to available balance.
+    actions:
+      - Verify unbonding complete
+      - Debit staking_balance
+      - Credit available_balance
+      - Apply any penalties
+      - Credit final rewards
+      - Update position status to 'completed'
+      - Create unstaking transaction
+    outputs:
+      - released_amount
+      - final_rewards
+      - penalties_applied
+    next_step: WF-UST-05
+
+  - id: WF-UST-05
+    name: Unstaking Notification
+    name_vi: Thông báo hủy stake
+    actor: notification_service
+    trigger: Unstaking complete
+    description: |
+      Notify user of completed unstaking.
+    content:
+      title: "Unstaking Complete"
+      body: "{amount} {asset} returned to your wallet"
+      details:
+        - Released amount
+        - Final rewards
+        - Penalties (if any)
+
+# =============================================================================
+# STATE TRANSITIONS
+# =============================================================================
+state_machine:
+  initial: pending
+  states:
+    pending:
+      description: Awaiting activation
+      transitions:
+        - to: active
+          event: activated
+        - to: cancelled
+          event: user_cancelled
+
+    active:
+      description: Earning rewards
+      transitions:
+        - to: unstaking
+          event: unstake_initiated
+        - to: active
+          event: rewards_distributed
+
+    unstaking:
+      description: In unbonding period
+      transitions:
+        - to: completed
+          event: unbonding_complete
+
+    completed:
+      description: Position closed
+      terminal: true
+
+    cancelled:
+      description: Cancelled before activation
+      terminal: true
+
+# =============================================================================
+# MONITORING & ALERTS
+# =============================================================================
+monitoring:
+  metrics:
+    - name: total_staked_value
+      description: Total value across all positions
+      alert: Info on significant changes
+
+    - name: reward_distribution_success_rate
+      target: > 99.9%
+      alert: Critical at < 99%
+
+    - name: unstaking_queue_size
+      target: < 1000
+      alert: Warning at > 5000
+
+    - name: average_apy_delivered
+      description: Actual vs advertised APY
+      alert: Warning if deviation > 5%
+
+  alerts:
+    - name: Reward Calculation Failure
+      condition: Calculation job failed
+      severity: critical
+      action: Page on-call
+
+    - name: Large Unstaking Event
+      condition: >10% of pool unstaking
+      severity: warning
+      action: Notify treasury
+
+    - name: APY Deviation
+      condition: Delivered APY differs from advertised
+      severity: warning
+      action: Investigate
+
+# =============================================================================
+# AUDIT TRAIL
+# =============================================================================
+audit:
+  logged_events:
+    - position_created
+    - position_activated
+    - reward_calculated
+    - reward_distributed
+    - reward_claimed
+    - unstake_initiated
+    - penalty_applied
+    - position_completed
+  retention: 10 years
+  immutable: true
+
+# =============================================================================
+# ERROR HANDLING
+# =============================================================================
+error_handling:
+  - scenario: Reward Calculation Failure
+    response:
+      - Retry calculation
+      - Alert operations
+      - Do not credit incorrect amounts
+
+  - scenario: On-Chain Delegation Failed
+    response:
+      - Retry with different gas
+      - Unlock user balance if persistent failure
+      - Notify user
+
+  - scenario: Unbonding Transaction Failed
+    response:
+      - Retry
+      - Keep position in unstaking state
+      - Manual intervention if needed

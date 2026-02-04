@@ -1,0 +1,383 @@
+name: flight
+display_name: Flight
+display_name_vi: Chuyến bay
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Flight booking entity representing an air travel itinerary.
+  Contains one or more flight segments for the complete journey.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: booking_id
+    type: uuid
+    foreign_key: booking.id
+    required: true
+
+  - name: airline_pnr
+    type: string
+    length: 6
+    description: Airline's PNR reference
+
+  # Status
+  - name: status
+    type: enum
+    values: [pending, confirmed, waitlisted, ticketed, cancelled, flown]
+    default: pending
+
+  - name: trip_type
+    type: enum
+    values: [one_way, round_trip, multi_city]
+    required: true
+
+  # Route Overview
+  - name: origin_city
+    type: string
+    required: true
+    description: Trip origin city name
+
+  - name: origin_airport
+    type: string
+    length: 3
+    required: true
+    description: IATA airport code
+
+  - name: destination_city
+    type: string
+    required: true
+
+  - name: destination_airport
+    type: string
+    length: 3
+    required: true
+
+  # Dates
+  - name: departure_date
+    type: date
+    required: true
+
+  - name: return_date
+    type: date
+    nullable: true
+    description: For round trips
+
+  # Segments
+  - name: segments
+    type: array
+    items:
+      type: uuid
+      foreign_key: flight_segment.id
+    min_items: 1
+
+  - name: total_segments
+    type: integer
+    min: 1
+
+  - name: total_stops
+    type: integer
+    default: 0
+
+  # Passengers
+  - name: passengers
+    type: array
+    items:
+      type: object
+      properties:
+        traveler_id:
+          type: uuid
+        ticket_number:
+          type: string
+        seat_assignments:
+          type: array
+        special_services:
+          type: array
+
+  - name: adults
+    type: integer
+    min: 1
+    default: 1
+
+  - name: children
+    type: integer
+    min: 0
+    default: 0
+
+  - name: infants
+    type: integer
+    min: 0
+    default: 0
+
+  # Class & Fare
+  - name: cabin_class
+    type: enum
+    values: [economy, premium_economy, business, first]
+    default: economy
+
+  - name: fare_basis
+    type: string
+    description: Fare basis code (e.g., YOWUS)
+
+  - name: fare_type
+    type: enum
+    values: [published, private, negotiated, web]
+    default: published
+
+  - name: fare_rules
+    type: object
+    properties:
+      refundable:
+        type: boolean
+      changeable:
+        type: boolean
+      change_fee:
+        type: decimal
+      cancel_fee:
+        type: decimal
+      advance_purchase:
+        type: integer
+      min_stay:
+        type: integer
+      max_stay:
+        type: integer
+
+  # Airlines
+  - name: marketing_carrier
+    type: string
+    length: 2
+    description: Marketing airline code
+
+  - name: operating_carriers
+    type: array
+    items:
+      type: string
+    description: Operating airline codes
+
+  - name: validating_carrier
+    type: string
+    length: 2
+    description: Ticketing airline
+
+  # Pricing
+  - name: base_fare
+    type: decimal
+    precision: 10
+    scale: 2
+
+  - name: taxes
+    type: decimal
+    precision: 10
+    scale: 2
+
+  - name: fees
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: total_fare
+    type: decimal
+    precision: 12
+    scale: 2
+
+  - name: currency
+    type: string
+    length: 3
+
+  - name: fare_breakdown
+    type: array
+    items:
+      type: object
+      properties:
+        passenger_type:
+          type: string
+        base_fare:
+          type: decimal
+        taxes:
+          type: decimal
+        total:
+          type: decimal
+
+  # Baggage
+  - name: included_baggage
+    type: object
+    properties:
+      checked:
+        type: object
+        properties:
+          pieces:
+            type: integer
+          weight_kg:
+            type: integer
+      carry_on:
+        type: object
+        properties:
+          pieces:
+            type: integer
+          weight_kg:
+            type: integer
+
+  # Duration
+  - name: total_duration_minutes
+    type: integer
+    description: Total journey time including layovers
+
+  - name: flight_duration_minutes
+    type: integer
+    description: Actual flying time
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    auto_set: true
+
+  - name: confirmed_at
+    type: timestamp
+    nullable: true
+
+  - name: ticketed_at
+    type: timestamp
+    nullable: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: departure_date >= current_date
+    message: Departure must be in future
+    context: creation
+
+  - rule: return_date >= departure_date OR return_date IS NULL
+    message: Return must be on or after departure
+
+  - rule: infants <= adults
+    message: Infants cannot exceed adults
+
+  - rule: total_segments >= 1
+    message: At least one segment required
+
+relationships:
+  - name: booking
+    type: belongs_to
+    entity: booking
+    foreign_key: booking_id
+
+  - name: segments
+    type: has_many
+    entity: flight_segment
+    foreign_key: flight_id
+    order_by: segment_number
+
+  - name: tickets
+    type: has_many
+    entity: ticket
+    foreign_key: flight_id
+
+  - name: travelers
+    type: has_many_through
+    entity: traveler
+    through: flight_passengers
+
+indexes:
+  - name: idx_flight_booking
+    columns: [booking_id]
+
+  - name: idx_flight_status
+    columns: [status]
+
+  - name: idx_flight_route
+    columns: [origin_airport, destination_airport]
+
+  - name: idx_flight_departure
+    columns: [departure_date]
+
+  - name: idx_flight_pnr
+    columns: [airline_pnr]
+
+state_machine:
+  initial: pending
+  states:
+    pending:
+      transitions:
+        - to: confirmed
+          event: booking_confirmed
+        - to: cancelled
+          event: booking_cancelled
+
+    confirmed:
+      transitions:
+        - to: ticketed
+          event: ticket_issued
+        - to: waitlisted
+          event: waitlist_confirmed
+        - to: cancelled
+          event: cancellation_requested
+
+    waitlisted:
+      transitions:
+        - to: confirmed
+          event: waitlist_cleared
+        - to: cancelled
+          event: waitlist_timeout
+
+    ticketed:
+      transitions:
+        - to: flown
+          event: flight_completed
+        - to: cancelled
+          event: cancellation_requested
+
+    flown:
+      final: true
+
+    cancelled:
+      final: true
+
+computed_fields:
+  - name: total_passengers
+    formula: adults + children + infants
+
+  - name: layover_time_minutes
+    formula: total_duration_minutes - flight_duration_minutes
+
+  - name: has_stops
+    formula: total_stops > 0
+
+  - name: is_overnight
+    formula: |
+      segments.any(s => DATE(s.arrival_datetime) > DATE(s.departure_datetime))
+
+business_rules:
+  - id: BR-FLT-001
+    name: Infant Requirement
+    rule: Infants must be accompanied by adult (max 1 infant per adult)
+
+  - id: BR-FLT-002
+    name: Ticketing Deadline
+    rule: |
+      Flights must be ticketed before:
+      - Time limit from airline
+      - 24 hours before departure (whichever first)
+
+  - id: BR-FLT-003
+    name: Name Change Policy
+    rule: Name corrections allowed (3 characters max), full name change not permitted
+
+events:
+  - name: flight.confirmed
+    payload: [id, booking_id, airline_pnr]
+
+  - name: flight.ticketed
+    payload: [id, booking_id, ticket_numbers]
+
+  - name: flight.cancelled
+    payload: [id, booking_id, cancellation_reason]
+
+  - name: flight.schedule_changed
+    payload: [id, segment_id, old_times, new_times]

@@ -1,0 +1,317 @@
+# Badge Entity
+# F5 Framework v2.0 - Education/Certification
+# Open Badge digital credential
+
+entity:
+  id: badge
+  name: Badge
+  name_ja: バッジ
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    A digital badge representing an achievement, skill, or participation.
+    Compliant with Open Badges 2.0/3.0 standard for portable credentials.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+      
+    - name: badge_id
+      type: string
+      format: "BDG-{XXXXXXXX}"
+      unique: true
+      indexed: true
+      
+    - name: assertion_id
+      type: string
+      max_length: 500
+      unique: true
+      indexed: true
+      description: Open Badge assertion identifier (IRI)
+
+    # Badge Class Reference
+    - name: badge_class_id
+      type: uuid
+      foreign_key: badge_class.id
+      required: true
+      indexed: true
+      description: Reference to badge definition
+
+    # Type & Status
+    - name: badge_type
+      type: enum
+      values: [skill, achievement, participation, completion, mastery, endorsement, membership]
+      required: true
+      indexed: true
+      
+    - name: status
+      type: enum
+      values: [pending, active, expired, revoked]
+      default: pending
+      indexed: true
+
+    # Open Badge Standard Fields
+    - name: recipient_identity_hash
+      type: string
+      max_length: 100
+      required: true
+      description: Hashed recipient identifier (SHA-256)
+      
+    - name: recipient_identity_type
+      type: enum
+      values: [email, url, telephone]
+      default: email
+      description: Type of recipient identifier
+      
+    - name: recipient_hashed
+      type: boolean
+      default: true
+      description: Whether identity is hashed
+      
+    - name: recipient_salt
+      type: string
+      max_length: 100
+      description: Salt used for hashing
+
+    # Verification
+    - name: verification_type
+      type: enum
+      values: [hosted, signed, VerifiableCredential]
+      default: hosted
+      description: Verification method per Open Badge spec
+      
+    - name: verification_url
+      type: string
+      max_length: 500
+      description: URL for hosted verification
+      
+    - name: public_key
+      type: text
+      description: Public key for signed verification
+
+    # Content
+    - name: name
+      type: string
+      max_length: 200
+      required: true
+      
+    - name: description
+      type: text
+      required: true
+      
+    - name: image_url
+      type: string
+      max_length: 500
+      required: true
+      description: Badge image URL (PNG recommended)
+      
+    - name: image_data_uri
+      type: text
+      description: Base64 encoded image (baked badge)
+
+    # Criteria
+    - name: criteria_narrative
+      type: text
+      description: Human-readable criteria
+      
+    - name: criteria_url
+      type: string
+      max_length: 500
+      description: URL to detailed criteria
+
+    # Evidence
+    - name: evidence
+      type: jsonb
+      description: Array of evidence objects
+      schema:
+        - id: string
+          name: string
+          description: string
+          genre: string
+          narrative: string
+          url: string
+          
+    - name: evidence_url
+      type: string
+      max_length: 500
+      description: Primary evidence URL
+
+    # Issuance
+    - name: holder_id
+      type: uuid
+      foreign_key: credential_holder.id
+      required: true
+      indexed: true
+      
+    - name: issuer_id
+      type: uuid
+      foreign_key: organization.id
+      required: true
+      indexed: true
+      
+    - name: issued_at
+      type: timestamp
+      required: true
+      indexed: true
+      
+    - name: issued_by_user
+      type: uuid
+      foreign_key: user.id
+
+    # Validity
+    - name: expires_at
+      type: timestamp
+      indexed: true
+      description: Expiration datetime (null if no expiry)
+      
+    - name: is_revoked
+      type: boolean
+      default: false
+      
+    - name: revoked_at
+      type: timestamp
+      
+    - name: revocation_reason
+      type: string
+      max_length: 500
+
+    # Alignment (to frameworks/standards)
+    - name: alignment
+      type: jsonb
+      description: Array of alignment objects
+      schema:
+        - target_name: string
+          target_url: string
+          target_description: string
+          target_framework: string
+          target_code: string
+
+    # Skills & Tags
+    - name: skills
+      type: array
+      items: uuid
+      description: Associated skill IDs
+      
+    - name: tags
+      type: array
+      items: string
+      description: Searchable tags
+      
+    - name: related_badges
+      type: array
+      items: uuid
+      description: Related badge IDs
+
+    # Sharing
+    - name: public_url
+      type: string
+      max_length: 500
+      description: Public viewing URL
+      
+    - name: is_public
+      type: boolean
+      default: true
+      
+    - name: share_count
+      type: integer
+      default: 0
+      description: Number of times shared
+
+    # Source
+    - name: source_type
+      type: enum
+      values: [course_completion, exam_passed, achievement, manual, import, api]
+      required: true
+      
+    - name: source_id
+      type: uuid
+      description: Reference to source entity
+
+    # Metadata
+    - name: additional_properties
+      type: jsonb
+      description: Open Badge extensions
+      
+    - name: created_at
+      type: timestamp
+      auto: true
+      
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_valid
+      formula: "status = 'active' AND (expires_at IS NULL OR expires_at > NOW())"
+      
+    - name: is_expired
+      formula: "expires_at IS NOT NULL AND expires_at < NOW()"
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: active
+        event: activate
+        
+      - from: active
+        to: expired
+        event: expire
+        condition: "expires_at < NOW()"
+        
+      - from: active
+        to: revoked
+        event: revoke
+
+  relationships:
+    - name: holder
+      type: belongs_to
+      entity: credential_holder
+      foreign_key: holder_id
+      
+    - name: issuer
+      type: belongs_to
+      entity: organization
+      foreign_key: issuer_id
+      
+    - name: badge_class
+      type: belongs_to
+      entity: badge_class
+      foreign_key: badge_class_id
+      
+    - name: skills_list
+      type: has_many
+      entity: skill
+      through: skills
+      
+    - name: verifications
+      type: has_many
+      entity: verification_record
+      foreign_key: badge_id
+
+  indexes:
+    - fields: [holder_id, badge_class_id]
+      name: idx_holder_badge_class
+      
+    - fields: [assertion_id]
+      unique: true
+      name: idx_assertion_id
+
+  open_badge_compliance:
+    version: "2.0"
+    required_fields:
+      - assertion_id
+      - recipient_identity_hash
+      - badge_class_id
+      - verification_type
+      - issued_at
+    optional_fields:
+      - expires_at
+      - evidence
+      - narrative
+      - image

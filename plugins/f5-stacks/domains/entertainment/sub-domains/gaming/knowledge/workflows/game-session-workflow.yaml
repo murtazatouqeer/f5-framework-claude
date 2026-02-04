@@ -1,0 +1,439 @@
+name: game-session-workflow
+display_name: Game Session Workflow
+description: |
+  Workflow for a complete game session from launch to exit.
+  Covers loading, gameplay, saving, and session cleanup.
+
+domain: entertainment
+subdomain: gaming
+category: workflows
+version: "1.0.0"
+status: active
+
+trigger:
+  event: player.launches_game
+  conditions:
+    - player.authenticated
+    - game.available
+
+workflow:
+  id: WF-GS-001
+  name: Game Session
+  description: Complete game session lifecycle
+
+  actors:
+    - id: player
+      name: Player
+      type: primary
+    - id: game_client
+      name: Game Client
+      type: system
+    - id: game_server
+      name: Game Server
+      type: system
+    - id: save_service
+      name: Save Service
+      type: system
+
+  steps:
+    # ============================================
+    # PHASE 1: INITIALIZATION
+    # ============================================
+    - id: step_1
+      name: Launch Game
+      description: Player starts the game
+      actor: player
+      action: |
+        - Click play button
+        - Launch game client
+      next: step_2
+
+    - id: step_2
+      name: Initialize Client
+      description: Game client starts up
+      actor: game_client
+      action: |
+        - Load game executable
+        - Initialize graphics engine
+        - Load core assets
+        - Check for updates
+      outputs:
+        - client_version
+        - system_specs
+      next: step_3
+
+    - id: step_3
+      name: Authenticate Session
+      description: Verify player identity
+      actor: game_client
+      action: |
+        - Send authentication token
+        - Verify with auth service
+        - Get player profile
+        - Check entitlements
+      validations:
+        - Valid authentication
+        - Game ownership verified
+        - No active bans
+      on_success: step_4
+      on_failure:
+        action: show_auth_error
+        end: true
+
+    - id: step_4
+      name: Create Session Record
+      description: Initialize session tracking
+      actor: game_server
+      action: |
+        - Create game_session record
+        - Set status = 'initializing'
+        - Record device/platform info
+        - Start session timer
+      outputs:
+        - session_id
+        - session_token
+      next: step_5
+
+    # ============================================
+    # PHASE 2: LOADING
+    # ============================================
+    - id: step_5
+      name: Load Player Data
+      description: Fetch player's game data
+      actor: game_server
+      action: |
+        - Load player profile for game
+        - Load inventory
+        - Load settings/preferences
+        - Load progression state
+      parallel: true
+      outputs:
+        - player_profile
+        - inventory
+        - settings
+      next: step_6
+
+    - id: step_6
+      name: Check Cloud Saves
+      description: Sync cloud save data
+      actor: save_service
+      action: |
+        - Check for cloud saves
+        - Compare with local saves
+
+        IF conflict_detected:
+          - Prompt player to choose
+          - Resolve conflict
+
+        IF cloud_newer:
+          - Download cloud save
+
+        IF local_newer:
+          - Upload to cloud
+      decision_point:
+        condition: saves_synced
+        if_true: step_7
+        if_false: step_6_resolve
+
+    - id: step_6_resolve
+      name: Resolve Save Conflict
+      description: Player chooses save version
+      actor: player
+      action: |
+        - Display comparison UI
+        - Show local vs cloud details
+        - Player selects version
+      next: step_7
+
+    - id: step_7
+      name: Load Game Assets
+      description: Load necessary game content
+      actor: game_client
+      action: |
+        - Load saved game state
+        - Load required levels/maps
+        - Load character assets
+        - Initialize game systems
+      outputs:
+        - load_progress
+      next: step_8
+
+    - id: step_8
+      name: Ready to Play
+      description: Game fully loaded
+      actor: game_client
+      action: |
+        - Update session status = 'active'
+        - Display main menu or resume game
+        - Enable player controls
+      next: step_9
+
+    # ============================================
+    # PHASE 3: GAMEPLAY
+    # ============================================
+    - id: step_9
+      name: Active Gameplay
+      description: Player is playing the game
+      actor: player
+      action: |
+        GAMEPLAY LOOP:
+        - Player interacts with game
+        - Game responds to input
+        - State changes tracked
+
+        PARALLEL PROCESSES:
+        - Auto-save (interval)
+        - Achievement tracking
+        - Statistics collection
+        - Network sync (if online)
+      parallel_processes:
+        - auto_save_process
+        - achievement_tracking
+        - stats_collection
+      next: step_10
+      interruptible: true
+
+    - id: auto_save_process
+      name: Auto-Save Process
+      description: Periodic automatic saving
+      actor: save_service
+      action: |
+        EVERY save_interval (e.g., 5 minutes):
+          - Capture current state
+          - Save to local storage
+          - Queue cloud sync
+          - Update checkpoint
+      trigger: interval
+      interval: 5 minutes
+
+    - id: achievement_tracking
+      name: Achievement Tracking
+      description: Monitor for achievement triggers
+      actor: game_server
+      action: |
+        ON player_action:
+          - Check relevant achievements
+          - Update progress
+          - Trigger unlock if complete
+      trigger: event
+
+    - id: stats_collection
+      name: Statistics Collection
+      description: Track gameplay statistics
+      actor: game_server
+      action: |
+        - Track kills, deaths, etc.
+        - Track time played
+        - Track resources collected
+        - Batch update periodically
+      trigger: continuous
+
+    # ============================================
+    # PHASE 4: SAVE/CHECKPOINT
+    # ============================================
+    - id: step_10
+      name: Manual Save Request
+      description: Player requests save
+      actor: player
+      action: |
+        - Open save menu
+        - Select save slot
+        - Confirm save
+      optional: true
+      next: step_11
+
+    - id: step_11
+      name: Execute Save
+      description: Save game state
+      actor: save_service
+      action: |
+        - Capture complete state
+        - Generate save data
+        - Validate save integrity
+        - Write to storage
+        - Update metadata
+      outputs:
+        - save_id
+        - timestamp
+        - checksum
+      next: step_12
+
+    - id: step_12
+      name: Cloud Sync
+      description: Sync save to cloud
+      actor: save_service
+      action: |
+        IF cloud_save_enabled:
+          - Compress save data
+          - Upload to cloud
+          - Verify upload success
+          - Update cloud metadata
+      next: step_9
+      note: Returns to gameplay
+
+    # ============================================
+    # PHASE 5: PAUSE/RESUME
+    # ============================================
+    - id: step_pause
+      name: Pause Game
+      description: Player pauses the game
+      actor: player
+      trigger: pause_input
+      action: |
+        - Freeze game state
+        - Display pause menu
+        - Update session status = 'paused'
+        - Stop active timers
+      interruptible: true
+
+    - id: step_resume
+      name: Resume Game
+      description: Player resumes from pause
+      actor: player
+      trigger: resume_input
+      action: |
+        - Update session status = 'active'
+        - Resume game state
+        - Restart timers
+        - Return to gameplay
+      next: step_9
+
+    # ============================================
+    # PHASE 6: SESSION END
+    # ============================================
+    - id: step_13
+      name: Exit Request
+      description: Player wants to exit game
+      actor: player
+      action: |
+        - Request exit via menu or quit
+        - System checks for unsaved progress
+      decision_point:
+        condition: unsaved_changes
+        if_true: step_14
+        if_false: step_15
+
+    - id: step_14
+      name: Save Prompt
+      description: Prompt to save before exit
+      actor: game_client
+      action: |
+        - Display "Save before exit?" prompt
+        - Options: Save & Exit, Exit without saving, Cancel
+      decision_point:
+        condition: player_choice
+        save_exit: step_11_then_15
+        exit_no_save: step_15
+        cancel: step_9
+
+    - id: step_15
+      name: Final Save
+      description: Execute final save
+      actor: save_service
+      action: |
+        - Save current progress
+        - Sync to cloud
+        - Verify save complete
+      next: step_16
+
+    - id: step_16
+      name: Session Summary
+      description: Calculate session results
+      actor: game_server
+      action: |
+        - Calculate total playtime
+        - Summarize progress made
+        - List achievements unlocked
+        - Record statistics
+      outputs:
+        - session_summary
+        - achievements_this_session
+        - stats_changes
+      next: step_17
+
+    - id: step_17
+      name: Update Server Data
+      description: Push session data to server
+      actor: game_server
+      action: |
+        - Update player profile
+        - Record session history
+        - Update leaderboards
+        - Sync inventory changes
+        - Process pending rewards
+      next: step_18
+
+    - id: step_18
+      name: Cleanup
+      description: Clean up session resources
+      actor: game_client
+      action: |
+        - Release game resources
+        - Close network connections
+        - Clear temporary data
+        - Update session status = 'completed'
+      next: step_19
+
+    - id: step_19
+      name: Session Complete
+      description: Session fully ended
+      actor: game_server
+      action: |
+        - Record final session data
+        - Set ended_at timestamp
+        - Calculate final duration
+        - Trigger post-session analytics
+      next: end
+
+  error_handling:
+    - error: client_crash
+      action: |
+        - Attempt recovery from last checkpoint
+        - If recovery fails: Mark session as crashed
+        - Preserve auto-save data
+        - Generate crash report
+
+    - error: network_disconnect
+      action: |
+        - Cache local changes
+        - Attempt reconnection (30 seconds)
+        - If offline mode available: Continue offline
+        - Queue sync for reconnection
+
+    - error: save_failure
+      action: |
+        - Retry save (3 attempts)
+        - If local fails: Alert player
+        - If cloud fails: Keep local, retry later
+        - Never lose player progress
+
+    - error: server_unavailable
+      action: |
+        - Enable offline mode if supported
+        - Queue all updates
+        - Sync when server returns
+        - Notify player of offline status
+
+  metrics:
+    - name: session_duration
+      description: Average session length
+
+    - name: save_reliability
+      description: Successful save rate
+      target: 99.9%
+
+    - name: cloud_sync_success
+      description: Cloud sync success rate
+      target: 99%
+
+    - name: crash_rate
+      description: Sessions ending in crash
+      target: < 0.1%
+
+integrations:
+  - service: save_service
+    events: [save_requested, save_completed, sync_completed]
+  - service: achievement_service
+    events: [achievement_progress, achievement_unlocked]
+  - service: analytics_service
+    events: [session_start, session_end, gameplay_events]

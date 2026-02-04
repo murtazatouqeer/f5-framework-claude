@@ -1,0 +1,343 @@
+name: Tour Booking Workflow
+display_name: Tour Booking Workflow / Quy trình đặt tour
+description: |
+  End-to-end workflow for booking a tour, from search
+  to confirmation and voucher delivery.
+
+domain: travel-hospitality
+subdomain: tour
+version: "1.0"
+
+triggers:
+  - event: customer.search_initiated
+    source: SearchService
+  - event: tour.selected
+    source: TourService
+
+actors:
+  - name: Customer
+    role: primary
+    description: Person booking the tour
+  - name: System
+    role: automated
+    description: Booking platform
+  - name: Operator
+    role: approver
+    description: Tour operator (for request-based bookings)
+  - name: Payment Gateway
+    role: external
+    description: Payment processor
+
+steps:
+  - id: SEARCH_TOURS
+    name: Search Tours
+    actor: Customer
+    type: interactive
+    actions:
+      - Select destination
+      - Select date
+      - Select number of travelers
+      - Apply filters (type, price, rating)
+    outputs:
+      - search_results
+    on_success: VIEW_RESULTS
+
+  - id: VIEW_RESULTS
+    name: View Search Results
+    actor: System
+    type: automated
+    actions:
+      - Filter by availability
+      - Sort by relevance/price/rating
+      - Check real-time availability
+      - Display pricing
+    outputs:
+      - available_tours[]
+    on_success: SELECT_TOUR
+
+  - id: SELECT_TOUR
+    name: Select Tour
+    actor: Customer
+    type: interactive
+    actions:
+      - View tour details
+      - View itinerary
+      - View photos/videos
+      - Read reviews
+      - Select date/time slot
+    outputs:
+      - selected_tour_id
+      - selected_schedule_id
+    on_success: CONFIGURE_BOOKING
+
+  - id: CONFIGURE_BOOKING
+    name: Configure Booking
+    actor: Customer
+    type: interactive
+    actions:
+      - Select number of adults/children/infants
+      - Select language preference
+      - Add pickup location (if available)
+      - Select add-ons
+      - Review inclusions/exclusions
+    inputs:
+      - adults
+      - children
+      - infants
+      - pickup_point_id
+      - addons[]
+      - language
+    validations:
+      - rule: BR-BKG-002
+      - rule: BR-BKG-003
+      - rule: BR-CAP-010
+    on_success: ADD_PARTICIPANTS
+
+  - id: ADD_PARTICIPANTS
+    name: Add Participant Details
+    actor: Customer
+    type: interactive
+    actions:
+      - Enter lead participant details
+      - Enter additional participant names
+      - Add special requirements
+      - Add dietary requirements
+      - Enter emergency contact (if required)
+    inputs:
+      - participants[]
+    validations:
+      - rule: BR-BKG-004
+      - rule: BR-BKG-005
+      - rule: BR-SAF-001
+      - rule: BR-SAF-002
+    on_success: REVIEW_BOOKING
+
+  - id: REVIEW_BOOKING
+    name: Review Booking
+    actor: Customer
+    type: interactive
+    actions:
+      - Display booking summary
+      - Show price breakdown
+      - Show cancellation policy
+      - Apply promo code (optional)
+      - Accept terms and conditions
+    validations:
+      - rule: BR-PRC-030
+      - rule: BR-PRC-031
+    on_success: HOLD_SPOTS
+
+  - id: HOLD_SPOTS
+    name: Hold Spots
+    actor: System
+    type: automated
+    actions:
+      - Reserve spots for 15 minutes
+      - Update availability
+      - Create pending booking
+    validations:
+      - rule: BR-CAP-030
+    events:
+      - booking.created
+    outputs:
+      - booking_id
+      - hold_expiry
+    on_success: PROCESS_PAYMENT
+    on_failure: SPOTS_UNAVAILABLE
+
+  - id: SPOTS_UNAVAILABLE
+    name: Spots Unavailable
+    actor: System
+    type: automated
+    actions:
+      - Notify customer
+      - Suggest alternative dates
+      - Suggest similar tours
+    on_success: SELECT_TOUR
+
+  - id: PROCESS_PAYMENT
+    name: Process Payment
+    actor: Customer
+    type: interactive
+    actions:
+      - Select payment method
+      - Enter payment details
+      - Process payment
+    inputs:
+      - payment_method
+      - payment_details
+    timeout: 15 minutes
+    on_success: CONFIRM_BOOKING
+    on_timeout: RELEASE_HOLD
+    on_failure: PAYMENT_FAILED
+
+  - id: PAYMENT_FAILED
+    name: Payment Failed
+    actor: System
+    type: automated
+    actions:
+      - Display error message
+      - Log failure reason
+      - Offer retry option
+    branches:
+      - condition: retry_count < 3
+        next: PROCESS_PAYMENT
+      - condition: retry_count >= 3
+        next: RELEASE_HOLD
+
+  - id: RELEASE_HOLD
+    name: Release Hold
+    actor: System
+    type: automated
+    actions:
+      - Release held spots
+      - Cancel pending booking
+      - Update availability
+    validations:
+      - rule: BR-CAP-031
+    on_success: SEARCH_TOURS
+
+  - id: CONFIRM_BOOKING
+    name: Confirm Booking
+    actor: System
+    type: automated
+    actions:
+      - Update booking status to paid
+      - Update availability (held to booked)
+      - Record payment transaction
+    validations:
+      - rule: BR-CAP-032
+    events:
+      - booking.paid
+    branches:
+      - condition: tour.instant_confirmation = true
+        next: GENERATE_VOUCHER
+      - condition: tour.instant_confirmation = false
+        next: AWAIT_OPERATOR_CONFIRMATION
+
+  - id: AWAIT_OPERATOR_CONFIRMATION
+    name: Await Operator Confirmation
+    actor: Operator
+    type: interactive
+    actions:
+      - Notify operator
+      - Display booking request
+      - Operator reviews and confirms
+    timeout: 24 hours
+    validations:
+      - rule: BR-BKG-011
+      - rule: BR-BKG-012
+    on_success: GENERATE_VOUCHER
+    on_timeout: OPERATOR_NO_RESPONSE
+    on_reject: OPERATOR_DECLINED
+
+  - id: OPERATOR_NO_RESPONSE
+    name: Operator No Response
+    actor: System
+    type: automated
+    actions:
+      - Cancel booking
+      - Process full refund
+      - Notify customer with apology
+    events:
+      - booking.cancelled
+    on_success: END_CANCELLED
+
+  - id: OPERATOR_DECLINED
+    name: Operator Declined
+    actor: System
+    type: automated
+    actions:
+      - Cancel booking
+      - Process full refund
+      - Offer alternative tours
+    events:
+      - booking.cancelled
+    on_success: END_CANCELLED
+
+  - id: GENERATE_VOUCHER
+    name: Generate Voucher
+    actor: System
+    type: automated
+    actions:
+      - Generate unique voucher number
+      - Generate QR code
+      - Create PDF voucher
+      - Include all booking details
+      - Include meeting point map
+    validations:
+      - rule: BR-BKG-030
+    outputs:
+      - voucher_id
+      - voucher_pdf_url
+      - qr_code
+    on_success: SEND_CONFIRMATION
+
+  - id: SEND_CONFIRMATION
+    name: Send Confirmation
+    actor: System
+    type: automated
+    actions:
+      - Send confirmation email
+      - Attach voucher PDF
+      - Send SMS notification
+      - Update booking status
+    events:
+      - booking.confirmed
+      - voucher.sent
+    on_success: BOOKING_COMPLETE
+
+  - id: BOOKING_COMPLETE
+    name: Booking Complete
+    actor: System
+    type: automated
+    actions:
+      - Mark booking as confirmed
+      - Schedule reminder (24h before)
+      - Update customer booking history
+      - Update tour statistics
+    outputs:
+      - booking_reference
+      - voucher_url
+    events:
+      - booking.completed
+
+  - id: END_CANCELLED
+    name: Booking Cancelled
+    actor: System
+    type: terminal
+    description: Booking was not completed
+
+timeouts:
+  hold_expiry: 15 minutes
+  payment_timeout: 15 minutes
+  operator_confirmation: 24 hours
+
+notifications:
+  - event: booking.created
+    recipients: [customer]
+    channels: [email]
+    template: booking_pending
+
+  - event: booking.paid
+    recipients: [customer, operator]
+    channels: [email, push]
+    template: payment_received
+
+  - event: booking.confirmed
+    recipients: [customer]
+    channels: [email, sms, push]
+    template: booking_confirmed
+
+  - event: voucher.sent
+    recipients: [customer]
+    channels: [email]
+    template: voucher_delivery
+
+error_handling:
+  payment_failure:
+    max_retries: 3
+    action: release_hold_and_notify
+
+  system_error:
+    action: preserve_state_and_alert

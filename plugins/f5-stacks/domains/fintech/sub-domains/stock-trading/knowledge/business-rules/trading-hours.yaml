@@ -1,0 +1,281 @@
+name: trading-hours-rules
+display_name: Trading Hours Rules
+description: |
+  Regulations on trading hours, trading sessions, and order matching methods
+  on Vietnamese stock exchanges (HOSE, HNX, UPCoM).
+
+domain: fintech/stock-trading
+version: "1.0"
+effective_date: "2024-01-01"
+
+references:
+  - HOSE Trading Regulations
+  - HNX Trading Regulations
+
+trading_sessions:
+  HOSE:
+    - session: pre_open
+      name: Pre-market
+      start: "08:30:00"
+      end: "09:00:00"
+      order_types_allowed: []
+      description: System receives orders but does not process
+
+    - session: ato
+      name: Opening Call Auction (ATO)
+      start: "09:00:00"
+      end: "09:15:00"
+      matching_method: call_auction
+      order_types_allowed: [LO, ATO]
+      description: |
+        Orders are collected and matched once at 9:15.
+        Opening price determined by maximum matched volume principle.
+
+    - session: continuous_am
+      name: Morning Continuous Session
+      start: "09:15:00"
+      end: "11:30:00"
+      matching_method: continuous
+      order_types_allowed: [LO, MP, MOK, MAK, MTL]
+      description: |
+        Orders are matched immediately when counterparty is available
+        according to price and time priority.
+
+    - session: lunch_break
+      name: Lunch Break
+      start: "11:30:00"
+      end: "13:00:00"
+      order_types_allowed: []
+      description: System does not accept orders
+
+    - session: continuous_pm
+      name: Afternoon Continuous Session
+      start: "13:00:00"
+      end: "14:30:00"
+      matching_method: continuous
+      order_types_allowed: [LO, MP, MOK, MAK, MTL]
+      description: Same as morning session
+
+    - session: atc
+      name: Closing Call Auction (ATC)
+      start: "14:30:00"
+      end: "14:45:00"
+      matching_method: call_auction
+      order_types_allowed: [LO, ATC]
+      description: |
+        Orders are collected and matched once at 14:45.
+        Closing price determined by maximum matched volume principle.
+
+    - session: plo
+      name: Put-through Order Session (PLO)
+      start: "14:45:00"
+      end: "15:00:00"
+      matching_method: continuous
+      order_types_allowed: [PLO]
+      description: |
+        PLO orders matched at closing price (ATC).
+        Does not change closing price.
+
+    - session: closed
+      name: Market Closed
+      start: "15:00:00"
+      end: "08:30:00"
+      order_types_allowed: []
+      description: System closed, no orders accepted
+
+  HNX:
+    - session: pre_open
+      name: Pre-market
+      start: "08:30:00"
+      end: "09:00:00"
+      order_types_allowed: []
+
+    - session: continuous_am
+      name: Morning Continuous Session
+      start: "09:00:00"
+      end: "11:30:00"
+      matching_method: continuous
+      order_types_allowed: [LO, MTL, MOK, MAK]
+
+    - session: lunch_break
+      name: Lunch Break
+      start: "11:30:00"
+      end: "13:00:00"
+      order_types_allowed: []
+
+    - session: continuous_pm
+      name: Afternoon Continuous Session
+      start: "13:00:00"
+      end: "14:30:00"
+      matching_method: continuous
+      order_types_allowed: [LO, MTL, MOK, MAK]
+
+    - session: atc
+      name: Closing Call Auction
+      start: "14:30:00"
+      end: "15:00:00"
+      matching_method: call_auction
+      order_types_allowed: [LO]
+
+    - session: closed
+      name: Market Closed
+      start: "15:00:00"
+      end: "08:30:00"
+      order_types_allowed: []
+
+  UPCOM:
+    - session: pre_open
+      name: Pre-market
+      start: "08:30:00"
+      end: "09:00:00"
+      order_types_allowed: []
+
+    - session: continuous
+      name: Continuous Session
+      start: "09:00:00"
+      end: "15:00:00"
+      matching_method: continuous
+      order_types_allowed: [LO]
+      description: Continuous trading all day, no ATO/ATC
+
+    - session: closed
+      name: Market Closed
+      start: "15:00:00"
+      end: "08:30:00"
+      order_types_allowed: []
+
+rules:
+  - id: BR-TH-001
+    name: Determine Trading Session
+    description: |
+      Automatically determine current trading session based on system time
+      and exchange.
+    category: calculation
+    severity: info
+    condition: |
+      CASE
+        WHEN TIME BETWEEN session.start AND session.end
+        THEN session.name
+      END
+    applies_to: [Quote]
+
+  - id: BR-TH-002
+    name: Valid Order Type for Session
+    description: |
+      Only accept order types allowed in current trading session.
+    category: validation
+    severity: error
+    condition: |
+      order.order_type IN session.order_types_allowed
+    message: "Order type {order_type} not allowed in {session} session"
+    applies_to: [Order]
+
+  - id: BR-TH-003
+    name: No Orders Outside Trading Hours
+    description: |
+      Reject orders during lunch break or after market close.
+      (Unless system allows pre-orders)
+    category: validation
+    severity: error
+    condition: |
+      quote.trading_session NOT IN ('lunch_break', 'closed')
+    message: "System does not accept orders during break hours"
+    applies_to: [Order]
+
+  - id: BR-TH-004
+    name: DAY Orders Expire at Session End
+    description: |
+      Orders with time_in_force = DAY automatically expire and are cancelled
+      at end of trading session (15:00 or after PLO).
+    category: calculation
+    severity: info
+    condition: |
+      IF order.time_in_force == 'DAY'
+         AND order.status IN ('confirmed', 'partial_filled')
+         AND current_session == 'closed' THEN
+        order.status = 'expired'
+      END IF
+    applies_to: [Order]
+
+  - id: BR-TH-005
+    name: Auto Transfer to Continuous Session
+    description: |
+      Unmatched orders from ATO automatically transfer to continuous session
+      with remaining price and quantity (if LO order).
+    category: calculation
+    severity: info
+    condition: |
+      IF order.order_type == 'LO'
+         AND previous_session == 'ato'
+         AND order.status == 'confirmed' THEN
+        -- Transfer to continuous_am
+      END IF
+    applies_to: [Order]
+
+  - id: BR-TH-006
+    name: ATO Orders Cancel if Not Matched
+    description: |
+      ATO orders not fully matched during ATO period are automatically cancelled,
+      not transferred to continuous session.
+    category: calculation
+    severity: info
+    condition: |
+      IF order.order_type == 'ATO'
+         AND current_session != 'ato'
+         AND order.remaining_quantity > 0 THEN
+        order.status = 'cancelled'
+      END IF
+    applies_to: [Order]
+
+  - id: BR-TH-007
+    name: ATC Orders Cancel if Not Matched
+    description: |
+      ATC orders not fully matched during ATC period are automatically cancelled.
+    category: calculation
+    severity: info
+    condition: |
+      IF order.order_type == 'ATC'
+         AND current_session != 'atc'
+         AND order.remaining_quantity > 0 THEN
+        order.status = 'cancelled'
+      END IF
+    applies_to: [Order]
+
+holidays_2024:
+  - date: "2024-01-01"
+    name: New Year's Day
+  - date: "2024-02-08"
+    name: Lunar New Year Holiday
+    to: "2024-02-14"
+  - date: "2024-04-18"
+    name: Hung Kings' Commemoration Day
+  - date: "2024-04-30"
+    name: Reunification Day
+  - date: "2024-05-01"
+    name: International Labor Day
+  - date: "2024-09-02"
+    name: National Day
+  - date: "2024-09-03"
+    name: National Day Substitute
+
+matching_principles:
+  continuous:
+    priority:
+      - price_priority: |
+          Buy orders with higher price have priority.
+          Sell orders with lower price have priority.
+      - time_priority: |
+          At same price, earlier orders have priority.
+    execution: |
+      Orders matched immediately when counterparty is available.
+      Match price is the price of the order already in book.
+
+  call_auction:
+    price_determination: |
+      Match price is the price where:
+      1. Trading volume is maximized
+      2. If multiple prices satisfy (1), choose price closest to reference price
+      3. If still multiple prices, choose higher price
+    execution: |
+      All orders matched at same determined price.
+      Orders matched by time priority if insufficient volume.

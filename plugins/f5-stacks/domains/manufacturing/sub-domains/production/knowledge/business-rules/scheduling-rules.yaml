@@ -1,0 +1,331 @@
+name: scheduling-rules
+display_name: Production Scheduling Rules
+display_name_vi: Quy tắc lập lịch sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: business-rules
+
+description: |
+  Business rules governing production scheduling, work order sequencing,
+  and resource allocation following ISA-95 and lean manufacturing principles.
+
+description_vi: |
+  Quy tắc kinh doanh về lập lịch sản xuất, trình tự lệnh sản xuất,
+  và phân bổ nguồn lực theo ISA-95 và nguyên tắc sản xuất tinh gọn.
+
+rule_categories:
+  - scheduling_methods
+  - priority_management
+  - constraint_handling
+  - optimization
+  - frozen_zone
+
+rules:
+  scheduling_methods:
+    - id: SCH-001
+      name: forward_scheduling
+      description: Schedule from start date forward when due date is flexible
+      description_vi: Lập lịch từ ngày bắt đầu khi ngày đến hạn linh hoạt
+      condition: |
+        work_order.due_date IS NULL OR
+        work_order.scheduling_method = 'forward'
+      action: |
+        scheduled_start = MAX(release_date, earliest_material_availability)
+        scheduled_end = scheduled_start + total_lead_time
+      priority: high
+      category: scheduling_methods
+
+    - id: SCH-002
+      name: backward_scheduling
+      description: Schedule backward from due date when it's fixed
+      description_vi: Lập lịch ngược từ ngày đến hạn cố định
+      condition: |
+        work_order.due_date IS NOT NULL AND
+        work_order.scheduling_method = 'backward'
+      action: |
+        scheduled_end = work_order.due_date
+        scheduled_start = scheduled_end - total_lead_time
+        IF scheduled_start < release_date THEN
+          RAISE warning "Impossible to meet due date"
+      priority: high
+      category: scheduling_methods
+
+    - id: SCH-003
+      name: finite_capacity_scheduling
+      description: Respect resource capacity limits
+      description_vi: Tuân thủ giới hạn công suất nguồn lực
+      condition: work_center.capacity_method = 'finite'
+      action: |
+        available_capacity = work_center.available_hours - SUM(scheduled_hours)
+        IF required_hours > available_capacity THEN
+          schedule_to_next_available_slot()
+      priority: high
+      category: scheduling_methods
+
+    - id: SCH-004
+      name: infinite_capacity_planning
+      description: Allow overload for initial planning
+      description_vi: Cho phép quá tải cho kế hoạch ban đầu
+      condition: |
+        planning_mode = 'rough_cut' OR
+        work_center.capacity_method = 'infinite'
+      action: |
+        schedule_at_required_date()
+        mark_overloaded_periods()
+      priority: medium
+      category: scheduling_methods
+
+  priority_management:
+    - id: PRI-001
+      name: priority_based_sequencing
+      description: Sequence work orders by priority and due date
+      description_vi: Sắp xếp lệnh sản xuất theo ưu tiên và ngày đến hạn
+      condition: multiple_work_orders_competing
+      action: |
+        sequence = SORT_BY(
+          priority ASC,
+          due_date ASC,
+          slack_time ASC,
+          work_order_number ASC
+        )
+      priority: high
+      category: priority_management
+
+    - id: PRI-002
+      name: critical_ratio_prioritization
+      description: Calculate critical ratio for dynamic priority
+      description_vi: Tính tỷ lệ quan trọng cho ưu tiên động
+      formula: |
+        critical_ratio = time_remaining / work_remaining
+        IF critical_ratio < 1 THEN priority = 'critical'
+        ELSE IF critical_ratio < 1.5 THEN priority = 'high'
+        ELSE priority = 'normal'
+      priority: high
+      category: priority_management
+
+    - id: PRI-003
+      name: hot_order_handling
+      description: Expedite orders marked as hot/rush
+      description_vi: Ưu tiên đơn hàng gấp/nóng
+      condition: work_order.is_hot = true
+      action: |
+        INSERT work_order AT front_of_queue
+        NOTIFY production_supervisor
+        ALLOW overtime_scheduling
+      priority: critical
+      category: priority_management
+
+    - id: PRI-004
+      name: customer_priority_boost
+      description: Boost priority for key customer orders
+      description_vi: Tăng ưu tiên cho đơn hàng khách hàng quan trọng
+      condition: customer.tier IN ('platinum', 'gold')
+      action: |
+        priority = priority - 10  -- Lower number = higher priority
+      priority: medium
+      category: priority_management
+
+  constraint_handling:
+    - id: CON-001
+      name: operation_sequence_constraint
+      description: Operations must follow routing sequence
+      description_vi: Công đoạn phải theo trình tự định tuyến
+      condition: always
+      action: |
+        FOR each operation IN routing:
+          operation[n].start >= operation[n-1].end
+      priority: critical
+      category: constraint_handling
+
+    - id: CON-002
+      name: material_availability_constraint
+      description: Cannot start before materials available
+      description_vi: Không thể bắt đầu trước khi có vật tư
+      condition: always
+      action: |
+        earliest_start = MAX(
+          planned_start,
+          MAX(material_availability_dates)
+        )
+      priority: critical
+      category: constraint_handling
+
+    - id: CON-003
+      name: tooling_constraint
+      description: Check tooling availability before scheduling
+      description_vi: Kiểm tra dụng cụ trước khi lập lịch
+      condition: operation.requires_tooling = true
+      action: |
+        IF NOT tool_available(required_tool, scheduled_period) THEN
+          shift_to_next_tool_available_period()
+      priority: high
+      category: constraint_handling
+
+    - id: CON-004
+      name: operator_qualification_constraint
+      description: Only qualified operators can perform operations
+      description_vi: Chỉ công nhân đủ năng lực mới được thực hiện công đoạn
+      condition: operation.requires_certification = true
+      action: |
+        available_operators = operators.WHERE(
+          certifications CONTAINS operation.required_certification AND
+          certification.expiry_date > scheduled_date
+        )
+      priority: high
+      category: constraint_handling
+
+    - id: CON-005
+      name: shift_boundary_constraint
+      description: Split operations at shift boundaries if needed
+      description_vi: Chia công đoạn tại ranh giới ca nếu cần
+      condition: operation.duration > remaining_shift_time
+      action: |
+        IF operation.can_split THEN
+          split_at_shift_boundary()
+        ELSE
+          move_to_next_shift()
+      priority: medium
+      category: constraint_handling
+
+  optimization:
+    - id: OPT-001
+      name: setup_time_minimization
+      description: Group similar products to reduce setup
+      description_vi: Nhóm sản phẩm tương tự để giảm thời gian cài đặt
+      condition: multiple_products_same_machine
+      action: |
+        sequence_products_by(
+          product_family,
+          setup_matrix
+        )
+        total_setup = SUM(setup_times_with_sequence)
+      priority: high
+      category: optimization
+
+    - id: OPT-002
+      name: batch_sizing_optimization
+      description: Optimize batch sizes for efficiency
+      description_vi: Tối ưu kích thước lô cho hiệu quả
+      formula: |
+        economic_batch_size = SQRT(
+          (2 * demand * setup_cost) / (holding_cost * production_rate)
+        )
+      priority: medium
+      category: optimization
+
+    - id: OPT-003
+      name: load_balancing
+      description: Balance load across parallel work centers
+      description_vi: Cân bằng tải qua các trung tâm làm việc song song
+      condition: multiple_capable_work_centers
+      action: |
+        assign_to_work_center = MIN_LOAD(
+          capable_work_centers,
+          weighted_by: efficiency
+        )
+      priority: medium
+      category: optimization
+
+    - id: OPT-004
+      name: makespan_minimization
+      description: Minimize total production time
+      description_vi: Tối thiểu tổng thời gian sản xuất
+      condition: schedule_objective = 'minimize_makespan'
+      action: |
+        apply_johnson_algorithm() IF two_machines
+        apply_genetic_algorithm() IF complex_schedule
+      priority: medium
+      category: optimization
+
+  frozen_zone:
+    - id: FRZ-001
+      name: frozen_zone_protection
+      description: Prevent changes to frozen schedule period
+      description_vi: Ngăn thay đổi trong khoảng thời gian cố định
+      condition: schedule_date <= frozen_horizon
+      action: |
+        REJECT schedule_change
+        UNLESS authorized_by = 'production_manager'
+      priority: critical
+      category: frozen_zone
+
+    - id: FRZ-002
+      name: slushy_zone_approval
+      description: Require approval for slushy zone changes
+      description_vi: Yêu cầu phê duyệt cho thay đổi trong vùng mềm
+      condition: |
+        frozen_horizon < schedule_date <= slushy_horizon
+      action: |
+        REQUIRE approval_from = 'supervisor'
+        LOG change_request
+      priority: high
+      category: frozen_zone
+
+    - id: FRZ-003
+      name: free_zone_flexibility
+      description: Allow free changes beyond slushy zone
+      description_vi: Cho phép thay đổi tự do ngoài vùng mềm
+      condition: schedule_date > slushy_horizon
+      action: ALLOW schedule_change
+      priority: low
+      category: frozen_zone
+
+scheduling_parameters:
+  frozen_horizon_days: 3
+  slushy_horizon_days: 7
+  planning_horizon_days: 90
+  default_efficiency: 0.85
+  overtime_limit_percent: 25
+  minimum_batch_size: 1
+  default_queue_time_hours: 4
+
+scheduling_algorithms:
+  - name: first_come_first_served
+    abbreviation: FCFS
+    use_case: Default when no priority differences
+
+  - name: shortest_processing_time
+    abbreviation: SPT
+    use_case: Minimize average flow time
+
+  - name: earliest_due_date
+    abbreviation: EDD
+    use_case: Minimize maximum lateness
+
+  - name: critical_ratio
+    abbreviation: CR
+    use_case: Dynamic priority based on slack
+
+  - name: setup_time_reduction
+    abbreviation: STR
+    use_case: Minimize total setup time
+
+exception_handling:
+  - exception: machine_breakdown
+    action: |
+      reschedule_affected_orders()
+      notify_planning_team()
+
+  - exception: material_shortage
+    action: |
+      hold_affected_orders()
+      check_substitute_materials()
+
+  - exception: quality_hold
+    action: |
+      suspend_downstream_operations()
+      await_quality_disposition()
+
+integration_points:
+  - system: ERP
+    data: sales_orders, demand_forecast
+    direction: inbound
+
+  - system: MES
+    data: schedule, work_orders
+    direction: outbound
+
+  - system: WMS
+    data: material_availability
+    direction: inbound

@@ -1,0 +1,410 @@
+# Counter Offer Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Counter offer in price negotiation
+
+entity:
+  name: CounterOffer
+  name_vi: Đề nghị ngược
+  name_ja: カウンターオファー
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Represents a counter-proposal in response to an offer or previous counter-offer.
+    Enables back-and-forth negotiation between buyer and seller.
+
+  # Database Configuration
+  database:
+    table_name: counter_offers
+    primary_key: id
+    indexes:
+      - columns: [original_offer_id]
+      - columns: [transaction_id]
+      - columns: [counter_number]
+      - columns: [status]
+      - columns: [valid_until]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: original_offer_id
+      type: uuid
+      required: true
+      foreign_key: offers.id
+      description: The original offer being countered
+
+    - name: previous_counter_id
+      type: uuid
+      nullable: true
+      foreign_key: counter_offers.id
+      description: Previous counter in chain (if applicable)
+
+    - name: transaction_id
+      type: uuid
+      nullable: true
+      foreign_key: transactions.id
+      description: Associated transaction
+
+    - name: counter_number
+      type: integer
+      required: true
+      description: Sequence number (1, 2, 3...)
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - draft
+        - sent
+        - under_review
+        - accepted
+        - rejected
+        - countered
+        - expired
+        - withdrawn
+      default: draft
+      description: Counter offer status
+
+    # Parties
+    - name: from_party
+      type: enum
+      values:
+        - seller
+        - buyer
+      required: true
+      description: Who is making this counter
+
+    - name: from_user_id
+      type: uuid
+      required: true
+      foreign_key: users.id
+      description: User making the counter
+
+    - name: to_user_id
+      type: uuid
+      required: true
+      foreign_key: users.id
+      description: User receiving the counter
+
+    # Price Changes
+    - name: counter_price
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: New proposed price
+
+    - name: original_offer_price
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Price from original offer
+
+    - name: price_change_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Difference from previous price
+
+    - name: price_change_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage change
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    # Term Changes
+    - name: counter_terms
+      type: jsonb
+      description: Changed terms from original
+      schema:
+        type: object
+        properties:
+          closing_date: { type: string, format: date }
+          possession_date: { type: string, format: date }
+          earnest_money: { type: number }
+          down_payment_percent: { type: number }
+          due_diligence_days: { type: integer }
+          inspection_period_days: { type: integer }
+          financing_contingency: { type: boolean }
+          other_changes: { type: array, items: { type: string } }
+
+    - name: changes_summary
+      type: text
+      description: Human-readable summary of changes
+
+    - name: terms_unchanged
+      type: array
+      items: string
+      description: Terms that remain unchanged
+
+    # Contingency Changes
+    - name: contingencies_added
+      type: array
+      items: string
+      description: New contingencies added
+
+    - name: contingencies_removed
+      type: array
+      items: string
+      description: Contingencies removed
+
+    - name: contingencies_modified
+      type: jsonb
+      description: Modified contingencies
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            name: { type: string }
+            original: { type: string }
+            modified: { type: string }
+
+    # Inclusions/Exclusions
+    - name: inclusions_changes
+      type: jsonb
+      nullable: true
+      description: Changes to included items
+      schema:
+        type: object
+        properties:
+          added: { type: array, items: { type: string } }
+          removed: { type: array, items: { type: string } }
+
+    # Validity
+    - name: valid_until
+      type: timestamp
+      required: true
+      description: Counter offer expiration
+
+    - name: validity_hours
+      type: integer
+      default: 48
+      description: Hours until expiration
+
+    # Communication
+    - name: message
+      type: text
+      nullable: true
+      description: Message to other party
+
+    - name: sent_at
+      type: timestamp
+      nullable: true
+      description: When counter was sent
+
+    - name: received_at
+      type: timestamp
+      nullable: true
+      description: When counter was received
+
+    - name: viewed_at
+      type: timestamp
+      nullable: true
+      description: When counter was viewed
+
+    # Response
+    - name: responded_at
+      type: timestamp
+      nullable: true
+      description: When response was given
+
+    - name: response_type
+      type: enum
+      values:
+        - pending
+        - accepted
+        - rejected
+        - countered
+      default: pending
+      description: Response type
+
+    - name: response_message
+      type: text
+      nullable: true
+      description: Response message
+
+    - name: next_counter_id
+      type: uuid
+      nullable: true
+      description: Next counter in chain if countered
+
+    # Final
+    - name: is_final_offer
+      type: boolean
+      default: false
+      description: Marked as final/best offer
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: original_offer
+      type: belongs_to
+      entity: Offer
+      foreign_key: original_offer_id
+
+    - name: previous_counter
+      type: belongs_to
+      entity: CounterOffer
+      foreign_key: previous_counter_id
+
+    - name: next_counter
+      type: has_one
+      entity: CounterOffer
+      foreign_key: previous_counter_id
+
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: from_user
+      type: belongs_to
+      entity: User
+      foreign_key: from_user_id
+
+    - name: to_user
+      type: belongs_to
+      entity: User
+      foreign_key: to_user_id
+
+  # State Machine
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: sent
+        trigger: send
+        action: set_sent_timestamp
+
+      - from: sent
+        to: under_review
+        trigger: view
+        action: set_viewed_timestamp
+
+      - from: [sent, under_review]
+        to: accepted
+        trigger: accept
+        action: process_acceptance
+
+      - from: [sent, under_review]
+        to: rejected
+        trigger: reject
+        action: record_rejection
+
+      - from: [sent, under_review]
+        to: countered
+        trigger: counter
+        action: create_next_counter
+
+      - from: [sent, under_review]
+        to: expired
+        trigger: expire
+        guard: past_expiration
+
+      - from: [draft, sent]
+        to: withdrawn
+        trigger: withdraw
+
+  # Computed Fields
+  computed_fields:
+    - name: is_expired
+      formula: "valid_until < NOW() AND status IN ('sent', 'under_review')"
+
+    - name: hours_remaining
+      formula: "GREATEST(0, EXTRACT(EPOCH FROM (valid_until - NOW())) / 3600)"
+
+    - name: negotiation_round
+      formula: "CEIL(counter_number / 2)"
+      description: Which round of negotiation
+
+  # Business Rules
+  business_rules:
+    - rule: BR-CTR-001
+      name: Counter must change terms
+      description: Counter offer must change at least price or one major term
+      validation: "counter_price != original_offer_price OR counter_terms IS NOT NULL"
+
+    - rule: BR-CTR-002
+      name: Maximum counter rounds
+      description: Warn after 5 rounds of counters
+      warning: "counter_number > 10"
+
+    - rule: BR-CTR-003
+      name: Valid expiration
+      description: Must be valid for at least 24 hours
+      validation: "valid_until > NOW() + INTERVAL '24 hours'"
+
+  # Validations
+  validations:
+    - field: counter_price
+      rule: positive
+      message: "Counter price must be positive"
+
+    - field: valid_until
+      rule: future
+      message: "Expiration must be in the future"
+
+    - field: counter_number
+      rule: sequence
+      message: "Counter number must follow sequence"
+
+  # Events
+  events:
+    - name: counter_offer.sent
+      trigger: on_transition_to_sent
+      payload: [id, original_offer_id, counter_price, to_user_id]
+      notifications:
+        - recipient: to_user
+          template: counter_offer_received
+
+    - name: counter_offer.accepted
+      trigger: on_transition_to_accepted
+      payload: [id, original_offer_id, final_price]
+
+    - name: counter_offer.expired
+      trigger: on_transition_to_expired
+      payload: [id, original_offer_id]
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/counter-offers
+        description: List counter offers
+
+      - method: GET
+        path: /api/counter-offers/{id}
+        description: Get counter offer details
+
+      - method: POST
+        path: /api/offers/{offer_id}/counter
+        description: Create counter offer
+
+      - method: POST
+        path: /api/counter-offers/{id}/respond
+        description: Respond to counter offer

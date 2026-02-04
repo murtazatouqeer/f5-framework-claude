@@ -1,0 +1,638 @@
+name: Subscription
+display_name: Subscription / Gói đăng ký
+description: |
+  Represents a tenant's subscription to a pricing plan.
+  Manages billing cycles, trial periods, and subscription state transitions.
+  Core entity for SaaS revenue management.
+
+domain: saas-platform
+entity_type: core
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    required: true
+    description: Tenant this subscription belongs to
+    description_vi: Khách thuê mà đăng ký này thuộc về
+
+  - name: plan_id
+    type: uuid
+    foreign_key: plan.id
+    required: true
+    description: Plan subscribed to
+    description_vi: Gói đã đăng ký
+
+  # Status
+  - name: status
+    type: enum
+    values: [trialing, active, past_due, unpaid, cancelled, paused, expired]
+    default: trialing
+    description: Current subscription status
+    description_vi: Trạng thái đăng ký hiện tại
+
+  # Pricing
+  - name: price_per_period
+    type: decimal
+    precision: 10
+    scale: 2
+    required: true
+    description: Price charged per billing cycle
+    description_vi: Giá tính mỗi chu kỳ thanh toán
+
+  - name: currency
+    type: string
+    max_length: 3
+    default: "USD"
+    description: Billing currency (ISO 4217)
+    description_vi: Tiền tệ thanh toán
+
+  # Billing Cycle
+  - name: billing_cycle
+    type: enum
+    values: [monthly, quarterly, annually]
+    default: monthly
+    description: How often billing occurs
+    description_vi: Tần suất thanh toán
+
+  - name: billing_anchor
+    type: integer
+    min: 1
+    max: 28
+    description: Day of month for billing (1-28)
+    description_vi: Ngày trong tháng để thanh toán
+    note: "Use 28 to avoid month-end issues"
+
+  # Trial Period
+  - name: trial_start
+    type: timestamp
+    description: When trial period started
+    description_vi: Thời điểm bắt đầu dùng thử
+
+  - name: trial_end
+    type: timestamp
+    description: When trial period ends
+    description_vi: Thời điểm kết thúc dùng thử
+
+  - name: trial_converted
+    type: boolean
+    default: false
+    description: Whether trial converted to paid
+    description_vi: Đã chuyển đổi từ dùng thử sang trả phí chưa
+
+  # Current Period
+  - name: current_period_start
+    type: timestamp
+    description: Start of current billing period
+    description_vi: Bắt đầu chu kỳ thanh toán hiện tại
+
+  - name: current_period_end
+    type: timestamp
+    description: End of current billing period
+    description_vi: Kết thúc chu kỳ thanh toán hiện tại
+
+  # Cancellation
+  - name: cancelled_at
+    type: timestamp
+    description: When cancellation was requested
+    description_vi: Thời điểm yêu cầu hủy
+
+  - name: cancel_at_period_end
+    type: boolean
+    default: false
+    description: If true, cancel at end of current period
+    description_vi: Nếu đúng, hủy vào cuối chu kỳ hiện tại
+
+  - name: cancel_reason
+    type: string
+    max_length: 100
+    description: Reason for cancellation
+    description_vi: Lý do hủy
+
+  - name: ended_at
+    type: timestamp
+    description: When subscription actually ended
+    description_vi: Thời điểm đăng ký thực sự kết thúc
+
+  # Pause
+  - name: paused_at
+    type: timestamp
+    description: When subscription was paused
+    description_vi: Thời điểm tạm dừng đăng ký
+
+  - name: resume_at
+    type: timestamp
+    description: When subscription will resume
+    description_vi: Thời điểm đăng ký sẽ tiếp tục
+
+  - name: pause_reason
+    type: string
+    max_length: 255
+    description: Reason for pausing
+    description_vi: Lý do tạm dừng
+
+  # Usage & Seats
+  - name: usage_type
+    type: enum
+    values: [none, metered, per_seat, hybrid]
+    default: none
+    description: How usage is tracked and billed
+    description_vi: Cách theo dõi và tính phí sử dụng
+
+  - name: quantity
+    type: integer
+    default: 1
+    min: 1
+    description: Number of seats/units
+    description_vi: Số lượng chỗ/đơn vị
+
+  - name: included_units
+    type: integer
+    description: Units included in base price
+    description_vi: Đơn vị bao gồm trong giá cơ bản
+
+  - name: overage_rate
+    type: decimal
+    precision: 10
+    scale: 4
+    description: Price per unit over included amount
+    description_vi: Giá mỗi đơn vị vượt quá số lượng bao gồm
+
+  # Discounts
+  - name: discount_id
+    type: uuid
+    foreign_key: discount.id
+    description: Applied discount/coupon
+    description_vi: Giảm giá/mã khuyến mãi được áp dụng
+
+  - name: discount_percent
+    type: decimal
+    precision: 5
+    scale: 2
+    min: 0
+    max: 100
+    description: Discount percentage applied
+    description_vi: Phần trăm giảm giá được áp dụng
+
+  - name: discount_end
+    type: timestamp
+    description: When discount expires
+    description_vi: Thời điểm giảm giá hết hạn
+
+  # Payment
+  - name: payment_method_id
+    type: uuid
+    foreign_key: payment_method.id
+    description: Payment method for this subscription
+    description_vi: Phương thức thanh toán cho đăng ký này
+
+  - name: last_payment_at
+    type: timestamp
+    description: When last payment was received
+    description_vi: Thời điểm nhận thanh toán cuối cùng
+
+  - name: last_payment_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    description: Amount of last payment
+    description_vi: Số tiền thanh toán cuối cùng
+
+  # Payment Failures
+  - name: failed_payment_count
+    type: integer
+    default: 0
+    description: Consecutive failed payment attempts
+    description_vi: Số lần thanh toán thất bại liên tiếp
+
+  - name: next_retry_at
+    type: timestamp
+    description: When next payment retry is scheduled
+    description_vi: Thời điểm thử lại thanh toán tiếp theo
+
+  - name: last_failed_at
+    type: timestamp
+    description: When last payment attempt failed
+    description_vi: Thời điểm thanh toán cuối thất bại
+
+  - name: failure_reason
+    type: string
+    max_length: 255
+    description: Reason for payment failure
+    description_vi: Lý do thanh toán thất bại
+
+  # External Integration
+  - name: external_subscription_id
+    type: string
+    max_length: 255
+    description: ID in external system (e.g., Stripe)
+    description_vi: ID trong hệ thống bên ngoài
+    example: "sub_1234567890"
+
+  - name: external_customer_id
+    type: string
+    max_length: 255
+    description: Customer ID in external system
+    description_vi: ID khách hàng trong hệ thống bên ngoài
+
+  # Metadata
+  - name: metadata
+    type: json
+    description: Additional subscription data
+    description_vi: Dữ liệu đăng ký bổ sung
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: updated_at
+    type: timestamp
+    auto: true
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Tenant this subscription belongs to
+
+  - name: plan
+    type: belongs_to
+    target: Plan
+    foreign_key: plan_id
+    description: Plan being subscribed to
+
+  - name: invoices
+    type: has_many
+    target: Invoice
+    foreign_key: subscription_id
+    description: Invoices generated for this subscription
+
+  - name: payment_method
+    type: belongs_to
+    target: PaymentMethod
+    foreign_key: payment_method_id
+    description: Payment method for billing
+
+  - name: discount
+    type: belongs_to
+    target: Discount
+    foreign_key: discount_id
+    description: Applied discount/coupon
+
+  - name: usage_records
+    type: has_many
+    target: UsageRecord
+    foreign_key: subscription_id
+    description: Usage records for metered billing
+
+state_machine:
+  field: status
+  initial: trialing
+  states:
+    trialing:
+      description: In trial period, no payment required yet
+      description_vi: Trong thời gian dùng thử, chưa cần thanh toán
+    active:
+      description: Paid and fully operational
+      description_vi: Đã thanh toán và hoạt động đầy đủ
+    past_due:
+      description: Payment failed, in grace period
+      description_vi: Thanh toán thất bại, trong thời gian gia hạn
+    unpaid:
+      description: Grace period expired, access restricted
+      description_vi: Hết thời gian gia hạn, quyền truy cập bị hạn chế
+    cancelled:
+      description: Subscription cancelled
+      description_vi: Đăng ký đã hủy
+    paused:
+      description: Temporarily paused by user
+      description_vi: Tạm dừng bởi người dùng
+    expired:
+      description: Subscription ended (trial or cancelled)
+      description_vi: Đăng ký đã kết thúc
+
+  transitions:
+    # Trial transitions
+    - from: trialing
+      to: active
+      event: convert
+      description: Trial converted to paid subscription
+      conditions:
+        - valid_payment_method
+      actions:
+        - charge first payment
+        - set current_period_start/end
+        - set trial_converted = true
+        - send conversion confirmation
+
+    - from: trialing
+      to: expired
+      event: expire
+      description: Trial expired without conversion
+      conditions:
+        - trial_end <= NOW()
+        - no_payment_method OR payment_failed
+      actions:
+        - set ended_at
+        - restrict tenant access
+        - send trial expired notice
+
+    # Active transitions
+    - from: active
+      to: past_due
+      event: payment_failed
+      description: Payment attempt failed
+      actions:
+        - increment failed_payment_count
+        - schedule next_retry_at
+        - send payment failed notice
+
+    - from: past_due
+      to: active
+      event: payment_succeeded
+      description: Payment retry succeeded
+      actions:
+        - reset failed_payment_count
+        - clear next_retry_at
+        - send payment success notice
+
+    - from: past_due
+      to: unpaid
+      event: grace_expired
+      description: Grace period ended without payment
+      conditions:
+        - failed_payment_count >= 3
+        - days_past_due > 7
+      actions:
+        - restrict tenant to read-only
+        - send final warning
+
+    - from: unpaid
+      to: active
+      event: payment_succeeded
+      description: Payment finally received
+      actions:
+        - restore full access
+        - reset failed_payment_count
+        - send reactivation notice
+
+    - from: unpaid
+      to: cancelled
+      event: auto_cancel
+      description: Auto-cancelled due to non-payment
+      conditions:
+        - days_unpaid > 14
+      actions:
+        - set ended_at
+        - cancel tenant subscription
+        - send cancellation notice
+
+    # Cancellation
+    - from: active
+      to: cancelled
+      event: cancel
+      description: Voluntary cancellation
+      actions:
+        - set cancelled_at
+        - if cancel_at_period_end: schedule end
+        - else: set ended_at = now
+        - send cancellation confirmation
+
+    - from: trialing
+      to: cancelled
+      event: cancel
+      description: Cancel during trial
+      actions:
+        - set cancelled_at
+        - set ended_at = now
+        - send cancellation confirmation
+
+    # Pause/Resume
+    - from: active
+      to: paused
+      event: pause
+      description: User pauses subscription
+      conditions:
+        - pause_allowed (no past_due)
+        - pause_duration <= max_pause_months
+      actions:
+        - set paused_at
+        - set resume_at
+        - prorate and pause billing
+        - send pause confirmation
+
+    - from: paused
+      to: active
+      event: resume
+      description: Resume paused subscription
+      actions:
+        - clear paused_at
+        - recalculate current_period
+        - resume billing
+        - send resume confirmation
+
+    # Reactivation
+    - from: cancelled
+      to: active
+      event: reactivate
+      description: Reactivate cancelled subscription
+      conditions:
+        - within_reactivation_window (30 days)
+        - valid_payment_method
+      actions:
+        - clear cancelled_at, ended_at
+        - create new billing period
+        - charge immediately
+        - send reactivation welcome
+
+indexes:
+  - name: idx_subscription_tenant
+    columns: [tenant_id]
+    description: Primary tenant lookup
+
+  - name: idx_subscription_tenant_status
+    columns: [tenant_id, status]
+    unique: true
+    where: "status NOT IN ('cancelled', 'expired')"
+    description: Ensure one active subscription per tenant
+
+  - name: idx_subscription_status
+    columns: [status]
+    description: Filter by status
+
+  - name: idx_subscription_period_end
+    columns: [current_period_end]
+    where: "status = 'active'"
+    description: Invoice generation queries
+
+  - name: idx_subscription_trial_end
+    columns: [trial_end]
+    where: "status = 'trialing'"
+    description: Trial expiration queries
+
+  - name: idx_subscription_next_retry
+    columns: [next_retry_at]
+    where: "status = 'past_due'"
+    description: Payment retry scheduling
+
+  - name: idx_subscription_external
+    columns: [external_subscription_id]
+    unique: true
+    where: "external_subscription_id IS NOT NULL"
+    description: External system lookup
+
+business_rules:
+  - id: BR-SUB-001
+    name: One Active Per Tenant
+    description: A tenant can have only one active subscription
+    description_vi: Một khách thuê chỉ có thể có một đăng ký hoạt động
+    severity: critical
+
+  - id: BR-SUB-002
+    name: Trial Duration
+    description: Default trial is 14 days
+    description_vi: Dùng thử mặc định là 14 ngày
+    parameters:
+      trial_days: 14
+
+  - id: BR-SUB-003
+    name: Trial Auto-Convert
+    description: Trial auto-converts if payment method exists
+    description_vi: Dùng thử tự động chuyển đổi nếu có phương thức thanh toán
+
+  - id: BR-SUB-010
+    name: Upgrade Immediate
+    description: Plan upgrades take effect immediately with proration
+    description_vi: Nâng cấp gói có hiệu lực ngay với điều chỉnh tỷ lệ
+    proration: true
+
+  - id: BR-SUB-011
+    name: Downgrade at Period End
+    description: Plan downgrades take effect at period end
+    description_vi: Hạ gói có hiệu lực vào cuối chu kỳ
+    effective_date: period_end
+
+  - id: BR-SUB-012
+    name: Seat Changes
+    description: Adding seats is immediate, removing is at period end
+    description_vi: Thêm chỗ có hiệu lực ngay, bớt chỗ vào cuối chu kỳ
+
+  - id: BR-SUB-020
+    name: Cancellation Options
+    description: Cancel immediately or at period end
+    description_vi: Hủy ngay lập tức hoặc vào cuối chu kỳ
+
+  - id: BR-SUB-021
+    name: Annual Refund
+    description: Annual plans get prorated refund on cancellation
+    description_vi: Gói năm được hoàn tiền tỷ lệ khi hủy
+    condition: "billing_cycle = 'annually'"
+
+  - id: BR-SUB-030
+    name: Pause Duration
+    description: Maximum pause duration is 3 months
+    description_vi: Thời gian tạm dừng tối đa là 3 tháng
+    parameters:
+      max_pause_months: 3
+
+  - id: BR-SUB-031
+    name: No Pause if Past Due
+    description: Cannot pause if subscription is past due
+    description_vi: Không thể tạm dừng nếu đăng ký quá hạn
+    condition: "status != 'past_due'"
+
+  - id: BR-SUB-040
+    name: Grace Period
+    description: 7-day grace period for failed payments
+    description_vi: 7 ngày gia hạn cho thanh toán thất bại
+    parameters:
+      grace_period_days: 7
+
+  - id: BR-SUB-041
+    name: Retry Schedule
+    description: Payment retries on day 1, 3, 7, then cancel
+    description_vi: Thử lại thanh toán vào ngày 1, 3, 7, sau đó hủy
+    parameters:
+      retry_days: [1, 3, 7]
+      max_retries: 3
+
+computed_fields:
+  - name: is_active
+    formula: "status IN ('trialing', 'active')"
+    description: Whether subscription provides full access
+
+  - name: is_in_trial
+    formula: "status = 'trialing' AND trial_end > NOW()"
+    description: Currently in trial period
+
+  - name: days_until_renewal
+    formula: "DATEDIFF(current_period_end, NOW())"
+    description: Days until next billing
+
+  - name: effective_price
+    formula: "price_per_period * (1 - COALESCE(discount_percent, 0) / 100)"
+    description: Price after discount
+
+  - name: annual_value
+    formula: |
+      CASE billing_cycle
+        WHEN 'monthly' THEN effective_price * 12
+        WHEN 'quarterly' THEN effective_price * 4
+        WHEN 'annually' THEN effective_price
+      END
+    description: Annualized subscription value (ARR contribution)
+
+events:
+  - name: subscription.created
+    description: New subscription created
+    payload: [subscription_id, tenant_id, plan_id, status]
+    triggers: [start_trial_if_applicable, send_welcome]
+
+  - name: subscription.activated
+    description: Subscription became active (trial converted or direct)
+    payload: [subscription_id, tenant_id, plan_id]
+    triggers: [unlock_features, track_conversion]
+
+  - name: subscription.upgraded
+    description: Plan upgraded
+    payload: [subscription_id, old_plan_id, new_plan_id, proration_amount]
+    triggers: [unlock_new_features, create_proration_invoice]
+
+  - name: subscription.downgraded
+    description: Plan downgraded
+    payload: [subscription_id, old_plan_id, new_plan_id, effective_date]
+    triggers: [schedule_feature_restriction, send_downgrade_notice]
+
+  - name: subscription.renewed
+    description: Subscription renewed for new period
+    payload: [subscription_id, period_start, period_end, amount]
+    triggers: [create_invoice, send_renewal_receipt]
+
+  - name: subscription.payment_failed
+    description: Payment attempt failed
+    payload: [subscription_id, amount, failure_reason, retry_at]
+    triggers: [send_payment_failed_email, schedule_retry]
+
+  - name: subscription.cancelled
+    description: Subscription cancelled
+    payload: [subscription_id, cancel_reason, effective_date]
+    triggers: [send_cancellation_email, schedule_access_removal]
+
+  - name: subscription.paused
+    description: Subscription paused
+    payload: [subscription_id, paused_at, resume_at]
+    triggers: [pause_billing, send_pause_confirmation]
+
+  - name: subscription.resumed
+    description: Subscription resumed from pause
+    payload: [subscription_id, resumed_at]
+    triggers: [resume_billing, send_resume_confirmation]

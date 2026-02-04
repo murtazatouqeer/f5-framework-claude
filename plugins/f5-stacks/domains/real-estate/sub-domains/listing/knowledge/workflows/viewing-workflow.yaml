@@ -1,0 +1,482 @@
+# Viewing Workflow
+# F5 Framework v2.0 - Real Estate/Listing
+# Workflow for property viewing appointments
+
+workflow:
+  id: viewing_management
+  name: Viewing Management Workflow
+  name_ja: 内覧管理ワークフロー
+  name_vi: Quy trình xem nhà
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Complete workflow for scheduling, conducting, and following up
+    on property viewing appointments.
+
+  actors:
+    - id: seeker
+      name: Property Seeker
+      permissions: [request_viewing, reschedule, cancel, provide_feedback]
+    - id: agent
+      name: Real Estate Agent
+      permissions: [confirm, reschedule, cancel, record_feedback]
+    - id: owner
+      name: Property Owner
+      permissions: [approve_viewing, set_availability]
+    - id: system
+      name: Automated System
+      permissions: [notify, remind, track]
+
+  triggers:
+    - type: user_action
+      action: request_viewing
+      actor: seeker
+    - type: workflow_transition
+      from_workflow: inquiry_workflow
+      action: schedule_viewing
+    - type: api_call
+      endpoint: POST /api/viewings
+
+  # Workflow States
+  states:
+    - id: requested
+      name: Requested
+      type: start
+
+    - id: pending_agent_confirmation
+      name: Pending Agent Confirmation
+
+    - id: pending_owner_approval
+      name: Pending Owner Approval
+      description: For owner-occupied properties
+
+    - id: confirmed
+      name: Confirmed
+
+    - id: reminder_sent
+      name: Reminder Sent
+
+    - id: in_progress
+      name: In Progress
+      description: Viewing currently happening
+
+    - id: completed
+      name: Completed
+
+    - id: feedback_pending
+      name: Feedback Pending
+
+    - id: follow_up
+      name: Follow Up
+
+    - id: rescheduled
+      name: Rescheduled
+
+    - id: cancelled
+      name: Cancelled
+      type: end
+
+    - id: no_show
+      name: No Show
+      type: end
+
+    - id: closed
+      name: Closed
+      type: end
+
+  # Workflow Steps
+  steps:
+    - id: step_1
+      name: Request Viewing
+      state: requested
+      actor: [seeker, agent]
+      actions:
+        - action: select_time_slots
+          ui: calendar_picker
+          constraints:
+            - within_business_hours
+            - minimum_24h_advance
+            - respect_agent_availability
+        - action: provide_details
+          fields:
+            - preferred_dates (required, max 3)
+            - preferred_times
+            - attendees_count
+            - viewing_type (in_person/virtual)
+            - special_requests
+      ui:
+        screen: viewing_request
+        components:
+          - listing_summary
+          - availability_calendar
+          - time_slot_picker
+          - attendees_input
+          - notes_field
+      transitions:
+        - to: pending_agent_confirmation
+          condition: viewing_requested
+
+    - id: step_2
+      name: Agent Confirmation
+      state: pending_agent_confirmation
+      actor: agent
+      sla:
+        target_hours: 4
+        max_hours: 24
+      actions:
+        - action: review_request
+        - action: check_availability
+        - action: confirm_time
+          next: confirmed
+        - action: propose_alternative
+          next: requested
+        - action: reject_request
+          next: cancelled
+          requires: reason
+      ui:
+        screen: viewing_confirmation
+        components:
+          - request_details
+          - agent_calendar
+          - seeker_profile
+          - confirm_button
+          - propose_alternative_form
+      notifications:
+        on_enter:
+          - recipient: agent
+            template: viewing_request_received
+            channels: [push, email]
+      transitions:
+        - to: pending_owner_approval
+          condition: owner_approval_required
+        - to: confirmed
+          condition: agent_confirmed
+        - to: requested
+          condition: alternative_proposed
+        - to: cancelled
+          condition: agent_rejected
+
+    - id: step_3
+      name: Owner Approval
+      state: pending_owner_approval
+      actor: owner
+      condition: property.requires_owner_approval
+      sla:
+        target_hours: 12
+        max_hours: 48
+      actions:
+        - action: review_viewing_request
+        - action: approve
+          next: confirmed
+        - action: reject
+          next: cancelled
+        - action: propose_different_time
+          next: pending_agent_confirmation
+      ui:
+        screen: owner_approval
+        components:
+          - viewing_details
+          - seeker_summary
+          - approval_buttons
+      notifications:
+        on_enter:
+          - recipient: owner
+            template: viewing_approval_needed
+      transitions:
+        - to: confirmed
+          condition: owner_approved
+        - to: cancelled
+          condition: owner_rejected
+        - to: pending_agent_confirmation
+          condition: owner_proposed_alternative
+
+    - id: step_4
+      name: Viewing Confirmed
+      state: confirmed
+      actor: system
+      actions:
+        - action: create_calendar_events
+          for: [seeker, agent, owner]
+        - action: send_confirmations
+          to: [seeker, agent]
+          template: viewing_confirmed
+        - action: schedule_reminders
+          schedule:
+            - 24_hours_before
+            - 2_hours_before
+        - action: prepare_viewing_checklist
+      ui:
+        screen: viewing_details
+        components:
+          - confirmation_banner
+          - viewing_details
+          - property_info
+          - directions_map
+          - reschedule_button
+          - cancel_button
+      transitions:
+        - to: reminder_sent
+          condition: reminder_time_reached
+        - to: rescheduled
+          condition: reschedule_requested
+        - to: cancelled
+          condition: cancelled_by_any_party
+
+    - id: step_5
+      name: Send Reminders
+      state: reminder_sent
+      actor: system
+      actions:
+        - action: send_24h_reminder
+          to: [seeker, agent]
+          include:
+            - viewing_details
+            - property_address
+            - directions
+            - contact_info
+        - action: send_2h_reminder
+          to: [seeker, agent]
+          include:
+            - quick_summary
+            - contact_for_emergency
+        - action: request_confirmation
+          from: seeker
+          template: confirm_attendance
+      transitions:
+        - to: in_progress
+          condition: viewing_time_reached
+        - to: rescheduled
+          condition: reschedule_requested
+        - to: cancelled
+          condition: cancelled
+
+    - id: step_6
+      name: Viewing In Progress
+      state: in_progress
+      actor: agent
+      actions:
+        - action: check_in
+          optional: true
+          location_verified: true
+        - action: conduct_viewing
+          checklist:
+            - greet_seeker
+            - tour_property
+            - answer_questions
+            - highlight_features
+            - discuss_next_steps
+        - action: mark_complete
+      ui:
+        screen: active_viewing
+        components:
+          - viewing_timer
+          - property_highlights
+          - quick_notes
+          - complete_button
+      duration:
+        default: 30 minutes
+        max: 120 minutes
+      transitions:
+        - to: completed
+          condition: agent_marks_complete
+        - to: no_show
+          condition: seeker_no_show_after_15_min
+
+    - id: step_7
+      name: Viewing Completed
+      state: completed
+      actor: system
+      actions:
+        - action: record_completion
+          data:
+            - actual_start_time
+            - actual_end_time
+            - actual_duration
+        - action: request_feedback
+          from: [seeker, agent]
+          delay: 1_hour
+      auto_transition: true
+      transitions:
+        - to: feedback_pending
+          condition: immediate
+
+    - id: step_8
+      name: Collect Feedback
+      state: feedback_pending
+      actor: [seeker, agent]
+      parallel: true
+      actions:
+        - action: seeker_feedback
+          actor: seeker
+          fields:
+            - overall_rating (1-5)
+            - property_condition
+            - matches_description
+            - liked_aspects
+            - disliked_aspects
+            - interest_level
+            - comments
+          ui:
+            screen: seeker_feedback_form
+            components:
+              - star_rating
+              - condition_rating
+              - like_dislike_chips
+              - interest_slider
+              - comments_field
+
+        - action: agent_feedback
+          actor: agent
+          fields:
+            - seeker_seriousness (1-5)
+            - purchase_readiness
+            - objections
+            - follow_up_actions
+            - notes
+          ui:
+            screen: agent_feedback_form
+            components:
+              - seriousness_rating
+              - readiness_selector
+              - objections_checklist
+              - action_items
+              - notes_field
+      timeout:
+        duration: 48_hours
+        action: proceed_without_feedback
+      transitions:
+        - to: follow_up
+          condition: feedback_collected OR timeout
+
+    - id: step_9
+      name: Follow Up
+      state: follow_up
+      actor: agent
+      actions:
+        - action: analyze_interest
+          based_on: feedback
+        - action: determine_next_steps
+          logic: |
+            CASE seeker_interest_level
+              WHEN 'ready_to_offer' THEN suggest_offer_preparation
+              WHEN 'very_interested' THEN schedule_second_viewing_or_offer
+              WHEN 'somewhat_interested' THEN send_additional_info
+              WHEN 'not_interested' THEN close_inquiry
+            END
+        - action: schedule_follow_up
+        - action: update_inquiry_status
+      ui:
+        screen: viewing_follow_up
+        components:
+          - feedback_summary
+          - interest_indicator
+          - next_steps_suggestion
+          - follow_up_scheduler
+          - inquiry_update_form
+      transitions:
+        - to: closed
+          condition: follow_up_complete
+          action: update_parent_inquiry
+
+    # Rescheduling Flow
+    - id: step_reschedule
+      name: Reschedule Viewing
+      state: rescheduled
+      actor: [seeker, agent]
+      constraints:
+        max_reschedules: 3
+        minimum_notice: 4_hours
+      actions:
+        - action: cancel_original
+        - action: select_new_time
+        - action: create_new_viewing
+          link_to_original: true
+      transitions:
+        - to: pending_agent_confirmation
+          condition: new_time_selected
+
+    # Cancellation Flow
+    - id: step_cancel
+      name: Cancel Viewing
+      state: cancelled
+      actor: [seeker, agent, owner]
+      actions:
+        - action: record_cancellation
+          fields:
+            - cancelled_by
+            - cancellation_reason
+            - cancelled_at
+        - action: remove_calendar_events
+        - action: notify_all_parties
+      notifications:
+        - recipient: affected_parties
+          template: viewing_cancelled
+          include: cancellation_reason
+
+    # No Show Handling
+    - id: step_no_show
+      name: Handle No Show
+      state: no_show
+      actor: agent
+      actions:
+        - action: record_no_show
+        - action: notify_seeker
+          template: missed_viewing
+        - action: update_seeker_reliability_score
+        - action: offer_reschedule
+          condition: first_no_show
+      transitions:
+        - to: requested
+          condition: seeker_wants_reschedule
+        - to: closed
+          condition: no_response
+
+  # Virtual Viewing Support
+  virtual_viewing:
+    enabled: true
+    platforms:
+      - zoom
+      - google_meet
+      - whatsapp_video
+    actions:
+      - action: generate_meeting_link
+        trigger: on_confirmation
+      - action: send_tech_instructions
+        to: seeker
+      - action: start_meeting
+        trigger: viewing_time
+
+  # Notifications
+  notifications:
+    - event: viewing_requested
+      recipients: [agent]
+      template: new_viewing_request
+
+    - event: viewing_confirmed
+      recipients: [seeker, agent]
+      template: viewing_confirmation
+      include: [calendar_invite, directions]
+
+    - event: reminder_24h
+      recipients: [seeker, agent]
+      template: viewing_reminder_24h
+
+    - event: reminder_2h
+      recipients: [seeker, agent]
+      template: viewing_reminder_2h
+
+    - event: feedback_request
+      recipients: [seeker, agent]
+      template: feedback_request
+
+  # Metrics
+  metrics:
+    track:
+      - viewing_completion_rate
+      - no_show_rate
+      - average_interest_level
+      - feedback_response_rate
+      - conversion_from_viewing
+      - average_viewings_per_conversion

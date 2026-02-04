@@ -1,0 +1,622 @@
+name: Renewal
+display_name: Policy Renewal
+description: |
+  Policy renewal record for extending coverage period.
+  Tracks renewal offers, decisions, and premium changes.
+
+domain: insurance
+subdomain: policy
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: renewals
+  primary_key: id
+  indexes:
+    - columns: [policy_id]
+    - columns: [renewal_number]
+      unique: true
+    - columns: [status]
+    - columns: [renewal_date]
+    - columns: [expiry_date]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: renewal_number
+    type: string
+    description: Renewal reference
+    pattern: "RNW-[A-Z0-9]{8}"
+    example: "RNW-2024A001"
+    required: true
+    unique: true
+
+  - name: policy_id
+    type: uuid
+    description: Policy being renewed
+    required: true
+
+  - name: policy_number
+    type: string
+    description: Policy reference
+
+  - name: renewal_sequence
+    type: integer
+    description: Nth renewal (1, 2, 3...)
+    required: true
+
+  # Dates
+  - name: current_expiry_date
+    type: date
+    description: Current policy expiry
+    required: true
+
+  - name: renewal_date
+    type: date
+    description: New period start date
+    required: true
+
+  - name: new_expiry_date
+    type: date
+    description: New period end date
+    required: true
+
+  - name: renewal_offer_date
+    type: date
+    description: When offer was sent
+
+  - name: offer_valid_until
+    type: date
+    description: Offer expiry date
+
+  - name: decision_date
+    type: date
+    description: When decision was made
+
+  # Status
+  - name: status
+    type: enum
+    description: Renewal status
+    values:
+      - pending
+      - offer_generated
+      - offer_sent
+      - under_review
+      - accepted
+      - declined
+      - lapsed
+      - cancelled
+      - completed
+    default: pending
+
+  - name: renewal_type
+    type: enum
+    description: Type of renewal
+    values:
+      - auto
+      - manual
+      - guaranteed
+      - conditional
+    default: auto
+
+  - name: decision
+    type: enum
+    description: Renewal decision
+    values:
+      - renew_same_terms
+      - renew_modified_terms
+      - decline
+      - lapse
+      - cancel
+
+  - name: decision_reason
+    type: text
+    description: Reason for decision
+
+  # Current terms
+  - name: current_sum_insured
+    type: decimal
+    description: Current sum insured
+    precision: 15
+    scale: 2
+
+  - name: current_annual_premium
+    type: decimal
+    description: Current premium
+    precision: 12
+    scale: 2
+
+  - name: current_coverages
+    type: array
+    description: Current coverage IDs
+    items:
+      type: uuid
+
+  - name: current_riders
+    type: array
+    description: Current rider IDs
+    items:
+      type: uuid
+
+  # Renewal terms
+  - name: proposed_sum_insured
+    type: decimal
+    description: Proposed sum insured
+    precision: 15
+    scale: 2
+
+  - name: proposed_annual_premium
+    type: decimal
+    description: Proposed renewal premium
+    precision: 12
+    scale: 2
+    required: true
+
+  - name: proposed_coverages
+    type: array
+    description: Proposed coverages
+    items:
+      type: uuid
+
+  - name: proposed_riders
+    type: array
+    description: Proposed riders
+    items:
+      type: uuid
+
+  - name: premium_change_amount
+    type: decimal
+    description: Premium change
+    precision: 12
+    scale: 2
+    computed: "proposed_annual_premium - current_annual_premium"
+
+  - name: premium_change_percent
+    type: decimal
+    description: Premium change %
+    precision: 5
+    scale: 2
+    computed: "(proposed_annual_premium - current_annual_premium) / current_annual_premium * 100"
+
+  # Premium breakdown
+  - name: premium_breakdown
+    type: object
+    description: Premium calculation
+    properties:
+      base_premium:
+        type: decimal
+      rider_premium:
+        type: decimal
+      loading_amount:
+        type: decimal
+      discount_amount:
+        type: decimal
+      no_claims_discount:
+        type: decimal
+      tax_amount:
+        type: decimal
+
+  - name: renewal_factors
+    type: array
+    description: Factors affecting premium
+    items:
+      type: object
+      properties:
+        factor:
+          type: string
+        impact:
+          type: decimal
+        reason:
+          type: string
+
+  # No claims bonus
+  - name: no_claims_years
+    type: integer
+    description: Consecutive claim-free years
+    default: 0
+
+  - name: ncb_percentage
+    type: decimal
+    description: No claims discount %
+    precision: 5
+    scale: 2
+
+  - name: ncb_amount
+    type: decimal
+    description: No claims discount amount
+    precision: 12
+    scale: 2
+
+  # Age adjustment
+  - name: age_at_renewal
+    type: integer
+    description: Insured age at renewal
+
+  - name: age_band_change
+    type: boolean
+    description: Age band changed
+    default: false
+
+  - name: age_loading
+    type: decimal
+    description: Age-related loading
+    precision: 5
+    scale: 2
+
+  # Claims impact
+  - name: claims_in_period
+    type: integer
+    description: Claims in current period
+    default: 0
+
+  - name: claims_amount
+    type: decimal
+    description: Total claims value
+    precision: 15
+    scale: 2
+    default: 0
+
+  - name: claims_loading
+    type: decimal
+    description: Claims experience loading
+    precision: 5
+    scale: 2
+
+  # Term changes
+  - name: term_change_requested
+    type: boolean
+    description: Term change requested
+    default: false
+
+  - name: current_term_months
+    type: integer
+    description: Current term
+
+  - name: proposed_term_months
+    type: integer
+    description: Proposed new term
+
+  # Underwriting
+  - name: requires_underwriting
+    type: boolean
+    description: Needs UW review
+    default: false
+
+  - name: underwriting_reason
+    type: string
+    description: Why UW required
+
+  - name: underwriting_status
+    type: enum
+    description: UW status
+    values:
+      - not_required
+      - pending
+      - approved
+      - declined
+      - referred
+    default: not_required
+
+  - name: underwriting_notes
+    type: text
+    description: UW notes
+
+  - name: new_exclusions
+    type: array
+    description: New exclusions added
+    items:
+      type: object
+      properties:
+        exclusion:
+          type: string
+        reason:
+          type: string
+
+  - name: new_loadings
+    type: array
+    description: New loadings applied
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        percentage:
+          type: decimal
+        reason:
+          type: string
+
+  # Communications
+  - name: offer_sent_at
+    type: timestamp
+    description: When offer was sent
+
+  - name: offer_sent_via
+    type: enum
+    description: Offer delivery method
+    values:
+      - email
+      - sms
+      - mail
+      - agent
+      - portal
+
+  - name: reminder_count
+    type: integer
+    description: Reminders sent
+    default: 0
+
+  - name: last_reminder_date
+    type: date
+    description: Last reminder date
+
+  - name: communication_history
+    type: array
+    description: Communications log
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+        sent_at:
+          type: timestamp
+        channel:
+          type: string
+        status:
+          type: string
+
+  # Customer response
+  - name: customer_response
+    type: enum
+    description: Customer decision
+    values:
+      - pending
+      - accepted
+      - declined
+      - no_response
+
+  - name: response_date
+    type: date
+    description: When customer responded
+
+  - name: response_channel
+    type: string
+    description: How customer responded
+
+  - name: decline_reason
+    type: string
+    description: Why declined
+
+  - name: decline_feedback
+    type: text
+    description: Detailed feedback
+
+  # Payment
+  - name: payment_due_date
+    type: date
+    description: Renewal premium due
+
+  - name: payment_status
+    type: enum
+    description: Payment status
+    values:
+      - not_due
+      - pending
+      - paid
+      - overdue
+      - waived
+    default: not_due
+
+  - name: payment_date
+    type: date
+    description: When paid
+
+  - name: payment_amount
+    type: decimal
+    description: Amount paid
+    precision: 12
+    scale: 2
+
+  - name: payment_reference
+    type: string
+    description: Payment reference
+
+  # Documents
+  - name: renewal_notice_url
+    type: string
+    description: Renewal notice PDF
+    format: uri
+
+  - name: new_schedule_url
+    type: string
+    description: New schedule PDF
+    format: uri
+
+  # Retention
+  - name: retention_offer
+    type: object
+    description: Retention offer if declining
+    properties:
+      offered:
+        type: boolean
+      discount_percent:
+        type: decimal
+      special_terms:
+        type: string
+      accepted:
+        type: boolean
+
+  # Agent
+  - name: agent_id
+    type: uuid
+    description: Servicing agent
+
+  - name: agent_contacted
+    type: boolean
+    description: Agent contacted customer
+    default: false
+
+  - name: agent_notes
+    type: text
+    description: Agent notes
+
+  # Processing
+  - name: processed_by
+    type: uuid
+    description: Who processed
+
+  - name: processed_at
+    type: timestamp
+    description: Processing time
+
+  - name: auto_renewed
+    type: boolean
+    description: Auto-renewed
+    default: false
+
+  # New policy
+  - name: new_policy_id
+    type: uuid
+    description: Renewed policy ID
+
+  - name: new_policy_number
+    type: string
+    description: Renewed policy number
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: policy
+    type: belongs_to
+    entity: Policy
+    foreign_key: policy_id
+
+  - name: new_policy
+    type: belongs_to
+    entity: Policy
+    foreign_key: new_policy_id
+
+  - name: agent
+    type: belongs_to
+    entity: Agent
+    foreign_key: agent_id
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Awaiting renewal process
+    - name: offer_generated
+      description: Renewal offer created
+    - name: offer_sent
+      description: Offer sent to customer
+    - name: under_review
+      description: Customer reviewing
+    - name: accepted
+      description: Customer accepted
+    - name: declined
+      description: Customer declined
+    - name: lapsed
+      description: No response, lapsed
+    - name: cancelled
+      description: Cancelled
+    - name: completed
+      description: Renewal completed
+
+  transitions:
+    - from: pending
+      to: offer_generated
+      event: generate_offer
+
+    - from: offer_generated
+      to: offer_sent
+      event: send_offer
+
+    - from: offer_sent
+      to: under_review
+      event: customer_viewed
+
+    - from: [offer_sent, under_review]
+      to: accepted
+      event: accept
+
+    - from: [offer_sent, under_review]
+      to: declined
+      event: decline
+
+    - from: [offer_sent, under_review]
+      to: lapsed
+      event: timeout
+
+    - from: accepted
+      to: completed
+      event: payment_received
+
+business_rules:
+  - rule: BR-RNW-001
+    description: Renewal offer before expiry
+    validation: offer_sent_at < current_expiry_date - 30 days
+
+  - rule: BR-RNW-002
+    description: No claims bonus calculation
+    validation: ncb_percentage = lookup_ncb_table(no_claims_years)
+
+  - rule: BR-RNW-003
+    description: Auto-renewal if enabled and within limits
+    validation: IF auto_renew_enabled AND premium_change_percent <= 10 THEN auto_renewed = true
+
+events:
+  - name: renewal.offer_generated
+    payload: [renewal_id, policy_id, proposed_premium]
+
+  - name: renewal.offer_sent
+    payload: [renewal_id, sent_to, sent_via]
+
+  - name: renewal.accepted
+    payload: [renewal_id, accepted_at]
+
+  - name: renewal.declined
+    payload: [renewal_id, decline_reason]
+
+  - name: renewal.completed
+    payload: [renewal_id, new_policy_id, new_expiry_date]
+
+  - name: renewal.lapsed
+    payload: [renewal_id, lapse_date]
+
+api_endpoints:
+  - method: GET
+    path: /renewals
+    description: List renewals
+
+  - method: GET
+    path: /renewals/{id}
+    description: Get renewal details
+
+  - method: POST
+    path: /renewals/{id}/generate-offer
+    description: Generate renewal offer
+
+  - method: POST
+    path: /renewals/{id}/send-offer
+    description: Send offer to customer
+
+  - method: POST
+    path: /renewals/{id}/accept
+    description: Accept renewal
+
+  - method: POST
+    path: /renewals/{id}/decline
+    description: Decline renewal

@@ -1,0 +1,723 @@
+name: Delivery
+display_name: Delivery
+description: |
+  Core entity representing a last-mile delivery from hub to recipient.
+  Tracks the complete delivery lifecycle including scheduling, assignment,
+  execution, and completion with proof of delivery.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: deliveries
+  primary_key: id
+  indexes:
+    - columns: [delivery_id]
+      unique: true
+    - columns: [tracking_number]
+      unique: true
+    - columns: [status, scheduled_date]
+    - columns: [delivery_agent_id, status]
+    - columns: [zone_id, scheduled_date]
+    - columns: [recipient_id]
+    - columns: [order_id]
+
+attributes:
+  # Primary identifiers
+  - name: id
+    type: uuid
+    description: Internal unique identifier
+    required: true
+    generated: true
+
+  - name: delivery_id
+    type: string
+    description: Human-readable delivery ID
+    pattern: "DEL-[A-Z0-9]{8}"
+    example: "DEL-A1B2C3D4"
+    required: true
+    unique: true
+
+  - name: tracking_number
+    type: string
+    description: Customer-facing tracking number
+    length: 20
+    example: "TRK9876543210"
+    required: true
+    unique: true
+
+  # Source references
+  - name: order_id
+    type: uuid
+    description: Reference to source order
+    required: true
+
+  - name: shipment_id
+    type: uuid
+    description: Reference to shipment from warehouse
+    required: true
+
+  # Status
+  - name: status
+    type: enum
+    description: Current delivery status
+    values:
+      - created
+      - pending_assignment
+      - assigned
+      - out_for_delivery
+      - arrived
+      - delivered
+      - partially_delivered
+      - failed
+      - returned
+      - cancelled
+    default: created
+    required: true
+
+  - name: delivery_type
+    type: enum
+    description: Type of delivery service
+    values:
+      - standard
+      - express
+      - same_day
+      - scheduled
+      - instant
+    default: standard
+    required: true
+
+  - name: delivery_method
+    type: enum
+    description: Delivery destination type
+    values:
+      - doorstep
+      - locker
+      - pickup_point
+      - safe_place
+      - neighbor
+    default: doorstep
+
+  # Recipient information
+  - name: recipient_id
+    type: uuid
+    description: Reference to recipient profile
+
+  - name: recipient_name
+    type: string
+    description: Name of the recipient
+    max_length: 100
+    required: true
+
+  - name: recipient_phone
+    type: string
+    description: Recipient contact number
+    pattern: "^\\+?[0-9]{10,15}$"
+    required: true
+
+  - name: recipient_email
+    type: string
+    description: Recipient email address
+    format: email
+
+  - name: delivery_address
+    type: object
+    description: Full delivery address
+    required: true
+    properties:
+      address_line1:
+        type: string
+        required: true
+      address_line2:
+        type: string
+      city:
+        type: string
+        required: true
+      district:
+        type: string
+      state:
+        type: string
+      postal_code:
+        type: string
+        required: true
+      country:
+        type: string
+        default: "VN"
+      lat:
+        type: decimal
+        precision: 10
+        scale: 8
+      lng:
+        type: decimal
+        precision: 11
+        scale: 8
+      plus_code:
+        type: string
+
+  - name: delivery_instructions
+    type: text
+    description: Special delivery instructions from recipient
+    max_length: 500
+
+  - name: safe_place_authorized
+    type: boolean
+    description: Whether recipient authorized safe place delivery
+    default: false
+
+  - name: safe_place_location
+    type: string
+    description: Authorized safe place description
+    max_length: 200
+
+  # Scheduling
+  - name: scheduled_date
+    type: date
+    description: Scheduled delivery date
+    required: true
+
+  - name: scheduled_slot_id
+    type: uuid
+    description: Reference to selected delivery slot
+
+  - name: time_window_start
+    type: time
+    description: Start of delivery time window
+
+  - name: time_window_end
+    type: time
+    description: End of delivery time window
+
+  - name: promised_by
+    type: timestamp
+    description: SLA deadline for delivery
+    required: true
+
+  # Assignment
+  - name: delivery_agent_id
+    type: uuid
+    description: Assigned delivery agent
+
+  - name: zone_id
+    type: uuid
+    description: Delivery zone
+    required: true
+
+  - name: route_sequence
+    type: integer
+    description: Sequence in agent's route
+
+  - name: priority
+    type: enum
+    description: Delivery priority level
+    values:
+      - low
+      - normal
+      - high
+      - urgent
+    default: normal
+
+  # Timing
+  - name: dispatched_at
+    type: timestamp
+    description: When delivery was dispatched to agent
+
+  - name: pickup_at
+    type: timestamp
+    description: When parcel was picked from hub
+
+  - name: arrived_at
+    type: timestamp
+    description: When agent arrived at delivery location
+
+  - name: completed_at
+    type: timestamp
+    description: When delivery was completed
+
+  - name: estimated_arrival
+    type: timestamp
+    description: Current ETA at recipient location
+
+  - name: actual_delivery_time_minutes
+    type: integer
+    description: Total time from dispatch to completion
+
+  # Parcel information
+  - name: parcel_ids
+    type: array
+    description: List of parcel IDs in this delivery
+    items:
+      type: uuid
+
+  - name: package_count
+    type: integer
+    description: Number of packages
+    minimum: 1
+    default: 1
+
+  - name: total_weight_kg
+    type: decimal
+    description: Total weight of all parcels
+    precision: 8
+    scale: 3
+
+  - name: total_volume_cbm
+    type: decimal
+    description: Total volume of all parcels
+    precision: 8
+    scale: 4
+
+  # Special handling
+  - name: requires_signature
+    type: boolean
+    description: Signature required for delivery
+    default: false
+
+  - name: requires_id_verification
+    type: boolean
+    description: ID verification required
+    default: false
+
+  - name: requires_age_verification
+    type: boolean
+    description: Age verification required
+    default: false
+
+  - name: minimum_age
+    type: integer
+    description: Minimum age for age-restricted items
+    minimum: 18
+
+  - name: is_fragile
+    type: boolean
+    description: Contains fragile items
+    default: false
+
+  - name: is_temperature_sensitive
+    type: boolean
+    description: Requires temperature control
+    default: false
+
+  # COD (Cash on Delivery)
+  - name: is_cod
+    type: boolean
+    description: Cash on delivery required
+    default: false
+
+  - name: cod_amount
+    type: decimal
+    description: Amount to collect on delivery
+    precision: 12
+    scale: 2
+
+  - name: cod_currency
+    type: string
+    description: COD currency
+    default: "VND"
+
+  - name: cod_collected
+    type: boolean
+    description: Whether COD was collected
+    default: false
+
+  - name: cod_collected_at
+    type: timestamp
+    description: When COD was collected
+
+  - name: cod_payment_method
+    type: enum
+    description: How COD was paid
+    values:
+      - cash
+      - mobile_payment
+      - card
+
+  # Attempts
+  - name: attempt_count
+    type: integer
+    description: Number of delivery attempts made
+    default: 0
+
+  - name: max_attempts
+    type: integer
+    description: Maximum allowed attempts
+    default: 3
+
+  - name: last_attempt_at
+    type: timestamp
+    description: Timestamp of last attempt
+
+  - name: next_attempt_date
+    type: date
+    description: Scheduled date for next attempt
+
+  # Proof of delivery
+  - name: pod_id
+    type: uuid
+    description: Reference to proof of delivery record
+
+  - name: delivery_photo_url
+    type: string
+    description: URL of delivery photo
+    format: uri
+
+  - name: recipient_signature_url
+    type: string
+    description: URL of recipient signature image
+    format: uri
+
+  # Failure information
+  - name: failure_reason
+    type: enum
+    description: Reason for failed delivery
+    values:
+      - not_home
+      - wrong_address
+      - refused
+      - access_denied
+      - damaged
+      - recipient_unavailable
+      - cod_not_ready
+      - address_incomplete
+      - business_closed
+      - weather
+      - other
+
+  - name: failure_notes
+    type: text
+    description: Additional notes about failure
+    max_length: 500
+
+  # Fees and costs
+  - name: delivery_fee
+    type: decimal
+    description: Delivery fee charged
+    precision: 10
+    scale: 2
+
+  - name: slot_fee
+    type: decimal
+    description: Premium slot fee
+    precision: 10
+    scale: 2
+
+  - name: total_fee
+    type: decimal
+    description: Total delivery charges
+    precision: 10
+    scale: 2
+
+  # Metadata
+  - name: source_channel
+    type: enum
+    description: Order source channel
+    values:
+      - web
+      - mobile_app
+      - api
+      - marketplace
+
+  - name: notes
+    type: text
+    description: Internal notes
+    max_length: 1000
+
+  - name: tags
+    type: array
+    description: Custom tags for categorization
+    items:
+      type: string
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    description: Record creation timestamp
+    required: true
+    auto_generate: true
+
+  - name: created_by
+    type: uuid
+    description: User who created the record
+
+  - name: updated_at
+    type: timestamp
+    description: Last update timestamp
+    auto_update: true
+
+  - name: updated_by
+    type: uuid
+    description: User who last updated
+
+relationships:
+  - name: order
+    type: belongs_to
+    entity: Order
+    foreign_key: order_id
+    description: Source order
+
+  - name: shipment
+    type: belongs_to
+    entity: Shipment
+    foreign_key: shipment_id
+    description: Shipment from warehouse
+
+  - name: recipient
+    type: belongs_to
+    entity: Recipient
+    foreign_key: recipient_id
+    description: Recipient profile
+
+  - name: delivery_agent
+    type: belongs_to
+    entity: DeliveryAgent
+    foreign_key: delivery_agent_id
+    description: Assigned agent
+
+  - name: zone
+    type: belongs_to
+    entity: DeliveryZone
+    foreign_key: zone_id
+    description: Delivery zone
+
+  - name: slot
+    type: belongs_to
+    entity: DeliverySlot
+    foreign_key: scheduled_slot_id
+    description: Selected time slot
+
+  - name: parcels
+    type: has_many
+    entity: Parcel
+    foreign_key: delivery_id
+    description: Parcels in delivery
+
+  - name: attempts
+    type: has_many
+    entity: DeliveryAttempt
+    foreign_key: delivery_id
+    description: Delivery attempts
+
+  - name: pod
+    type: has_one
+    entity: ProofOfDelivery
+    foreign_key: delivery_id
+    description: Proof of delivery
+
+  - name: exceptions
+    type: has_many
+    entity: DeliveryException
+    foreign_key: delivery_id
+    description: Delivery exceptions
+
+  - name: notifications
+    type: has_many
+    entity: DeliveryNotification
+    foreign_key: delivery_id
+    description: Notifications sent
+
+state_machine:
+  initial: created
+  states:
+    - name: created
+      description: Delivery record created
+
+    - name: pending_assignment
+      description: Waiting for agent assignment
+
+    - name: assigned
+      description: Agent assigned, awaiting pickup
+
+    - name: out_for_delivery
+      description: Agent has parcel and is en route
+
+    - name: arrived
+      description: Agent arrived at delivery location
+
+    - name: delivered
+      description: Successfully delivered
+
+    - name: partially_delivered
+      description: Some items delivered, others failed
+
+    - name: failed
+      description: Delivery attempt failed
+
+    - name: returned
+      description: Returned to sender/hub
+
+    - name: cancelled
+      description: Delivery cancelled
+
+  transitions:
+    - from: created
+      to: pending_assignment
+      event: submit_for_assignment
+      description: Submit for agent assignment
+
+    - from: created
+      to: cancelled
+      event: cancel
+      description: Cancel before assignment
+
+    - from: pending_assignment
+      to: assigned
+      event: assign_agent
+      description: Agent assigned
+      actions:
+        - notify_agent
+        - update_zone_workload
+
+    - from: assigned
+      to: out_for_delivery
+      event: dispatch
+      description: Agent picked up parcel
+      actions:
+        - record_pickup_time
+        - start_tracking
+        - notify_recipient
+
+    - from: assigned
+      to: pending_assignment
+      event: unassign
+      description: Remove assignment
+      conditions:
+        - not_picked_up
+
+    - from: out_for_delivery
+      to: arrived
+      event: arrive
+      description: Agent arrived at location
+      actions:
+        - record_arrival_time
+        - notify_recipient_arriving
+
+    - from: arrived
+      to: delivered
+      event: complete
+      description: Delivery completed
+      conditions:
+        - pod_captured
+        - cod_collected_if_required
+      actions:
+        - record_completion
+        - notify_recipient_delivered
+        - update_agent_stats
+
+    - from: arrived
+      to: failed
+      event: fail
+      description: Delivery attempt failed
+      actions:
+        - record_failure
+        - create_attempt_record
+        - schedule_reattempt_if_allowed
+
+    - from: failed
+      to: assigned
+      event: reassign
+      description: Reassign for another attempt
+      conditions:
+        - attempts_remaining
+
+    - from: failed
+      to: returned
+      event: return
+      description: Return to hub
+      conditions:
+        - max_attempts_reached
+
+    - from: out_for_delivery
+      to: failed
+      event: fail
+      description: Failed during delivery
+
+    - from: [assigned, out_for_delivery]
+      to: cancelled
+      event: cancel
+      description: Cancel delivery
+      conditions:
+        - not_delivered
+
+business_rules:
+  - rule: BR-DEL-001
+    description: Delivery must have valid address
+    validation: delivery_address.lat IS NOT NULL AND delivery_address.lng IS NOT NULL
+
+  - rule: BR-DEL-002
+    description: COD amount must match order total if COD
+    validation: is_cod = false OR cod_amount > 0
+
+  - rule: BR-DEL-003
+    description: Scheduled date must be in future
+    validation: scheduled_date >= CURRENT_DATE
+
+  - rule: BR-DEL-004
+    description: Time window must be within zone availability
+    validation: time_window_start >= zone.available_from AND time_window_end <= zone.available_until
+
+  - rule: BR-DEL-005
+    description: Agent must be assigned to delivery zone
+    validation: zone_id IN delivery_agent.assigned_zones
+
+events:
+  - name: delivery.created
+    description: New delivery created
+    payload: [delivery_id, order_id, recipient_id]
+
+  - name: delivery.assigned
+    description: Agent assigned to delivery
+    payload: [delivery_id, delivery_agent_id]
+
+  - name: delivery.dispatched
+    description: Delivery dispatched
+    payload: [delivery_id, estimated_arrival]
+
+  - name: delivery.arrived
+    description: Agent arrived at location
+    payload: [delivery_id, arrived_at]
+
+  - name: delivery.completed
+    description: Delivery completed successfully
+    payload: [delivery_id, completed_at, pod_id]
+
+  - name: delivery.failed
+    description: Delivery attempt failed
+    payload: [delivery_id, failure_reason, attempt_count]
+
+  - name: delivery.returned
+    description: Delivery returned to hub
+    payload: [delivery_id, return_reason]
+
+api_endpoints:
+  - method: GET
+    path: /deliveries
+    description: List deliveries with filters
+  - method: GET
+    path: /deliveries/{delivery_id}
+    description: Get delivery details
+  - method: POST
+    path: /deliveries
+    description: Create new delivery
+  - method: PATCH
+    path: /deliveries/{delivery_id}
+    description: Update delivery
+  - method: POST
+    path: /deliveries/{delivery_id}/assign
+    description: Assign agent
+  - method: POST
+    path: /deliveries/{delivery_id}/dispatch
+    description: Mark as dispatched
+  - method: POST
+    path: /deliveries/{delivery_id}/arrive
+    description: Mark as arrived
+  - method: POST
+    path: /deliveries/{delivery_id}/complete
+    description: Complete delivery
+  - method: POST
+    path: /deliveries/{delivery_id}/fail
+    description: Mark as failed
+  - method: GET
+    path: /deliveries/{tracking_number}/track
+    description: Public tracking endpoint

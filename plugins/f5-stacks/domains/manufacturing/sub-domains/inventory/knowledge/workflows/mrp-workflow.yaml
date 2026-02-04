@@ -1,0 +1,486 @@
+name: mrp-workflow
+display_name: MRP (Material Requirements Planning) Workflow
+display_name_vi: Quy trình hoạch định nhu cầu vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Material Requirements Planning workflow for calculating material needs
+  and generating planned orders. Supports both regenerative and net change
+  MRP with exception handling and planner review.
+
+workflow_type: batch_process
+triggers:
+  - Scheduled MRP run (daily/weekly)
+  - Demand change (sales order, forecast)
+  - Supply change (PO, production order)
+  - Inventory adjustment
+  - Manual MRP request
+
+participants:
+  - role: mrp_system
+    description: MRP calculation engine
+  - role: planner
+    description: Material/production planner
+  - role: buyer
+    description: Procurement specialist
+  - role: scheduler
+    description: Production scheduler
+
+stages:
+  # ============================================
+  # STAGE 1: PREPARATION
+  # ============================================
+  - id: preparation
+    name: MRP Preparation
+    name_vi: Chuẩn bị MRP
+    sequence: 1
+    description: Prepare data for MRP calculation
+
+    steps:
+      - id: determine_scope
+        name: Determine MRP Scope
+        actor: mrp_system
+        description: Define materials and plants for MRP run
+        run_types:
+          regenerative:
+            description: Full recalculation for all materials
+            frequency: Weekly
+            scope: All MRP-planned materials
+          net_change:
+            description: Process only changed items
+            frequency: Daily
+            scope: Materials with changes since last run
+          single_item:
+            description: Run for specific material
+            frequency: On-demand
+            scope: Selected material and dependents
+        parameters:
+          - Planning horizon (weeks)
+          - Processing key (NETCH, NEUPL)
+          - Plant selection
+          - MRP controller selection
+        outputs:
+          - MRP run scope
+
+      - id: data_validation
+        name: Data Validation
+        actor: mrp_system
+        description: Validate master data integrity
+        validations:
+          material_master:
+            - MRP type valid
+            - Lead times defined
+            - Lot sizing parameters set
+          bom:
+            - Active BOM exists (for make items)
+            - Components valid
+            - Quantities positive
+          routing:
+            - Valid routing (if required)
+            - Work centers assigned
+          vendor_master:
+            - Default vendor (for buy items)
+            - Lead times defined
+        error_handling:
+          critical_error: Stop MRP, notify planner
+          warning: Continue with warning log
+        outputs:
+          - Validation report
+          - Error/warning list
+
+      - id: freeze_data
+        name: Freeze Planning Data
+        actor: mrp_system
+        description: Snapshot current data for consistent run
+        data_frozen:
+          - Inventory levels
+          - Open orders (PO, production)
+          - Demand (sales, forecast)
+          - Planning parameters
+        outputs:
+          - Data snapshot timestamp
+
+  # ============================================
+  # STAGE 2: DEMAND CALCULATION
+  # ============================================
+  - id: demand_calculation
+    name: Demand Calculation
+    name_vi: Tính toán nhu cầu
+    sequence: 2
+    description: Calculate gross requirements
+
+    steps:
+      - id: collect_independent_demand
+        name: Collect Independent Demand
+        actor: mrp_system
+        description: Gather top-level requirements
+        sources:
+          - Sales orders (confirmed)
+          - Sales forecasts
+          - Safety stock requirements
+          - Manual requirements
+          - Inter-plant transfers
+        time_phasing:
+          - Bucket demands by planning period
+          - Consider delivery lead time
+        outputs:
+          - Independent demand by material/date
+
+      - id: explode_bom
+        name: BOM Explosion
+        actor: mrp_system
+        description: Calculate dependent demand from BOM
+        process:
+          - Start from top level (Level 0)
+          - For each parent requirement:
+            - Explode BOM
+            - Calculate component quantities
+            - Apply scrap percentages
+            - Time-phase by lead time offset
+          - Continue to lowest BOM level
+        formula: |
+          Component_Qty = Parent_Qty × BOM_Qty × (1 + Scrap_%)
+        outputs:
+          - Dependent demand by level/material/date
+
+      - id: calculate_gross_requirements
+        name: Calculate Gross Requirements
+        actor: mrp_system
+        description: Sum all requirements by date
+        calculation: |
+          Gross_Req = Independent_Demand + Dependent_Demand
+        time_buckets:
+          - Daily (near term)
+          - Weekly (mid term)
+          - Monthly (long term)
+        outputs:
+          - Gross requirements table
+
+  # ============================================
+  # STAGE 3: SUPPLY CALCULATION
+  # ============================================
+  - id: supply_calculation
+    name: Supply Calculation
+    name_vi: Tính toán nguồn cung
+    sequence: 3
+    description: Calculate available and planned supply
+
+    steps:
+      - id: collect_supply
+        name: Collect Existing Supply
+        actor: mrp_system
+        description: Gather existing supply elements
+        supply_sources:
+          - On-hand inventory
+          - Scheduled receipts (PO, production orders)
+          - Planned orders (from previous run)
+          - In-transit stock
+        status_filter:
+          include: Open, released, in-process
+          exclude: Cancelled, closed
+        outputs:
+          - Supply elements by date
+
+      - id: calculate_net_requirements
+        name: Calculate Net Requirements
+        actor: mrp_system
+        description: Determine net requirements
+        formula: |
+          Net_Req = Gross_Req
+                   - Available_Inventory
+                   - Scheduled_Receipts
+                   + Safety_Stock
+
+          IF Net_Req > 0 THEN
+            Create planned order
+        period_by_period:
+          - Process each time bucket
+          - Carry forward available inventory
+        outputs:
+          - Net requirements table
+
+      - id: create_planned_orders
+        name: Create Planned Orders
+        actor: mrp_system
+        description: Generate planned orders for net requirements
+        lot_sizing:
+          fixed: Order fixed lot size
+          lot_for_lot: Order exact requirement
+          eoq: Order economic quantity
+          period_lot: Combine period requirements
+        timing:
+          order_date: Due_Date - Lead_Time
+        classification:
+          planned_purchase: Procurement type = external
+          planned_production: Procurement type = in-house
+        outputs:
+          - Planned orders
+
+  # ============================================
+  # STAGE 4: EXCEPTION HANDLING
+  # ============================================
+  - id: exception_handling
+    name: Exception Processing
+    name_vi: Xử lý ngoại lệ
+    sequence: 4
+    description: Identify and process MRP exceptions
+
+    steps:
+      - id: generate_exceptions
+        name: Generate Exception Messages
+        actor: mrp_system
+        description: Identify planning exceptions
+        exception_types:
+          expedite:
+            condition: Required < Scheduled date
+            message: "Reschedule in: {days} days"
+            priority: high
+          defer:
+            condition: Required > Scheduled date
+            message: "Reschedule out: {days} days"
+            priority: medium
+          cancel:
+            condition: No longer required
+            message: "Consider cancellation"
+            priority: low
+          past_due:
+            condition: Required date in past
+            message: "Past due requirement"
+            priority: critical
+          below_safety:
+            condition: Projected stock < safety stock
+            message: "Below safety stock"
+            priority: high
+          no_supply:
+            condition: Cannot meet requirement
+            message: "No supply possible"
+            priority: critical
+        outputs:
+          - Exception messages list
+
+      - id: prioritize_exceptions
+        name: Prioritize Exceptions
+        actor: mrp_system
+        description: Rank exceptions for review
+        priority_factors:
+          - Severity (critical > high > medium > low)
+          - Value impact
+          - Customer priority
+          - Production impact
+        grouping:
+          - By MRP controller
+          - By material group
+          - By exception type
+        outputs:
+          - Prioritized exception list
+
+  # ============================================
+  # STAGE 5: PLANNER REVIEW
+  # ============================================
+  - id: planner_review
+    name: Planner Review
+    name_vi: Xem xét của người lập kế hoạch
+    sequence: 5
+    description: Planner reviews and acts on MRP results
+
+    steps:
+      - id: review_exceptions
+        name: Review Exceptions
+        actor: planner
+        description: Analyze and resolve exceptions
+        actions:
+          expedite:
+            - Contact supplier for earlier delivery
+            - Authorize overtime
+            - Find alternate source
+          defer:
+            - Request supplier delay
+            - Adjust production schedule
+          cancel:
+            - Confirm no longer needed
+            - Cancel order if appropriate
+          no_supply:
+            - Find alternate material
+            - Escalate to management
+        documentation:
+          - Resolution action
+          - Revised dates
+          - Notes/justification
+        outputs:
+          - Resolved exceptions
+
+      - id: review_planned_orders
+        name: Review Planned Orders
+        actor: planner
+        description: Review and adjust planned orders
+        review_criteria:
+          - Quantity appropriate
+          - Timing correct
+          - Source valid
+        adjustments:
+          - Modify quantity
+          - Change date
+          - Change source
+          - Combine/split orders
+          - Delete unnecessary
+        outputs:
+          - Reviewed planned orders
+
+      - id: firm_planned_orders
+        name: Firm Planned Orders
+        actor: planner
+        description: Convert planned to firm planned orders
+        firming_criteria:
+          - Within firm horizon
+          - Planner confirmed
+          - No exceptions
+        firm_effect:
+          - Not regenerated by MRP
+          - Ready for conversion
+        outputs:
+          - Firm planned orders
+
+  # ============================================
+  # STAGE 6: ORDER RELEASE
+  # ============================================
+  - id: order_release
+    name: Order Release
+    name_vi: Phát hành đơn hàng
+    sequence: 6
+    description: Convert planned orders to actual orders
+
+    steps:
+      - id: convert_to_requisition
+        name: Convert to Purchase Requisition
+        actor: planner
+        description: Convert planned purchase to requisition
+        conditions:
+          - Order type = planned purchase
+          - Within release horizon
+          - Firmed by planner
+        created_document:
+          - Purchase requisition
+          - Links to planned order
+        approval_routing:
+          - Per standard requisition workflow
+        outputs:
+          - Purchase requisitions
+
+      - id: convert_to_production
+        name: Convert to Production Order
+        actor: scheduler
+        description: Convert planned production to order
+        conditions:
+          - Order type = planned production
+          - Within release horizon
+          - Firmed by planner
+        created_document:
+          - Production order
+          - Material reservations
+          - Capacity reservations
+        outputs:
+          - Production orders
+
+      - id: generate_transfer_orders
+        name: Generate Transfer Orders
+        actor: planner
+        description: Create stock transfer orders
+        conditions:
+          - Replenishment type = transfer
+          - Source has availability
+        created_document:
+          - Stock transfer order
+        outputs:
+          - Transfer orders
+
+  # ============================================
+  # STAGE 7: MRP COMPLETION
+  # ============================================
+  - id: completion
+    name: MRP Run Completion
+    name_vi: Hoàn tất MRP
+    sequence: 7
+    description: Complete and document MRP run
+
+    steps:
+      - id: generate_reports
+        name: Generate Reports
+        actor: mrp_system
+        description: Create MRP output reports
+        reports:
+          - MRP exception report
+          - Planned order report
+          - Stock/requirements list
+          - Order recommendation report
+          - Shortage report
+        distribution:
+          - Planners
+          - Buyers
+          - Schedulers
+        outputs:
+          - MRP reports
+
+      - id: update_planning_status
+        name: Update Planning Status
+        actor: mrp_system
+        description: Record MRP run completion
+        updates:
+          - Last MRP run date/time
+          - Run statistics
+          - Exception counts
+        outputs:
+          - Updated planning status
+
+      - id: schedule_next_run
+        name: Schedule Next Run
+        actor: mrp_system
+        description: Set up next MRP run
+        scheduling:
+          regenerative: Weekly (Sunday night)
+          net_change: Daily (2:00 AM)
+        outputs:
+          - Scheduled next run
+
+process_metrics:
+  - name: MRP Run Time
+    formula: AVG(End_Time - Start_Time)
+    target: "< 2 hours (regenerative)"
+
+  - name: Exception Resolution Rate
+    formula: (Resolved_Exceptions / Total_Exceptions) × 100
+    target: "> 90% within 24 hours"
+
+  - name: Plan Accuracy
+    formula: (Executed_as_Planned / Total_Planned) × 100
+    target: "> 85%"
+
+  - name: Stock-out Rate
+    formula: (Stock_Out_Events / Total_SKUs) × 100
+    target: "< 2%"
+
+scheduling:
+  regenerative_mrp:
+    frequency: Weekly
+    day: Sunday
+    time: "22:00"
+    duration: ~4 hours
+  net_change_mrp:
+    frequency: Daily
+    time: "02:00"
+    duration: ~1 hour
+
+parameters:
+  planning_horizon: 26 weeks
+  firm_horizon: 4 weeks
+  release_horizon: 2 weeks
+  exception_threshold_days: 3
+
+integrations:
+  - system: ERP
+    integration_points: [demand, supply, orders]
+  - system: Demand Planning
+    integration_points: [forecasts]
+  - system: Production Scheduling
+    integration_points: [capacity, production_orders]

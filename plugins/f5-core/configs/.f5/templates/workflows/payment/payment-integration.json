@@ -1,0 +1,294 @@
+{
+  "id": "f5-payment-integration",
+  "name": "Payment Gateway Integration Workflow",
+  "description": "Payment processing with multiple gateways, refunds, and reconciliation",
+  "version": "1.0.0",
+  "f5Metadata": {
+    "domain": "payment",
+    "category": "integration",
+    "complexity": "complex",
+    "estimatedDuration": "25-35 minutes",
+    "requiredSkills": ["f5-backend", "f5-security", "f5-test"],
+    "mcpServers": ["sequential-thinking", "github", "serena"],
+    "qualityGates": ["D3", "D4", "G2", "G2.5", "G3"],
+    "argumentHint": "Implement payment gateway integration with Stripe/PayPal for {{projectName}}"
+  },
+  "nodes": [
+    {
+      "id": "start-1",
+      "type": "start",
+      "position": { "x": 300, "y": 50 },
+      "data": {
+        "label": "Start Payment"
+      }
+    },
+    {
+      "id": "switch-gateway",
+      "type": "switch",
+      "position": { "x": 300, "y": 150 },
+      "data": {
+        "label": "Select Payment Gateway",
+        "description": "Route to appropriate payment gateway",
+        "evaluationTarget": "Selected payment method",
+        "cases": [
+          { "id": "case-stripe", "label": "Stripe", "condition": "Card payment via Stripe" },
+          { "id": "case-paypal", "label": "PayPal", "condition": "PayPal payment" },
+          { "id": "case-bank", "label": "Bank Transfer", "condition": "Direct bank transfer" }
+        ]
+      }
+    },
+    {
+      "id": "subagent-stripe",
+      "type": "subAgent",
+      "position": { "x": 100, "y": 320 },
+      "data": {
+        "label": "Process Stripe Payment",
+        "description": "Process payment through Stripe",
+        "prompt": "Process Stripe payment:\n1. Create PaymentIntent with amount and currency\n2. Attach payment method\n3. Confirm payment\n4. Handle 3D Secure authentication if required\n5. Store charge ID and receipt URL\n6. Handle webhook for async confirmation\n7. Return payment result with receipt",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "requires_action", "failed"]
+      }
+    },
+    {
+      "id": "subagent-paypal",
+      "type": "subAgent",
+      "position": { "x": 300, "y": 320 },
+      "data": {
+        "label": "Process PayPal Payment",
+        "description": "Process payment through PayPal",
+        "prompt": "Process PayPal payment:\n1. Create PayPal order\n2. Generate approval URL\n3. Redirect user for approval\n4. Capture payment after approval\n5. Store PayPal order ID\n6. Handle IPN notifications\n7. Return payment result",
+        "agentType": "backend-architect",
+        "outputPorts": ["success", "pending", "failed"]
+      }
+    },
+    {
+      "id": "subagent-bank",
+      "type": "subAgent",
+      "position": { "x": 500, "y": 320 },
+      "data": {
+        "label": "Process Bank Transfer",
+        "description": "Generate bank transfer instructions",
+        "prompt": "Generate bank transfer:\n1. Generate unique payment reference\n2. Calculate transfer amount with fees\n3. Return bank details and reference\n4. Set payment status to 'awaiting_transfer'\n5. Schedule payment confirmation check\n6. Return transfer instructions",
+        "agentType": "backend-architect",
+        "outputPorts": ["instructions_sent", "error"]
+      }
+    },
+    {
+      "id": "askuser-3ds",
+      "type": "askUserQuestion",
+      "position": { "x": 100, "y": 480 },
+      "data": {
+        "label": "3D Secure Authentication",
+        "description": "Handle 3D Secure authentication flow",
+        "question": "3D Secure verification required. Please complete authentication.",
+        "selectionMode": "predefined",
+        "options": [
+          {
+            "id": "complete",
+            "label": "Authentication Complete",
+            "description": "User completed 3DS verification"
+          },
+          {
+            "id": "cancel",
+            "label": "Cancel Payment",
+            "description": "User cancelled 3DS verification"
+          }
+        ],
+        "multiSelect": false
+      }
+    },
+    {
+      "id": "subagent-confirm-3ds",
+      "type": "subAgent",
+      "position": { "x": 100, "y": 640 },
+      "data": {
+        "label": "Confirm 3DS Payment",
+        "description": "Confirm payment after 3D Secure",
+        "prompt": "Confirm 3DS payment:\n1. Retrieve PaymentIntent\n2. Check authentication status\n3. Confirm final payment\n4. Update payment record\n5. Return confirmation result",
+        "agentType": "backend-architect",
+        "outputPorts": ["confirmed", "failed"]
+      }
+    },
+    {
+      "id": "mcp-record-transaction",
+      "type": "mcp",
+      "position": { "x": 300, "y": 640 },
+      "data": {
+        "label": "Record Transaction",
+        "description": "Record payment transaction for reconciliation",
+        "serverName": "serena",
+        "toolName": "write_memory",
+        "mode": "structured",
+        "parameters": {
+          "memory_file_name": "payment-transactions",
+          "content": "Transaction recorded with gateway reference, amount, status"
+        },
+        "outputPorts": ["recorded"]
+      }
+    },
+    {
+      "id": "qualitygate-security",
+      "type": "qualityGate",
+      "position": { "x": 300, "y": 800 },
+      "data": {
+        "label": "G2.5: Security Review",
+        "description": "Security review for payment implementation",
+        "gateId": "G2.5",
+        "gateName": "Security Review",
+        "checklistItems": [
+          "PCI DSS compliance verified",
+          "Card data never stored locally",
+          "All API calls use HTTPS",
+          "Webhook signatures verified",
+          "Idempotency keys implemented"
+        ],
+        "outputPorts": ["passed", "failed"]
+      }
+    },
+    {
+      "id": "prompt-success",
+      "type": "prompt",
+      "position": { "x": 300, "y": 930 },
+      "data": {
+        "label": "Return Payment Success",
+        "description": "Return successful payment response",
+        "prompt": "Return payment success:\n- HTTP 200 OK\n- Include transaction ID\n- Include receipt URL\n- Include payment method last 4 digits\n- Trigger order confirmation flow",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "prompt-failure",
+      "type": "prompt",
+      "position": { "x": 500, "y": 640 },
+      "data": {
+        "label": "Return Payment Failure",
+        "description": "Return payment failure response",
+        "prompt": "Return payment failure:\n- HTTP 402 Payment Required\n- Include error code (card_declined, insufficient_funds, etc.)\n- Suggest retry with different payment method\n- Log failure for monitoring",
+        "outputPorts": ["done"]
+      }
+    },
+    {
+      "id": "end-success",
+      "type": "end",
+      "position": { "x": 300, "y": 1060 },
+      "data": {
+        "label": "Payment Complete"
+      }
+    },
+    {
+      "id": "end-failed",
+      "type": "end",
+      "position": { "x": 500, "y": 770 },
+      "data": {
+        "label": "Payment Failed"
+      }
+    }
+  ],
+  "connections": [
+    {
+      "id": "conn-1",
+      "source": "start-1",
+      "target": "switch-gateway",
+      "sourceHandle": "output",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-2",
+      "source": "switch-gateway",
+      "target": "subagent-stripe",
+      "sourceHandle": "case-stripe",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-3",
+      "source": "switch-gateway",
+      "target": "subagent-paypal",
+      "sourceHandle": "case-paypal",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-4",
+      "source": "switch-gateway",
+      "target": "subagent-bank",
+      "sourceHandle": "case-bank",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-5",
+      "source": "subagent-stripe",
+      "target": "mcp-record-transaction",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-6",
+      "source": "subagent-stripe",
+      "target": "askuser-3ds",
+      "sourceHandle": "output-requires_action",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-7",
+      "source": "subagent-stripe",
+      "target": "prompt-failure",
+      "sourceHandle": "output-failed",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-8",
+      "source": "askuser-3ds",
+      "target": "subagent-confirm-3ds",
+      "sourceHandle": "output-complete",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-9",
+      "source": "subagent-confirm-3ds",
+      "target": "mcp-record-transaction",
+      "sourceHandle": "output-confirmed",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-10",
+      "source": "subagent-paypal",
+      "target": "mcp-record-transaction",
+      "sourceHandle": "output-success",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-11",
+      "source": "subagent-bank",
+      "target": "mcp-record-transaction",
+      "sourceHandle": "output-instructions_sent",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-12",
+      "source": "mcp-record-transaction",
+      "target": "qualitygate-security",
+      "sourceHandle": "output-recorded",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-13",
+      "source": "qualitygate-security",
+      "target": "prompt-success",
+      "sourceHandle": "branch-0",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-14",
+      "source": "prompt-success",
+      "target": "end-success",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    },
+    {
+      "id": "conn-15",
+      "source": "prompt-failure",
+      "target": "end-failed",
+      "sourceHandle": "output-done",
+      "targetHandle": "input"
+    }
+  ]
+}

@@ -1,0 +1,350 @@
+# Inquiry Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# Property inquiries and leads
+
+entity:
+  id: inquiry
+  name: Inquiry
+  name_ja: お問い合わせ
+  name_vi: Yêu cầu thông tin
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Inquiries from property seekers to agents/owners about listings.
+    Tracks lead qualification, follow-up activities, and conversion.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: inquiry_id
+      type: string
+      format: "INQ-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    # References
+    - name: listing_id
+      type: uuid
+      foreign_key: listing.id
+      required: true
+      indexed: true
+
+    - name: property_id
+      type: uuid
+      foreign_key: property.id
+      required: true
+      indexed: true
+
+    - name: agent_id
+      type: uuid
+      foreign_key: agent.id
+      indexed: true
+      description: Agent handling the inquiry
+
+    - name: agency_id
+      type: uuid
+      foreign_key: agency.id
+      indexed: true
+
+    # Seeker Info
+    - name: seeker_id
+      type: uuid
+      foreign_key: user.id
+      indexed: true
+      description: Registered user (if any)
+
+    - name: seeker_name
+      type: string
+      max_length: 200
+      required: true
+
+    - name: seeker_phone
+      type: string
+      max_length: 20
+      required: true
+
+    - name: seeker_email
+      type: string
+      max_length: 255
+
+    - name: seeker_preferred_contact
+      type: enum
+      values: [phone, email, whatsapp, zalo]
+      default: phone
+
+    # Inquiry Details
+    - name: inquiry_type
+      type: enum
+      values: [general, schedule_viewing, price_inquiry, availability, offer, other]
+      required: true
+      indexed: true
+
+    - name: message
+      type: text
+      required: true
+      description: Initial inquiry message
+
+    - name: questions
+      type: array
+      items: string
+      description: Specific questions asked
+
+    # Status
+    - name: status
+      type: enum
+      values: [new, contacted, qualified, viewing_scheduled, negotiating, converted, lost, spam]
+      default: new
+      indexed: true
+
+    - name: priority
+      type: enum
+      values: [low, medium, high, urgent]
+      default: medium
+      indexed: true
+
+    # Lead Qualification
+    - name: lead_score
+      type: integer
+      description: 0-100 qualification score
+      indexed: true
+
+    - name: lead_temperature
+      type: enum
+      values: [cold, warm, hot]
+      indexed: true
+
+    - name: budget_range
+      type: jsonb
+      schema:
+        min: number
+        max: number
+        currency: string
+
+    - name: purchase_timeline
+      type: enum
+      values: [immediate, within_1_month, within_3_months, within_6_months, within_1_year, just_browsing]
+
+    - name: financing_status
+      type: enum
+      values: [cash_buyer, pre_approved, needs_financing, unknown]
+
+    - name: is_first_time_buyer
+      type: boolean
+
+    # Response Tracking
+    - name: first_response_at
+      type: timestamp
+
+    - name: response_time_minutes
+      type: integer
+      description: Time to first response
+
+    - name: responded_by
+      type: uuid
+      foreign_key: user.id
+
+    # Follow-up
+    - name: follow_up_count
+      type: integer
+      default: 0
+
+    - name: last_follow_up_at
+      type: timestamp
+
+    - name: next_follow_up_at
+      type: timestamp
+      indexed: true
+
+    - name: follow_up_notes
+      type: text
+
+    # Conversion
+    - name: converted_at
+      type: timestamp
+
+    - name: conversion_type
+      type: enum
+      values: [viewing, offer, transaction]
+
+    - name: lost_reason
+      type: enum
+      values: [budget, location, timing, chose_competitor, unresponsive, spam, other]
+
+    - name: lost_notes
+      type: text
+
+    # Communication Log
+    - name: communications
+      type: jsonb
+      description: Log of all communications
+      schema:
+        - type: string  # call, email, sms, chat
+          direction: string  # inbound, outbound
+          content: string
+          timestamp: timestamp
+          by: uuid
+
+    # Source Tracking
+    - name: source
+      type: enum
+      values: [website, mobile_app, phone, email, walk_in, referral, social_media, mls, other]
+      indexed: true
+
+    - name: source_details
+      type: string
+      max_length: 200
+      description: Specific campaign or referrer
+
+    - name: utm_source
+      type: string
+      max_length: 100
+
+    - name: utm_medium
+      type: string
+      max_length: 100
+
+    - name: utm_campaign
+      type: string
+      max_length: 100
+
+    # Assignment
+    - name: assigned_to
+      type: uuid
+      foreign_key: user.id
+      indexed: true
+
+    - name: assigned_at
+      type: timestamp
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      auto: true
+      indexed: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: is_hot_lead
+      formula: "lead_temperature = 'hot' OR (lead_score >= 80 AND purchase_timeline IN ('immediate', 'within_1_month'))"
+
+    - name: needs_follow_up
+      formula: "status IN ('new', 'contacted', 'qualified') AND (next_follow_up_at IS NULL OR next_follow_up_at <= NOW())"
+
+    - name: is_stale
+      formula: "status = 'new' AND created_at < NOW() - INTERVAL '24 hours'"
+
+  relationships:
+    - name: listing
+      type: belongs_to
+      entity: listing
+      foreign_key: listing_id
+
+    - name: property
+      type: belongs_to
+      entity: property
+      foreign_key: property_id
+
+    - name: agent
+      type: belongs_to
+      entity: agent
+      foreign_key: agent_id
+
+    - name: seeker
+      type: belongs_to
+      entity: user
+      foreign_key: seeker_id
+
+    - name: viewings
+      type: has_many
+      entity: viewing_appointment
+      foreign_key: inquiry_id
+
+  indexes:
+    - fields: [status, created_at]
+      name: idx_inquiry_status_date
+
+    - fields: [agent_id, status]
+      name: idx_agent_inquiries
+
+    - fields: [listing_id, status]
+      name: idx_listing_inquiries
+
+    - fields: [lead_score, status]
+      name: idx_lead_qualification
+
+    - fields: [next_follow_up_at]
+      name: idx_follow_up_queue
+
+  validations:
+    - field: seeker_phone
+      rule: phone_format
+      message: Invalid phone number
+
+    - field: seeker_email
+      rule: email_format
+      condition: "seeker_email IS NOT NULL"
+      message: Invalid email format
+
+    - field: lead_score
+      rule: between
+      min: 0
+      max: 100
+
+  state_machine:
+    initial: new
+
+    transitions:
+      - from: new
+        to: contacted
+        trigger: contact
+        actions:
+          - set_first_response
+          - calculate_response_time
+
+      - from: new
+        to: spam
+        trigger: mark_spam
+        actions:
+          - block_sender
+
+      - from: contacted
+        to: qualified
+        trigger: qualify
+        actions:
+          - calculate_lead_score
+
+      - from: qualified
+        to: viewing_scheduled
+        trigger: schedule_viewing
+        actions:
+          - create_viewing_appointment
+          - notify_seeker
+
+      - from: [qualified, viewing_scheduled]
+        to: negotiating
+        trigger: start_negotiation
+
+      - from: [qualified, viewing_scheduled, negotiating]
+        to: converted
+        trigger: convert
+        actions:
+          - set_converted_at
+          - update_listing_metrics
+
+      - from: [new, contacted, qualified, viewing_scheduled, negotiating]
+        to: lost
+        trigger: mark_lost
+        actions:
+          - set_lost_reason
+
+  audit:
+    enabled: true
+    track_changes: true

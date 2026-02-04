@@ -1,0 +1,278 @@
+# Kubernetes HorizontalPodAutoscaler Template
+# F5 Framework - Infrastructure Stack
+#
+# Variables:
+#   {{app_name}}         - Application name
+#   {{namespace}}        - Kubernetes namespace
+#   {{min_replicas}}     - Minimum replicas (default: 2)
+#   {{max_replicas}}     - Maximum replicas (default: 10)
+#   {{cpu_target}}       - CPU utilization target % (default: 70)
+#   {{memory_target}}    - Memory utilization target % (default: 80)
+#   {{labels}}           - Additional labels
+#   {{annotations}}      - Additional annotations
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{app_name}}
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/instance: {{app_name}}
+    app.kubernetes.io/component: hpa
+    app.kubernetes.io/managed-by: f5-framework
+    {{labels}}
+  annotations:
+    f5.io/template: "k8s-hpa"
+    f5.io/version: "1.0.0"
+    {{annotations}}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{app_name}}
+
+  minReplicas: {{min_replicas | default: 2}}
+  maxReplicas: {{max_replicas | default: 10}}
+
+  metrics:
+    # CPU-based scaling
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{cpu_target | default: 70}}
+
+    # Memory-based scaling
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: {{memory_target | default: 80}}
+
+  # Scaling behavior
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+        - type: Pods
+          value: 4
+          periodSeconds: 15
+      selectPolicy: Max
+
+---
+# HPA with custom metrics (Prometheus)
+{{#if custom_metrics}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{app_name}}-custom
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: hpa-custom
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{app_name}}
+
+  minReplicas: {{min_replicas | default: 2}}
+  maxReplicas: {{max_replicas | default: 10}}
+
+  metrics:
+    # Standard resource metrics
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{cpu_target | default: 70}}
+
+    # Custom Prometheus metric - requests per second
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: {{rps_target | default: "1000"}}
+
+    # Custom metric - queue depth
+    - type: External
+      external:
+        metric:
+          name: queue_messages_ready
+          selector:
+            matchLabels:
+              queue: {{queue_name | default: "orders"}}
+        target:
+          type: AverageValue
+          averageValue: {{queue_target | default: "30"}}
+
+    # Ingress-based metric
+    - type: Object
+      object:
+        metric:
+          name: requests_per_second
+        describedObject:
+          apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          name: {{app_name}}
+        target:
+          type: Value
+          value: {{ingress_rps_target | default: "10000"}}
+
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 0
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 15
+{{/if}}
+
+---
+# Vertical Pod Autoscaler
+{{#if enable_vpa}}
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: {{app_name}}
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{app_name}}
+
+  updatePolicy:
+    updateMode: "{{vpa_mode | default: Auto}}"
+
+  resourcePolicy:
+    containerPolicies:
+      - containerName: {{app_name}}
+        minAllowed:
+          cpu: {{vpa_min_cpu | default: "50m"}}
+          memory: {{vpa_min_memory | default: "64Mi"}}
+        maxAllowed:
+          cpu: {{vpa_max_cpu | default: "2"}}
+          memory: {{vpa_max_memory | default: "4Gi"}}
+        controlledResources:
+          - cpu
+          - memory
+        controlledValues: RequestsAndLimits
+{{/if}}
+
+---
+# KEDA ScaledObject (event-driven autoscaling)
+{{#if enable_keda}}
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: {{app_name}}
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: keda
+spec:
+  scaleTargetRef:
+    name: {{app_name}}
+
+  minReplicaCount: {{min_replicas | default: 2}}
+  maxReplicaCount: {{max_replicas | default: 10}}
+
+  pollingInterval: 30
+  cooldownPeriod: 300
+
+  triggers:
+    # Prometheus trigger
+    - type: prometheus
+      metadata:
+        serverAddress: http://prometheus:9090
+        metricName: http_requests_total
+        threshold: "{{prometheus_threshold | default: 100}}"
+        query: sum(rate(http_requests_total{deployment="{{app_name}}"}[2m]))
+
+    # RabbitMQ trigger
+    {{#if rabbitmq_queue}}
+    - type: rabbitmq
+      metadata:
+        host: {{rabbitmq_host}}
+        queueName: {{rabbitmq_queue}}
+        queueLength: "{{rabbitmq_threshold | default: 50}}"
+    {{/if}}
+
+    # AWS SQS trigger
+    {{#if sqs_queue}}
+    - type: aws-sqs-queue
+      metadata:
+        queueURL: {{sqs_queue}}
+        queueLength: "{{sqs_threshold | default: 5}}"
+        awsRegion: {{aws_region | default: "us-east-1"}}
+    {{/if}}
+
+    # Kafka trigger
+    {{#if kafka_topic}}
+    - type: kafka
+      metadata:
+        bootstrapServers: {{kafka_brokers}}
+        consumerGroup: {{kafka_consumer_group}}
+        topic: {{kafka_topic}}
+        lagThreshold: "{{kafka_lag_threshold | default: 100}}"
+    {{/if}}
+
+    # Cron trigger (scheduled scaling)
+    {{#if cron_schedule}}
+    - type: cron
+      metadata:
+        timezone: {{cron_timezone | default: "UTC"}}
+        start: {{cron_start}}
+        end: {{cron_end}}
+        desiredReplicas: "{{cron_replicas | default: 5}}"
+    {{/if}}
+{{/if}}
+
+---
+# PodDisruptionBudget (complements HPA)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{app_name}}-pdb
+  namespace: {{namespace}}
+  labels:
+    app.kubernetes.io/name: {{app_name}}
+    app.kubernetes.io/component: pdb
+spec:
+  # Ensure at least 50% of pods are available during disruptions
+  minAvailable: 50%
+  # Or use maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{app_name}}
+      app.kubernetes.io/instance: {{app_name}}

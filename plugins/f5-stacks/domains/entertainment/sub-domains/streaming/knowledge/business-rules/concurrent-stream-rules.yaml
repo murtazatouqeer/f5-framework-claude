@@ -1,0 +1,450 @@
+name: concurrent_stream_rules
+display_name: Concurrent Stream Rules
+description: |
+  Business rules for managing concurrent streaming sessions,
+  device limits, and playback authorization.
+
+domain: entertainment
+subdomain: streaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - stream_limits
+  - device_management
+  - session_control
+  - quality_enforcement
+  - security
+
+rules:
+  # ============================================
+  # Stream Limits
+  # ============================================
+  - id: CSR-001
+    name: Concurrent Stream Limit by Plan
+    description: Enforce concurrent stream limits based on subscription plan
+    category: stream_limits
+    severity: critical
+
+    parameters:
+      plan_limits:
+        free: 1
+        basic: 1
+        standard: 2
+        premium: 4
+        family: 5
+
+    conditions:
+      when:
+        - event: playback_start_request
+      then:
+        - field: active_sessions_count
+          operator: less_than
+          reference: subscription.max_streams
+
+    actions:
+      on_violation:
+        - block_playback
+        - show_concurrent_limit_message
+        - offer_upgrade_option
+        - log_limit_reached
+      on_success:
+        - create_playback_session
+        - start_heartbeat_monitoring
+
+    error_message: "You've reached your concurrent stream limit. Stop watching on another device or upgrade your plan."
+
+  - id: CSR-002
+    name: Profile-Level Stream Tracking
+    description: Track streams per profile within family plans
+    category: stream_limits
+    severity: medium
+
+    conditions:
+      when:
+        - field: subscription.plan_type
+          operator: equals
+          value: family
+
+    parameters:
+      per_profile_limit: 2
+
+    actions:
+      enforcement:
+        - track_streams_by_profile
+        - allow_overflow_to_account_limit
+        - warn_on_profile_limit_reached
+
+  - id: CSR-003
+    name: Same Content Simultaneous Restriction
+    description: Prevent same content streaming on multiple devices
+    category: stream_limits
+    severity: high
+
+    conditions:
+      when:
+        - event: playback_start_request
+      then:
+        - field: existing_sessions
+          operator: not_contains
+          match:
+            content_id: request.content_id
+            episode_id: request.episode_id
+
+    actions:
+      on_violation:
+        - block_playback
+        - show_same_content_message
+        - offer_to_take_over
+
+    exceptions:
+      - allow_for_different_profiles
+      - allow_for_kids_profiles
+
+    error_message: "This content is already playing on another device"
+
+  # ============================================
+  # Device Management
+  # ============================================
+  - id: CSR-010
+    name: Device Registration Limit
+    description: Limit number of registered devices
+    category: device_management
+    severity: medium
+
+    parameters:
+      device_limits:
+        free: 1
+        basic: 2
+        standard: 4
+        premium: 6
+        family: 10
+
+    conditions:
+      when:
+        - event: device_registration
+      then:
+        - field: registered_devices_count
+          operator: less_than
+          reference: max_devices
+
+    actions:
+      on_violation:
+        - block_registration
+        - prompt_device_removal
+        - show_device_management_screen
+
+    error_message: "Maximum device limit reached. Remove a device to add a new one."
+
+  - id: CSR-011
+    name: Device Trust Period
+    description: New devices have probation period
+    category: device_management
+    severity: low
+
+    conditions:
+      when:
+        - field: device.registration_date
+          operator: within
+          value: "7 days"
+
+    parameters:
+      new_device_restrictions:
+        - require_2fa_for_settings
+        - limit_download_count: 5
+        - enable_enhanced_logging
+
+    actions:
+      on_new_device:
+        - apply_restrictions
+        - send_new_device_notification
+        - flag_for_monitoring
+
+  - id: CSR-012
+    name: Device Deregistration Cooldown
+    description: Prevent rapid device swapping
+    category: device_management
+    severity: medium
+
+    conditions:
+      when:
+        - event: device_removal
+
+    parameters:
+      cooldown_period: 30 days
+      max_removals_per_period: 3
+
+    actions:
+      on_removal:
+        - start_cooldown_timer
+        - prevent_reregistration_until_cooldown
+        - track_removal_count
+      on_violation:
+        - block_removal
+        - show_cooldown_message
+
+    error_message: "You've reached the device removal limit. Try again in {days_remaining} days."
+
+  # ============================================
+  # Session Control
+  # ============================================
+  - id: CSR-020
+    name: Session Heartbeat Validation
+    description: Validate active sessions via heartbeat
+    category: session_control
+    severity: high
+
+    parameters:
+      heartbeat_interval_seconds: 30
+      max_missed_heartbeats: 3
+      session_timeout_seconds: 120
+
+    conditions:
+      when:
+        - event: heartbeat_check
+      validate:
+        - field: last_heartbeat
+          operator: within
+          value: "120 seconds"
+
+    actions:
+      on_missed_heartbeat:
+        - increment_missed_count
+        - send_keepalive_request
+      on_timeout:
+        - terminate_session
+        - release_stream_slot
+        - log_session_timeout
+
+  - id: CSR-021
+    name: Session Takeover
+    description: Allow user to take over existing session
+    category: session_control
+    severity: medium
+
+    conditions:
+      when:
+        - event: takeover_request
+        - field: active_sessions_count
+          operator: greater_than_or_equal
+          reference: max_streams
+
+    actions:
+      on_request:
+        - verify_user_identity
+        - select_oldest_session
+        - send_termination_notice
+        - wait_grace_period: 30 seconds
+        - terminate_old_session
+        - start_new_session
+        - notify_terminated_device
+
+  - id: CSR-022
+    name: Graceful Session Termination
+    description: Handle session termination gracefully
+    category: session_control
+    severity: medium
+
+    conditions:
+      when:
+        - event: session_terminate
+
+    actions:
+      on_terminate:
+        - save_playback_position
+        - release_drm_license
+        - update_watch_history
+        - close_cdn_connection
+        - log_session_end
+        - release_stream_slot
+
+  # ============================================
+  # Quality Enforcement
+  # ============================================
+  - id: CSR-030
+    name: Quality Cap by Subscription
+    description: Enforce maximum video quality by plan
+    category: quality_enforcement
+    severity: high
+
+    parameters:
+      quality_caps:
+        free: SD
+        basic: HD
+        standard: FHD
+        premium: 4K
+
+    conditions:
+      when:
+        - event: quality_request
+      then:
+        - field: requested_quality
+          operator: less_than_or_equal
+          reference: plan_quality_cap
+
+    actions:
+      on_violation:
+        - downgrade_to_cap
+        - show_upgrade_prompt
+
+    message: "Upgrade to {required_plan} for {requested_quality} quality"
+
+  - id: CSR-031
+    name: Quality Cap by Device
+    description: Enforce quality limits by device capability
+    category: quality_enforcement
+    severity: medium
+
+    parameters:
+      device_quality_caps:
+        mobile: FHD
+        tablet: FHD
+        web: FHD
+        smart_tv: 4K
+        streaming_device: 4K
+        game_console: 4K
+
+    conditions:
+      when:
+        - event: playback_start
+
+    actions:
+      on_start:
+        - determine_device_cap
+        - set_max_quality: min(plan_cap, device_cap, content_cap)
+        - configure_abr_ceiling
+
+  - id: CSR-032
+    name: HDR/Dolby Vision Requirements
+    description: Verify device supports premium formats
+    category: quality_enforcement
+    severity: medium
+
+    conditions:
+      when:
+        - field: requested_quality
+          operator: in
+          values: [HDR, DOLBY_VISION]
+      then:
+        - field: device.hdr_capable
+          operator: equals
+          value: true
+        - field: device.hdcp_level
+          operator: greater_than_or_equal
+          value: "2.2"
+
+    actions:
+      on_violation:
+        - fallback_to_sdr
+        - log_capability_mismatch
+
+  # ============================================
+  # Security
+  # ============================================
+  - id: CSR-040
+    name: Geographic Session Validation
+    description: Detect suspicious geographic activity
+    category: security
+    severity: high
+
+    conditions:
+      when:
+        - event: playback_start
+      evaluate:
+        - geographic_velocity: |
+            IF sessions exist within 1 hour
+            AND distance > 500km
+            THEN flag_suspicious
+
+    actions:
+      on_suspicious:
+        - require_verification
+        - block_if_not_verified
+        - log_security_event
+        - notify_user_of_activity
+
+  - id: CSR-041
+    name: VPN Detection
+    description: Detect and handle VPN usage
+    category: security
+    severity: high
+
+    conditions:
+      when:
+        - event: playback_start
+      evaluate:
+        - vpn_detected: ip_analysis_result
+
+    actions:
+      on_vpn_detected:
+        - check_content_licensing
+        - block_if_geo_restricted
+        - log_vpn_usage
+        - apply_default_region
+
+    policy_options:
+      - block_all_vpn
+      - allow_with_restrictions
+      - allow_for_privacy
+
+  - id: CSR-042
+    name: Account Sharing Detection
+    description: Detect potential account sharing abuse
+    category: security
+    severity: medium
+
+    conditions:
+      continuous_evaluation:
+        - distinct_locations_per_month: threshold > 5
+        - distinct_devices_per_week: threshold > 10
+        - simultaneous_different_regions: threshold > 2
+        - rapid_profile_switching: threshold > 20/day
+
+    actions:
+      on_threshold_exceeded:
+        - flag_account_for_review
+        - send_sharing_notice
+        - prompt_household_verification
+        - suggest_family_plan
+
+automation:
+  - name: session_cleanup
+    description: Clean up stale sessions
+    trigger:
+      type: schedule
+      cron: "*/5 * * * *"
+    condition:
+      - field: last_heartbeat
+        operator: greater_than
+        value: "5 minutes ago"
+    action:
+      - terminate_stale_sessions
+      - release_stream_slots
+      - log_cleanup_stats
+
+  - name: concurrent_stream_report
+    description: Daily report on streaming patterns
+    trigger:
+      type: schedule
+      cron: "0 6 * * *"
+    action:
+      - generate_usage_report
+      - identify_abuse_patterns
+      - send_to_analytics
+
+metrics:
+  - name: average_concurrent_streams
+    calculation: "AVG(concurrent_sessions per user)"
+
+  - name: stream_limit_hit_rate
+    calculation: "(limit_reached_events / playback_attempts) * 100"
+
+  - name: device_turnover_rate
+    calculation: "device_changes / active_subscriptions"
+
+  - name: session_timeout_rate
+    calculation: "(timeout_terminations / total_sessions) * 100"
+
+  - name: suspected_sharing_rate
+    calculation: "(flagged_accounts / total_accounts) * 100"

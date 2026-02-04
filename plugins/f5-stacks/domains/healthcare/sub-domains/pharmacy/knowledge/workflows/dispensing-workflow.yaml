@@ -1,0 +1,470 @@
+# Dispensing Workflow
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Workflow for prescription filling and dispensing
+
+workflow:
+  id: dispensing-workflow
+  name: Prescription Dispensing
+  name_ja: 調剤ワークフロー
+  description: Workflow for filling and dispensing prescriptions
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - prescription_verified
+      - refill_approved
+      - fill_queue_scheduled
+
+  actors:
+    - id: pharmacy_tech
+      role: Pharmacy Technician
+      description: Performs filling and packaging
+      
+    - id: pharmacist
+      role: Pharmacist
+      description: Final verification and patient counseling
+      
+    - id: pharmacy_clerk
+      role: Pharmacy Clerk
+      description: Handles point of sale
+      
+    - id: system
+      role: Pharmacy System
+      description: Automated processing
+
+  preconditions:
+    - Prescription verified and ready for fill
+    - Drug in stock
+    - Patient profile complete
+    - Insurance processed (if applicable)
+
+  steps:
+    # Pull from Queue
+    - step: 1
+      id: pull_from_queue
+      name: Pull Prescription from Queue
+      actor: pharmacy_tech
+      description: Select prescription to fill from queue
+      
+      queue_display:
+        - Patient name
+        - Drug name
+        - Promised time
+        - Priority indicator
+        
+      queue_sorting:
+        - STAT prescriptions first
+        - Patient waiting
+        - Promise time
+        - Age in queue
+        
+      actions:
+        - Select prescription from queue
+        - Print fill ticket/label
+        - Gather materials
+        
+      database_operations:
+        - UPDATE dispense.status = 'pending_fill'
+        - LOG filled_by, start_time
+        
+      next_step: 2
+
+    # Product Selection
+    - step: 2
+      id: product_selection
+      name: Select Drug Product
+      actor: pharmacy_tech
+      description: Select correct product from inventory
+      
+      selection_process:
+        locate_product:
+          - Use bin location from system
+          - Verify NDC matches prescription
+          - Check expiration date
+        product_verification:
+          - Scan NDC barcode
+          - Confirm drug name/strength
+          - Check lot number
+          
+      substitution_rules:
+        generic_allowed:
+          - DAW code permits
+          - Therapeutically equivalent
+          - Patient accepts
+        brand_required:
+          - DAW 1 (prescriber required)
+          - Patient request
+          - No generic available
+          
+      inventory_check:
+        sufficient_quantity:
+          action: Proceed with fill
+        partial_quantity:
+          action: Partial fill workflow
+        out_of_stock:
+          action: Order or transfer workflow
+          
+      database_operations:
+        - SELECT inventory_item
+        - LOCK quantity for this fill
+        
+      next_step: 3
+
+    # Counting/Measuring
+    - step: 3
+      id: counting
+      name: Count/Measure Medication
+      actor: pharmacy_tech
+      description: Count or measure prescribed quantity
+      
+      counting_methods:
+        manual_count:
+          for: "Tablets, capsules"
+          equipment: "Counting tray"
+          verification: "Count twice"
+        automated_count:
+          for: "High volume items"
+          equipment: "Automated dispensing"
+          verification: "Machine verified"
+        liquid_measure:
+          for: "Liquids, solutions"
+          equipment: "Graduated cylinder"
+          verification: "Measure precisely"
+        unit_dose:
+          for: "Pre-packaged units"
+          verification: "Count packages"
+          
+      controlled_substance_counting:
+        schedule_II:
+          method: "Exact count required"
+          documentation: "Log perpetual inventory"
+        schedule_III_V:
+          method: "Standard counting"
+          documentation: "Update inventory"
+          
+      database_operations:
+        - DEDUCT from drug_inventory
+        - CREATE controlled_substance_log if applicable
+        
+      next_step: 4
+
+    # Labeling
+    - step: 4
+      id: labeling
+      name: Create and Apply Label
+      actor: pharmacy_tech
+      description: Generate and apply prescription label
+      
+      label_requirements:
+        required_elements:
+          - Pharmacy name, address, phone
+          - Prescription number
+          - Patient name
+          - Drug name, strength, form
+          - Quantity
+          - Directions for use
+          - Prescriber name
+          - Fill date
+          - Refills remaining
+          - Required warnings
+        auxiliary_labels:
+          - Storage instructions
+          - Drug-specific warnings
+          - Interaction warnings
+          
+      label_generation:
+        - System generates label
+        - Print on compliant stock
+        - Include barcode for verification
+        
+      label_application:
+        - Apply to prescription vial
+        - Ensure readability
+        - Position correctly
+        
+      database_operations:
+        - LOG label_printed
+        
+      next_step: 5
+
+    # Packaging
+    - step: 5
+      id: packaging
+      name: Package Prescription
+      actor: pharmacy_tech
+      description: Package medication for dispensing
+      
+      packaging_options:
+        standard_vial:
+          for: "Most solid oral medications"
+        safety_cap:
+          default: true
+          exception: "Patient requested easy-open"
+        easy_open_cap:
+          for: "Patient request, arthritis, elderly"
+          documentation: "On file"
+        unit_dose:
+          for: "Pre-packaged medications"
+        original_packaging:
+          for: "Inhalers, creams, injectables"
+          
+      child_resistant_requirements:
+        required: "All prescriptions by default"
+        exceptions:
+          - Patient written waiver on file
+          - Certain dosage forms (nitroglycerin, etc.)
+          
+      database_operations:
+        - UPDATE dispense.status = 'filled'
+        - LOG fill_complete_time
+        
+      next_step: 6
+
+    # Quality Check
+    - step: 6
+      id: quality_check
+      name: Technician Quality Check
+      actor: pharmacy_tech
+      description: Self-check before pharmacist review
+      
+      verification_points:
+        drug_product:
+          - NDC matches label
+          - Strength correct
+          - Form correct
+        quantity:
+          - Amount matches label
+          - Count accurate
+        label:
+          - Patient correct
+          - Directions complete
+          - Warnings appropriate
+        appearance:
+          - Professional presentation
+          - No damage/contamination
+          
+      documentation:
+        - Attach original prescription/image
+        - Include DUR printout if applicable
+        - Stage for pharmacist
+        
+      database_operations:
+        - UPDATE dispense.status = 'pending_rph_check'
+        - LOG submitted_for_verification
+        
+      next_step: 7
+
+    # Pharmacist Verification
+    - step: 7
+      id: pharmacist_verification
+      name: Pharmacist Final Verification
+      actor: pharmacist
+      description: Final verification before dispensing
+      
+      verification_requirements:
+        clinical_verification:
+          - Drug appropriate for condition
+          - Dose appropriate for patient
+          - Interactions addressed
+          - No contraindications
+        product_verification:
+          - Correct drug (visual check)
+          - Correct quantity
+          - Label accurate
+          - Packaging appropriate
+        documentation_verification:
+          - Prescription valid
+          - Authorization current
+          - Required elements present
+          
+      verification_methods:
+        scan_verify:
+          - Scan product NDC
+          - System confirms match
+        visual_verify:
+          - Physical inspection
+          - Compare to prescription
+          
+      controlled_substance_additional:
+        - Verify DEA compliance
+        - Check PDMP if required
+        - Verify patient ID on file
+        
+      outcomes:
+        approved:
+          action: Mark ready for dispensing
+        rejected:
+          action: Return to fill with reason
+          
+      database_operations:
+        - UPDATE dispense.verified_by = pharmacist_id
+        - SET status = 'ready'
+        - LOG verification_datetime
+        
+      next_step: 8
+
+    # Stage for Pickup
+    - step: 8
+      id: stage_pickup
+      name: Stage for Patient Pickup
+      actor: pharmacy_tech
+      description: Place in will-call area
+      
+      will_call_organization:
+        alphabetical: "By patient last name"
+        dated: "By fill date"
+        
+      notifications:
+        patient_notification:
+          methods:
+            - Text message
+            - Automated call
+            - App push notification
+          content: "Prescription ready for pickup"
+          
+      storage_requirements:
+        refrigerated: "Refrigerated will-call"
+        controlled: "Secure storage area"
+        standard: "Standard will-call bins"
+        
+      database_operations:
+        - UPDATE dispense.status = 'ready'
+        - SET will_call_datetime
+        - TRIGGER patient notification
+        
+      next_step: 9
+
+    # Point of Sale
+    - step: 9
+      id: point_of_sale
+      name: Point of Sale / Pickup
+      actor: pharmacy_clerk
+      description: Process patient pickup
+      
+      pickup_verification:
+        patient_identity:
+          - Verify name and DOB
+          - Check ID for controlled (if required)
+        prescription_match:
+          - Scan prescription
+          - Confirm patient
+          
+      payment_processing:
+        insurance_copay:
+          - Collect adjudicated amount
+          - Process payment
+        cash_sale:
+          - Collect full price
+          - Apply discount if applicable
+        third_party:
+          - Process per agreement
+          
+      receipt_generation:
+        - Print transaction receipt
+        - Include HIPAA notice
+        - Provide medication guide if required
+        
+      database_operations:
+        - UPDATE dispense.status = 'sold'
+        - LOG sold_datetime, sold_by
+        - CREATE payment_record
+        
+      next_step: 10
+
+    # Patient Counseling
+    - step: 10
+      id: patient_counseling
+      name: Patient Counseling
+      actor: pharmacist
+      description: Offer and provide patient counseling
+      
+      counseling_requirement:
+        new_prescriptions: "Required offer"
+        refills: "Offer as appropriate"
+        high_risk: "Required counseling"
+        
+      counseling_offer:
+        methods:
+          - Pharmacist directly
+          - Counseling prompt at register
+          - Written offer with signature
+          
+      counseling_content:
+        required_topics:
+          - Drug name and description
+          - Route, dose, and form
+          - Duration of therapy
+          - Special directions
+          - Common side effects
+          - Interactions
+          - Storage requirements
+          - Refill information
+          
+      patient_response:
+        accepts:
+          action: Provide counseling, document
+        declines:
+          action: Document refusal, signature if required
+          
+      database_operations:
+        - LOG counseling_offered
+        - LOG counseling_accepted or counseling_declined
+        - CAPTURE signature if required
+        
+      next_step: complete
+
+  completion:
+    status: prescription_dispensed
+    outputs:
+      - dispense_record
+      - payment_record
+      - patient_signature
+      - counseling_documentation
+      - updated_inventory
+
+  alternate_flows:
+    partial_fill:
+      trigger: Insufficient inventory
+      steps:
+        - Dispense available quantity
+        - Document partial fill
+        - Schedule remainder
+        - Notify patient
+        
+    will_call_return:
+      trigger: Prescription not picked up (14 days)
+      steps:
+        - Return to stock
+        - Update inventory
+        - Reverse claim if applicable
+        - Notify patient
+
+  error_handling:
+    verification_failed:
+      action: Return to filling with correction notes
+      
+    wrong_drug_caught:
+      action: Discard fill, restart process, incident report
+      
+    payment_declined:
+      action: Hold prescription, attempt resolution
+      
+    patient_refuses:
+      action: Return to will-call, follow up later
+
+  metrics:
+    track:
+      - fill_time
+      - verification_time
+      - wait_time
+      - error_rate
+      - counseling_acceptance_rate
+      - will_call_return_rate
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555
+    hipaa_compliant: true
+    dea_compliant: true

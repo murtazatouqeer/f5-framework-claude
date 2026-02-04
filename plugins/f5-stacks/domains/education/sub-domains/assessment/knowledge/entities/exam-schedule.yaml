@@ -1,0 +1,308 @@
+# Exam Schedule Entity
+# F5 Framework v2.0 - Education/Assessment
+# Scheduling configuration for exams
+
+entity:
+  id: exam_schedule
+  name: Exam Schedule
+  name_ja: 試験スケジュール
+  description: Scheduling configuration for exam availability windows and sessions
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    schedule_code:
+      type: string
+      max_length: 50
+      unique: true
+      pattern: "^SCH-[0-9]{4}-[0-9]{4}$"
+      
+    # Basic Information
+    name:
+      type: string
+      max_length: 200
+      required: true
+      
+    description:
+      type: text
+      
+    # Associated Exam
+    exam_id:
+      type: uuid
+      references: exam
+      required: true
+      
+    # Schedule Type
+    schedule_type:
+      type: enum
+      values:
+        - single_window      # One availability window
+        - multiple_windows   # Multiple time slots
+        - recurring          # Regular recurring schedule
+        - on_demand          # Available anytime within range
+      required: true
+      
+    # Status
+    status:
+      type: enum
+      values: [draft, scheduled, active, completed, cancelled]
+      default: draft
+      
+    # Single/General Window
+    available_from:
+      type: datetime
+      required: true
+      
+    available_until:
+      type: datetime
+      required: true
+      
+    # Time Windows (for multiple_windows type)
+    time_windows:
+      type: array
+      items:
+        type: object
+        properties:
+          id: uuid
+          name: string
+          start_time: datetime
+          end_time: datetime
+          capacity: integer
+          registered_count: integer
+          location_id: uuid
+          proctor_required: boolean
+          
+    # Recurring Schedule
+    recurrence:
+      type: object
+      properties:
+        pattern:
+          type: enum
+          values: [daily, weekly, monthly]
+        interval: integer
+        days_of_week: array
+        start_date: date
+        end_date: date
+        time_start: time
+        time_end: time
+        exceptions: array
+        
+    # Capacity Management
+    total_capacity:
+      type: integer
+      description: Maximum candidates across all windows
+      
+    seat_capacity_per_window:
+      type: integer
+      
+    current_registrations:
+      type: integer
+      default: 0
+      computed: true
+      
+    waitlist_enabled:
+      type: boolean
+      default: false
+      
+    waitlist_count:
+      type: integer
+      default: 0
+      
+    # Registration Settings
+    registration_required:
+      type: boolean
+      default: true
+      
+    registration_opens:
+      type: datetime
+      
+    registration_closes:
+      type: datetime
+      
+    allow_late_registration:
+      type: boolean
+      default: false
+      
+    late_registration_deadline:
+      type: datetime
+      
+    # Cancellation Policy
+    cancellation_allowed:
+      type: boolean
+      default: true
+      
+    cancellation_deadline_hours:
+      type: integer
+      default: 24
+      
+    cancellation_fee:
+      type: decimal
+      precision: 10
+      scale: 2
+      
+    # Location
+    delivery_mode:
+      type: enum
+      values:
+        - online
+        - in_person
+        - hybrid
+      default: online
+      
+    location_id:
+      type: uuid
+      references: location
+      
+    locations:
+      type: array
+      items:
+        type: object
+        properties:
+          location_id: uuid
+          name: string
+          address: text
+          capacity: integer
+          instructions: text
+          
+    virtual_room_url:
+      type: string
+      format: url
+      
+    # Timezone
+    timezone:
+      type: string
+      max_length: 50
+      default: "UTC"
+      
+    # Proctoring
+    proctoring_required:
+      type: boolean
+      default: false
+      
+    proctor_id:
+      type: uuid
+      references: user
+      
+    proctor_instructions:
+      type: text
+      
+    # Notifications
+    reminder_settings:
+      type: object
+      properties:
+        enabled: boolean
+        days_before: array
+        hours_before: array
+        email_template_id: uuid
+        
+    # Accommodations
+    accommodations_deadline:
+      type: datetime
+      
+    # Metadata
+    notes:
+      type: text
+      
+    created_by:
+      type: uuid
+      references: user
+      required: true
+      
+    # Timestamps
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  computed_fields:
+    is_registration_open:
+      formula: "registration_opens <= NOW() AND registration_closes > NOW()"
+      type: boolean
+      
+    availability_status:
+      formula: |
+        CASE 
+          WHEN current_registrations >= total_capacity THEN 'full'
+          WHEN available_until < NOW() THEN 'closed'
+          WHEN available_from > NOW() THEN 'upcoming'
+          ELSE 'available'
+        END
+      type: string
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: scheduled
+        action: publish
+        conditions:
+          - has_time_windows
+          - exam_configured
+          
+      - from: scheduled
+        to: active
+        action: activate
+        trigger: available_from_reached
+        
+      - from: active
+        to: completed
+        action: complete
+        trigger: available_until_passed
+        
+      - from: [draft, scheduled]
+        to: cancelled
+        action: cancel
+
+  relationships:
+    exam:
+      type: belongs_to
+      entity: exam
+      foreign_key: exam_id
+      
+    registrations:
+      type: has_many
+      entity: exam_registration
+      foreign_key: schedule_id
+      
+    proctor:
+      type: belongs_to
+      entity: user
+      foreign_key: proctor_id
+      
+    creator:
+      type: belongs_to
+      entity: user
+      foreign_key: created_by
+
+  indexes:
+    - columns: [schedule_code]
+      unique: true
+    - columns: [exam_id, status]
+    - columns: [available_from, available_until]
+    - columns: [status, delivery_mode]
+
+  validations:
+    - name: valid_date_range
+      condition: "available_from < available_until"
+      message: "End date must be after start date"
+      
+    - name: registration_before_availability
+      condition: "registration_opens IS NULL OR registration_opens <= available_from"
+      message: "Registration must open before exam availability"
+      
+    - name: capacity_positive
+      condition: "total_capacity IS NULL OR total_capacity > 0"
+      message: "Capacity must be positive"
+
+  audit:
+    enabled: true
+    track_changes: true

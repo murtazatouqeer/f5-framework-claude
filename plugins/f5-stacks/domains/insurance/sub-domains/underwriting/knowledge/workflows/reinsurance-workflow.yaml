@@ -1,0 +1,579 @@
+name: reinsurance_workflow
+display_name: Reinsurance Workflow
+description: |
+  Workflow for managing reinsurance arrangements including
+  automatic cession, facultative placement, and treaty administration.
+
+domain: insurance
+subdomain: underwriting
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-UW-005
+trigger:
+  events:
+    - sum_exceeds_retention
+    - facultative_trigger
+    - treaty_limit_approach
+  source: underwriting_case
+  conditions:
+    - reinsurance_applicable: true
+
+participants:
+  roles:
+    - underwriter
+    - reinsurance_underwriter
+    - reinsurance_manager
+    - reinsurer
+
+  systems:
+    - underwriting_system
+    - reinsurance_system
+    - reinsurer_portal
+    - treaty_management
+
+stages:
+  - id: RI-001
+    name: Reinsurance Requirement Identification
+    description: Determine reinsurance needs for the case
+    actor: system
+
+    inputs:
+      - sum_insured
+      - risk_classification
+      - loading_percent
+      - product_type
+      - applicant_details
+
+    activities:
+      - id: RI-001-A
+        name: Check Against Retention
+        type: automated
+        action: Compare to retention limits
+        calculation:
+          company_retention: from_retention_table
+          excess_amount: sum_insured - retention
+          reinsurance_needed: excess_amount > 0
+
+      - id: RI-001-B
+        name: Determine Treaty Applicability
+        type: automated
+        action: Check treaty acceptance criteria
+        criteria:
+          - age_within_limits
+          - loading_within_limits
+          - occupation_acceptable
+          - no_excluded_conditions
+        output: treaty_applicable
+
+      - id: RI-001-C
+        name: Calculate Automatic Cession
+        type: automated
+        condition: treaty_applicable
+        action: Calculate treaty cession
+        calculation:
+          quota_share:
+            treaty_share: sum × quota_percent
+            retention: sum × (1 - quota_percent)
+          surplus:
+            first_surplus: MIN(excess, first_surplus_capacity)
+            second_surplus: remaining_after_first
+        output: automatic_cession
+
+      - id: RI-001-D
+        name: Identify Facultative Need
+        type: automated
+        action: Determine if facultative required
+        triggers:
+          - sum_exceeds_treaty_capacity
+          - loading_exceeds_treaty_limit
+          - excluded_occupation
+          - excluded_condition
+          - treaty_not_applicable
+        output: facultative_required
+
+    outputs:
+      - retention_amount
+      - automatic_cession
+      - facultative_amount
+      - reinsurance_type_needed
+
+    sla: 15_minutes
+    next_stage: RI-002_or_RI-003
+
+  - id: RI-002
+    name: Automatic Treaty Processing
+    description: Process automatic treaty cession
+    actor: system
+
+    conditions:
+      applicable_when:
+        - treaty_applicable: true
+        - no_facultative_required: true
+
+    inputs:
+      - automatic_cession_calculation
+      - treaty_details
+
+    activities:
+      - id: RI-002-A
+        name: Apply Treaty Terms
+        type: automated
+        action: Calculate cession per treaty
+        outputs:
+          - ceded_sum
+          - ceded_premium
+          - commission_receivable
+
+      - id: RI-002-B
+        name: Generate Bordereaux Entry
+        type: automated
+        action: Create bordereaux record
+        includes:
+          - policy_details
+          - cession_details
+          - premium_details
+          - effective_date
+
+      - id: RI-002-C
+        name: Update Reinsurance Register
+        type: automated
+        action: Record cession in register
+        updates:
+          - treaty_utilization
+          - aggregate_tracking
+          - exposure_by_reinsurer
+
+      - id: RI-002-D
+        name: Confirm Automatic Acceptance
+        type: automated
+        action: Confirm within treaty terms
+        output: automatic_acceptance_confirmed
+
+    outputs:
+      - cession_record
+      - bordereaux_entry
+      - treaty_confirmation
+
+    sla: immediate
+    next_stage: RI-006
+
+  - id: RI-003
+    name: Facultative Submission Preparation
+    description: Prepare facultative reinsurance submission
+    actor: reinsurance_underwriter
+
+    conditions:
+      applicable_when:
+        - facultative_required: true
+
+    inputs:
+      - case_file
+      - facultative_amount
+      - risk_assessment
+
+    activities:
+      - id: RI-003-A
+        name: Compile Submission Package
+        type: manual
+        action: Prepare complete submission
+        documents:
+          - facultative_questionnaire
+          - application_summary
+          - medical_evidence
+          - financial_summary
+          - underwriting_assessment
+          - proposed_terms
+          - company_retention
+
+      - id: RI-003-B
+        name: Write Risk Summary
+        type: manual
+        action: Prepare risk narrative
+        includes:
+          - applicant_profile
+          - key_risk_factors
+          - medical_summary
+          - occupation_details
+          - proposed_action
+          - loading_rationale
+
+      - id: RI-003-C
+        name: Calculate Premium Indication
+        type: manual
+        action: Provide premium guidance
+        includes:
+          - standard_premium
+          - loaded_premium
+          - expected_facultative_premium
+
+      - id: RI-003-D
+        name: Select Reinsurers
+        type: manual
+        action: Choose reinsurers to approach
+        criteria:
+          - existing_relationship
+          - capacity_available
+          - expertise_in_risk_type
+          - security_rating
+        output: selected_reinsurers
+
+    outputs:
+      - submission_package
+      - risk_summary
+      - selected_reinsurers
+
+    sla: 2_days
+    next_stage: RI-004
+
+  - id: RI-004
+    name: Facultative Placement
+    description: Submit and negotiate with reinsurers
+    actor: reinsurance_underwriter
+
+    inputs:
+      - submission_package
+      - selected_reinsurers
+
+    activities:
+      - id: RI-004-A
+        name: Submit to Reinsurers
+        type: manual
+        action: Send submission to reinsurers
+        methods:
+          - reinsurer_portal
+          - secure_email
+          - broker_if_applicable
+        tracking: submission_tracking_id
+
+      - id: RI-004-B
+        name: Track Responses
+        type: manual
+        action: Monitor for responses
+        expected_sla: 5_business_days
+        reminders:
+          - at_3_days: gentle_reminder
+          - at_5_days: formal_follow_up
+
+      - id: RI-004-C
+        name: Receive Quotes
+        type: manual
+        action: Process reinsurer responses
+        response_types:
+          quoted:
+            capture:
+              - share_offered
+              - loading_quoted
+              - additional_exclusions
+              - conditions
+              - validity_period
+          declined:
+            capture:
+              - decline_reason
+              - conditions_for_reconsideration
+          pending:
+            action: follow_up
+
+      - id: RI-004-D
+        name: Negotiate Terms
+        type: manual
+        action: Negotiate if needed
+        negotiation_points:
+          - loading_reduction
+          - exclusion_modification
+          - share_increase
+          - premium_terms
+
+      - id: RI-004-E
+        name: Finalize Placement
+        type: manual
+        action: Confirm final placement
+        actions:
+          - select_best_quotes
+          - confirm_shares
+          - obtain_written_confirmation
+        output: placement_confirmed
+
+    outputs:
+      - quotes_received
+      - negotiation_record
+      - final_placement
+      - reinsurer_confirmations
+
+    sla: 7_days
+    next_stage: RI-005
+
+  - id: RI-005
+    name: Facultative Confirmation
+    description: Document and confirm facultative placement
+    actor: reinsurance_underwriter
+
+    inputs:
+      - final_placement
+      - reinsurer_confirmations
+
+    activities:
+      - id: RI-005-A
+        name: Verify Confirmations
+        type: manual
+        action: Confirm all reinsurers have confirmed
+        verification:
+          - written_confirmation
+          - terms_match_quote
+          - share_percentages
+          - premium_terms
+
+      - id: RI-005-B
+        name: Create Facultative Record
+        type: manual
+        action: Create formal facultative record
+        includes:
+          - case_reference
+          - reinsurer_details
+          - share_breakdown
+          - premium_calculation
+          - terms_and_conditions
+          - effective_date
+
+      - id: RI-005-C
+        name: Calculate Final Cession
+        type: automated
+        action: Compute final cession amounts
+        calculation:
+          retention: company_portion
+          automatic_treaty: if_applicable
+          facultative: placed_amount
+          total: sum_of_all
+
+      - id: RI-005-D
+        name: Update Underwriting Case
+        type: automated
+        action: Update case with RI details
+        sets:
+          - reinsurance_confirmed: true
+          - retention_amount: calculated
+          - ceded_amount: calculated
+          - ri_premium: calculated
+
+    outputs:
+      - facultative_record
+      - cession_confirmation
+      - case_update
+
+    sla: 1_day
+    next_stage: RI-006
+
+  - id: RI-006
+    name: Premium and Commission Processing
+    description: Process reinsurance premium and commission
+    actor: system
+
+    inputs:
+      - cession_details
+      - premium_amounts
+
+    activities:
+      - id: RI-006-A
+        name: Calculate RI Premium
+        type: automated
+        action: Compute reinsurance premium
+        calculation:
+          treaty:
+            ceded_premium: original_premium × cession_share
+            commission: ceded_premium × commission_rate
+            net_payable: ceded_premium - commission
+          facultative:
+            ceded_premium: per_quote
+            commission: as_negotiated
+            net_payable: ceded_premium - commission
+
+      - id: RI-006-B
+        name: Generate Accounting Entries
+        type: automated
+        action: Create accounting records
+        entries:
+          - premium_ceded_payable
+          - commission_receivable
+          - reserve_ceded
+
+      - id: RI-006-C
+        name: Update Bordereaux
+        type: automated
+        action: Add to bordereaux
+        schedule:
+          treaty: monthly_reporting
+          facultative: individual_notification
+
+      - id: RI-006-D
+        name: Schedule Settlement
+        type: automated
+        action: Schedule premium settlement
+        timing:
+          treaty: per_treaty_terms
+          facultative: upon_confirmation
+
+    outputs:
+      - premium_calculations
+      - accounting_entries
+      - bordereaux_update
+      - settlement_schedule
+
+    sla: 1_day
+    next_stage: RI-007
+
+  - id: RI-007
+    name: Ongoing Administration
+    description: Ongoing reinsurance administration
+    actor: reinsurance_underwriter
+
+    trigger:
+      events:
+        - policy_amendment
+        - claim_notification
+        - annual_review
+        - policy_termination
+
+    activities:
+      - id: RI-007-A
+        name: Handle Amendments
+        type: conditional
+        condition: policy_amended
+        actions:
+          - recalculate_cession
+          - notify_reinsurers
+          - adjust_bordereaux
+          - process_premium_adjustment
+
+      - id: RI-007-B
+        name: Handle Claims
+        type: conditional
+        condition: claim_received
+        actions:
+          - notify_reinsurers_per_terms
+          - reserve_advice
+          - settlement_coordination
+          - recovery_processing
+
+      - id: RI-007-C
+        name: Handle Termination
+        type: conditional
+        condition: policy_terminated
+        actions:
+          - notify_reinsurers
+          - process_return_premium
+          - close_cession_record
+
+      - id: RI-007-D
+        name: Annual Renewal
+        type: conditional
+        condition: policy_anniversary
+        actions:
+          - confirm_treaty_coverage
+          - update_cession_if_needed
+          - process_renewal_premium
+
+    outputs:
+      - administration_record
+      - notifications_sent
+      - adjustments_processed
+
+    sla: varies_by_event
+    next_stage: ongoing
+
+  - id: RI-008
+    name: Treaty Reporting
+    description: Generate required treaty reports
+    actor: reinsurance_underwriter
+
+    trigger:
+      schedule:
+        bordereaux: monthly
+        statements: quarterly
+        annual_review: yearly
+
+    activities:
+      - id: RI-008-A
+        name: Generate Bordereaux
+        type: automated
+        action: Compile monthly bordereaux
+        includes:
+          - new_cessions
+          - amendments
+          - terminations
+          - premium_detail
+        format: treaty_specified
+
+      - id: RI-008-B
+        name: Generate Statements
+        type: automated
+        action: Prepare quarterly statements
+        includes:
+          - premium_account
+          - claims_account
+          - outstanding_reserves
+          - balance_calculation
+
+      - id: RI-008-C
+        name: Submit to Reinsurers
+        type: manual
+        action: Dispatch reports to reinsurers
+        method:
+          - electronic_portal
+          - secure_file_transfer
+        confirmation: receipt_tracking
+
+      - id: RI-008-D
+        name: Reconcile Accounts
+        type: manual
+        action: Reconcile with reinsurer records
+        frequency: semi_annual
+        resolve: discrepancies_within_30_days
+
+    outputs:
+      - bordereaux_submitted
+      - statements_submitted
+      - reconciliation_record
+
+    sla: per_treaty_requirements
+    next_stage: complete
+
+completion_criteria:
+  one_time_cases:
+    - cession_confirmed: true
+    - premium_processed: true
+    - documentation_complete: true
+
+  ongoing_administration:
+    - regular_reporting: current
+    - claims_processed: timely
+    - amendments_handled: promptly
+
+exception_handling:
+  placement_failure:
+    action: escalate_to_manager
+    options:
+      - reduce_sum_to_capacity
+      - decline_case
+      - accept_with_retention
+
+  reinsurer_non_response:
+    action: alternative_placement
+    fallback: open_market_placement
+
+  claim_dispute:
+    action: engage_management
+    process: dispute_resolution_procedure
+
+metrics:
+  - placement_success_rate
+  - average_placement_time
+  - quote_acceptance_rate
+  - commission_income
+  - claims_recovery_rate
+  - treaty_utilization
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

@@ -1,0 +1,574 @@
+name: Renewal Workflow
+display_name: Policy Renewal Workflow
+description: |
+  Workflow for policy renewal processing.
+  From renewal identification to policy continuation.
+
+domain: insurance
+subdomain: policy
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-RENEW-001
+trigger:
+  - type: scheduled
+    timing: "policy.expiry_date - 60 days"
+  - type: event
+    name: renewal.trigger
+  - type: api_call
+    endpoint: POST /renewals/process
+
+actors:
+  - id: system
+    name: Renewal System
+    type: system
+  - id: policyholder
+    name: Policyholder
+    type: external
+  - id: agent
+    name: Insurance Agent
+    type: internal
+  - id: underwriter
+    name: Underwriter
+    type: internal
+  - id: retention
+    name: Retention Team
+    type: internal
+
+states:
+  - id: identified
+    name: Renewal Identified
+    description: Policy identified for renewal
+    initial: true
+  - id: assessing
+    name: Assessing Renewal
+    description: Evaluating renewal terms
+  - id: underwriting_review
+    name: Underwriting Review
+    description: Risk reassessment required
+  - id: offer_generated
+    name: Offer Generated
+    description: Renewal offer created
+  - id: offer_sent
+    name: Offer Sent
+    description: Offer delivered to customer
+  - id: customer_reviewing
+    name: Customer Reviewing
+    description: Customer reviewing offer
+  - id: negotiating
+    name: Negotiating
+    description: Terms under negotiation
+  - id: accepted
+    name: Accepted
+    description: Customer accepted renewal
+  - id: pending_payment
+    name: Pending Payment
+    description: Awaiting renewal premium
+  - id: payment_received
+    name: Payment Received
+    description: Premium payment confirmed
+  - id: renewed
+    name: Renewed
+    description: Policy renewed successfully
+    final: true
+  - id: declined
+    name: Declined
+    description: Customer declined renewal
+    final: true
+  - id: lapsed
+    name: Lapsed
+    description: Policy lapsed due to no response
+    final: true
+
+steps:
+  - id: step_1
+    name: Identify Renewals
+    actor: system
+    from_state: null
+    to_state: identified
+    trigger:
+      type: scheduled
+      cron: "0 1 * * *"
+    actions:
+      - action: query_expiring_policies
+        criteria:
+          expiry_within_days: 60
+          status: active
+          renewable: true
+      - action: create_renewal_records
+      - action: assign_to_agents
+      - action: log_event
+        event: renewal.identified
+    outputs:
+      - renewal_batch_id
+      - renewal_count
+
+  - id: step_2
+    name: Assess Renewal
+    actor: system
+    from_state: identified
+    to_state: assessing
+    actions:
+      - action: calculate_renewal_premium
+        consider:
+          - age_at_renewal
+          - claims_history
+          - no_claims_bonus
+          - inflation_adjustment
+          - rate_changes
+      - action: assess_retention_risk
+        factors:
+          - premium_increase_percentage
+          - claims_count
+          - customer_tenure
+          - payment_history
+      - action: determine_if_underwriting_needed
+        triggers:
+          - high_claims
+          - age_threshold
+          - sum_insured_threshold
+    outputs:
+      - proposed_premium
+      - premium_change_percentage
+      - retention_risk_score
+      - underwriting_required
+
+  - id: step_2a
+    name: Underwriting Review
+    actor: underwriter
+    from_state: assessing
+    to_state: underwriting_review
+    condition:
+      expression: |
+        underwriting_required = true OR
+        claims_ratio > 100 OR
+        risk_factors_changed = true
+    actions:
+      - action: review_claims_history
+      - action: reassess_risk
+      - action: determine_renewal_terms
+        options:
+          - renew_standard_terms
+          - renew_with_loading
+          - renew_with_exclusions
+          - decline_renewal
+      - action: approve_terms
+    inputs:
+      - underwriting_decision
+      - modified_terms
+    sla:
+      duration: 48_hours
+
+  - id: step_3
+    name: Generate Renewal Offer
+    actor: system
+    from_state: [assessing, underwriting_review]
+    to_state: offer_generated
+    condition:
+      expression: "underwriting_decision != 'decline'"
+    actions:
+      - action: finalize_renewal_terms
+      - action: generate_renewal_notice
+        include:
+          - current_policy_summary
+          - renewal_premium
+          - premium_comparison
+          - coverage_changes
+          - ncb_status
+      - action: generate_renewal_quote
+      - action: set_validity_period
+        days: 30
+    outputs:
+      - renewal_notice_url
+      - renewal_quote_url
+      - valid_until
+
+  - id: step_3a
+    name: Decline Renewal (Insurer)
+    actor: underwriter
+    from_state: underwriting_review
+    to_state: declined
+    condition:
+      expression: "underwriting_decision = 'decline'"
+    actions:
+      - action: generate_non_renewal_notice
+        include: decline_reason
+      - action: notify_policyholder
+        timing: "30 days before expiry"
+      - action: notify_agent
+      - action: log_event
+        event: renewal.insurer_declined
+    outputs:
+      - non_renewal_reason
+      - alternative_options
+
+  - id: step_4
+    name: Send Renewal Offer
+    actor: agent
+    from_state: offer_generated
+    to_state: offer_sent
+    actions:
+      - action: send_renewal_package
+        to: policyholder
+        channels: [email, sms, mail]
+        documents:
+          - renewal_notice
+          - renewal_quote
+          - payment_options
+      - action: schedule_follow_up
+        days: 7
+      - action: notify_agent
+      - action: log_event
+        event: renewal.offer_sent
+    outputs:
+      - sent_at
+      - delivery_confirmation
+
+  - id: step_5
+    name: Customer Views Offer
+    actor: policyholder
+    from_state: offer_sent
+    to_state: customer_reviewing
+    trigger:
+      type: tracking
+      event: renewal_opened
+    actions:
+      - action: record_view
+      - action: notify_agent
+      - action: log_event
+        event: renewal.viewed
+
+  - id: step_5a
+    name: Agent Follow Up
+    actor: agent
+    from_state: [offer_sent, customer_reviewing]
+    to_state: customer_reviewing
+    trigger:
+      type: scheduled
+      timing: "sent_at + 7 days"
+      condition: "status != 'accepted'"
+    actions:
+      - action: contact_customer
+        purpose: follow_up
+      - action: address_concerns
+      - action: record_interaction
+    inputs:
+      - customer_feedback
+      - concerns_raised
+
+  - id: step_5b
+    name: Initiate Retention
+    actor: retention
+    from_state: customer_reviewing
+    to_state: negotiating
+    condition:
+      expression: |
+        customer_indicating_decline = true OR
+        retention_risk_score >= 'high'
+    actions:
+      - action: contact_customer
+        purpose: retention
+      - action: understand_concerns
+      - action: prepare_retention_offer
+        options:
+          - premium_discount
+          - enhanced_coverage
+          - payment_plan
+          - loyalty_benefits
+      - action: present_counter_offer
+    inputs:
+      - retention_offer
+      - customer_response
+    sla:
+      duration: 48_hours
+
+  - id: step_6a
+    name: Customer Accepts
+    actor: policyholder
+    from_state: [offer_sent, customer_reviewing, negotiating]
+    to_state: accepted
+    inputs:
+      - acceptance_confirmation
+    actions:
+      - action: record_acceptance
+      - action: finalize_terms
+        terms: accepted_terms
+      - action: log_event
+        event: renewal.accepted
+    outputs:
+      - accepted_at
+      - final_premium
+
+  - id: step_6b
+    name: Customer Declines
+    actor: policyholder
+    from_state: [offer_sent, customer_reviewing, negotiating]
+    to_state: declined
+    inputs:
+      - decline_confirmation
+      - decline_reason
+    actions:
+      - action: record_decline
+      - action: save_feedback
+      - action: process_final_benefits
+        condition: "policy.has_surrender_value"
+      - action: notify_agent
+      - action: log_event
+        event: renewal.customer_declined
+    outputs:
+      - decline_reason
+      - feedback
+
+  - id: step_6c
+    name: No Response - Lapse
+    actor: system
+    from_state: [offer_sent, customer_reviewing]
+    to_state: lapsed
+    trigger:
+      type: scheduled
+      timing: "policy.expiry_date + grace_period_days"
+      condition: "status NOT IN ['accepted', 'declined']"
+    actions:
+      - action: mark_policy_lapsed
+      - action: send_lapse_notice
+      - action: notify_agent
+      - action: log_event
+        event: renewal.lapsed
+    outputs:
+      - lapse_date
+
+  - id: step_7
+    name: Request Renewal Premium
+    actor: system
+    from_state: accepted
+    to_state: pending_payment
+    actions:
+      - action: generate_premium_notice
+        amount: renewal_premium
+        due_date: policy.expiry_date
+      - action: send_payment_request
+      - action: set_payment_reminders
+        schedule: [14, 7, 3]
+    outputs:
+      - payment_due_date
+      - payment_amount
+
+  - id: step_7a
+    name: Auto-Debit Payment
+    actor: system
+    from_state: pending_payment
+    to_state: payment_received
+    condition:
+      expression: "policy.auto_pay_enabled = true"
+    actions:
+      - action: attempt_auto_debit
+        source: policy.payment_source
+        amount: renewal_premium
+      - action: handle_payment_result
+        on_success: proceed
+        on_failure: notify_and_retry
+    outputs:
+      - payment_reference
+      - payment_status
+
+  - id: step_7b
+    name: Manual Payment
+    actor: policyholder
+    from_state: pending_payment
+    to_state: payment_received
+    condition:
+      expression: "policy.auto_pay_enabled = false"
+    actions:
+      - action: receive_payment
+      - action: verify_payment
+      - action: issue_receipt
+    inputs:
+      - payment_details
+    outputs:
+      - payment_reference
+      - receipt_number
+
+  - id: step_8
+    name: Complete Renewal
+    actor: system
+    from_state: payment_received
+    to_state: renewed
+    actions:
+      - action: extend_policy_term
+        new_expiry: "current_expiry + policy_term"
+      - action: update_policy_version
+      - action: apply_renewal_changes
+        changes:
+          - premium: renewal_premium
+          - ncb_years: updated_ncb
+          - age_band: current_age_band
+      - action: generate_renewal_certificate
+      - action: send_renewal_confirmation
+        to: policyholder
+        documents:
+          - renewal_certificate
+          - updated_schedule
+          - premium_receipt
+      - action: update_commission
+      - action: log_event
+        event: renewal.completed
+    outputs:
+      - new_expiry_date
+      - renewal_certificate_url
+
+transitions:
+  - from: identified
+    to: assessing
+    event: start_assessment
+
+  - from: assessing
+    to: underwriting_review
+    event: refer_underwriting
+
+  - from: assessing
+    to: offer_generated
+    event: assessment_complete
+
+  - from: underwriting_review
+    to: offer_generated
+    event: uw_approved
+
+  - from: underwriting_review
+    to: declined
+    event: uw_declined
+
+  - from: offer_generated
+    to: offer_sent
+    event: send_offer
+
+  - from: offer_sent
+    to: customer_reviewing
+    event: customer_views
+
+  - from: customer_reviewing
+    to: negotiating
+    event: retention_needed
+
+  - from: [offer_sent, customer_reviewing, negotiating]
+    to: accepted
+    event: customer_accepts
+
+  - from: [offer_sent, customer_reviewing, negotiating]
+    to: declined
+    event: customer_declines
+
+  - from: [offer_sent, customer_reviewing]
+    to: lapsed
+    event: no_response_timeout
+
+  - from: accepted
+    to: pending_payment
+    event: request_payment
+
+  - from: pending_payment
+    to: payment_received
+    event: payment_confirmed
+
+  - from: payment_received
+    to: renewed
+    event: complete_renewal
+
+auto_renewal_rules:
+  eligible_if:
+    - premium_increase_percentage <= 10
+    - claims_count <= 1
+    - payment_history: good
+    - no_underwriting_required: true
+
+  process:
+    - auto_debit_enabled: true
+    - payment_success: true
+
+  notification:
+    timing: "14 days before renewal"
+    content:
+      - new_premium
+      - debit_date
+      - opt_out_option
+
+notifications:
+  - trigger: renewal.identified
+    recipient: agent
+    template: renewals_due
+    channel: [email, portal]
+
+  - trigger: renewal.offer_sent
+    recipient: policyholder
+    template: renewal_offer
+    channel: [email, sms]
+
+  - trigger: renewal.reminder
+    recipient: policyholder
+    template: renewal_reminder
+    channel: [email, sms]
+    timing: [14, 7, 3]
+
+  - trigger: renewal.payment_due
+    recipient: policyholder
+    template: premium_due
+    channel: [email, sms]
+
+  - trigger: renewal.completed
+    recipient: [policyholder, agent]
+    template: renewal_confirmed
+    channel: [email, portal]
+
+  - trigger: renewal.lapsed
+    recipient: [policyholder, agent]
+    template: policy_lapsed
+    channel: [email, sms]
+
+sla:
+  offer_generation:
+    target: 24_hours
+    max: 48_hours
+  offer_to_customer:
+    target: "60 days before expiry"
+  payment_collection:
+    target: "before expiry"
+    grace: "30 days after expiry"
+
+metrics:
+  - name: renewal_rate
+    formula: "renewed_policies / eligible_policies * 100"
+  - name: auto_renewal_rate
+    formula: "auto_renewed / total_renewals * 100"
+  - name: lapse_rate
+    formula: "lapsed_policies / eligible_policies * 100"
+  - name: retention_success_rate
+    formula: "retained / retention_attempted * 100"
+  - name: average_premium_increase
+    formula: "AVG(new_premium - old_premium) / old_premium * 100"
+
+retention_strategies:
+  high_value_customers:
+    criteria:
+      - premium > threshold
+      - tenure > 5_years
+    actions:
+      - personal_agent_call
+      - loyalty_discount
+      - premium_freeze_offer
+
+  at_risk_customers:
+    criteria:
+      - premium_increase > 15%
+      - previous_complaint
+    actions:
+      - retention_team_call
+      - discount_up_to_10%
+      - enhanced_coverage_offer
+
+  price_sensitive:
+    criteria:
+      - decline_reason: price
+    actions:
+      - payment_plan_option
+      - coverage_reduction_option
+      - alternative_product

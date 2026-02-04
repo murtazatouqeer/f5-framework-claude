@@ -1,0 +1,449 @@
+name: deduction-rules
+display_name: Payroll Deduction Rules
+description: |
+  Business rules for payroll deductions including statutory deductions,
+  voluntary deductions, loans, and net pay protection per Vietnam regulations.
+
+domain: hr-management
+subdomain: payroll
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Deduction Priority
+  - id: DED-001
+    name: deduction_priority_order
+    description: Order in which deductions are applied
+    category: process
+    priority: critical
+
+    priority_order:
+      - priority: 1
+        type: mandatory_insurance
+        codes: [SI_EE, HI_EE, UI_EE]
+        timing: pre_tax
+        skippable: false
+        description: "Always deducted first"
+
+      - priority: 2
+        type: voluntary_pre_tax
+        codes: [VOL_PENSION]
+        timing: pre_tax
+        skippable: true
+        description: "Before tax calculation"
+
+      - priority: 3
+        type: personal_income_tax
+        codes: [PIT]
+        timing: calculated
+        skippable: false
+        description: "Calculated on assessable income"
+
+      - priority: 4
+        type: union_dues
+        codes: [UNION_DUES]
+        timing: post_tax
+        skippable: true
+        description: "If union member"
+
+      - priority: 5
+        type: loans_advances
+        codes: [LOAN_REPAY, ADVANCE_REPAY]
+        timing: post_tax
+        skippable: partial
+        description: "Per loan agreement"
+
+      - priority: 6
+        type: voluntary_post_tax
+        codes: [LIFE_INS, HEALTH_INS_EXTRA]
+        timing: post_tax
+        skippable: true
+        description: "Employee elected benefits"
+
+      - priority: 7
+        type: penalties
+        codes: [ABSENCE, LATE_PENALTY, DAMAGE]
+        timing: post_tax
+        skippable: false
+        description: "Per policy violations"
+
+      - priority: 8
+        type: other
+        codes: [PARKING, CANTEEN]
+        timing: post_tax
+        skippable: true
+        description: "Miscellaneous deductions"
+
+  # Deduction Limits
+  - id: DED-002
+    name: total_deduction_limit
+    description: Total deductions cannot exceed percentage of gross salary
+    category: limit
+    priority: critical
+
+    limits:
+      voluntary_deductions:
+        max_percentage: 50
+        base: gross_salary
+        applies_to: "All non-statutory deductions combined"
+
+      single_deduction:
+        max_percentage: 30
+        base: net_salary
+        exception: "Statutory deductions exempt"
+
+    calculation:
+      formula: |
+        available_for_voluntary = gross_salary * 0.50 - mandatory_deductions
+        max_single_deduction = (gross_salary - mandatory_deductions - tax) * 0.30
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_102
+
+  # Net Pay Protection
+  - id: DED-003
+    name: minimum_net_pay_protection
+    description: Ensure minimum net pay after all deductions
+    category: protection
+    priority: critical
+
+    minimum_net_pay:
+      value: regional_minimum_wage
+      exception: "Unless employee authorizes lower"
+
+    protection_logic:
+      formula: |
+        protected_amount = regional_minimum_wage[employee.region]
+
+        IF net_pay_after_mandatory < protected_amount THEN
+          suspend_voluntary_deductions
+          net_pay = protected_amount
+        END
+
+    suspended_deductions:
+      handling: "Carry forward to next period"
+      notification: "Inform employee"
+      logging: "Record suspension reason"
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_102
+
+  # Loan Repayment Rules
+  - id: DED-004
+    name: loan_repayment_deduction
+    description: Rules for deducting loan repayments from salary
+    category: loan
+    priority: high
+
+    maximum_deduction:
+      percentage: 30
+      base: net_salary_after_statutory
+
+    partial_deduction:
+      condition: "If full amount exceeds limit"
+      action: "Deduct maximum allowed"
+      remaining: "Carry forward with interest adjustment"
+
+    termination_handling:
+      remaining_balance: "Deduct from final settlement"
+      excess_balance: "Convert to receivable"
+
+    default_handling:
+      missed_payments: 3
+      escalation: hr_notification
+      impact: "May affect future loan eligibility"
+
+  - id: DED-005
+    name: salary_advance_deduction
+    description: Rules for deducting salary advances
+    category: advance
+    priority: high
+
+    standard_advance:
+      max_amount: "50% of monthly salary"
+      repayment: "Same pay period or next"
+      approval: direct_manager
+
+    emergency_advance:
+      max_amount: "100% of monthly salary"
+      repayment: "Within 2 pay periods"
+      approval: hr_manager
+
+    multiple_advances:
+      policy: "One active advance at a time"
+      exception: "Emergency with HR approval"
+
+  # Union Dues
+  - id: DED-006
+    name: union_dues_deduction
+    description: Trade union membership fee deduction
+    category: union
+    priority: medium
+
+    membership_fee:
+      rate: 1.0
+      base: "Salary subject to BHXH"
+      max: null
+
+    condition:
+      - employee.is_union_member = true
+      - employee.union_deduction_consent = true
+
+    employer_contribution:
+      rate: 2.0
+      base: "Salary fund"
+      paid_to: union_fund
+
+    compliance:
+      - standard: Trade_Union_Law_2012
+        article: Article_26
+
+  # Penalty Deductions
+  - id: DED-007
+    name: disciplinary_deduction_rules
+    description: Rules for penalty and disciplinary deductions
+    category: penalty
+    priority: high
+
+    allowed_deductions:
+      absence_without_leave:
+        calculation: "daily_rate * absent_days"
+        documentation: required
+        approval: hr_manager
+
+      damage_to_property:
+        calculation: "actual_damage_amount"
+        max_per_period: "30% of net salary"
+        installment: allowed
+        documentation: "Damage report and evidence"
+        approval: department_head
+
+      policy_violation:
+        calculation: "per_policy_schedule"
+        max_per_incident: varies
+        documentation: required
+        due_process: required
+
+    prohibited_deductions:
+      - arbitrary_fines
+      - deductions_without_cause
+      - excessive_penalties
+      - deductions_for_normal_mistakes
+
+    employee_rights:
+      - right_to_explanation
+      - right_to_appeal
+      - right_to_documentation
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_102
+
+  # Voluntary Benefit Deductions
+  - id: DED-008
+    name: voluntary_benefit_deductions
+    description: Employee-elected benefit deductions
+    category: voluntary
+    priority: medium
+
+    types:
+      supplementary_health_insurance:
+        timing: post_tax
+        enrollment: employee_choice
+        cancellation: "With notice period"
+
+      life_insurance:
+        timing: post_tax
+        enrollment: employee_choice
+        beneficiary: employee_designated
+
+      retirement_savings:
+        timing: pre_tax
+        limit: "Per tax rules"
+        employer_match: varies
+
+      stock_purchase:
+        timing: post_tax
+        enrollment: employee_choice
+        vesting: per_plan
+
+    enrollment_changes:
+      frequency: annual_open_enrollment
+      exception: qualifying_life_event
+      notice_period: varies
+
+  # One-Time Deductions
+  - id: DED-009
+    name: one_time_deduction_rules
+    description: Rules for one-time special deductions
+    category: one_time
+    priority: medium
+
+    types:
+      overpayment_recovery:
+        description: "Recovery of accidental overpayment"
+        discovery_period: "Within 6 months"
+        max_per_period: "10% of net salary"
+        employee_notification: required
+        repayment_plan: negotiable
+
+      training_bond:
+        description: "Recovery if employee leaves before commitment"
+        calculation: "Prorated by remaining commitment"
+        documentation: "Training agreement"
+
+      equipment_recovery:
+        description: "Unreturned company equipment"
+        calculation: "Depreciated value"
+        documentation: "Asset records"
+
+    employee_consent:
+      required_for: [voluntary, negotiated_amounts]
+      not_required_for: [statutory, policy_violations]
+
+  # Court-Ordered Deductions
+  - id: DED-010
+    name: court_ordered_deductions
+    description: Legal garnishment and court-ordered deductions
+    category: legal
+    priority: critical
+
+    types:
+      child_support:
+        priority: highest
+        max_percentage: 30
+        documentation: court_order
+
+      alimony:
+        priority: high
+        max_percentage: 25
+        documentation: court_order
+
+      debt_garnishment:
+        priority: lower
+        max_percentage: 20
+        documentation: court_order
+
+      tax_levy:
+        priority: highest
+        max_percentage: varies
+        documentation: tax_authority_order
+
+    employer_obligations:
+      - comply_with_court_order
+      - remit_to_designated_party
+      - maintain_records
+      - inform_employee
+
+    protection:
+      minimum_retained: "As per court order or regional minimum wage"
+
+  # Deduction Documentation
+  - id: DED-011
+    name: deduction_documentation
+    description: Documentation requirements for deductions
+    category: compliance
+    priority: high
+
+    requirements:
+      statutory:
+        documentation: "Automatic, per law"
+        retention: 10_years
+
+      voluntary:
+        documentation: "Employee authorization form"
+        retention: "Duration of deduction + 5 years"
+
+      one_time:
+        documentation: "Specific justification and approval"
+        retention: 10_years
+
+      court_ordered:
+        documentation: "Court order copy"
+        retention: "Duration + 10 years"
+
+    payslip_requirements:
+      - itemize_all_deductions
+      - show_deduction_codes
+      - show_amounts
+      - show_ytd_totals
+
+  # Deduction Timing
+  - id: DED-012
+    name: deduction_timing_rules
+    description: When different deductions are processed
+    category: process
+    priority: medium
+
+    timing:
+      pre_tax:
+        - mandatory_insurance
+        - voluntary_pension
+        - certain_benefits
+
+      calculated:
+        - personal_income_tax
+
+      post_tax:
+        - union_dues
+        - loans
+        - voluntary_benefits
+        - penalties
+        - other
+
+    processing_order:
+      formula: |
+        1. Calculate gross earnings
+        2. Apply pre-tax deductions
+        3. Calculate taxable income
+        4. Apply tax
+        5. Apply post-tax deductions in priority order
+        6. Verify net pay protection
+        7. Finalize net pay
+
+rule_dependencies:
+  DED-001:
+    determines: [DED-012]
+    reason: "Priority determines timing"
+
+  DED-002:
+    validates: [DED-004, DED-005, DED-007, DED-008]
+    reason: "Limits apply to voluntary deductions"
+
+  DED-003:
+    overrides: [DED-004, DED-005, DED-008]
+    reason: "Net pay protection takes precedence"
+
+execution_order:
+  - phase: prioritization
+    rules: [DED-001]
+
+  - phase: mandatory_deductions
+    rules: [DED-006, DED-010]
+
+  - phase: voluntary_deductions
+    rules: [DED-004, DED-005, DED-008, DED-009]
+
+  - phase: penalty_deductions
+    rules: [DED-007]
+
+  - phase: validation
+    rules: [DED-002, DED-003]
+
+  - phase: documentation
+    rules: [DED-011, DED-012]
+
+compliance_summary:
+  - standard: Vietnam_Labor_Code_2019
+    articles: [102]
+    subject: Wage_deduction_limits
+
+  - standard: Trade_Union_Law_2012
+    articles: [26]
+    subject: Union_dues
+
+  - standard: Civil_Procedure_Code
+    subject: Garnishment_procedures

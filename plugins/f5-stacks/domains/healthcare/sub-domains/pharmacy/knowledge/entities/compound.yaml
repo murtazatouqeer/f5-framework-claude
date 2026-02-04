@@ -1,0 +1,329 @@
+# Compound Entity
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Compounded medication formula and preparation entity
+
+entity:
+  id: compound
+  name: Compound
+  name_ja: 調合薬
+  description: Compounded medication formula and preparation records
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  attributes:
+    # Identifiers
+    - name: compound_id
+      type: uuid
+      primary_key: true
+      description: Unique compound formula ID
+      
+    - name: compound_number
+      type: string
+      length: 50
+      unique: true
+      description: Pharmacy compound formula number
+      
+    - name: master_formula_id
+      type: string
+      description: Master formula reference if standard
+
+    # Compound Information
+    - name: compound_name
+      type: string
+      length: 255
+      required: true
+      description: Compound name/description
+      
+    - name: compound_type
+      type: enum
+      values: [non_sterile, sterile, hazardous, nuclear]
+      required: true
+      description: Type of compounding
+      mapping:
+        non_sterile: "USP <795> non-sterile"
+        sterile: "USP <797> sterile"
+        hazardous: "USP <800> hazardous"
+        nuclear: "Nuclear pharmacy"
+        
+    - name: dosage_form
+      type: string
+      length: 100
+      required: true
+      description: Final dosage form
+      examples: [Cream, Ointment, Capsule, Suspension, Solution, Suppository]
+      
+    - name: route_of_administration
+      type: string
+      length: 100
+      required: true
+      examples: [Topical, Oral, Rectal, Vaginal, Ophthalmic, Parenteral]
+      
+    - name: total_quantity
+      type: decimal
+      precision: 10
+      scale: 2
+      required: true
+      description: Total quantity prepared
+      
+    - name: quantity_unit
+      type: string
+      length: 20
+      required: true
+      description: Unit of total quantity
+
+    # Ingredients
+    - name: ingredients
+      type: json
+      required: true
+      description: List of ingredients with quantities
+      schema:
+        items:
+          ndc: string
+          name: string
+          quantity: decimal
+          unit: string
+          lot_number: string
+          expiration_date: date
+          manufacturer: string
+          cost: decimal
+
+    # Compounding Instructions
+    - name: preparation_instructions
+      type: text
+      required: true
+      description: Step-by-step preparation instructions
+      
+    - name: equipment_required
+      type: json
+      description: List of required equipment
+      
+    - name: safety_precautions
+      type: text
+      description: Safety precautions and PPE requirements
+      
+    - name: quality_control_tests
+      type: json
+      description: Required QC tests
+
+    # Beyond Use Dating
+    - name: bud_calculation_method
+      type: enum
+      values: [usp_default, stability_testing, literature, manufacturer]
+      required: true
+      description: Method for BUD determination
+      
+    - name: bud_days
+      type: integer
+      required: true
+      description: Beyond use date in days
+      
+    - name: storage_conditions
+      type: enum
+      values: [room_temp, refrigerated, frozen, controlled_room_temp]
+      required: true
+      
+    - name: light_protection
+      type: boolean
+      default: false
+      
+    - name: container_closure
+      type: string
+      description: Required container type
+
+    # Batch Information
+    - name: batch_number
+      type: string
+      length: 50
+      description: Batch/lot number for this preparation
+      
+    - name: preparation_date
+      type: timestamp
+      description: When compound was prepared
+      
+    - name: beyond_use_date
+      type: date
+      description: Calculated BUD for this batch
+      
+    - name: quantity_prepared
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Actual quantity prepared
+
+    # Verification
+    - name: prepared_by
+      type: uuid
+      description: Tech who prepared compound
+      
+    - name: checked_by
+      type: uuid
+      description: Pharmacist who verified
+      
+    - name: check_datetime
+      type: timestamp
+      description: When pharmacist checked
+
+    # Associated Prescription
+    - name: rx_number
+      type: string
+      references: prescription
+      description: Associated prescription if patient-specific
+
+    # Costing
+    - name: ingredient_cost
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Total ingredient cost
+      
+    - name: labor_cost
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Labor/preparation cost
+      
+    - name: overhead_cost
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Overhead allocation
+      
+    - name: total_cost
+      type: decimal
+      precision: 10
+      scale: 2
+      computed: "ingredient_cost + labor_cost + overhead_cost"
+      
+    - name: suggested_price
+      type: decimal
+      precision: 10
+      scale: 2
+      description: Suggested selling price
+
+    # Controlled Substance
+    - name: contains_controlled
+      type: boolean
+      default: false
+      description: Contains controlled substance ingredients
+      
+    - name: highest_dea_schedule
+      type: enum
+      values: [unscheduled, II, III, IV, V]
+      default: unscheduled
+      description: Highest DEA schedule in formula
+
+    # Status
+    - name: formula_status
+      type: enum
+      values: [active, inactive, discontinued, pending_review]
+      default: active
+      
+    - name: batch_status
+      type: enum
+      values: [in_preparation, pending_check, approved, dispensed, expired, destroyed]
+      
+    - name: created_at
+      type: timestamp
+      auto: create
+      
+    - name: updated_at
+      type: timestamp
+      auto: update
+
+  state_machine:
+    field: batch_status
+    initial: in_preparation
+    states:
+      in_preparation:
+        description: Being compounded
+        transitions:
+          - to: pending_check
+            event: preparation_complete
+            
+      pending_check:
+        description: Awaiting pharmacist verification
+        transitions:
+          - to: approved
+            event: verify
+            guard: pharmacist_only
+          - to: in_preparation
+            event: reject
+            
+      approved:
+        description: Approved for dispensing
+        transitions:
+          - to: dispensed
+            event: dispense
+          - to: expired
+            event: expire
+            guard: past_bud
+          - to: destroyed
+            event: destroy
+            
+      dispensed:
+        description: Dispensed to patient
+        terminal: true
+        
+      expired:
+        description: Past beyond use date
+        transitions:
+          - to: destroyed
+            event: destroy
+            
+      destroyed:
+        description: Destroyed per policy
+        terminal: true
+
+  relationships:
+    - name: prescription
+      type: many_to_one
+      target: prescription
+      foreign_key: rx_number
+      
+    - name: ingredient_drugs
+      type: many_to_many
+      target: drug
+      description: Component drugs
+
+  indexes:
+    - fields: [compound_number]
+      unique: true
+      name: idx_compound_number
+      
+    - fields: [compound_name]
+      name: idx_compound_name
+      
+    - fields: [compound_type]
+      name: idx_compound_type
+      
+    - fields: [batch_number]
+      name: idx_compound_batch
+      
+    - fields: [beyond_use_date]
+      name: idx_compound_bud
+      
+    - fields: [formula_status]
+      name: idx_compound_status
+
+  validations:
+    - field: bud_days
+      rule: positive
+      message: "BUD days must be positive"
+      
+    - field: checked_by
+      rule: required_if
+      condition: "batch_status in ['approved', 'dispensed']"
+      message: "Pharmacist check required for approval"
+      
+    - field: ingredients
+      rule: min_items
+      value: 1
+      message: "At least one ingredient required"
+
+  audit:
+    enabled: true
+    events: [create, update, prepare, verify, dispense, destroy]
+    retention_days: 2555
+    usp_compliant: true
+    fields: [ingredients, batch_number, checked_by, preparation_date]

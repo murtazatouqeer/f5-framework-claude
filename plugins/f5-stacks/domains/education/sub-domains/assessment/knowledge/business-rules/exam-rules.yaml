@@ -1,0 +1,408 @@
+# Exam Business Rules
+# F5 Framework v2.0 - Education/Assessment
+# Rules governing exam lifecycle and delivery
+
+business_rules:
+  domain: education
+  subdomain: assessment
+  category: exam_management
+  version: "1.0.0"
+
+  rules:
+    # ==========================================
+    # Exam Creation Rules
+    # ==========================================
+    
+    - id: EXR-001
+      name: Exam Must Have Questions
+      name_ja: 試験には問題が必要
+      description: An exam must have at least one question before activation
+      category: creation
+      severity: error
+      
+      condition:
+        entity: exam
+        trigger: [status_change_to_active, publish]
+        expression: "total_questions >= 1"
+        
+      action:
+        type: block
+        message: "Exam must contain at least one question"
+        message_ja: "試験には少なくとも1つの問題が必要です"
+        
+    - id: EXR-002
+      name: Valid Passing Criteria Required
+      name_ja: 有効な合格基準が必要
+      description: Non-practice exams must have defined passing criteria
+      category: creation
+      severity: error
+      
+      condition:
+        entity: exam
+        trigger: [status_change_to_active]
+        expression: "exam_type = 'practice' OR passing_score IS NOT NULL OR passing_percentage IS NOT NULL"
+        
+      action:
+        type: block
+        message: "Passing score or percentage must be defined for non-practice exams"
+        
+    - id: EXR-003
+      name: Duration Limits
+      name_ja: 時間制限
+      description: Exam duration must be within reasonable limits
+      category: creation
+      severity: warning
+      
+      condition:
+        entity: exam
+        trigger: [create, update]
+        expression: "duration_minutes >= 5 AND duration_minutes <= 480"
+        
+      action:
+        type: warn
+        message: "Exam duration should be between 5 minutes and 8 hours"
+        
+    # ==========================================
+    # Exam Scheduling Rules
+    # ==========================================
+    
+    - id: EXR-010
+      name: Future Scheduling Required
+      name_ja: 将来のスケジュール必須
+      description: Exam availability must start in the future when scheduling
+      category: scheduling
+      severity: error
+      
+      condition:
+        entity: exam
+        trigger: [schedule]
+        expression: "available_from > NOW()"
+        
+      action:
+        type: block
+        message: "Exam availability must be scheduled for a future date"
+        
+    - id: EXR-011
+      name: Adequate Preparation Window
+      name_ja: 十分な準備期間
+      description: Scheduled exams should give candidates adequate notice
+      category: scheduling
+      severity: warning
+      
+      condition:
+        entity: exam
+        trigger: [schedule]
+        expression: "available_from > NOW() + INTERVAL '24 hours'"
+        
+      action:
+        type: warn
+        message: "Consider giving candidates at least 24 hours notice"
+        
+    - id: EXR-012
+      name: Maximum Availability Window
+      name_ja: 最大可用期間
+      description: Exam availability window should not exceed 30 days for security
+      category: scheduling
+      severity: warning
+      
+      condition:
+        entity: exam
+        trigger: [create, update]
+        expression: "available_until IS NULL OR (available_until - available_from) <= INTERVAL '30 days'"
+        
+      action:
+        type: warn
+        message: "Consider limiting availability window to 30 days for security"
+
+    # ==========================================
+    # Attempt Rules
+    # ==========================================
+    
+    - id: EXR-020
+      name: Maximum Attempts Limit
+      name_ja: 最大受験回数制限
+      description: Candidates cannot exceed maximum allowed attempts
+      category: attempts
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [create]
+        expression: |
+          COUNT(exam_attempts WHERE exam_id = :exam_id 
+            AND candidate_id = :candidate_id 
+            AND status NOT IN ('voided')) < exam.max_attempts
+            
+      action:
+        type: block
+        message: "Maximum number of attempts ({max_attempts}) exceeded"
+        message_ja: "最大受験回数（{max_attempts}回）を超えています"
+        
+    - id: EXR-021
+      name: Attempt Interval Enforcement
+      name_ja: 受験間隔の強制
+      description: Enforce cooldown period between attempts
+      category: attempts
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [create]
+        expression: |
+          exam.attempt_interval_hours = 0 
+          OR NOT EXISTS (
+            SELECT 1 FROM exam_attempts 
+            WHERE exam_id = :exam_id 
+            AND candidate_id = :candidate_id
+            AND created_at > NOW() - INTERVAL '{exam.attempt_interval_hours} hours'
+          )
+          
+      action:
+        type: block
+        message: "Must wait {attempt_interval_hours} hours between attempts"
+        message_ja: "次の受験まで{attempt_interval_hours}時間お待ちください"
+        
+    - id: EXR-022
+      name: Single Active Attempt
+      name_ja: 同時受験禁止
+      description: Candidate can only have one active attempt at a time
+      category: attempts
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: |
+          NOT EXISTS (
+            SELECT 1 FROM exam_attempts 
+            WHERE exam_id = :exam_id 
+            AND candidate_id = :candidate_id
+            AND status = 'in_progress'
+          )
+          
+      action:
+        type: block
+        message: "An attempt is already in progress"
+
+    # ==========================================
+    # Access Control Rules
+    # ==========================================
+    
+    - id: EXR-030
+      name: Access Code Verification
+      name_ja: アクセスコード確認
+      description: Verify access code if required
+      category: access
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: "exam.access_code_required = false OR access_code_used = exam.access_code"
+        
+      action:
+        type: block
+        message: "Invalid access code"
+        message_ja: "アクセスコードが無効です"
+        
+    - id: EXR-031
+      name: IP Restriction
+      name_ja: IP制限
+      description: Verify IP address if restrictions are configured
+      category: access
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: |
+          exam.ip_restriction IS NULL 
+          OR exam.ip_restriction = [] 
+          OR ip_address IN exam.ip_restriction
+          
+      action:
+        type: block
+        message: "Access not allowed from this IP address"
+        
+    - id: EXR-032
+      name: Availability Window Check
+      name_ja: 受験可能期間確認
+      description: Verify exam is within availability window
+      category: access
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: |
+          (exam.available_from IS NULL OR NOW() >= exam.available_from)
+          AND (exam.available_until IS NULL OR NOW() <= exam.available_until)
+          
+      action:
+        type: block
+        message: "Exam is not available at this time"
+        message_ja: "現在、この試験は利用できません"
+
+    # ==========================================
+    # Timing Rules
+    # ==========================================
+    
+    - id: EXR-040
+      name: Auto Submit on Timeout
+      name_ja: タイムアウト時自動提出
+      description: Automatically submit exam when time expires
+      category: timing
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [timer_expired]
+        expression: "exam.auto_submit_on_timeout = true AND status = 'in_progress'"
+        
+      action:
+        type: auto_submit
+        message: "Time expired - exam automatically submitted"
+        message_ja: "時間切れ - 試験が自動提出されました"
+        
+    - id: EXR-041
+      name: Time Warning Notifications
+      name_ja: 残り時間警告
+      description: Send warnings at configured intervals
+      category: timing
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [timer_tick]
+        expression: "time_remaining_seconds IN exam.warning_intervals * 60"
+        
+      action:
+        type: notify
+        message: "{minutes} minutes remaining"
+        message_ja: "残り{minutes}分です"
+
+    # ==========================================
+    # Completion Rules
+    # ==========================================
+    
+    - id: EXR-050
+      name: All Questions Required
+      name_ja: 全問回答必須
+      description: Block submission if all questions must be answered
+      category: completion
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [submit]
+        expression: "exam.require_all_answered = false OR questions_answered = total_questions"
+        
+      action:
+        type: block
+        message: "All questions must be answered before submission"
+        message_ja: "提出前にすべての問題に回答してください"
+        
+    - id: EXR-051
+      name: Submission Confirmation
+      name_ja: 提出確認
+      description: Require confirmation for early submission
+      category: completion
+      severity: warning
+      
+      condition:
+        entity: exam_attempt
+        trigger: [submit]
+        expression: "time_remaining_seconds > 300"
+        
+      action:
+        type: confirm
+        message: "You have {minutes} minutes remaining. Are you sure you want to submit?"
+        message_ja: "残り{minutes}分あります。本当に提出しますか？"
+
+    # ==========================================
+    # State Transition Rules
+    # ==========================================
+    
+    - id: EXR-060
+      name: Cannot Modify Active Exam
+      name_ja: 実施中試験変更禁止
+      description: Prevent modifications to active exams with attempts
+      category: lifecycle
+      severity: error
+      
+      condition:
+        entity: exam
+        trigger: [update]
+        expression: |
+          status != 'active' 
+          OR NOT EXISTS (
+            SELECT 1 FROM exam_attempts 
+            WHERE exam_id = :id 
+            AND status IN ('in_progress', 'submitted', 'grading')
+          )
+          
+      action:
+        type: block
+        message: "Cannot modify exam while candidates are taking it"
+        exception_roles: [admin]
+        
+    - id: EXR-061
+      name: Archive Requires Completion
+      name_ja: アーカイブには完了が必要
+      description: Only completed exams can be archived
+      category: lifecycle
+      severity: error
+      
+      condition:
+        entity: exam
+        trigger: [archive]
+        expression: |
+          status = 'completed' 
+          OR NOT EXISTS (
+            SELECT 1 FROM exam_attempts 
+            WHERE exam_id = :id 
+            AND status NOT IN ('graded', 'voided')
+          )
+          
+      action:
+        type: block
+        message: "All attempts must be graded before archiving"
+
+  rule_groups:
+    exam_creation:
+      rules: [EXR-001, EXR-002, EXR-003]
+      description: Rules applied during exam creation
+      
+    exam_scheduling:
+      rules: [EXR-010, EXR-011, EXR-012]
+      description: Rules applied during scheduling
+      
+    attempt_management:
+      rules: [EXR-020, EXR-021, EXR-022]
+      description: Rules for attempt creation and management
+      
+    access_control:
+      rules: [EXR-030, EXR-031, EXR-032]
+      description: Rules for exam access
+      
+    timing:
+      rules: [EXR-040, EXR-041]
+      description: Time-related rules
+      
+    completion:
+      rules: [EXR-050, EXR-051]
+      description: Rules for exam completion
+      
+    lifecycle:
+      rules: [EXR-060, EXR-061]
+      description: Rules for exam state transitions
+
+  exceptions:
+    - role: admin
+      bypasses: [EXR-060]
+      requires_justification: true
+      
+    - role: proctor
+      bypasses: [EXR-040]
+      conditions:
+        - valid_technical_issue

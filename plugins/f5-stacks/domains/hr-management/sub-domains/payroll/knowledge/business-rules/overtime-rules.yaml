@@ -1,0 +1,433 @@
+name: overtime-rules
+display_name: Overtime Calculation Rules
+description: |
+  Business rules for overtime calculation including rates, limits,
+  approvals, and compliance per Vietnam Labor Code.
+
+domain: hr-management
+subdomain: payroll
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # OT Rate Rules
+  - id: OT-001
+    name: weekday_overtime_rate
+    description: Overtime on normal working days at 150%
+    category: calculation
+    priority: critical
+
+    condition: |
+      work_date.is_weekday = true AND
+      work_date.is_holiday = false AND
+      hours > standard_daily_hours
+
+    rate:
+      multiplier: 1.5
+      percentage: 150
+
+    calculation:
+      formula: |
+        base_hourly_rate = monthly_salary / (standard_hours_per_month)
+        weekday_ot_pay = ot_hours * base_hourly_rate * 1.5
+
+    standard_hours:
+      per_day: 8
+      per_week: 48
+      per_month: 208  # Varies based on working days
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_98
+
+  - id: OT-002
+    name: weekend_overtime_rate
+    description: Overtime on weekly rest days at 200%
+    category: calculation
+    priority: critical
+
+    condition: |
+      work_date.is_weekly_rest_day = true AND
+      work_date.is_holiday = false
+
+    rate:
+      multiplier: 2.0
+      percentage: 200
+
+    calculation:
+      formula: |
+        weekend_ot_pay = hours * base_hourly_rate * 2.0
+
+    note: "All hours on rest day are at OT rate, not just excess hours"
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_98
+
+  - id: OT-003
+    name: holiday_overtime_rate
+    description: Overtime on public holidays at 300%
+    category: calculation
+    priority: critical
+
+    condition: |
+      work_date.is_public_holiday = true OR
+      work_date.is_paid_leave = true
+
+    rate:
+      multiplier: 3.0
+      percentage: 300
+
+    public_holidays_vietnam:
+      - name: New Year
+        date: "January 1"
+        days: 1
+
+      - name: Lunar New Year (Tet)
+        date: "varies"
+        days: 5
+
+      - name: Hung Kings Commemoration
+        date: "10th day of 3rd lunar month"
+        days: 1
+
+      - name: Reunification Day
+        date: "April 30"
+        days: 1
+
+      - name: International Labor Day
+        date: "May 1"
+        days: 1
+
+      - name: National Day
+        date: "September 2"
+        days: 2
+
+    calculation:
+      formula: |
+        holiday_ot_pay = hours * base_hourly_rate * 3.0
+
+    note: |
+      If employee already receives full salary for holiday,
+      additional 200% (total 300%) for working on holiday
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_98
+
+  - id: OT-004
+    name: night_shift_premium
+    description: Additional 30% premium for night work (22:00-06:00)
+    category: calculation
+    priority: high
+
+    condition: |
+      work_time BETWEEN '22:00' AND '06:00'
+
+    rate:
+      additional_percentage: 30
+
+    combined_rates:
+      weekday_night_ot: 180  # 150% + 30%
+      weekend_night: 260     # 200% + 60% (200% * 30%)
+      holiday_night: 390     # 300% + 90% (300% * 30%)
+
+    calculation:
+      formula: |
+        IF is_overtime THEN
+          night_ot_pay = hours * base_hourly_rate * (ot_rate + (ot_rate * 0.30))
+        ELSE
+          night_shift_pay = hours * base_hourly_rate * 1.30
+        END
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_98
+
+  # OT Limit Rules
+  - id: OT-005
+    name: daily_overtime_limit
+    description: Maximum 4 hours overtime per day
+    category: limit
+    priority: critical
+
+    limit:
+      max_hours: 4
+      per: day
+
+    exceptions:
+      - condition: "urgent_work_per_government_order"
+      - condition: "natural_disaster_response"
+      - condition: "public_safety_emergency"
+
+    violation_handling:
+      warning: "OT exceeds daily limit"
+      action: "Require manager approval for exception"
+      logging: "Record exception reason"
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_107
+
+  - id: OT-006
+    name: monthly_overtime_limit
+    description: Maximum 40 hours overtime per month
+    category: limit
+    priority: critical
+
+    limit:
+      standard: 40
+      extended: 60
+      per: month
+
+    extended_conditions:
+      - condition: "peak_production_period"
+        approval: "labor_authority_notification"
+        max_months: 6
+
+    tracking:
+      mtd_hours: "Running total of OT hours in month"
+      warning_threshold: 32  # 80% of limit
+      block_threshold: 40
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_107
+
+  - id: OT-007
+    name: yearly_overtime_limit
+    description: Maximum 200-300 hours overtime per year
+    category: limit
+    priority: critical
+
+    limits:
+      standard: 200
+      extended: 300
+
+    extended_conditions:
+      industries:
+        - textiles
+        - garments
+        - leather
+        - footwear
+        - electronics
+        - agriculture_processing
+        - fishery_processing
+        - telecommunications
+        - energy
+        - water_supply
+
+      requirements:
+        - labor_authority_registration
+        - employee_consent
+        - additional_compensation
+
+    tracking:
+      ytd_hours: "Running total of OT hours in year"
+      warning_threshold: 160  # 80% of standard
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_107
+      - standard: Decree_145_2020
+
+  # Approval Rules
+  - id: OT-008
+    name: overtime_approval_workflow
+    description: Overtime must be pre-approved
+    category: approval
+    priority: high
+
+    approval_levels:
+      - hours: "1-2"
+        approver: direct_supervisor
+        advance_notice: 1_day
+
+      - hours: "2-4"
+        approver: department_manager
+        advance_notice: 2_days
+
+      - hours: "exceeds_daily_limit"
+        approver: hr_manager
+        advance_notice: 3_days
+        justification: required
+
+    emergency_exception:
+      condition: "Urgent unplanned work"
+      process: "Post-approval within 24 hours"
+      documentation: "Exception form with reason"
+
+    documentation:
+      - overtime_request_form
+      - business_justification
+      - approval_record
+      - timesheet_record
+
+  - id: OT-009
+    name: employee_consent
+    description: Employee must consent to overtime work
+    category: compliance
+    priority: critical
+
+    consent_requirements:
+      - informed_of_ot_requirement
+      - voluntary_agreement
+      - cannot_force_overtime
+
+    exceptions:
+      - national_defense_needs
+      - natural_disaster_prevention
+      - workplace_safety_emergency
+      - government_ordered_urgent_work
+
+    refusal_rights:
+      - employee_can_refuse_non_emergency_ot
+      - no_retaliation_for_refusal
+      - protected_categories:
+          - pregnant_employees
+          - nursing_mothers
+          - employees_with_young_children
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_107
+
+  # Special Categories
+  - id: OT-010
+    name: protected_category_overtime
+    description: Overtime restrictions for protected employees
+    category: restriction
+    priority: critical
+
+    pregnant_employees:
+      night_work: prohibited_after_7th_month
+      overtime: prohibited
+      remote_work: prohibited_after_7th_month
+
+    nursing_mothers:
+      period: "until_child_is_12_months"
+      night_work: prohibited
+      overtime: prohibited_without_consent
+      break_allowance: "60_minutes_per_day_for_nursing"
+
+    employees_with_disabilities:
+      overtime: "only_with_consent"
+      night_work: "only_with_consent"
+
+    minor_employees:
+      overtime: prohibited
+      night_work: prohibited
+      maximum_hours: "8_per_day, 40_per_week"
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        articles: [137, 138, 159]
+
+  # Calculation Rules
+  - id: OT-011
+    name: hourly_rate_calculation
+    description: Calculate base hourly rate for OT calculation
+    category: calculation
+    priority: high
+
+    methods:
+      standard:
+        formula: |
+          hourly_rate = monthly_salary / standard_monthly_hours
+          standard_monthly_hours = standard_daily_hours * working_days_in_month
+
+      alternative:
+        formula: |
+          hourly_rate = monthly_salary / 208  # Fixed divisor
+
+    included_in_base:
+      - basic_salary
+      - position_allowance
+      - responsibility_allowance
+
+    excluded_from_base:
+      - meal_allowance
+      - transport_allowance
+      - attendance_bonus
+      - performance_bonus
+
+  - id: OT-012
+    name: overtime_recording
+    description: Accurate recording of overtime hours
+    category: compliance
+    priority: high
+
+    requirements:
+      - time_in_out_recorded
+      - break_time_deducted
+      - supervisor_verification
+      - employee_acknowledgment
+
+    rounding_rules:
+      minimum_unit: 0.5_hours
+      rounding: round_to_nearest_half
+
+    documentation:
+      retention: 2_years
+      accessible_to: labor_inspector
+
+  # Payment Rules
+  - id: OT-013
+    name: overtime_payment_timing
+    description: Overtime payment with regular salary
+    category: payment
+    priority: high
+
+    timing:
+      standard: "With regular monthly salary"
+      maximum_delay: "Following pay period"
+
+    separate_tracking:
+      show_on_payslip: true
+      itemize: true
+      categories:
+        - weekday_ot
+        - weekend_ot
+        - holiday_ot
+        - night_premium
+
+    compliance:
+      - standard: Vietnam_Labor_Code_2019
+        article: Article_97
+
+rule_dependencies:
+  OT-001:
+    conflicts_with: [OT-002, OT-003]
+    reason: "Mutually exclusive day types"
+
+  OT-004:
+    combines_with: [OT-001, OT-002, OT-003]
+    reason: "Night premium adds to base OT rate"
+
+  OT-005:
+    validates_before: [OT-001, OT-002, OT-003, OT-004]
+    reason: "Daily limit checked before calculation"
+
+execution_order:
+  - phase: validation
+    rules: [OT-005, OT-006, OT-007, OT-009, OT-010]
+
+  - phase: approval
+    rules: [OT-008]
+
+  - phase: calculation
+    rules: [OT-011, OT-001, OT-002, OT-003, OT-004]
+
+  - phase: recording
+    rules: [OT-012]
+
+  - phase: payment
+    rules: [OT-013]
+
+compliance_summary:
+  - standard: Vietnam_Labor_Code_2019
+    articles: [97, 98, 107, 137, 138, 159]
+
+  - standard: Decree_145_2020
+    subject: OT_limits_and_industries

@@ -1,0 +1,267 @@
+name: TourSchedule
+display_name: Tour Schedule / Lịch tour
+description: |
+  Individual tour departure schedule with specific date, time,
+  capacity, and assigned resources. Manages availability for
+  a specific tour on a specific date.
+
+domain: travel-hospitality
+subdomain: tour
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: tour_id
+    type: uuid
+    required: true
+
+  - name: schedule_type
+    type: enum
+    required: true
+    validation:
+      values: [fixed, flexible, on_demand, private]
+    description: |
+      fixed: Runs on specific dates
+      flexible: Available daily within date range
+      on_demand: Only when requested
+      private: Private tour request
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [scheduled, confirmed, in_progress, completed, cancelled]
+    default: scheduled
+
+  # Date/Time
+  - name: tour_date
+    type: date
+    required: true
+
+  - name: start_time
+    type: time
+    required: true
+
+  - name: end_time
+    type: time
+    required: false
+
+  - name: cutoff_datetime
+    type: timestamp
+    required: true
+    description: Last time to accept bookings
+
+  # Capacity
+  - name: max_capacity
+    type: integer
+    required: true
+
+  - name: booked_count
+    type: integer
+    required: true
+    default: 0
+
+  - name: available_spots
+    type: integer
+    required: true
+    computed: true
+    description: max_capacity - booked_count
+
+  - name: min_to_operate
+    type: integer
+    required: true
+    description: Minimum bookings to run the tour
+
+  - name: confirmed_to_operate
+    type: boolean
+    required: true
+    default: false
+    description: True when min_to_operate reached
+
+  # Resources
+  - name: guide_id
+    type: uuid
+    required: false
+
+  - name: secondary_guide_id
+    type: uuid
+    required: false
+    description: Assistant guide for large groups
+
+  - name: vehicle_id
+    type: uuid
+    required: false
+
+  - name: equipment_assigned
+    type: array
+    required: false
+
+  # Pricing Override
+  - name: price_override_adult
+    type: decimal
+    required: false
+    description: Override base price for this date
+
+  - name: price_override_child
+    type: decimal
+    required: false
+
+  - name: is_promotional
+    type: boolean
+    required: true
+    default: false
+
+  - name: promotion_label
+    type: string
+    required: false
+    example: "Early Bird", "Last Minute"
+
+  # Language
+  - name: language
+    type: string
+    required: true
+    description: Language for this departure
+
+  # Pickup
+  - name: pickup_enabled
+    type: boolean
+    required: true
+    default: false
+
+  - name: pickup_points
+    type: array
+    required: false
+    description: Available pickup points for this schedule
+
+  # Notes
+  - name: internal_notes
+    type: text
+    required: false
+
+  - name: special_instructions
+    type: text
+    required: false
+    description: Special instructions for this departure
+
+  # Weather
+  - name: weather_dependent
+    type: boolean
+    required: true
+    default: false
+
+  - name: weather_backup_plan
+    type: text
+    required: false
+
+  # Timestamps
+  - name: confirmed_at
+    type: timestamp
+    required: false
+
+  - name: started_at
+    type: timestamp
+    required: false
+
+  - name: completed_at
+    type: timestamp
+    required: false
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+
+  - name: cancellation_reason
+    type: text
+    required: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: tour
+    type: belongs_to
+    entity: Tour
+    required: true
+
+  - name: guide
+    type: belongs_to
+    entity: Guide
+    required: false
+
+  - name: bookings
+    type: has_many
+    entity: TourBooking
+
+  - name: vehicle
+    type: belongs_to
+    entity: Vehicle
+    required: false
+
+indexes:
+  - [tour_id, tour_date]
+  - [tour_date]
+  - [status]
+  - [guide_id]
+  - [confirmed_to_operate]
+
+business_rules:
+  - BR-SCH-001: cutoff_datetime <= tour_date + start_time
+  - BR-SCH-002: booked_count <= max_capacity
+  - BR-SCH-003: Cannot cancel confirmed schedule without notifying guests
+  - BR-SCH-004: Guide must be assigned 24h before tour_date
+  - BR-SCH-005: Auto-confirm when booked_count >= min_to_operate
+  - BR-SCH-006: Cannot modify completed schedule
+
+state_machine:
+  initial: scheduled
+  states:
+    - name: scheduled
+      description: Tour is scheduled, accepting bookings
+    - name: confirmed
+      description: Minimum participants reached, tour will run
+    - name: in_progress
+      description: Tour is currently running
+    - name: completed
+      description: Tour finished successfully
+    - name: cancelled
+      description: Tour cancelled
+  transitions:
+    - from: scheduled
+      to: confirmed
+      trigger: confirm
+      conditions: [booked_count >= min_to_operate]
+    - from: scheduled
+      to: cancelled
+      trigger: cancel
+    - from: confirmed
+      to: in_progress
+      trigger: start
+    - from: confirmed
+      to: cancelled
+      trigger: cancel
+      actions: [notify_guests, process_refunds]
+    - from: in_progress
+      to: completed
+      trigger: complete
+
+events:
+  - name: schedule.created
+    payload: [id, tour_id, tour_date]
+  - name: schedule.confirmed
+    payload: [id, booked_count]
+  - name: schedule.guide_assigned
+    payload: [id, guide_id]
+  - name: schedule.started
+    payload: [id]
+  - name: schedule.completed
+    payload: [id, actual_participants]
+  - name: schedule.cancelled
+    payload: [id, reason, affected_bookings]

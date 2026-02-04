@@ -1,0 +1,596 @@
+name: Provision Fund
+display_name: Provision Fund / Quỹ dự phòng
+description: |
+  Provision fund entity managing the reserve fund for covering
+  investor losses from defaulted loans, including contributions,
+  claims, and fund balance tracking.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ENTITY DEFINITION
+# =============================================================================
+entity:
+  name: ProvisionFund
+  name_vi: Quỹ dự phòng
+  table_name: provision_funds
+
+  primary_key: id
+
+  # ---------------------------------------------------------------------------
+  # FUND ENTITY (Singleton per platform)
+  # ---------------------------------------------------------------------------
+  fund_attributes:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique fund identifier
+
+    - name: fund_name
+      type: string
+      default: "Investor Protection Fund"
+      description: Name of the provision fund
+
+    - name: fund_name_vi
+      type: string
+      default: "Quỹ bảo vệ nhà đầu tư"
+      description: Vietnamese name
+
+    # Fund Balance
+    - name: total_balance
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Current fund balance in VND
+
+    - name: available_balance
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Available for claims
+
+    - name: reserved_balance
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Reserved for pending claims
+
+    # Fund Statistics
+    - name: total_contributions
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Total contributions received
+
+    - name: total_claims_paid
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Total claims paid out
+
+    - name: total_recoveries
+      type: decimal
+      precision: 18
+      scale: 2
+      default: 0
+      description: Total recoveries received
+
+    - name: claims_count
+      type: integer
+      default: 0
+      description: Number of claims processed
+
+    # Fund Health
+    - name: coverage_ratio
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(total_balance / total_at_risk) * 100"
+      description: Fund coverage as % of at-risk loans
+
+    - name: claim_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: "(total_claims_paid / total_contributions) * 100"
+      description: Historical claim rate
+
+    # Contribution Settings
+    - name: contribution_rate
+      type: decimal
+      precision: 5
+      scale: 4
+      default: 0.005
+      description: Contribution rate (0.5% of repayments)
+
+    - name: max_coverage_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      default: 80
+      description: Maximum coverage per default (80%)
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, suspended, depleted]
+      default: active
+      description: Fund status
+
+    - name: last_audit_date
+      type: date
+      description: Last fund audit date
+
+    - name: next_audit_date
+      type: date
+      description: Next scheduled audit
+
+  # ---------------------------------------------------------------------------
+  # TRANSACTION ENTITY
+  # ---------------------------------------------------------------------------
+  attributes:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique transaction identifier
+
+    - name: transaction_reference
+      type: string
+      format: "PF-YYYYMM-XXXXXX"
+      unique: true
+      indexed: true
+      description: Transaction reference
+      example: "PF-202501-000001"
+
+    # Transaction Type
+    - name: transaction_type
+      type: enum
+      values: [contribution, claim, recovery, adjustment, withdrawal, interest]
+      required: true
+      indexed: true
+      description: Type of transaction
+
+    # References
+    - name: loan_id
+      type: uuid
+      references: loans.id
+      description: Associated loan (for contributions/claims)
+
+    - name: investment_id
+      type: uuid
+      references: investments.id
+      description: Associated investment (for claims)
+
+    - name: investor_id
+      type: uuid
+      references: investors.id
+      description: Beneficiary investor (for claims)
+
+    - name: repayment_id
+      type: uuid
+      references: repayments.id
+      description: Associated repayment (for contributions)
+
+    # Amount Details
+    - name: amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Transaction amount
+
+    - name: running_balance
+      type: decimal
+      precision: 18
+      scale: 2
+      description: Fund balance after transaction
+
+    # Contribution Details
+    - name: contribution_source
+      type: enum
+      values: [borrower_repayment, platform_allocation, investor_fee, initial_funding]
+      description: Source of contribution
+
+    - name: contribution_rate_applied
+      type: decimal
+      precision: 5
+      scale: 4
+      description: Rate applied for this contribution
+
+    # Claim Details
+    - name: claim_id
+      type: uuid
+      description: Related claim record
+
+    - name: claim_type
+      type: enum
+      values: [default_coverage, early_default, fraud_coverage]
+      description: Type of claim
+
+    - name: principal_covered
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Principal amount covered
+
+    - name: interest_covered
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Interest amount covered
+
+    - name: coverage_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of loss covered
+
+    # Recovery Details
+    - name: recovery_source
+      type: enum
+      values: [collection, legal, settlement, sale]
+      description: Source of recovery
+
+    - name: original_claim_id
+      type: uuid
+      description: Original claim being recovered
+
+    # Transaction Status
+    - name: status
+      type: enum
+      values: [pending, completed, reversed, failed]
+      default: pending
+      indexed: true
+      description: Transaction status
+
+    - name: processed_at
+      type: timestamp
+      description: When transaction was processed
+
+    - name: reversed_at
+      type: timestamp
+      description: When reversed (if applicable)
+
+    - name: reversal_reason
+      type: string
+      max_length: 500
+      description: Reason for reversal
+
+    # Approval
+    - name: requires_approval
+      type: boolean
+      default: false
+      description: Whether approval required
+
+    - name: approved_by
+      type: uuid
+      references: users.id
+      description: Approver for claims
+
+    - name: approved_at
+      type: timestamp
+      description: Approval timestamp
+
+    # Notes
+    - name: description
+      type: string
+      max_length: 500
+      description: Transaction description
+
+    - name: notes
+      type: text
+      description: Internal notes
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      default: now()
+      indexed: true
+      description: When transaction was created
+
+    - name: updated_at
+      type: timestamp
+      default: now()
+      on_update: now()
+      description: Last update time
+
+  # ---------------------------------------------------------------------------
+  # CLAIM ENTITY
+  # ---------------------------------------------------------------------------
+  claim_attributes:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique claim identifier
+
+    - name: claim_number
+      type: string
+      format: "CLM-YYYYMM-XXXXXX"
+      unique: true
+      description: Claim reference number
+
+    # References
+    - name: loan_id
+      type: uuid
+      required: true
+      references: loans.id
+      description: Defaulted loan
+
+    - name: investor_id
+      type: uuid
+      required: true
+      references: investors.id
+      description: Investor making claim
+
+    - name: investment_id
+      type: uuid
+      required: true
+      references: investments.id
+      description: Affected investment
+
+    # Claim Details
+    - name: principal_loss
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Principal loss amount
+
+    - name: interest_loss
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Interest loss amount
+
+    - name: total_loss
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "principal_loss + interest_loss"
+      description: Total loss amount
+
+    - name: eligible_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Amount eligible for coverage
+
+    - name: coverage_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Coverage percentage applied
+
+    - name: claim_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      computed: "eligible_amount * coverage_percentage / 100"
+      description: Amount to be claimed
+
+    - name: amount_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Amount actually paid
+
+    # Claim Status
+    - name: status
+      type: enum
+      values: [pending, under_review, approved, partial_approved, rejected, paid, closed]
+      default: pending
+      indexed: true
+      description: Claim status
+
+    - name: rejection_reason
+      type: string
+      max_length: 500
+      description: Reason if rejected
+
+    # Processing
+    - name: submitted_at
+      type: timestamp
+      default: now()
+      description: When claim was submitted
+
+    - name: reviewed_at
+      type: timestamp
+      description: When review completed
+
+    - name: reviewed_by
+      type: uuid
+      references: users.id
+      description: Reviewer
+
+    - name: paid_at
+      type: timestamp
+      description: When payment was made
+
+    # Recovery Tracking
+    - name: recovery_expected
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Expected recovery amount
+
+    - name: recovery_received
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+      description: Actual recovery received
+
+  # ---------------------------------------------------------------------------
+  # RELATIONSHIPS
+  # ---------------------------------------------------------------------------
+  relationships:
+    - name: loan
+      type: belongs_to
+      entity: Loan
+      foreign_key: loan_id
+
+    - name: investment
+      type: belongs_to
+      entity: Investment
+      foreign_key: investment_id
+
+    - name: investor
+      type: belongs_to
+      entity: Investor
+      foreign_key: investor_id
+
+    - name: repayment
+      type: belongs_to
+      entity: Repayment
+      foreign_key: repayment_id
+
+  # ---------------------------------------------------------------------------
+  # INDEXES
+  # ---------------------------------------------------------------------------
+  indexes:
+    - name: idx_pf_transactions_type
+      columns: [transaction_type]
+
+    - name: idx_pf_transactions_loan
+      columns: [loan_id]
+
+    - name: idx_pf_transactions_investor
+      columns: [investor_id]
+
+    - name: idx_pf_transactions_date
+      columns: [created_at]
+
+    - name: idx_pf_claims_status
+      columns: [status]
+
+# =============================================================================
+# FUND MANAGEMENT
+# =============================================================================
+fund_management:
+  contribution_model:
+    sources:
+      borrower_repayments:
+        rate: 0.005
+        description: "0.5% of each repayment"
+        applies_to: interest_portion
+
+      platform_allocation:
+        rate: 0.10
+        description: "10% of platform fees"
+        frequency: monthly
+
+      initial_funding:
+        description: "Platform capital contribution"
+        minimum: 1000000000
+
+  coverage_rules:
+    default_coverage:
+      eligibility:
+        - loan_status: defaulted
+        - days_past_due: "> 90"
+        - collection_attempted: true
+      coverage_percentage: 80
+      max_wait_days: 30
+
+    early_default:
+      eligibility:
+        - days_past_due: "< 90"
+        - fraud_confirmed: true
+      coverage_percentage: 100
+      description: "Full coverage for confirmed fraud"
+
+    coverage_limits:
+      per_investor:
+        annual_max: 500000000
+        per_loan_max: 50000000
+      per_loan:
+        max_percentage: 80
+
+  payout_priority:
+    - principal_first: true
+    - pro_rata_among_investors: true
+    - if_insufficient: partial_payout
+
+  recovery_allocation:
+    order:
+      - fund_replenishment: 50
+      - investor_additional: 50
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  contributions:
+    - rule: "Contribution rate applies to interest portion only"
+      enforcement: system
+
+    - rule: "Contributions recorded with each repayment"
+      enforcement: system
+
+    - rule: "Platform contributes 10% of fees monthly"
+      enforcement: scheduled
+
+  claims:
+    - rule: "Claims eligible only after 90 DPD"
+      enforcement: system
+
+    - rule: "Maximum coverage 80% of principal"
+      enforcement: system
+
+    - rule: "Claims processed within 30 days"
+      enforcement: sla
+
+    - rule: "Claims > 10M require manager approval"
+      enforcement: workflow
+
+  fund_health:
+    - rule: "Minimum fund balance 2% of outstanding loans"
+      enforcement: monitoring
+
+    - rule: "Alert if coverage ratio < 5%"
+      enforcement: alert
+
+    - rule: "Suspend new loans if fund depleted"
+      enforcement: system
+
+# =============================================================================
+# VALIDATION RULES
+# =============================================================================
+validations:
+  - field: amount
+    rules:
+      - min: 0
+        message: "Amount must be positive"
+
+  - field: coverage_percentage
+    rules:
+      - max: 100
+        message: "Coverage cannot exceed 100%"
+
+  - field: claim_amount
+    rules:
+      - custom: "claim_amount <= eligible_amount * max_coverage_percentage / 100"
+        message: "Claim exceeds maximum coverage"
+
+# =============================================================================
+# AUDIT CONFIGURATION
+# =============================================================================
+audit:
+  enabled: true
+  track_changes: true
+  sensitive_fields:
+    - investor_id
+    - claim_amount
+    - amount_paid
+  retention_years: 10

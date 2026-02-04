@@ -1,0 +1,475 @@
+# Payment Processing Workflow
+# Domain: fintech/payment
+# Purpose: End-to-end payment processing from creation to settlement
+
+name: Payment Processing
+display_name: Payment Processing Workflow
+description: |
+  Complete workflow for processing a payment from intent creation through
+  authorization, capture, and settlement. Includes retry logic, fallback
+  processors, and error handling.
+
+  Vietnamese: Quy trình hoàn chỉnh xử lý thanh toán từ tạo intent đến
+  ủy quyền, capture và quyết toán. Bao gồm logic thử lại và xử lý lỗi.
+
+domain: fintech
+sub_domain: payment
+category: workflow
+version: "1.0.0"
+
+workflow:
+  id: WF-PAY-001
+  name: payment_processing
+  trigger: api_request
+
+  # ============ STEP 1: CREATE PAYMENT INTENT ============
+  steps:
+    - id: create_payment_intent
+      name: Create Payment Intent
+      description: Initialize payment intent with merchant and amount details
+      vietnamese: Khởi tạo payment intent với thông tin merchant và số tiền
+      type: action
+      input:
+        - merchant_id
+        - amount
+        - currency
+        - payment_method_types
+        - capture_method
+        - return_url
+        - metadata
+      actions:
+        - validate_merchant_status(merchant_id)
+        - validate_amount_limits(amount, merchant)
+        - generate_payment_intent_id()
+        - generate_client_secret()
+        - create_payment_intent_record()
+      output:
+        - payment_intent_id
+        - client_secret
+        - status: requires_payment_method
+      on_success: return_client_secret
+      on_failure: return_error
+      timeout: 5s
+
+    # ============ STEP 2: COLLECT PAYMENT METHOD ============
+    - id: collect_payment_method
+      name: Collect Payment Method
+      description: Customer provides payment method via frontend SDK
+      vietnamese: Khách hàng cung cấp phương thức thanh toán qua SDK frontend
+      type: external_action
+      actor: customer
+      input:
+        - client_secret
+        - payment_method_data
+      actions:
+        - validate_client_secret()
+        - tokenize_payment_method()
+        - attach_payment_method_to_intent()
+        - update_intent_status(requires_confirmation)
+      output:
+        - payment_method_id
+        - status: requires_confirmation
+      timeout: 30m
+      on_timeout: expire_intent
+
+    # ============ STEP 3: VALIDATE PAYMENT ============
+    - id: validate_payment
+      name: Validate Payment
+      description: Validate payment method and run fraud checks
+      vietnamese: Xác thực phương thức thanh toán và kiểm tra gian lận
+      type: action
+      input:
+        - payment_intent
+        - payment_method
+        - device_fingerprint
+        - ip_address
+      parallel_actions:
+        - validate_payment_method:
+            - check_card_expiry()
+            - check_card_status()
+            - check_daily_limits()
+
+        - fraud_detection:
+            - calculate_risk_score()
+            - check_velocity_limits()
+            - check_blacklists()
+            - check_geographic_anomalies()
+
+        - merchant_validation:
+            - verify_merchant_active()
+            - check_merchant_limits()
+      output:
+        - validation_result
+        - risk_score
+        - risk_level
+        - requires_3ds
+      decision:
+        - if: validation_failed
+          goto: reject_payment
+        - if: risk_level = very_high
+          goto: manual_review
+        - if: requires_3ds = true
+          goto: authenticate_3ds
+        - else: goto: authorize_payment
+
+    # ============ STEP 4: 3D SECURE AUTHENTICATION ============
+    - id: authenticate_3ds
+      name: 3D Secure Authentication
+      description: Perform 3D Secure authentication if required
+      vietnamese: Thực hiện xác thực 3D Secure nếu cần
+      type: external_action
+      actor: customer
+      condition: requires_3ds = true
+      input:
+        - payment_intent
+        - payment_method
+        - return_url
+      actions:
+        - initiate_3ds_challenge()
+        - update_intent_status(requires_action)
+        - set_next_action(redirect_to_url)
+        - wait_for_3ds_completion()
+      output:
+        - three_d_secure_status
+        - authentication_value
+      timeout: 15m
+      on_timeout: fail_payment(3ds_timeout)
+      decision:
+        - if: 3ds_succeeded
+          goto: authorize_payment
+        - if: 3ds_failed
+          goto: reject_payment
+        - if: 3ds_challenged
+          continue_waiting: true
+
+    # ============ STEP 5: AUTHORIZE PAYMENT ============
+    - id: authorize_payment
+      name: Authorize Payment
+      description: Send authorization request to payment processor
+      vietnamese: Gửi yêu cầu ủy quyền đến bộ xử lý thanh toán
+      type: action
+      input:
+        - payment_intent
+        - payment_method
+        - authentication_data
+      actions:
+        - select_processor(payment_method, merchant)
+        - build_authorization_request()
+        - send_to_processor()
+        - process_response()
+        - store_authorization_code()
+      output:
+        - authorization_code
+        - processor_response
+        - authorized_amount
+      retry:
+        max_attempts: 3
+        backoff: exponential
+        retry_on: [timeout, connection_error]
+      decision:
+        - if: authorized AND capture_method = automatic
+          goto: capture_payment
+        - if: authorized AND capture_method = manual
+          goto: hold_authorization
+        - if: soft_decline
+          goto: retry_authorization
+        - if: hard_decline
+          goto: reject_payment
+
+    # ============ STEP 5B: RETRY WITH FAILOVER ============
+    - id: retry_authorization
+      name: Retry Authorization
+      description: Retry with backup processor or different routing
+      vietnamese: Thử lại với processor dự phòng hoặc định tuyến khác
+      type: action
+      condition: retry_count < max_retries
+      input:
+        - payment_intent
+        - original_decline_code
+      actions:
+        - select_backup_processor()
+        - wait_exponential_backoff()
+        - retry_authorization_request()
+      output:
+        - retry_result
+      decision:
+        - if: authorized
+          goto: capture_payment
+        - if: retry_exhausted
+          goto: reject_payment
+
+    # ============ STEP 6A: HOLD AUTHORIZATION ============
+    - id: hold_authorization
+      name: Hold Authorization
+      description: Hold authorization for manual capture
+      vietnamese: Giữ ủy quyền cho capture thủ công
+      type: action
+      condition: capture_method = manual
+      input:
+        - payment_intent
+        - authorization_code
+      actions:
+        - create_payment_record(status: requires_capture)
+        - set_authorization_expiry(7 days)
+        - notify_merchant(authorization_successful)
+      output:
+        - payment_id
+        - status: requires_capture
+        - expires_at
+      on_success: return_payment_success
+
+    # ============ STEP 6B: CAPTURE PAYMENT ============
+    - id: capture_payment
+      name: Capture Payment
+      description: Capture authorized funds
+      vietnamese: Capture số tiền đã ủy quyền
+      type: action
+      input:
+        - payment_intent
+        - authorization_code
+        - capture_amount
+      actions:
+        - validate_capture_amount()
+        - send_capture_request()
+        - process_capture_response()
+        - calculate_fees()
+        - create_payment_record(status: succeeded)
+        - update_merchant_balance()
+      output:
+        - payment_id
+        - captured_amount
+        - fee_amount
+        - net_amount
+        - status: succeeded
+      on_success: goto: post_payment_processing
+      on_failure: goto: capture_failed
+
+    # ============ STEP 7: POST-PAYMENT PROCESSING ============
+    - id: post_payment_processing
+      name: Post-Payment Processing
+      description: Async tasks after successful payment
+      vietnamese: Xử lý bất đồng bộ sau thanh toán thành công
+      type: async_action
+      parallel_actions:
+        - send_receipt:
+            - generate_receipt()
+            - send_receipt_email(customer)
+
+        - notify_merchant:
+            - send_webhook(payment.succeeded)
+            - update_merchant_dashboard()
+
+        - queue_for_settlement:
+            - calculate_settlement_date()
+            - add_to_settlement_batch()
+
+        - update_analytics:
+            - record_transaction_metrics()
+            - update_merchant_volume()
+
+        - save_payment_method:
+            - if: setup_future_usage
+              then: save_payment_method_for_customer()
+      output:
+        - receipt_url
+        - settlement_date
+
+    # ============ ERROR HANDLING STEPS ============
+    - id: reject_payment
+      name: Reject Payment
+      description: Handle payment rejection
+      vietnamese: Xử lý từ chối thanh toán
+      type: action
+      input:
+        - payment_intent
+        - decline_code
+        - decline_reason
+      actions:
+        - create_payment_record(status: failed)
+        - set_failure_details(code, message)
+        - send_webhook(payment.failed)
+        - notify_customer(payment_declined)
+      output:
+        - payment_id
+        - status: failed
+        - failure_code
+        - failure_message
+
+    - id: manual_review
+      name: Manual Review
+      description: Queue for manual fraud review
+      vietnamese: Đưa vào hàng đợi xem xét gian lận thủ công
+      type: action
+      input:
+        - payment_intent
+        - risk_score
+        - risk_factors
+      actions:
+        - create_review_case()
+        - notify_fraud_team()
+        - update_intent_status(on_hold)
+      output:
+        - review_case_id
+        - status: on_hold
+      sla: 2 hours
+      on_review_approved: goto: authorize_payment
+      on_review_rejected: goto: reject_payment
+
+    - id: capture_failed
+      name: Handle Capture Failure
+      description: Handle capture failure
+      vietnamese: Xử lý lỗi capture
+      type: action
+      input:
+        - payment_intent
+        - capture_error
+      actions:
+        - void_authorization_if_possible()
+        - create_payment_record(status: failed)
+        - send_webhook(payment.capture_failed)
+      output:
+        - status: failed
+        - failure_code
+
+# ============ SEQUENCE DIAGRAM ============
+sequence_diagram: |
+  Customer -> Frontend SDK: Select payment method
+  Frontend SDK -> API: Create PaymentIntent
+  API -> Database: Store intent
+  API -> Frontend SDK: Return client_secret
+  Frontend SDK -> Customer: Show payment form
+  Customer -> Frontend SDK: Enter card details
+  Frontend SDK -> API: Confirm PaymentIntent
+  API -> Fraud Service: Check risk
+  Fraud Service -> API: Risk score
+  alt High Risk
+    API -> 3DS Provider: Initiate 3DS
+    3DS Provider -> Customer: Challenge
+    Customer -> 3DS Provider: Complete challenge
+    3DS Provider -> API: Authentication result
+  end
+  API -> Processor: Authorization request
+  Processor -> Card Network: Auth request
+  Card Network -> Issuer: Auth request
+  Issuer -> Card Network: Approve/Decline
+  Card Network -> Processor: Response
+  Processor -> API: Auth response
+  alt Approved
+    API -> Processor: Capture request
+    Processor -> API: Capture response
+    API -> Database: Store payment
+    API -> Merchant: Webhook (succeeded)
+    API -> Frontend SDK: Payment succeeded
+    Frontend SDK -> Customer: Success page
+  else Declined
+    API -> Database: Store failure
+    API -> Merchant: Webhook (failed)
+    API -> Frontend SDK: Payment failed
+    Frontend SDK -> Customer: Error message
+  end
+
+# ============ STATE MACHINE ============
+state_machine:
+  states:
+    - requires_payment_method
+    - requires_confirmation
+    - requires_action
+    - processing
+    - requires_capture
+    - succeeded
+    - failed
+    - cancelled
+
+  transitions:
+    - from: requires_payment_method
+      to: requires_confirmation
+      event: payment_method_attached
+
+    - from: requires_confirmation
+      to: processing
+      event: intent_confirmed
+
+    - from: requires_confirmation
+      to: requires_action
+      event: action_required
+
+    - from: requires_action
+      to: processing
+      event: action_completed
+
+    - from: processing
+      to: requires_capture
+      event: authorized_manual_capture
+
+    - from: processing
+      to: succeeded
+      event: captured
+
+    - from: processing
+      to: failed
+      event: declined
+
+    - from: requires_capture
+      to: succeeded
+      event: captured
+
+    - from: requires_capture
+      to: failed
+      event: authorization_expired
+
+    - from: [requires_payment_method, requires_confirmation, requires_action, requires_capture]
+      to: cancelled
+      event: cancelled
+
+# ============ ERROR CODES ============
+error_codes:
+  validation:
+    - code: INVALID_AMOUNT
+      message: Amount must be positive and within limits
+    - code: INVALID_CURRENCY
+      message: Currency not supported
+    - code: MERCHANT_NOT_ACTIVE
+      message: Merchant account is not active
+
+  processing:
+    - code: CARD_DECLINED
+      message: Card was declined
+    - code: INSUFFICIENT_FUNDS
+      message: Insufficient funds
+    - code: EXPIRED_CARD
+      message: Card has expired
+    - code: PROCESSOR_ERROR
+      message: Payment processor error
+
+  authentication:
+    - code: 3DS_FAILED
+      message: 3D Secure authentication failed
+    - code: 3DS_TIMEOUT
+      message: 3D Secure authentication timed out
+
+  capture:
+    - code: AUTHORIZATION_EXPIRED
+      message: Authorization has expired
+    - code: CAPTURE_EXCEEDS_AUTHORIZATION
+      message: Capture amount exceeds authorization
+
+# ============ MONITORING ============
+monitoring:
+  metrics:
+    - payment_success_rate
+    - average_processing_time
+    - 3ds_challenge_rate
+    - decline_rate_by_reason
+    - processor_response_time
+
+  alerts:
+    - success_rate_below: 95%
+    - processing_time_above: 10s
+    - decline_rate_above: 15%
+    - processor_errors_above: 5%
+
+sla:
+  payment_processing: 5s
+  authorization: 3s
+  capture: 2s
+  3ds_completion: 15m

@@ -1,0 +1,324 @@
+name: Guide Assignment Workflow
+display_name: Guide Assignment Workflow / Quy trình phân công hướng dẫn viên
+description: |
+  Workflow for assigning guides to tour schedules,
+  including availability check, skill matching, and confirmation.
+
+domain: travel-hospitality
+subdomain: tour
+version: "1.0"
+
+triggers:
+  - event: schedule.created
+    source: ScheduleService
+  - event: schedule.guide_needed
+    source: ScheduleService
+    condition: guide_id IS NULL AND tour_date - NOW() <= 7 days
+
+actors:
+  - name: System
+    role: automated
+    description: Auto-assignment engine
+  - name: Operator
+    role: coordinator
+    description: Tour operator staff
+  - name: Guide
+    role: assignee
+    description: Tour guide to be assigned
+
+steps:
+  - id: CHECK_REQUIREMENTS
+    name: Check Tour Requirements
+    actor: System
+    type: automated
+    actions:
+      - Identify tour type
+      - Identify required languages
+      - Identify required certifications
+      - Check group size
+      - Determine if secondary guide needed
+    outputs:
+      - requirements
+        - languages[]
+        - certifications[]
+        - tour_types[]
+        - operating_area
+        - max_group_size
+    on_success: FIND_AVAILABLE_GUIDES
+
+  - id: FIND_AVAILABLE_GUIDES
+    name: Find Available Guides
+    actor: System
+    type: automated
+    actions:
+      - Query guides with matching skills
+      - Check calendar availability
+      - Check max_tours_per_day limit
+      - Filter by operating area
+      - Exclude suspended/inactive guides
+    inputs:
+      - requirements
+      - tour_date
+      - start_time
+      - end_time
+    outputs:
+      - eligible_guides[]
+    branches:
+      - condition: eligible_guides.count > 0
+        next: RANK_GUIDES
+      - condition: eligible_guides.count = 0
+        next: NO_GUIDES_AVAILABLE
+
+  - id: RANK_GUIDES
+    name: Rank Eligible Guides
+    actor: System
+    type: automated
+    actions:
+      - Score by rating
+      - Score by experience with tour type
+      - Score by language proficiency
+      - Score by proximity to meeting point
+      - Consider workload balance
+      - Factor in repeat booking preference
+    scoring:
+      rating_weight: 0.30
+      experience_weight: 0.25
+      language_weight: 0.20
+      proximity_weight: 0.15
+      workload_weight: 0.10
+    outputs:
+      - ranked_guides[]
+    on_success: CHECK_AUTO_ASSIGN
+
+  - id: CHECK_AUTO_ASSIGN
+    name: Check Auto-Assignment Setting
+    actor: System
+    type: automated
+    branches:
+      - condition: supplier.auto_assign_guides = true
+        next: AUTO_ASSIGN_TOP_GUIDE
+      - condition: supplier.auto_assign_guides = false
+        next: PRESENT_OPTIONS_TO_OPERATOR
+
+  - id: AUTO_ASSIGN_TOP_GUIDE
+    name: Auto-Assign Top Guide
+    actor: System
+    type: automated
+    actions:
+      - Select highest-ranked guide
+      - Block calendar slot
+      - Create assignment record
+      - Send notification to guide
+    outputs:
+      - assigned_guide_id
+    on_success: AWAIT_GUIDE_CONFIRMATION
+    on_failure: TRY_NEXT_GUIDE
+
+  - id: TRY_NEXT_GUIDE
+    name: Try Next Guide
+    actor: System
+    type: automated
+    actions:
+      - Move to next ranked guide
+      - Attempt assignment
+    loop_until: assignment_successful OR no_more_guides
+    on_success: AWAIT_GUIDE_CONFIRMATION
+    on_failure: ESCALATE_TO_OPERATOR
+
+  - id: PRESENT_OPTIONS_TO_OPERATOR
+    name: Present Options to Operator
+    actor: Operator
+    type: interactive
+    actions:
+      - Display ranked guide list
+      - Show guide profiles
+      - Show availability
+      - Show ratings and reviews
+    inputs:
+      - selected_guide_id
+    on_success: MANUAL_ASSIGN_GUIDE
+
+  - id: MANUAL_ASSIGN_GUIDE
+    name: Manual Assign Guide
+    actor: Operator
+    type: interactive
+    actions:
+      - Confirm guide selection
+      - Block calendar slot
+      - Create assignment record
+      - Send notification to guide
+    outputs:
+      - assigned_guide_id
+    on_success: AWAIT_GUIDE_CONFIRMATION
+
+  - id: AWAIT_GUIDE_CONFIRMATION
+    name: Await Guide Confirmation
+    actor: Guide
+    type: interactive
+    timeout: 4 hours
+    actions:
+      - Guide receives notification
+      - Reviews tour details
+      - Confirms or declines
+    inputs:
+      - confirmation: accept | decline
+      - decline_reason
+    branches:
+      - condition: confirmation = 'accept'
+        next: ASSIGNMENT_CONFIRMED
+      - condition: confirmation = 'decline'
+        next: HANDLE_DECLINE
+    on_timeout: HANDLE_NO_RESPONSE
+
+  - id: HANDLE_DECLINE
+    name: Handle Guide Decline
+    actor: System
+    type: automated
+    actions:
+      - Record decline reason
+      - Release calendar block
+      - Remove from consideration
+      - Select next guide
+    on_success: TRY_NEXT_GUIDE
+
+  - id: HANDLE_NO_RESPONSE
+    name: Handle No Response
+    actor: System
+    type: automated
+    actions:
+      - Send reminder
+      - Wait additional 2 hours
+      - Auto-assign or escalate
+    timeout: 2 hours
+    on_timeout: TRY_NEXT_GUIDE
+
+  - id: ASSIGNMENT_CONFIRMED
+    name: Assignment Confirmed
+    actor: System
+    type: automated
+    actions:
+      - Update schedule with guide_id
+      - Confirm calendar block
+      - Notify operator
+      - Send assignment details to guide
+    events:
+      - schedule.guide_assigned
+    outputs:
+      - assignment_id
+    on_success: SEND_BRIEFING
+
+  - id: SEND_BRIEFING
+    name: Send Briefing Materials
+    actor: System
+    type: automated
+    actions:
+      - Send tour details
+      - Send participant list (24h before)
+      - Send meeting point info
+      - Send special requirements
+    on_success: ASSIGNMENT_COMPLETE
+
+  - id: NO_GUIDES_AVAILABLE
+    name: No Guides Available
+    actor: System
+    type: automated
+    actions:
+      - Alert operator
+      - Suggest expanding search criteria
+      - Check for external guides
+    on_success: ESCALATE_TO_OPERATOR
+
+  - id: ESCALATE_TO_OPERATOR
+    name: Escalate to Operator
+    actor: Operator
+    type: interactive
+    actions:
+      - Review situation
+      - Contact guides directly
+      - Consider hiring external guide
+      - Consider rescheduling/cancelling
+    inputs:
+      - resolution: assign | reschedule | cancel
+    branches:
+      - condition: resolution = 'assign'
+        next: MANUAL_ASSIGN_GUIDE
+      - condition: resolution = 'reschedule'
+        next: RESCHEDULE_TOUR
+      - condition: resolution = 'cancel'
+        next: CANCEL_TOUR
+
+  - id: RESCHEDULE_TOUR
+    name: Reschedule Tour
+    actor: Operator
+    type: interactive
+    actions:
+      - Find alternative date
+      - Notify customers
+      - Offer refund or rebooking
+    on_success: RESTART_ASSIGNMENT
+
+  - id: RESTART_ASSIGNMENT
+    name: Restart Assignment
+    actor: System
+    type: automated
+    actions:
+      - Update tour date
+      - Restart guide search
+    on_success: FIND_AVAILABLE_GUIDES
+
+  - id: CANCEL_TOUR
+    name: Cancel Tour
+    actor: System
+    type: automated
+    actions:
+      - Cancel schedule
+      - Process refunds
+      - Notify customers
+    events:
+      - schedule.cancelled
+    on_success: END_CANCELLED
+
+  - id: ASSIGNMENT_COMPLETE
+    name: Assignment Complete
+    actor: System
+    type: terminal
+    description: Guide successfully assigned
+
+  - id: END_CANCELLED
+    name: Tour Cancelled
+    actor: System
+    type: terminal
+    description: Tour cancelled due to no guide
+
+timeouts:
+  guide_confirmation: 4 hours
+  reminder_followup: 2 hours
+  escalation: 24 hours before tour
+
+notifications:
+  - event: assignment.requested
+    recipients: [guide]
+    channels: [push, email, sms]
+    template: guide_assignment_request
+
+  - event: assignment.confirmed
+    recipients: [operator]
+    channels: [email]
+    template: guide_confirmed
+
+  - event: assignment.declined
+    recipients: [operator]
+    channels: [push, email]
+    template: guide_declined
+
+  - event: no_guide_available
+    recipients: [operator]
+    channels: [push, email, sms]
+    template: urgent_no_guide
+
+error_handling:
+  no_eligible_guides:
+    action: expand_search_and_escalate
+
+  all_guides_declined:
+    action: urgent_escalation_to_manager

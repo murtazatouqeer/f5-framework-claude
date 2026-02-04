@@ -1,0 +1,403 @@
+name: leave-request
+display_name: Leave Request
+description: |
+  Leave request entity for employee leave applications with approval
+  workflow, balance checking, and handover management.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: LeaveRequest
+  table_name: leave_requests
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: request_id
+        type: string
+        required: true
+        unique: true
+        format: "LV-YYYYMMDD-XXXX"
+        description: "Leave request reference number"
+
+      - name: employee_id
+        type: uuid
+        required: true
+        foreign_key: employees.id
+        description: "Employee requesting leave"
+
+      - name: leave_type_id
+        type: uuid
+        required: true
+        foreign_key: leave_types.id
+        description: "Type of leave requested"
+
+      - name: status
+        type: enum
+        required: true
+        default: "draft"
+        values:
+          - draft
+          - pending
+          - approved
+          - rejected
+          - cancelled
+          - withdrawn
+        description: "Request status"
+
+    # Leave Period
+    period:
+      - name: start_date
+        type: date
+        required: true
+        description: "Leave start date"
+
+      - name: end_date
+        type: date
+        required: true
+        description: "Leave end date"
+
+      - name: days_requested
+        type: decimal
+        required: true
+        precision: 4
+        scale: 2
+        description: "Number of days requested"
+
+      - name: working_days
+        type: decimal
+        computed: true
+        description: "Actual working days (excluding holidays)"
+
+      - name: half_day
+        type: boolean
+        default: false
+        description: "Whether this is a half-day leave"
+
+      - name: half_day_type
+        type: enum
+        values: [first_half, second_half]
+        description: "Which half of the day"
+
+      - name: leave_hours
+        type: decimal
+        description: "Hours if hourly leave"
+
+    # Details
+    details:
+      - name: reason
+        type: text
+        required: true
+        description: "Reason for leave"
+
+      - name: destination
+        type: string
+        description: "Where employee will be (optional)"
+
+      - name: contact_during_leave
+        type: string
+        description: "Contact number during leave"
+
+      - name: supporting_document_url
+        type: string
+        description: "URL to supporting document"
+
+      - name: document_type
+        type: string
+        description: "Type of document attached"
+
+    # Balance Check
+    balance:
+      - name: balance_before
+        type: decimal
+        description: "Leave balance before this request"
+
+      - name: balance_after
+        type: decimal
+        computed: true
+        description: "Projected balance after approval"
+
+      - name: uses_carry_forward
+        type: boolean
+        default: false
+        description: "Whether using carried forward days"
+
+      - name: carry_forward_days_used
+        type: decimal
+        default: 0
+        description: "Days from carry forward balance"
+
+    # Approval
+    approval:
+      - name: approver_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Manager who approves/rejects"
+
+      - name: approval_date
+        type: timestamp
+        description: "When approved/rejected"
+
+      - name: approval_notes
+        type: text
+        description: "Notes from approver"
+
+      - name: rejection_reason
+        type: text
+        description: "Reason if rejected"
+
+      - name: escalated
+        type: boolean
+        default: false
+        description: "Whether escalated to higher level"
+
+      - name: escalated_to_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Person escalated to"
+
+    # Coverage
+    coverage:
+      - name: handover_required
+        type: boolean
+        default: false
+        description: "Whether handover is required"
+
+      - name: handover_to_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Person covering responsibilities"
+
+      - name: handover_notes
+        type: text
+        description: "Handover instructions"
+
+      - name: handover_accepted
+        type: boolean
+        description: "Whether backup person accepted"
+
+    # Return
+    return_info:
+      - name: actual_return_date
+        type: date
+        description: "Actual date employee returned"
+
+      - name: extended
+        type: boolean
+        default: false
+        description: "Whether leave was extended"
+
+      - name: extension_request_id
+        type: uuid
+        foreign_key: leave_requests.id
+        description: "Link to extension request"
+
+      - name: early_return
+        type: boolean
+        default: false
+        description: "Whether returned early"
+
+      - name: days_adjusted
+        type: decimal
+        description: "Days adjustment on return"
+
+    # System
+    system:
+      - name: submitted_at
+        type: timestamp
+        description: "When request was submitted"
+
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: created_by
+        type: uuid
+        foreign_key: users.id
+
+      - name: updated_by
+        type: uuid
+        foreign_key: users.id
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+      description: "Employee who requested leave"
+
+    - name: leave_type
+      type: belongs_to
+      entity: LeaveType
+      foreign_key: leave_type_id
+      description: "Type of leave"
+
+    - name: approver
+      type: belongs_to
+      entity: Employee
+      foreign_key: approver_id
+      description: "Manager who approved/rejected"
+
+    - name: handover_person
+      type: belongs_to
+      entity: Employee
+      foreign_key: handover_to_id
+      description: "Person handling coverage"
+
+    - name: leave_balance
+      type: belongs_to
+      entity: LeaveBalance
+      description: "Associated leave balance"
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending
+        event: submit
+        conditions:
+          - has_sufficient_balance
+          - within_policy_limits
+          - required_documents_attached
+        actions:
+          - calculate_working_days
+          - notify_approver
+          - create_calendar_event
+
+      - from: pending
+        to: approved
+        event: approve
+        conditions:
+          - is_approver
+        actions:
+          - deduct_balance
+          - notify_employee
+          - notify_team
+          - update_calendar
+          - notify_handover_person
+
+      - from: pending
+        to: rejected
+        event: reject
+        conditions:
+          - is_approver
+          - rejection_reason_provided
+        actions:
+          - notify_employee
+          - log_rejection
+
+      - from: [draft, pending]
+        to: withdrawn
+        event: withdraw
+        conditions:
+          - is_owner
+        actions:
+          - notify_approver
+          - remove_calendar_event
+
+      - from: approved
+        to: cancelled
+        event: cancel
+        conditions:
+          - leave_not_started
+          - cancellation_allowed
+        actions:
+          - restore_balance
+          - notify_stakeholders
+          - remove_calendar_event
+
+  indexes:
+    - columns: [request_id]
+      unique: true
+    - columns: [employee_id]
+    - columns: [leave_type_id]
+    - columns: [status]
+    - columns: [start_date, end_date]
+    - columns: [approver_id, status]
+
+  validations:
+    - field: end_date
+      rule: "must_be_on_or_after_start_date"
+      message: "End date must be on or after start date"
+
+    - field: days_requested
+      rule: "must_match_date_range"
+      message: "Days requested must match date range"
+
+    - field: start_date
+      rule: "must_respect_advance_notice"
+      message: "Leave must be requested X days in advance"
+
+    - field: days_requested
+      rule: "cannot_exceed_balance"
+      message: "Insufficient leave balance"
+
+  hooks:
+    before_create:
+      - generate_request_id
+      - calculate_days
+      - check_balance
+      - validate_leave_type_rules
+
+    before_submit:
+      - validate_documents
+      - check_team_conflicts
+      - identify_approver
+
+    after_approve:
+      - deduct_leave_balance
+      - create_attendance_entries
+      - send_notifications
+
+    after_reject:
+      - send_rejection_notification
+
+  business_rules:
+    - name: advance_notice
+      description: "Respect leave type advance notice requirement"
+
+    - name: team_coverage
+      description: "Check minimum team coverage"
+
+    - name: consecutive_limit
+      description: "Enforce maximum consecutive days"
+
+    - name: document_requirement
+      description: "Require documents per leave type rules"
+
+  notifications:
+    - event: submitted
+      recipients: [approver]
+      template: "leave_request_pending"
+
+    - event: approved
+      recipients: [employee, handover_person, team]
+      template: "leave_request_approved"
+
+    - event: rejected
+      recipients: [employee]
+      template: "leave_request_rejected"
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - days_requested
+      - start_date
+      - end_date
+    retention: "5 years"

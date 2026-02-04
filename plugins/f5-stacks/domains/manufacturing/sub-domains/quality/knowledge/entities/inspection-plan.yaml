@@ -1,0 +1,354 @@
+name: inspection-plan
+display_name: Inspection Plan
+display_name_vi: Kế hoạch kiểm tra
+version: "1.0"
+domain: manufacturing
+subdomain: quality
+type: entity
+
+description: |
+  Inspection plan defining what characteristics to inspect, methods,
+  sampling plans, and acceptance criteria for quality control.
+
+description_vi: |
+  Kế hoạch kiểm tra xác định các đặc tính cần kiểm tra, phương pháp,
+  kế hoạch lấy mẫu và tiêu chí chấp nhận cho kiểm soát chất lượng.
+
+attributes:
+  - name: plan_id
+    type: string
+    format: "IP-XXXX"
+    primary_key: true
+    description: Unique plan identifier
+
+  - name: plan_number
+    type: string
+    required: true
+    unique: true
+    description: Human-readable plan number
+
+  - name: plan_name
+    type: string
+    required: true
+    description: Descriptive plan name
+
+  - name: plan_name_vi
+    type: string
+    description: Vietnamese plan name
+
+  - name: version
+    type: string
+    required: true
+    default: "1.0"
+    description: Plan version number
+
+  - name: revision
+    type: integer
+    default: 0
+    description: Revision number within version
+
+  - name: status
+    type: enum
+    values:
+      - draft
+      - pending_approval
+      - approved
+      - superseded
+      - obsolete
+    required: true
+    default: draft
+    description: Plan lifecycle status
+
+  - name: plan_type
+    type: enum
+    values:
+      - incoming
+      - in_process
+      - final
+      - periodic
+      - receiving
+      - audit
+    required: true
+    description: Type of inspection this plan covers
+
+  - name: product_id
+    type: reference
+    references: product
+    description: Specific product this plan applies to
+
+  - name: product_family
+    type: string
+    description: Product family for family-level plans
+
+  - name: material_category
+    type: string
+    description: Material category for incoming plans
+
+  - name: operation_id
+    type: reference
+    references: operation
+    description: Specific operation for in-process plans
+
+  - name: work_center_id
+    type: reference
+    references: work-center
+    description: Work center where plan applies
+
+  - name: supplier_id
+    type: reference
+    references: supplier
+    description: Supplier for incoming inspection plans
+
+  - name: description
+    type: text
+    description: Detailed plan description
+
+  - name: description_vi
+    type: text
+    description: Vietnamese description
+
+  - name: inspection_level
+    type: enum
+    values:
+      - normal
+      - tightened
+      - reduced
+      - skip_lot
+    default: normal
+    description: Inspection level per AQL switching rules
+
+  - name: sampling_standard
+    type: string
+    default: "ANSI/ASQ Z1.4"
+    description: Sampling standard reference
+
+  - name: aql_major
+    type: decimal
+    precision: 4
+    scale: 2
+    description: AQL for major defects
+
+  - name: aql_minor
+    type: decimal
+    precision: 4
+    scale: 2
+    description: AQL for minor defects
+
+  - name: aql_critical
+    type: decimal
+    precision: 4
+    scale: 2
+    description: AQL for critical defects
+
+  - name: sample_size_code
+    type: string
+    description: Sample size code letter (A-R)
+
+  - name: inspection_frequency
+    type: enum
+    values:
+      - every_lot
+      - skip_lot
+      - periodic
+      - first_article
+      - random
+    default: every_lot
+    description: How often inspection is required
+
+  - name: frequency_value
+    type: integer
+    description: Frequency value (e.g., every N lots)
+
+  - name: estimated_duration
+    type: integer
+    description: Estimated inspection time in minutes
+
+  - name: special_instructions
+    type: text
+    description: Special handling or inspection instructions
+
+  - name: equipment_required
+    type: json
+    description: List of required inspection equipment
+
+  - name: calibration_requirements
+    type: json
+    description: Calibration requirements for equipment
+
+  - name: environmental_requirements
+    type: json
+    description: Temperature, humidity, cleanliness requirements
+
+  - name: training_requirements
+    type: json
+    description: Inspector training/certification needed
+
+  - name: reference_documents
+    type: json
+    description: Related procedures, specifications
+
+  - name: effective_date
+    type: date
+    required: true
+    description: Date plan becomes effective
+
+  - name: expiration_date
+    type: date
+    description: Plan expiration date if applicable
+
+  - name: created_by
+    type: reference
+    references: employee
+    required: true
+    description: Quality engineer who created plan
+
+  - name: created_at
+    type: datetime
+    auto: true
+    description: Creation timestamp
+
+  - name: approved_by
+    type: reference
+    references: employee
+    description: Manager who approved plan
+
+  - name: approved_at
+    type: datetime
+    description: Approval timestamp
+
+  - name: last_reviewed_by
+    type: reference
+    references: employee
+    description: Last reviewer
+
+  - name: last_reviewed_at
+    type: datetime
+    description: Last review date
+
+  - name: next_review_date
+    type: date
+    description: Scheduled next review
+
+  - name: change_reason
+    type: text
+    description: Reason for latest revision
+
+  - name: supersedes_plan_id
+    type: reference
+    references: inspection-plan
+    description: Previous version being superseded
+
+relationships:
+  - name: characteristics
+    type: one_to_many
+    target: quality-characteristic
+    inverse: inspection_plan_id
+    description: Characteristics to inspect
+
+  - name: product
+    type: many_to_one
+    target: product
+    foreign_key: product_id
+    description: Product this plan covers
+
+  - name: inspections
+    type: one_to_many
+    target: inspection
+    inverse: inspection_plan_id
+    description: Inspections using this plan
+
+  - name: creator
+    type: many_to_one
+    target: employee
+    foreign_key: created_by
+    description: Plan creator
+
+  - name: approver
+    type: many_to_one
+    target: employee
+    foreign_key: approved_by
+    description: Plan approver
+
+state_machine:
+  initial: draft
+  states:
+    draft:
+      description: Plan being developed
+      transitions:
+        - to: pending_approval
+          trigger: submit_for_approval
+          conditions:
+            - has_characteristics
+            - valid_sampling_plan
+
+    pending_approval:
+      description: Awaiting quality approval
+      transitions:
+        - to: approved
+          trigger: approve
+          conditions:
+            - approved_by_quality_manager
+        - to: draft
+          trigger: reject
+          conditions:
+            - rejection_reason_provided
+
+    approved:
+      description: Plan active and in use
+      transitions:
+        - to: superseded
+          trigger: supersede
+          conditions:
+            - new_version_approved
+        - to: obsolete
+          trigger: obsolete
+          conditions:
+            - no_longer_needed
+
+    superseded:
+      description: Replaced by newer version
+      final: true
+
+    obsolete:
+      description: No longer in use
+      final: true
+
+business_rules:
+  - rule: characteristic_required
+    description: Plan must have at least one characteristic
+    validation: characteristics.count > 0
+
+  - rule: valid_aql
+    description: AQL values must be valid
+    validation: aql_major, aql_minor, aql_critical in standard AQL values
+
+  - rule: approval_before_use
+    description: Plan must be approved before use
+    validation: status = approved for new inspections
+
+  - rule: review_schedule
+    description: Plans must be reviewed periodically
+    validation: next_review_date set and tracked
+
+  - rule: version_control
+    description: Changes require new version
+    validation: New version for substantive changes
+
+indexes:
+  - columns: [plan_number]
+    unique: true
+  - columns: [plan_type, status]
+  - columns: [product_id]
+  - columns: [supplier_id]
+  - columns: [effective_date]
+  - columns: [status]
+
+audit:
+  enabled: true
+  retention_years: 10
+  track_fields:
+    - status
+    - version
+    - revision
+    - aql_major
+    - aql_minor

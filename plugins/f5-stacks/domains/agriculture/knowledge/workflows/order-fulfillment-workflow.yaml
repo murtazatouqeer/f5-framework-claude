@@ -1,0 +1,425 @@
+name: Order Fulfillment Workflow
+display_name: Order Fulfillment / Quy trình giao hàng
+description: |
+  Quy trình xử lý đơn hàng từ khi tạo đến khi hoàn thành.
+  Bao gồm kiểm tra chất lượng tại mỗi checkpoint.
+
+domain: agriculture
+version: "1.0"
+
+triggers:
+  - event: order.created
+    source: Order
+
+actors:
+  - name: Seller
+    description: Farm owner
+  - name: Buyer
+    description: Người mua
+  - name: Shipper
+    description: Người vận chuyển
+  - name: Slaughterhouse
+    description: Lò mổ (nếu có)
+  - name: Hub
+    description: Điểm giao nhận
+  - name: System
+
+steps:
+  - id: PENDING_DEPOSIT
+    name: Pending Deposit
+    actor: Buyer
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Calculate deposit (10-20%)
+      - Generate payment info
+      - Wait for payment
+    validations:
+      - rule: BR-ORD-001
+    on_success: DEPOSIT_PAID
+    on_timeout: CANCEL_NO_DEPOSIT
+
+  - id: DEPOSIT_PAID
+    name: Deposit Paid
+    actor: System
+    type: automated
+    actions:
+      - Verify payment
+      - Update order.deposit_status = 'paid'
+      - Notify seller
+    events:
+      - order.deposit_paid
+    on_success: SELLER_CONFIRM
+
+  - id: SELLER_CONFIRM
+    name: Seller Confirmation
+    actor: Seller
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Review order details
+      - Confirm availability
+      - Set pickup date/time
+    inputs:
+      - confirmation: confirm | cancel
+      - pickup_date
+      - pickup_time_slot
+    branches:
+      - condition: confirmation = 'confirm'
+        next: CONFIRMED
+      - condition: confirmation = 'cancel'
+        next: SELLER_CANCEL
+    on_timeout: AUTO_CONFIRM
+
+  - id: AUTO_CONFIRM
+    name: Auto Confirm
+    actor: System
+    type: automated
+    actions:
+      - Auto confirm order
+      - Notify seller of auto-confirmation
+    on_success: CONFIRMED
+
+  - id: CONFIRMED
+    name: Order Confirmed
+    actor: System
+    type: automated
+    actions:
+      - Update status = 'confirmed'
+      - Create shipment request
+      - Assign shipper (if platform delivery)
+      - Notify buyer
+    events:
+      - order.confirmed
+    on_success: PROCESSING
+
+  - id: PROCESSING
+    name: Processing
+    actor: Seller
+    type: interactive
+    actions:
+      - Prepare livestock
+      - Create quality check at farm
+      - Upload photos
+      - Record weight
+      - Apply seal (if applicable)
+    inputs:
+      - quality_check_data
+    validations:
+      - rule: BR-QC-001
+      - rule: BR-QC-002
+    on_success: READY_FOR_PICKUP
+
+  - id: READY_FOR_PICKUP
+    name: Ready for Pickup
+    actor: System
+    type: automated
+    actions:
+      - Update status
+      - Notify shipper
+      - Send pickup details
+    on_success: SHIPPER_PICKUP
+
+  - id: SHIPPER_PICKUP
+    name: Shipper Pickup
+    actor: Shipper
+    type: interactive
+    actions:
+      - Arrive at farm
+      - Verify livestock matches listing
+      - Record weight (actual_weight_kg)
+      - Check veterinary cert
+      - Create quality check
+      - Load and seal
+    inputs:
+      - quality_check_data
+      - actual_weight_kg
+    validations:
+      - rule: BR-QC-002
+      - rule: BR-QC-005
+      - rule: BR-FRAUD-002
+    on_success: CHECK_SLAUGHTERHOUSE
+
+  - id: CHECK_SLAUGHTERHOUSE
+    name: Check Slaughterhouse
+    actor: System
+    type: automated
+    branches:
+      - condition: order.slaughterhouse_id IS NOT NULL
+        next: AT_SLAUGHTERHOUSE
+      - condition: order.slaughterhouse_id IS NULL
+        next: CHECK_HUB
+
+  - id: AT_SLAUGHTERHOUSE
+    name: At Slaughterhouse
+    actor: Slaughterhouse
+    type: interactive
+    actions:
+      - Receive livestock
+      - Perform slaughter
+      - Record carcass weight
+      - Calculate carcass ratio
+      - Check for water injection
+      - Create quality check
+      - Package and seal
+    inputs:
+      - quality_check_data
+      - carcass_weight_kg
+    validations:
+      - rule: BR-QC-002
+      - rule: BR-FRAUD-001
+    alerts:
+      - condition: carcass_ratio > 85%
+        action: alert_water_injection
+    on_success: CHECK_HUB
+
+  - id: CHECK_HUB
+    name: Check Hub Required
+    actor: System
+    type: automated
+    branches:
+      - condition: order.hub_id IS NOT NULL
+        next: IN_TRANSIT_TO_HUB
+      - condition: order.hub_id IS NULL
+        next: IN_TRANSIT_DIRECT
+
+  - id: IN_TRANSIT_TO_HUB
+    name: In Transit to Hub
+    actor: Shipper
+    type: automated
+    actions:
+      - Update status = 'in_transit'
+      - Track location
+      - Monitor temperature (if cold chain)
+    on_success: AT_HUB
+
+  - id: AT_HUB
+    name: At Hub
+    actor: Hub
+    type: interactive
+    actions:
+      - Receive shipment
+      - Check seal integrity
+      - Store in appropriate temperature
+      - Create quality check
+      - Notify buyer for pickup
+    inputs:
+      - quality_check_data
+    validations:
+      - rule: BR-FRAUD-003
+      - rule: BR-HUB-002
+    on_success: WAIT_BUYER_PICKUP
+
+  - id: WAIT_BUYER_PICKUP
+    name: Wait for Buyer Pickup
+    actor: Buyer
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Buyer arrives at hub
+      - Verify identity
+      - Release shipment
+      - Create quality check
+    on_success: DELIVERED
+    on_timeout: EXTEND_HUB_STORAGE
+
+  - id: EXTEND_HUB_STORAGE
+    name: Extend Hub Storage
+    actor: System
+    type: automated
+    actions:
+      - Alert buyer
+      - Check if over 48h
+    branches:
+      - condition: storage_time < 48 hours
+        next: WAIT_BUYER_PICKUP
+      - condition: storage_time >= 48 hours
+        next: RETURN_TO_SELLER
+
+  - id: RETURN_TO_SELLER
+    name: Return to Seller
+    actor: System
+    type: automated
+    actions:
+      - Initiate return
+      - Notify all parties
+      - Process refund minus fees
+    on_success: CANCELLED
+
+  - id: IN_TRANSIT_DIRECT
+    name: In Transit Direct
+    actor: Shipper
+    type: automated
+    actions:
+      - Update status = 'in_transit'
+      - Track location
+    on_success: DELIVERY
+
+  - id: DELIVERY
+    name: Delivery
+    actor: Shipper
+    type: interactive
+    actions:
+      - Arrive at buyer location
+      - Create quality check
+      - Hand over shipment
+      - Collect remaining payment (if COD)
+    inputs:
+      - quality_check_data
+    on_success: DELIVERED
+
+  - id: DELIVERED
+    name: Delivered
+    actor: System
+    type: automated
+    actions:
+      - Update status = 'delivered'
+      - Record delivered_at
+      - Start report window (2h)
+      - Notify both parties
+    events:
+      - order.delivered
+    on_success: BUYER_VERIFICATION
+
+  - id: BUYER_VERIFICATION
+    name: Buyer Verification
+    actor: Buyer
+    type: interactive
+    timeout: 2 hours
+    actions:
+      - Open seal
+      - Verify product
+      - Create final quality check
+      - Report issues if any
+    inputs:
+      - quality_check_data
+      - has_issues: boolean
+      - issues_description
+    branches:
+      - condition: has_issues = false
+        next: WAIT_AUTO_COMPLETE
+      - condition: has_issues = true
+        next: OPEN_DISPUTE
+
+  - id: WAIT_AUTO_COMPLETE
+    name: Wait Auto Complete
+    actor: System
+    type: scheduled
+    timeout: 48 hours
+    actions:
+      - Wait for dispute window to close
+    on_timeout: COMPLETE
+
+  - id: COMPLETE
+    name: Complete Order
+    actor: System
+    type: automated
+    actions:
+      - Update status = 'completed'
+      - Release payment to seller
+      - Deduct platform fee
+      - Request ratings from both parties
+    events:
+      - order.completed
+    on_success: END
+
+  - id: OPEN_DISPUTE
+    name: Open Dispute
+    actor: System
+    type: automated
+    actions:
+      - Create dispute record
+      - Hold payment
+      - Notify admin
+      - Notify seller
+    on_success: DISPUTE_RESOLUTION
+
+  - id: DISPUTE_RESOLUTION
+    name: Dispute Resolution
+    actor: Admin
+    type: interactive
+    actions:
+      - Review evidence
+      - Compare quality checks
+      - Make decision
+    branches:
+      - condition: favor_buyer
+        next: REFUND_BUYER
+      - condition: favor_seller
+        next: COMPLETE
+
+  - id: REFUND_BUYER
+    name: Refund Buyer
+    actor: System
+    type: automated
+    actions:
+      - Calculate refund amount
+      - Process refund
+      - Update seller rating
+    on_success: CANCELLED
+
+  - id: CANCEL_NO_DEPOSIT
+    name: Cancel - No Deposit
+    actor: System
+    type: automated
+    actions:
+      - Cancel order
+      - Release listing
+      - Notify seller
+    on_success: CANCELLED
+
+  - id: SELLER_CANCEL
+    name: Seller Cancel
+    actor: System
+    type: automated
+    actions:
+      - Cancel order
+      - Refund deposit to buyer
+      - Apply penalty to seller
+    on_success: CANCELLED
+
+  - id: CANCELLED
+    name: Cancelled
+    type: terminal
+    events:
+      - order.cancelled
+
+  - id: END
+    name: End
+    type: terminal
+
+quality_checkpoints:
+  - checkpoint: farm
+    actor: Seller
+    required: true
+
+  - checkpoint: shipper_pickup
+    actor: Shipper
+    required: true
+
+  - checkpoint: slaughterhouse
+    actor: Slaughterhouse
+    required: if_applicable
+
+  - checkpoint: hub_receive
+    actor: Hub
+    required: if_applicable
+
+  - checkpoint: hub_release
+    actor: Hub
+    required: if_applicable
+
+  - checkpoint: shipper_delivery
+    actor: Shipper
+    required: true
+
+  - checkpoint: buyer_receive
+    actor: Buyer
+    required: true
+
+timeouts:
+  deposit_payment: 24 hours
+  seller_confirm: 24 hours
+  hub_storage: 24 hours
+  buyer_report: 2 hours
+  auto_complete: 48 hours

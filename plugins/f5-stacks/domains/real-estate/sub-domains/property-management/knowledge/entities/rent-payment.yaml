@@ -1,0 +1,346 @@
+# Rent Payment Entity
+# F5 Framework v2.0 - Real Estate/Property Management
+# Thanh toán tiền thuê / 賃料支払い
+
+entity:
+  name: RentPayment
+  name_vi: Thanh toán tiền thuê
+  name_ja: 賃料支払い
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    Represents a payment made by a tenant, tracking the payment method,
+    amount, allocation to charges, and processing status. Supports
+    multiple payment methods including online payments.
+
+  # Primary Key
+  identifier:
+    field: id
+    type: uuid
+    generated: true
+
+  # Business Keys
+  business_keys:
+    payment_id:
+      pattern: "PAY-{YYYYMMDD}-{XXXXX}"
+      example: "PAY-20240115-00001"
+      unique: true
+    receipt_number:
+      pattern: "RCT-{YYYYMM}-{XXXXX}"
+      unique: true
+
+  # Attributes
+  attributes:
+    # References
+    lease_id:
+      type: uuid
+      required: true
+    tenant_id:
+      type: uuid
+      required: true
+    unit_id:
+      type: uuid
+
+    # Status
+    status:
+      type: enum
+      values:
+        - pending
+        - processing
+        - completed
+        - failed
+        - refunded
+        - bounced
+        - cancelled
+      default: pending
+      name_vi:
+        pending: Chờ xử lý
+        processing: Đang xử lý
+        completed: Hoàn tất
+        failed: Thất bại
+        refunded: Hoàn tiền
+        bounced: Check không đủ tiền
+        cancelled: Đã hủy
+
+    # Amount
+    amount:
+      type: object
+      properties:
+        payment_amount:
+          type: money
+          required: true
+        currency:
+          type: string
+          default: "VND"
+        processing_fee:
+          type: money
+          default: 0
+        net_amount:
+          type: money
+          computed: true
+          formula: "payment_amount - processing_fee"
+
+    # Allocation
+    allocation:
+      type: object
+      properties:
+        applied_to_charges:
+          type: array
+          items:
+            type: object
+            properties:
+              charge_id:
+                type: uuid
+              charge_type:
+                type: string
+              amount_applied:
+                type: money
+              billing_period:
+                type: string
+        unapplied_amount:
+          type: money
+          description: "Amount in credit/overpayment"
+        auto_allocated:
+          type: boolean
+          default: true
+
+    # Payment Method
+    method:
+      type: object
+      properties:
+        payment_method:
+          type: enum
+          values:
+            - bank_transfer
+            - cash
+            - check
+            - auto_debit
+            - credit_card
+            - debit_card
+            - e_wallet
+            - qr_code
+          required: true
+          name_vi:
+            bank_transfer: Chuyển khoản
+            cash: Tiền mặt
+            check: Check
+            auto_debit: Trích nợ tự động
+            credit_card: Thẻ tín dụng
+            debit_card: Thẻ ghi nợ
+            e_wallet: Ví điện tử
+            qr_code: Mã QR
+        payment_reference:
+          type: string
+          description: "Transaction ID or reference number"
+        bank_name:
+          type: string
+        bank_account_last4:
+          type: string
+          max_length: 4
+        card_last4:
+          type: string
+          max_length: 4
+        card_brand:
+          type: string
+        e_wallet_provider:
+          type: string
+          examples: ["momo", "zalopay", "vnpay", "viettelpay"]
+
+    # Timing
+    timing:
+      type: object
+      properties:
+        payment_date:
+          type: date
+          required: true
+          description: "Date payment was made"
+        received_date:
+          type: date
+          description: "Date funds received"
+        processed_at:
+          type: timestamp
+        posted_at:
+          type: timestamp
+          description: "Date posted to ledger"
+
+    # Receipt
+    receipt:
+      type: object
+      properties:
+        receipt_generated:
+          type: boolean
+          default: false
+        receipt_url:
+          type: string
+          format: url
+        receipt_sent:
+          type: boolean
+          default: false
+        receipt_sent_at:
+          type: timestamp
+
+    # Check Details (if applicable)
+    check:
+      type: object
+      applicable_when: "payment_method == 'check'"
+      properties:
+        check_number:
+          type: string
+        check_date:
+          type: date
+        bank_name:
+          type: string
+        deposited_date:
+          type: date
+        cleared_date:
+          type: date
+
+    # Online Payment Details
+    online_payment:
+      type: object
+      applicable_when: "payment_method in ['credit_card', 'debit_card', 'e_wallet', 'qr_code']"
+      properties:
+        gateway_name:
+          type: string
+        transaction_id:
+          type: string
+        authorization_code:
+          type: string
+        gateway_response:
+          type: json
+
+    # Refund (if applicable)
+    refund:
+      type: object
+      applicable_when: "status == 'refunded'"
+      properties:
+        refund_amount:
+          type: money
+        refund_reason:
+          type: string
+        refund_date:
+          type: date
+        refund_reference:
+          type: string
+        refunded_by:
+          type: uuid
+
+    # Metadata
+    notes:
+      type: text
+    internal_notes:
+      type: text
+    recorded_by:
+      type: uuid
+    created_at:
+      type: timestamp
+      auto: create
+    updated_at:
+      type: timestamp
+      auto: update
+
+  # Relationships
+  relationships:
+    lease:
+      type: belongs_to
+      entity: Lease
+      foreign_key: lease_id
+    tenant:
+      type: belongs_to
+      entity: Tenant
+      foreign_key: tenant_id
+    unit:
+      type: belongs_to
+      entity: Unit
+      foreign_key: unit_id
+    charge_allocations:
+      type: has_many
+      entity: RentPaymentAllocation
+      foreign_key: payment_id
+    recorded_by_user:
+      type: belongs_to
+      entity: User
+      foreign_key: recorded_by
+
+  # State Machine
+  state_machine:
+    field: status
+    states:
+      - pending
+      - processing
+      - completed
+      - failed
+      - refunded
+      - bounced
+      - cancelled
+    transitions:
+      - from: pending
+        to: processing
+        event: process
+        action: initiate_processing
+      - from: pending
+        to: completed
+        event: complete
+        action: [allocate_to_charges, generate_receipt]
+      - from: processing
+        to: completed
+        event: confirm
+        action: [allocate_to_charges, generate_receipt]
+      - from: processing
+        to: failed
+        event: fail
+        action: notify_tenant
+      - from: completed
+        to: refunded
+        event: refund
+        guard: has_refund_permission
+        action: [reverse_allocations, process_refund]
+      - from: completed
+        to: bounced
+        event: bounce
+        action: [reverse_allocations, apply_nsf_fee]
+      - from: pending
+        to: cancelled
+        event: cancel
+
+  # Indexes
+  indexes:
+    - fields: [payment_id]
+      unique: true
+    - fields: [receipt_number]
+      unique: true
+    - fields: [lease_id, payment_date]
+    - fields: [tenant_id, status]
+    - fields: [status, payment_date]
+    - fields: [payment_method]
+
+  # Validation Rules
+  validations:
+    - rule: "payment_amount must be positive"
+      condition: "payment_amount > 0"
+    - rule: "payment_date must not be in future"
+      condition: "payment_date <= Date.today"
+    - rule: "refund_amount cannot exceed payment_amount"
+      condition: "refund_amount.nil? || refund_amount <= payment_amount"
+
+  # Events
+  events:
+    - payment_received
+    - payment_processing
+    - payment_completed
+    - payment_failed
+    - payment_refunded
+    - payment_bounced
+    - receipt_sent
+    - nsf_fee_applied
+
+  # Audit
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - amount
+      - allocation
+      - refund

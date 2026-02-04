@@ -1,0 +1,288 @@
+name: watchlist
+display_name: Watchlist
+description: |
+  User's saved content list for future viewing.
+  Supports organization and availability notifications.
+
+domain: entertainment
+subdomain: streaming
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  # Identity
+  - name: id
+    type: uuid
+    required: true
+    description: Unique watchlist item identifier
+
+  - name: profile_id
+    type: uuid
+    required: true
+    description: User profile ID
+
+  - name: content_id
+    type: uuid
+    required: true
+    description: Saved content ID
+
+  # Organization
+  - name: list_type
+    type: enum
+    values: [default, custom]
+    required: true
+    default: default
+    description: List categorization
+
+  - name: custom_list_id
+    type: uuid
+    required: false
+    description: Custom list reference
+
+  - name: custom_list_name
+    type: string
+    required: false
+    description: Custom list name
+
+  - name: display_order
+    type: integer
+    required: true
+    default: 0
+    description: Sort order in list
+
+  - name: sort_position
+    type: decimal
+    required: false
+    description: Precise sort position
+
+  # Source Tracking
+  - name: added_from
+    type: enum
+    values: [browse, search, recommendation, shared, marketing, detail_page]
+    required: false
+    description: How item was added
+
+  - name: recommendation_id
+    type: uuid
+    required: false
+    description: Source recommendation
+
+  - name: shared_by_profile_id
+    type: uuid
+    required: false
+    description: Profile that shared
+
+  # Content State
+  - name: content_type
+    type: enum
+    values: [movie, series, documentary, show]
+    required: true
+    description: Cached content type
+
+  - name: content_title
+    type: string
+    required: true
+    description: Cached content title
+
+  - name: content_poster_url
+    type: url
+    required: false
+    description: Cached poster URL
+
+  - name: is_available
+    type: boolean
+    required: true
+    default: true
+    description: Currently available
+
+  - name: availability_changed
+    type: boolean
+    required: false
+    default: false
+    description: Availability recently changed
+
+  - name: available_from
+    type: datetime
+    required: false
+    description: When content becomes available
+
+  - name: available_until
+    type: datetime
+    required: false
+    description: When content expires
+
+  # Series Tracking
+  - name: has_new_episodes
+    type: boolean
+    required: false
+    default: false
+    description: New episodes available
+
+  - name: new_episode_count
+    type: integer
+    required: false
+    description: Number of new episodes
+
+  - name: last_notified_episode
+    type: integer
+    required: false
+    description: Last episode notified about
+
+  # Notifications
+  - name: notify_when_available
+    type: boolean
+    required: true
+    default: true
+    description: Notify when available
+
+  - name: notify_new_episodes
+    type: boolean
+    required: true
+    default: true
+    description: Notify on new episodes
+
+  - name: notify_expiring
+    type: boolean
+    required: true
+    default: true
+    description: Notify before expiration
+
+  - name: last_notification_at
+    type: datetime
+    required: false
+    description: Last notification sent
+
+  # User Intent
+  - name: priority
+    type: enum
+    values: [low, normal, high]
+    required: true
+    default: normal
+    description: User-set priority
+
+  - name: notes
+    type: text
+    required: false
+    max_length: 500
+    description: User notes
+
+  - name: reminder_date
+    type: date
+    required: false
+    description: Custom reminder date
+
+  # Status
+  - name: status
+    type: enum
+    values: [active, watching, completed, removed]
+    required: true
+    default: active
+    description: Item status
+
+  - name: is_hidden
+    type: boolean
+    required: true
+    default: false
+    description: Hidden from list
+
+  # Timestamps
+  - name: added_at
+    type: datetime
+    required: true
+    description: When item was added
+
+  - name: started_watching_at
+    type: datetime
+    required: false
+    description: When user started watching
+
+  - name: completed_at
+    type: datetime
+    required: false
+    description: When user completed
+
+  # Audit
+  - name: created_at
+    type: datetime
+    required: true
+    auto: true
+
+  - name: updated_at
+    type: datetime
+    required: true
+    auto: true
+
+relationships:
+  - name: profile
+    type: belongs_to
+    target: user_profile
+    foreign_key: profile_id
+    description: Owner profile
+
+  - name: content
+    type: belongs_to
+    target: content
+    foreign_key: content_id
+    description: Saved content
+
+  - name: custom_list
+    type: belongs_to
+    target: custom_list
+    foreign_key: custom_list_id
+    description: Custom list
+
+  - name: recommendation
+    type: belongs_to
+    target: recommendation
+    foreign_key: recommendation_id
+    description: Source recommendation
+
+state_machine:
+  initial: active
+  states:
+    - name: active
+      description: Saved for future viewing
+      allowed_transitions: [watching, removed]
+
+    - name: watching
+      description: Currently being watched
+      allowed_transitions: [completed, active, removed]
+
+    - name: completed
+      description: Finished watching
+      allowed_transitions: [active, removed]
+
+    - name: removed
+      description: Removed from list
+      allowed_transitions: [active]
+
+indexes:
+  - name: idx_watchlist_profile
+    fields: [profile_id, status]
+    type: btree
+
+  - name: idx_watchlist_profile_content
+    fields: [profile_id, content_id]
+    type: unique
+
+  - name: idx_watchlist_order
+    fields: [profile_id, display_order]
+    type: btree
+
+  - name: idx_watchlist_added
+    fields: [added_at]
+    type: btree
+
+  - name: idx_watchlist_available
+    fields: [is_available, notify_when_available]
+    type: btree
+
+validations:
+  - name: valid_custom_list
+    condition: "list_type = 'custom' IMPLIES custom_list_id IS NOT NULL"
+    message: "Custom list type requires list reference"
+
+business_rules:
+  - rule: watchlist-management-rules
+    description: Rules for watchlist organization and notifications

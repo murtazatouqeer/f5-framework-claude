@@ -1,0 +1,605 @@
+name: Borrower Use Cases
+display_name: Borrower Use Cases / Các trường hợp sử dụng của người vay
+description: |
+  Use cases for borrower interactions with the P2P lending platform
+  from registration through loan completion.
+
+domain: fintech
+sub_domain: p2p-lending
+version: "1.0"
+status: active
+
+# =============================================================================
+# ACTOR DEFINITION
+# =============================================================================
+primary_actor:
+  name: Borrower
+  name_vi: Người vay
+  description: |
+    Individual or business seeking to borrow money through
+    the P2P lending platform.
+  types:
+    - individual_borrower
+    - business_borrower
+    - repeat_borrower
+    - first_time_borrower
+
+# =============================================================================
+# USE CASES
+# =============================================================================
+use_cases:
+  # ---------------------------------------------------------------------------
+  # UC-B001: Register as Borrower
+  # ---------------------------------------------------------------------------
+  - id: UC-B001
+    name: Register as Borrower
+    name_vi: Đăng ký làm người vay
+    category: onboarding
+    priority: high
+
+    description: |
+      New user creates a borrower account on the platform.
+
+    preconditions:
+      - user_has_valid_phone_number
+      - user_not_already_registered
+      - user_meets_age_requirement
+
+    trigger: User clicks "Register" or "Borrow Now"
+
+    main_flow:
+      1:
+        action: Enter phone number
+        system: Send OTP verification code
+      2:
+        action: Enter OTP code
+        system: Verify OTP and create account
+      3:
+        action: Set password
+        system: Validate password strength
+      4:
+        action: Accept terms and conditions
+        system: Record acceptance
+      5:
+        action: Complete basic profile
+        system: Save profile and redirect to dashboard
+
+    alternative_flows:
+      A1_invalid_otp:
+        at_step: 2
+        condition: OTP invalid or expired
+        flow:
+          - Display error message
+          - Allow resend OTP (max 3 times)
+          - If exceeded, block for 30 minutes
+
+      A2_phone_already_registered:
+        at_step: 1
+        condition: Phone number exists
+        flow:
+          - Notify user of existing account
+          - Offer login or password reset
+
+    postconditions:
+      - borrower_account_created
+      - welcome_notification_sent
+      - kyc_status_pending
+
+    business_rules:
+      - BR-REG-001: Age minimum 18 years
+      - BR-REG-002: Valid Vietnamese phone number required
+      - BR-REG-003: Strong password policy enforcement
+
+  # ---------------------------------------------------------------------------
+  # UC-B002: Complete KYC Verification
+  # ---------------------------------------------------------------------------
+  - id: UC-B002
+    name: Complete KYC Verification
+    name_vi: Hoàn thành xác minh KYC
+    category: onboarding
+    priority: high
+
+    description: |
+      Borrower completes identity verification (eKYC) process.
+
+    preconditions:
+      - borrower_account_exists
+      - kyc_not_completed_or_expired
+
+    trigger: User accesses KYC section or applies for loan
+
+    main_flow:
+      1:
+        action: Upload National ID front image
+        system: Perform OCR extraction
+      2:
+        action: Upload National ID back image
+        system: Validate ID format and extract data
+      3:
+        action: Take selfie with ID
+        system: Perform face matching
+      4:
+        action: Complete liveness check
+        system: Verify person is real and present
+      5:
+        action: Review extracted information
+        system: Display extracted data for confirmation
+      6:
+        action: Confirm information accuracy
+        system: Submit for verification
+
+    alternative_flows:
+      A1_image_quality_poor:
+        at_step: 1, 2, 3
+        condition: Image quality below threshold
+        flow:
+          - Display quality guidance
+          - Request image retake
+
+      A2_face_mismatch:
+        at_step: 3
+        condition: Face match score below threshold
+        flow:
+          - Request another selfie attempt
+          - After 3 failures, escalate to manual review
+
+      A3_liveness_failed:
+        at_step: 4
+        condition: Liveness check failed
+        flow:
+          - Provide guidance for lighting/position
+          - Allow retry (max 3 attempts)
+
+    postconditions:
+      - kyc_status_updated
+      - if_verified_borrower_eligible_for_loans
+
+    business_rules:
+      - BR-KYC-001: OCR confidence threshold 85%
+      - BR-KYC-002: Face match threshold 90%
+      - BR-KYC-003: Active liveness required
+
+  # ---------------------------------------------------------------------------
+  # UC-B003: Apply for Loan
+  # ---------------------------------------------------------------------------
+  - id: UC-B003
+    name: Apply for Loan
+    name_vi: Nộp đơn vay
+    category: loan_application
+    priority: high
+
+    description: |
+      Borrower submits a new loan application.
+
+    preconditions:
+      - borrower_kyc_verified
+      - no_existing_pending_application
+      - borrower_not_blacklisted
+
+    trigger: User clicks "Apply for Loan"
+
+    main_flow:
+      1:
+        action: Select loan amount
+        system: Validate amount within limits
+      2:
+        action: Select loan term
+        system: Calculate estimated monthly payment
+      3:
+        action: Select loan purpose
+        system: Record purpose category
+      4:
+        action: Enter employment information
+        system: Validate and save
+      5:
+        action: Enter income information
+        system: Validate income requirements
+      6:
+        action: Upload supporting documents
+        system: Accept and queue for processing
+      7:
+        action: Review application summary
+        system: Display all entered information
+      8:
+        action: Submit application
+        system: Create application record and trigger processing
+
+    alternative_flows:
+      A1_income_below_minimum:
+        at_step: 5
+        condition: Stated income below minimum
+        flow:
+          - Reduce maximum loan amount
+          - Show adjusted loan options
+
+      A2_ineligible_for_amount:
+        at_step: 1
+        condition: Requested amount exceeds eligibility
+        flow:
+          - Display maximum eligible amount
+          - Allow selection within limit
+
+    postconditions:
+      - application_created
+      - application_number_generated
+      - credit_assessment_triggered
+
+    business_rules:
+      - BR-APP-001: Loan amount 1M-2B VND
+      - BR-APP-002: Term 1-60 months
+      - BR-APP-003: Income verification required
+
+  # ---------------------------------------------------------------------------
+  # UC-B004: View Application Status
+  # ---------------------------------------------------------------------------
+  - id: UC-B004
+    name: View Application Status
+    name_vi: Xem trạng thái đơn vay
+    category: loan_application
+    priority: medium
+
+    description: |
+      Borrower checks the status of their loan application.
+
+    preconditions:
+      - borrower_has_pending_application
+
+    trigger: User navigates to application status page
+
+    main_flow:
+      1:
+        action: Access application status
+        system: Retrieve current application details
+      2:
+        action: View status timeline
+        system: Display progress through stages
+      3:
+        action: View any pending requirements
+        system: Show documents or information needed
+
+    postconditions:
+      - status_viewed
+      - analytics_recorded
+
+  # ---------------------------------------------------------------------------
+  # UC-B005: Review and Accept Loan Offer
+  # ---------------------------------------------------------------------------
+  - id: UC-B005
+    name: Review and Accept Loan Offer
+    name_vi: Xem xét và chấp nhận đề nghị vay
+    category: loan_application
+    priority: high
+
+    description: |
+      Borrower reviews approved loan terms and accepts offer.
+
+    preconditions:
+      - application_approved
+      - offer_generated
+      - offer_not_expired
+
+    trigger: Borrower receives approval notification
+
+    main_flow:
+      1:
+        action: View loan offer summary
+        system: Display approved amount, rate, term, payment
+      2:
+        action: View full repayment schedule
+        system: Show month-by-month breakdown
+      3:
+        action: View fee disclosure
+        system: Display origination fee, APR, total cost
+      4:
+        action: Read terms and conditions
+        system: Track scroll/reading progress
+      5:
+        action: Confirm understanding of terms
+        system: Record confirmation
+      6:
+        action: Provide e-signature
+        system: Capture signature and timestamp
+      7:
+        action: Set up auto-debit (optional)
+        system: Link bank account for automatic payments
+      8:
+        action: Accept offer
+        system: Finalize acceptance and trigger funding
+
+    alternative_flows:
+      A1_decline_offer:
+        at_step: any
+        condition: Borrower declines offer
+        flow:
+          - Record decline reason
+          - Close application
+          - Notify of future re-application eligibility
+
+      A2_modify_terms:
+        at_step: 1
+        condition: Borrower requests different terms
+        flow:
+          - If allowed, adjust terms
+          - Recalculate offer
+          - Present modified offer
+
+    postconditions:
+      - offer_accepted
+      - loan_agreement_signed
+      - funding_workflow_triggered
+
+    business_rules:
+      - BR-OFF-001: Offer valid for 7 days
+      - BR-OFF-002: E-signature legally binding
+      - BR-OFF-003: Terms disclosure mandatory
+
+  # ---------------------------------------------------------------------------
+  # UC-B006: Make Loan Repayment
+  # ---------------------------------------------------------------------------
+  - id: UC-B006
+    name: Make Loan Repayment
+    name_vi: Thanh toán khoản vay
+    category: loan_management
+    priority: high
+
+    description: |
+      Borrower makes a payment on their active loan.
+
+    preconditions:
+      - borrower_has_active_loan
+      - payment_due_or_allowed
+
+    trigger: User accesses payment section or due date reminder
+
+    main_flow:
+      1:
+        action: View payment details
+        system: Display amount due, breakdown, due date
+      2:
+        action: Select payment amount
+        system: Allow minimum, full, or custom amount
+      3:
+        action: Select payment method
+        system: Display available payment options
+      4:
+        action: Confirm payment
+        system: Process payment through selected method
+      5:
+        action: Receive confirmation
+        system: Display receipt and update balance
+
+    alternative_flows:
+      A1_insufficient_wallet_balance:
+        at_step: 3
+        condition: Wallet balance insufficient
+        flow:
+          - Offer to top up wallet
+          - Suggest alternative payment method
+
+      A2_auto_debit_failed:
+        at_step: automatic
+        condition: Scheduled auto-debit failed
+        flow:
+          - Notify borrower immediately
+          - Provide manual payment options
+          - Schedule retry attempts
+
+    postconditions:
+      - payment_recorded
+      - balance_updated
+      - receipt_generated
+
+    business_rules:
+      - BR-PAY-001: Minimum payment is interest due
+      - BR-PAY-002: 3-day grace period after due date
+      - BR-PAY-003: Late fee 0.5% per day after grace
+
+  # ---------------------------------------------------------------------------
+  # UC-B007: Request Early Payoff
+  # ---------------------------------------------------------------------------
+  - id: UC-B007
+    name: Request Early Payoff
+    name_vi: Yêu cầu tất toán sớm
+    category: loan_management
+    priority: medium
+
+    description: |
+      Borrower pays off remaining loan balance before term end.
+
+    preconditions:
+      - borrower_has_active_loan
+      - at_least_one_payment_made
+      - loan_not_in_default
+
+    trigger: User selects "Pay Off Loan" option
+
+    main_flow:
+      1:
+        action: Request payoff quote
+        system: Calculate remaining principal, interest, fees
+      2:
+        action: View payoff breakdown
+        system: Show total payoff amount with all components
+      3:
+        action: View early payoff penalty if applicable
+        system: Display penalty calculation if within 6 months
+      4:
+        action: Select payment method
+        system: Display available payment options
+      5:
+        action: Confirm payoff
+        system: Process full payment
+      6:
+        action: Receive payoff confirmation
+        system: Issue loan closure certificate
+
+    postconditions:
+      - loan_fully_paid
+      - loan_status_closed
+      - certificate_generated
+
+    business_rules:
+      - BR-PAYOFF-001: 1% penalty if within 6 months
+      - BR-PAYOFF-002: Quote valid for 7 days
+      - BR-PAYOFF-003: Immediate investor notification
+
+  # ---------------------------------------------------------------------------
+  # UC-B008: Request Payment Plan
+  # ---------------------------------------------------------------------------
+  - id: UC-B008
+    name: Request Payment Plan
+    name_vi: Yêu cầu kế hoạch trả nợ
+    category: collection
+    priority: medium
+
+    description: |
+      Borrower in difficulty requests modified payment arrangement.
+
+    preconditions:
+      - borrower_has_delinquent_loan
+      - dpd_at_least_15
+      - no_existing_payment_plan
+
+    trigger: Borrower contacts support or responds to collection
+
+    main_flow:
+      1:
+        action: Request payment plan option
+        system: Verify eligibility based on DPD and amount
+      2:
+        action: Complete hardship questionnaire
+        system: Assess financial situation
+      3:
+        action: View available plan options
+        system: Present possible payment arrangements
+      4:
+        action: Select preferred plan
+        system: Calculate new payment schedule
+      5:
+        action: Make down payment
+        system: Process initial payment (10% typically)
+      6:
+        action: Accept plan terms
+        system: Finalize and activate payment plan
+
+    alternative_flows:
+      A1_ineligible_for_plan:
+        at_step: 1
+        condition: Not meeting eligibility criteria
+        flow:
+          - Explain rejection reason
+          - Offer alternative solutions
+          - Direct to customer support
+
+    postconditions:
+      - payment_plan_active
+      - new_schedule_generated
+      - collection_paused
+
+    business_rules:
+      - BR-PLAN-001: Minimum 10% down payment
+      - BR-PLAN-002: Plan duration based on amount
+      - BR-PLAN-003: 2 missed payments = plan cancelled
+
+  # ---------------------------------------------------------------------------
+  # UC-B009: View Loan History
+  # ---------------------------------------------------------------------------
+  - id: UC-B009
+    name: View Loan History
+    name_vi: Xem lịch sử khoản vay
+    category: account_management
+    priority: low
+
+    description: |
+      Borrower views their complete loan history on the platform.
+
+    preconditions:
+      - borrower_account_exists
+
+    trigger: User navigates to loan history section
+
+    main_flow:
+      1:
+        action: Access loan history
+        system: Retrieve all past and current loans
+      2:
+        action: View loan list
+        system: Display loans with status, amount, dates
+      3:
+        action: Select specific loan
+        system: Show detailed loan information
+      4:
+        action: View payment history
+        system: Display all payments made
+      5:
+        action: Download statements
+        system: Generate and download PDF statements
+
+    postconditions:
+      - history_viewed
+
+  # ---------------------------------------------------------------------------
+  # UC-B010: Update Profile Information
+  # ---------------------------------------------------------------------------
+  - id: UC-B010
+    name: Update Profile Information
+    name_vi: Cập nhật thông tin hồ sơ
+    category: account_management
+    priority: medium
+
+    description: |
+      Borrower updates their personal or financial information.
+
+    preconditions:
+      - borrower_account_exists
+      - borrower_authenticated
+
+    trigger: User accesses profile settings
+
+    main_flow:
+      1:
+        action: Select information to update
+        system: Display editable profile sections
+      2:
+        action: Enter new information
+        system: Validate input format
+      3:
+        action: Upload supporting documents if required
+        system: Queue documents for verification
+      4:
+        action: Submit changes
+        system: Save changes and trigger any re-verification
+
+    alternative_flows:
+      A1_bank_account_change:
+        at_step: 2
+        condition: Changing bank account
+        flow:
+          - Require additional verification
+          - Verify new account ownership
+          - Update auto-debit mandate
+
+    postconditions:
+      - profile_updated
+      - verification_triggered_if_needed
+
+    business_rules:
+      - BR-PROF-001: Some fields require re-KYC
+      - BR-PROF-002: Bank change requires verification
+      - BR-PROF-003: Contact info change requires OTP
+
+# =============================================================================
+# USE CASE RELATIONSHIPS
+# =============================================================================
+relationships:
+  extends:
+    - UC-B003_extends_UC-B002: "Loan application requires completed KYC"
+    - UC-B005_extends_UC-B003: "Offer review follows application"
+
+  includes:
+    - UC-B006_includes_payment_processing: "Payment triggers allocation"
+    - UC-B007_includes_UC-B006: "Payoff is a type of payment"
+
+  precedes:
+    - UC-B001_precedes_UC-B002: "Registration before KYC"
+    - UC-B005_precedes_UC-B006: "Acceptance before repayment"

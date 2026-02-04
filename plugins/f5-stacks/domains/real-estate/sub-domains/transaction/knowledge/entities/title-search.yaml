@@ -1,0 +1,466 @@
+# Title Search Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Property title verification and history
+
+entity:
+  name: TitleSearch
+  name_vi: Tra cứu quyền sở hữu
+  name_ja: 権原調査
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Records title search results for property verification.
+    Tracks ownership history, liens, encumbrances, and title status.
+
+  # Database Configuration
+  database:
+    table_name: title_searches
+    primary_key: id
+    indexes:
+      - columns: [search_id]
+        unique: true
+      - columns: [transaction_id]
+      - columns: [property_id]
+      - columns: [status]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: search_id
+      type: string
+      format: "TTS-{YYYYMMDD}-{XXXXXX}"
+      unique: true
+      description: Title search reference ID
+
+    - name: transaction_id
+      type: uuid
+      required: true
+      foreign_key: transactions.id
+
+    - name: property_id
+      type: uuid
+      required: true
+      foreign_key: properties.id
+
+    - name: due_diligence_id
+      type: uuid
+      nullable: true
+      foreign_key: due_diligence.id
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - ordered
+        - in_progress
+        - completed
+        - issues_found
+        - clear
+        - requires_action
+      default: ordered
+      description: Search status
+
+    # Search Details
+    - name: search_type
+      type: enum
+      values:
+        - full_search
+        - update_search
+        - limited_search
+        - current_owner
+      default: full_search
+
+    - name: search_period_years
+      type: integer
+      default: 30
+      description: How far back to search
+
+    # Provider
+    - name: search_provider
+      type: enum
+      values:
+        - internal
+        - title_company
+        - government
+        - attorney
+      nullable: true
+
+    - name: provider_name
+      type: string
+      nullable: true
+
+    - name: provider_reference
+      type: string
+      nullable: true
+
+    # Timeline
+    - name: ordered_at
+      type: timestamp
+      nullable: true
+
+    - name: completed_at
+      type: timestamp
+      nullable: true
+
+    - name: effective_date
+      type: date
+      nullable: true
+      description: Search effective as of date
+
+    # Property Details
+    - name: property_address
+      type: text
+      description: Property address searched
+
+    - name: legal_description
+      type: text
+      nullable: true
+      description: Legal property description
+
+    - name: parcel_number
+      type: string
+      nullable: true
+
+    - name: land_area
+      type: decimal
+      precision: 12
+      scale: 2
+      nullable: true
+
+    # Current Title
+    - name: current_certificate
+      type: jsonb
+      description: Current title certificate details
+      schema:
+        type: object
+        properties:
+          certificate_type: { type: string, enum: [pink_book, red_book] }
+          certificate_number: { type: string }
+          issued_date: { type: string, format: date }
+          issued_by: { type: string }
+          land_parcel_number: { type: string }
+          map_sheet_number: { type: string }
+
+    - name: current_owners
+      type: jsonb
+      description: Current registered owners
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            name: { type: string }
+            id_number: { type: string }
+            ownership_type: { type: string }
+            share_percent: { type: number }
+            acquired_date: { type: string, format: date }
+
+    - name: ownership_type
+      type: enum
+      values:
+        - sole_ownership
+        - joint_ownership
+        - common_ownership
+        - corporate
+      nullable: true
+
+    # Ownership History
+    - name: ownership_history
+      type: jsonb
+      description: Chain of title
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            owner_name: { type: string }
+            transfer_date: { type: string, format: date }
+            transfer_type: { type: string, enum: [sale, inheritance, gift, division, other] }
+            document_reference: { type: string }
+            consideration: { type: number }
+
+    # Liens
+    - name: liens
+      type: jsonb
+      description: Liens on property
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            lien_id: { type: string }
+            lien_type: { type: string, enum: [mortgage, tax, judgment, mechanic, other] }
+            lienholder: { type: string }
+            amount: { type: number }
+            original_amount: { type: number }
+            filed_date: { type: string, format: date }
+            document_reference: { type: string }
+            status: { type: string, enum: [active, released, partial_release] }
+            release_required: { type: boolean }
+            priority: { type: integer }
+
+    - name: total_liens_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: liens_count
+      type: integer
+      default: 0
+
+    # Encumbrances
+    - name: encumbrances
+      type: jsonb
+      description: Non-lien encumbrances
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            type: { type: string, enum: [easement, restriction, covenant, right_of_way, encroachment] }
+            description: { type: string }
+            beneficiary: { type: string }
+            recorded_date: { type: string, format: date }
+            document_reference: { type: string }
+            affects_marketability: { type: boolean }
+            perpetual: { type: boolean }
+
+    # Judgments
+    - name: judgments
+      type: jsonb
+      nullable: true
+      description: Judgments against owners
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            case_number: { type: string }
+            court: { type: string }
+            judgment_date: { type: string, format: date }
+            amount: { type: number }
+            creditor: { type: string }
+            status: { type: string }
+
+    # Tax Status
+    - name: tax_status
+      type: jsonb
+      description: Property tax information
+      schema:
+        type: object
+        properties:
+          tax_id_number: { type: string }
+          annual_tax: { type: number }
+          paid_through: { type: string, format: date }
+          arrears_amount: { type: number }
+          tax_liens: { type: array }
+
+    # Zoning
+    - name: zoning_info
+      type: jsonb
+      nullable: true
+      description: Zoning information
+      schema:
+        type: object
+        properties:
+          current_zoning: { type: string }
+          permitted_uses: { type: array, items: { type: string } }
+          restrictions: { type: array, items: { type: string } }
+          compliant: { type: boolean }
+
+    # Issues
+    - name: title_issues
+      type: jsonb
+      description: Issues found
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            issue_id: { type: string }
+            issue_type: { type: string }
+            description: { type: string }
+            severity: { type: string, enum: [critical, major, minor] }
+            affects_marketability: { type: boolean }
+            resolution_required: { type: boolean }
+            resolution: { type: string }
+            resolved: { type: boolean }
+
+    - name: issues_count
+      type: integer
+      default: 0
+
+    - name: all_issues_resolved
+      type: boolean
+      default: true
+
+    # Title Status
+    - name: title_status
+      type: enum
+      values:
+        - clear
+        - marketable_with_exceptions
+        - defective
+        - unknown
+      nullable: true
+      description: Overall title status
+
+    - name: is_marketable
+      type: boolean
+      nullable: true
+      description: Title is marketable
+
+    - name: exceptions
+      type: array
+      items: string
+      nullable: true
+      description: Title exceptions
+
+    # Report
+    - name: report_url
+      type: string
+      nullable: true
+      description: Full report document
+
+    - name: summary
+      type: text
+      nullable: true
+      description: Executive summary
+
+    - name: examiner_name
+      type: string
+      nullable: true
+
+    - name: examiner_notes
+      type: text
+      nullable: true
+
+    # Cost
+    - name: search_fee
+      type: decimal
+      precision: 12
+      scale: 2
+      nullable: true
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: property
+      type: belongs_to
+      entity: Property
+      foreign_key: property_id
+
+    - name: due_diligence
+      type: belongs_to
+      entity: DueDiligence
+      foreign_key: due_diligence_id
+
+  # State Machine
+  state_machine:
+    field: status
+    initial: ordered
+    transitions:
+      - from: ordered
+        to: in_progress
+        trigger: start_search
+
+      - from: in_progress
+        to: completed
+        trigger: complete
+
+      - from: completed
+        to: clear
+        trigger: confirm_clear
+        guard: no_issues
+
+      - from: completed
+        to: issues_found
+        trigger: flag_issues
+        guard: has_issues
+
+      - from: issues_found
+        to: requires_action
+        trigger: request_resolution
+
+      - from: requires_action
+        to: clear
+        trigger: resolve_issues
+        guard: all_resolved
+
+  # Business Rules
+  business_rules:
+    - rule: BR-TTS-001
+      name: Search depth
+      description: Full search should cover minimum 30 years
+
+    - rule: BR-TTS-002
+      name: Lien release
+      description: All liens must be released at or before closing
+
+    - rule: BR-TTS-003
+      name: Ownership verification
+      description: Seller must match current owner records
+
+  # Events
+  events:
+    - name: title_search.completed
+      trigger: on_transition_to_completed
+      payload: [id, transaction_id, title_status]
+
+    - name: title_search.clear
+      trigger: on_transition_to_clear
+      payload: [id, transaction_id]
+      notifications:
+        - recipient: buyer_agent
+          template: title_clear
+
+    - name: title_search.issues_found
+      trigger: on_transition_to_issues_found
+      payload: [id, issues_count]
+      notifications:
+        - recipient: buyer_agent
+          template: title_issues
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/title-searches/{id}
+        description: Get title search details
+
+      - method: POST
+        path: /api/transactions/{transaction_id}/title-search
+        description: Order title search
+
+      - method: PUT
+        path: /api/title-searches/{id}
+        description: Update search results
+
+      - method: GET
+        path: /api/title-searches/{id}/report
+        description: Get title report

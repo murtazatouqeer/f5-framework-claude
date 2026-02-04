@@ -1,0 +1,435 @@
+name: flight-booking-workflow
+display_name: Flight Booking Workflow
+display_name_vi: Quy trình đặt vé máy bay
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  End-to-end workflow for booking flights including search,
+  selection, passenger details, payment, and ticketing.
+
+workflow:
+  id: WF-FLT-BOOK
+  name: Flight Booking
+  type: sequential_with_branches
+
+  trigger:
+    type: user_action
+    action: flight_search_initiated
+
+  actors:
+    - traveler: Primary booker
+    - system: OTA platform
+    - gds: Global Distribution System
+    - airline: Carrier system
+    - payment_gateway: Payment processor
+
+  states:
+    - searching
+    - results_displayed
+    - flight_selected
+    - fare_selected
+    - passenger_details
+    - extras_selection
+    - payment_pending
+    - payment_processing
+    - booking_confirmed
+    - ticketing
+    - ticketed
+    - failed
+    - abandoned
+
+steps:
+  - id: STEP-01
+    name: Search Initiation
+    description: Traveler initiates flight search
+    state: searching
+    actor: traveler
+    inputs:
+      - origin: IATA code or city
+      - destination: IATA code or city
+      - departure_date: required
+      - return_date: optional
+      - passengers: adults, children, infants
+      - cabin_class: economy, business, first
+      - trip_type: one_way, round_trip, multi_city
+    validations:
+      - valid_airport_codes
+      - future_dates
+      - passenger_limits
+      - infant_adult_ratio
+    outputs:
+      - search_id
+      - validated_parameters
+    next: STEP-02
+
+  - id: STEP-02
+    name: Search Execution
+    description: System queries GDS and airline sources
+    state: searching
+    actor: system
+    actions:
+      - query_amadeus:
+          type: parallel
+          timeout: 10s
+      - query_sabre:
+          type: parallel
+          timeout: 10s
+      - query_direct_connects:
+          type: parallel
+          timeout: 8s
+    processing:
+      - deduplicate_results
+      - normalize_fares
+      - apply_markup
+      - rank_results
+      - cache_results
+    outputs:
+      - flight_options: list
+      - search_metadata
+    timeout: 15s
+    on_timeout: return_cached_or_partial
+    next: STEP-03
+
+  - id: STEP-03
+    name: Results Display
+    description: Present search results to traveler
+    state: results_displayed
+    actor: system
+    display:
+      - default_sort: best_value
+      - filters_available: [stops, airlines, times, price, duration]
+      - price_display: total_per_person
+      - fare_families: show_comparison
+    tracking:
+      - log_impressions
+      - track_scroll_depth
+    wait_for: user_selection
+    timeout: 30m
+    on_timeout: session_expired
+    next: STEP-04 | STEP-01 (modify_search) | END (abandon)
+
+  - id: STEP-04
+    name: Flight Selection
+    description: Traveler selects flight option
+    state: flight_selected
+    actor: traveler
+    inputs:
+      - selected_flight_id
+      - outbound_option: if_round_trip
+      - return_option: if_round_trip
+    actions:
+      - verify_availability:
+          type: real_time_check
+          source: gds
+      - lock_inventory:
+          duration: 20m
+          type: soft_hold
+    validations:
+      - availability_confirmed
+      - price_unchanged_or_notify
+    outputs:
+      - confirmed_flight
+      - fare_options
+    on_unavailable: STEP-03 (show_alternatives)
+    next: STEP-05
+
+  - id: STEP-05
+    name: Fare Selection
+    description: Select fare family/brand
+    state: fare_selected
+    actor: traveler
+    display:
+      fare_comparison:
+        - fare_name
+        - price
+        - baggage_included
+        - seat_selection
+        - change_fee
+        - refund_policy
+        - mileage_earning
+    inputs:
+      - selected_fare_id
+    validations:
+      - fare_available
+    outputs:
+      - selected_fare_details
+      - total_price
+    next: STEP-06
+
+  - id: STEP-06
+    name: Passenger Details
+    description: Collect passenger information
+    state: passenger_details
+    actor: traveler
+    for_each: passenger
+    inputs:
+      required:
+        - first_name
+        - last_name
+        - date_of_birth
+        - gender: if_international
+      optional:
+        - middle_name
+        - passport_number: if_international
+        - passport_expiry: if_international
+        - nationality: if_international
+        - frequent_flyer_number
+        - meal_preference
+        - special_assistance
+    validations:
+      - name_format
+      - age_matches_type
+      - passport_validity
+      - secure_flight_data
+    contact_details:
+      - email: required
+      - phone: required
+    outputs:
+      - passenger_list
+      - contact_info
+    next: STEP-07
+
+  - id: STEP-07
+    name: Extras Selection
+    description: Offer ancillary products
+    state: extras_selection
+    actor: traveler
+    offers:
+      - baggage:
+          display: visual_weight_options
+          pricing: per_segment
+      - seat_selection:
+          display: seat_map
+          pricing: per_seat
+      - travel_insurance:
+          display: coverage_comparison
+          pricing: per_person
+      - lounge_access:
+          display: if_available
+      - fast_track:
+          display: if_available
+      - transfer:
+          display: suggested
+    inputs:
+      - selected_extras: list
+    outputs:
+      - extras_total
+      - updated_booking_total
+    timeout: 15m
+    next: STEP-08
+
+  - id: STEP-08
+    name: Review & Terms
+    description: Review booking and accept terms
+    state: passenger_details
+    actor: traveler
+    display:
+      - itinerary_summary
+      - passenger_list
+      - price_breakdown
+      - fare_rules_summary
+      - cancellation_policy
+      - terms_and_conditions
+    inputs:
+      - terms_accepted: required
+      - marketing_consent: optional
+    validations:
+      - terms_accepted = true
+      - price_not_expired
+    next: STEP-09
+
+  - id: STEP-09
+    name: Payment Initiation
+    description: Enter payment details
+    state: payment_pending
+    actor: traveler
+    payment_options:
+      - credit_card
+      - debit_card
+      - digital_wallet
+      - bank_transfer
+      - installments: if_eligible
+    inputs:
+      - payment_method
+      - card_details: if_card
+      - billing_address
+    security:
+      - pci_compliant_form
+      - tokenization
+      - 3ds_enrollment_check
+    outputs:
+      - payment_token
+      - amount_to_charge
+    next: STEP-10
+
+  - id: STEP-10
+    name: Payment Processing
+    description: Process payment through gateway
+    state: payment_processing
+    actor: system
+    actions:
+      - fraud_check:
+          type: pre_auth
+          risk_scoring: enabled
+      - 3ds_challenge:
+          if: required
+      - authorize_payment:
+          type: auth_capture | auth_only
+      - capture_payment:
+          if: auth_only_done
+    validations:
+      - authorization_approved
+      - fraud_score_acceptable
+    on_failure:
+      - log_failure_reason
+      - notify_customer
+      - offer_retry
+    outputs:
+      - payment_reference
+      - authorization_code
+    next: STEP-11 | STEP-09 (retry)
+
+  - id: STEP-11
+    name: Booking Confirmation
+    description: Create booking record
+    state: booking_confirmed
+    actor: system
+    actions:
+      - create_pnr:
+          source: gds
+      - store_booking:
+          database: booking_db
+      - assign_booking_reference
+    outputs:
+      - booking_id
+      - pnr_locator
+      - booking_reference
+    next: STEP-12
+
+  - id: STEP-12
+    name: Ticketing
+    description: Issue electronic tickets
+    state: ticketing
+    actor: system
+    actions:
+      - queue_for_ticketing
+      - issue_tickets:
+          type: automatic | manual_review
+      - generate_ticket_numbers
+      - store_ticket_records
+    validations:
+      - ticket_issued_per_passenger
+      - coupon_status_valid
+    on_failure:
+      - queue_for_manual_review
+      - notify_ticketing_team
+    outputs:
+      - ticket_numbers: list
+      - eticket_receipts
+    next: STEP-13
+
+  - id: STEP-13
+    name: Confirmation Delivery
+    description: Send booking confirmation
+    state: ticketed
+    actor: system
+    actions:
+      - send_confirmation_email:
+          content:
+            - booking_reference
+            - eticket_receipt
+            - itinerary
+            - payment_receipt
+      - send_sms:
+          if: phone_provided
+          content: booking_summary
+      - create_calendar_events:
+          format: ics
+      - update_loyalty_account:
+          if: ff_number_provided
+    outputs:
+      - confirmation_sent: boolean
+      - delivery_status
+    next: END
+
+error_handling:
+  - step: STEP-02
+    error: gds_timeout
+    action: fallback_to_cache
+
+  - step: STEP-04
+    error: inventory_sold_out
+    action: show_alternatives
+
+  - step: STEP-10
+    error: payment_declined
+    action: retry_with_different_method
+    max_retries: 3
+
+  - step: STEP-12
+    error: ticketing_failed
+    action: queue_manual_review
+    notify: ticketing_team
+
+rollback:
+  - on: payment_failed_after_booking
+    actions:
+      - cancel_gds_booking
+      - release_inventory
+      - refund_if_charged
+
+  - on: ticketing_failed
+    actions:
+      - hold_booking
+      - notify_operations
+      - schedule_retry
+
+sla:
+  - step: STEP-02
+    max_time: 15s
+
+  - step: STEP-10
+    max_time: 30s
+
+  - step: STEP-12
+    max_time: 60s
+
+  - overall:
+    target: < 5 minutes
+    p95: < 8 minutes
+
+metrics:
+  - name: search_to_book_conversion
+    calculation: bookings / searches
+    target: "> 2%"
+
+  - name: cart_abandonment_rate
+    calculation: abandoned / started
+    target: "< 70%"
+
+  - name: ticketing_success_rate
+    calculation: ticketed / booked
+    target: "> 99%"
+
+  - name: average_booking_time
+    calculation: avg(completion_time)
+    target: "< 5 minutes"
+
+integrations:
+  - system: Amadeus
+    type: gds
+    operations: [search, book, ticket, void]
+
+  - system: Stripe
+    type: payment
+    operations: [authorize, capture, refund]
+
+  - system: SendGrid
+    type: email
+    operations: [send_confirmation, send_receipt]
+
+  - system: Twilio
+    type: sms
+    operations: [send_confirmation]

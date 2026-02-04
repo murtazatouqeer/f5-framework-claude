@@ -1,0 +1,403 @@
+name: achievement-workflow
+display_name: Achievement Workflow
+description: |
+  Workflow for tracking, unlocking, and rewarding achievements.
+  Covers progress tracking, unlock triggers, and reward distribution.
+
+domain: entertainment
+subdomain: gaming
+category: workflows
+version: "1.0.0"
+status: active
+
+trigger:
+  event: player.performs_action
+  conditions:
+    - achievement_system.active
+    - player.authenticated
+
+workflow:
+  id: WF-AC-001
+  name: Achievement System
+  description: Achievement tracking and unlock flow
+
+  actors:
+    - id: player
+      name: Player
+      type: primary
+    - id: achievement_service
+      name: Achievement Service
+      type: system
+    - id: notification_service
+      name: Notification Service
+      type: system
+    - id: reward_service
+      name: Reward Service
+      type: system
+
+  steps:
+    # ============================================
+    # PHASE 1: EVENT DETECTION
+    # ============================================
+    - id: step_1
+      name: Capture Player Action
+      description: Detect player actions that may trigger achievements
+      actor: achievement_service
+      trigger: player_action_event
+      action: |
+        EVENTS to capture:
+        - Match completed
+        - Kill/death/assist
+        - Score achieved
+        - Item collected
+        - Level reached
+        - Quest completed
+        - Time played
+        - Social actions
+        - Collection progress
+
+        CREATE action_event:
+          - player_id
+          - game_id
+          - action_type
+          - action_data
+          - timestamp
+      outputs:
+        - action_event
+      next: step_2
+
+    - id: step_2
+      name: Identify Relevant Achievements
+      description: Find achievements that may be affected
+      actor: achievement_service
+      action: |
+        QUERY achievements WHERE:
+          - game_id matches
+          - criteria_type matches action_type
+          - status = 'active'
+          - NOT already_unlocked_by_player
+
+        RETURN candidate_achievements
+      outputs:
+        - candidate_achievements
+      next: step_3
+
+    # ============================================
+    # PHASE 2: PROGRESS TRACKING
+    # ============================================
+    - id: step_3
+      name: Update Progress
+      description: Update progress for each candidate achievement
+      actor: achievement_service
+      action: |
+        FOR EACH achievement IN candidate_achievements:
+
+          current_progress = get_player_progress(achievement)
+
+          SWITCH criteria_type:
+
+            CASE 'stat_threshold':
+              new_progress = player.stats[achievement.stat_name]
+
+            CASE 'action_count':
+              new_progress = current_progress + 1
+
+            CASE 'collection':
+              IF action adds to collection:
+                new_progress = count_collected_items()
+
+            CASE 'time_based':
+              new_progress = elapsed_time
+
+            CASE 'combo':
+              IF sub_achievement_unlocked:
+                new_progress = count_sub_achievements()
+
+          SAVE new_progress
+      outputs:
+        - updated_progress_list
+      next: step_4
+
+    - id: step_4
+      name: Check Completion
+      description: Determine if any achievements are now complete
+      actor: achievement_service
+      action: |
+        FOR EACH achievement IN updated_achievements:
+
+          IF achievement.trackable:
+            progress_percent = progress / achievement.max_progress
+
+          completion_check = evaluate_criteria(achievement, progress)
+
+          IF completion_check.complete:
+            ADD to achievements_to_unlock
+
+      outputs:
+        - achievements_to_unlock
+      decision_point:
+        condition: achievements_to_unlock.length > 0
+        if_true: step_5
+        if_false: end
+
+    # ============================================
+    # PHASE 3: UNLOCK PROCESSING
+    # ============================================
+    - id: step_5
+      name: Process Unlock
+      description: Execute achievement unlock
+      actor: achievement_service
+      action: |
+        FOR EACH achievement IN achievements_to_unlock:
+
+          BEGIN transaction:
+            - Set player_achievement.unlocked = true
+            - Set player_achievement.unlocked_at = now()
+            - Increment achievement.total_unlocked
+            - Recalculate achievement.unlock_rate
+
+            IF achievement.is_first_unlock:
+              - Set achievement.first_unlocked_by = player
+              - Set achievement.first_unlocked_at = now()
+
+          COMMIT
+      outputs:
+        - unlocked_achievements
+      next: step_6
+
+    - id: step_6
+      name: Calculate Rewards
+      description: Determine rewards to grant
+      actor: reward_service
+      action: |
+        FOR EACH achievement IN unlocked_achievements:
+
+          rewards = []
+
+          IF achievement.points:
+            rewards.push({type: 'points', value: achievement.points})
+
+          IF achievement.xp_reward:
+            rewards.push({type: 'xp', value: achievement.xp_reward})
+
+          IF achievement.currency_reward:
+            rewards.push({type: 'currency', ...achievement.currency_reward})
+
+          IF achievement.item_rewards:
+            FOR EACH item IN achievement.item_rewards:
+              rewards.push({type: 'item', item_id: item})
+
+          IF achievement.title_reward:
+            rewards.push({type: 'title', title: achievement.title_reward})
+
+      outputs:
+        - rewards_to_grant
+      next: step_7
+
+    - id: step_7
+      name: Grant Rewards
+      description: Add rewards to player
+      actor: reward_service
+      action: |
+        FOR EACH reward IN rewards_to_grant:
+
+          SWITCH reward.type:
+
+            CASE 'points':
+              player.achievement_points += reward.value
+
+            CASE 'xp':
+              player.add_xp(reward.value)
+              CHECK for level_up
+
+            CASE 'currency':
+              player.add_currency(reward.currency, reward.amount)
+
+            CASE 'item':
+              inventory.add_item(reward.item_id, {
+                source: 'achievement',
+                achievement_id: achievement.id
+              })
+
+            CASE 'title':
+              player.unlock_title(reward.title)
+
+      outputs:
+        - granted_rewards
+      next: step_8
+
+    # ============================================
+    # PHASE 4: NOTIFICATION
+    # ============================================
+    - id: step_8
+      name: Show Achievement Notification
+      description: Display unlock notification to player
+      actor: notification_service
+      action: |
+        FOR EACH achievement IN unlocked_achievements:
+
+          CREATE notification:
+            - type: 'achievement_unlocked'
+            - achievement_name
+            - achievement_icon
+            - points_value
+            - rarity
+            - rewards_summary
+
+          DISPLAY in-game popup:
+            - Sound effect
+            - Visual celebration
+            - Dismiss after 5 seconds
+
+          ADD to notification history
+      outputs:
+        - notifications_sent
+      next: step_9
+
+    - id: step_9
+      name: Update Statistics
+      description: Update achievement statistics
+      actor: achievement_service
+      action: |
+        UPDATE player stats:
+          - total_achievements_unlocked
+          - achievement_points
+          - completion_percentage_per_game
+          - recent_achievements
+
+        UPDATE global stats:
+          - achievement unlock counts
+          - unlock rate percentages
+
+        UPDATE leaderboards:
+          - Achievement point rankings
+          - Completion % rankings
+      next: step_10
+
+    # ============================================
+    # PHASE 5: SOCIAL & FOLLOW-UP
+    # ============================================
+    - id: step_10
+      name: Social Sharing
+      description: Optional social sharing
+      actor: notification_service
+      action: |
+        IF achievement.rarity IN ['epic', 'legendary']:
+          OFFER share options:
+            - Post to activity feed
+            - Share to social media
+            - Display on profile
+
+        IF player.settings.auto_share_achievements:
+          AUTO post to activity feed
+      optional: true
+      next: step_11
+
+    - id: step_11
+      name: Check Chain Achievements
+      description: Check for meta/chain achievements
+      actor: achievement_service
+      action: |
+        FOR unlocked achievement:
+
+          CHECK if unlocks other achievements:
+            - "Unlock 50 achievements" type
+            - Achievement series completion
+            - Category completion
+
+          IF chain_achievement_triggered:
+            RETURN to step_5 for new achievement
+      decision_point:
+        condition: chain_achievements_unlocked
+        if_true: step_5
+        if_false: end
+
+  special_flows:
+    # ============================================
+    # RETROACTIVE UNLOCKS
+    # ============================================
+    - id: retroactive_check
+      name: Retroactive Achievement Check
+      description: Check for achievements player already qualifies for
+      trigger: player_first_login OR new_achievement_added
+      steps:
+        - step: scan_player_stats
+          action: |
+            FOR EACH active achievement:
+              IF player_already_meets_criteria:
+                QUEUE for unlock
+
+            PROCESS all queued unlocks
+
+    # ============================================
+    # SECRET ACHIEVEMENT REVEAL
+    # ============================================
+    - id: secret_reveal
+      name: Secret Achievement Reveal
+      description: Handle secret/hidden achievements
+      trigger: secret_achievement_unlocked
+      steps:
+        - step: reveal_achievement
+          action: |
+            - Show achievement details for first time
+            - Special "secret unlocked" animation
+            - Reveal description
+
+    # ============================================
+    # PROGRESS NOTIFICATION
+    # ============================================
+    - id: progress_notification
+      name: Progress Milestone Notification
+      description: Notify on significant progress
+      trigger: progress_milestone_reached
+      steps:
+        - step: check_milestone
+          action: |
+            IF progress hits 25%, 50%, 75%:
+              SHOW subtle progress notification
+              "50% progress toward [Achievement Name]"
+
+  error_handling:
+    - error: duplicate_unlock_attempt
+      action: |
+        - Silently ignore
+        - Log for investigation
+        - No duplicate rewards
+
+    - error: reward_grant_failed
+      action: |
+        - Retry up to 3 times
+        - Queue for manual review if persists
+        - Achievement still marked unlocked
+        - Rewards granted when resolved
+
+    - error: achievement_not_found
+      action: |
+        - Log error
+        - Skip processing
+        - No player impact
+
+  metrics:
+    - name: unlock_rate
+      description: Rate of achievement unlocks
+
+    - name: average_completion
+      description: Average completion percentage per player
+
+    - name: reward_grant_success_rate
+      description: Successful reward distributions
+      target: 99.9%
+
+    - name: notification_delivery_rate
+      description: Notifications successfully shown
+      target: 99%
+
+integrations:
+  - service: event_bus
+    events: [player_action, match_complete, item_collected]
+  - service: progression_service
+    events: [xp_granted, level_up]
+  - service: inventory_service
+    events: [item_granted]
+  - service: social_service
+    events: [achievement_shared, activity_posted]

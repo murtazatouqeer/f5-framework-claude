@@ -1,0 +1,114 @@
+name: Auction Rules
+display_name: Auction Rules / Quy tắc đấu giá
+description: |
+  Quy tắc vận hành phiên đấu giá gia súc/gia cầm.
+
+domain: agriculture
+category: auction
+
+rules:
+  - id: BR-AUC-001
+    name: Minimum Bid Increment
+    description: Bid mới phải cao hơn giá hiện tại ít nhất 1 bước giá
+    priority: critical
+    condition: |
+      new_bid.amount >= auction.current_price + auction.bid_increment
+    action: reject_if_violated
+    message: "Giá đặt phải >= {current_price} + {bid_increment}"
+    applies_to: [Bid, Auction]
+
+  - id: BR-AUC-002
+    name: No Self Bidding
+    description: Không được bid listing của chính mình
+    priority: critical
+    condition: |
+      bid.bidder_id != listing.farm.owner_id
+    action: reject_if_violated
+    message: "Bạn không thể đấu giá listing của chính mình"
+    applies_to: [Bid]
+
+  - id: BR-AUC-003
+    name: Auto Extension
+    description: Gia hạn 5 phút nếu có bid trong 5 phút cuối
+    priority: high
+    condition: |
+      auction.auto_extend = true AND
+      (auction.end_at - NOW()) <= INTERVAL '5 minutes' AND
+      auction.extension_count < auction.max_extensions
+    action: |
+      auction.end_at = auction.end_at + INTERVAL '5 minutes'
+      auction.extension_count += 1
+      auction.status = 'extended'
+      TRIGGER auction.extended
+    applies_to: [Auction]
+
+  - id: BR-AUC-004
+    name: Maximum Extensions
+    description: Tối đa 5 lần gia hạn
+    priority: high
+    condition: auction.extension_count < 5
+    action: allow_extension
+    applies_to: [Auction]
+    config:
+      max_extensions: 5
+
+  - id: BR-AUC-005
+    name: Reserve Price Check
+    description: Nếu không đạt reserve price, seller có quyền hủy
+    priority: medium
+    condition: |
+      auction.status = 'ended' AND
+      auction.final_price < auction.reserve_price
+    action: |
+      auction.reserve_met = false
+      allow_seller_cancellation
+    applies_to: [Auction]
+
+  - id: BR-AUC-006
+    name: Winner Payment Deadline
+    description: Winner có 24h để thanh toán cọc
+    priority: high
+    condition: |
+      auction.status = 'ended' AND
+      order.status = 'pending_deposit' AND
+      NOW() - auction.ended_at > INTERVAL '24 hours'
+    action: |
+      order.status = 'cancelled'
+      order.cancellation_reason = 'Payment timeout'
+      transfer_to_second_highest_bidder()
+      penalize_winner()
+    applies_to: [Auction, Order]
+
+  - id: BR-AUC-007
+    name: Shill Bidding Detection
+    description: Phát hiện đẩy giá ảo
+    priority: critical
+    condition: |
+      -- Cùng IP bid trên listing của nhau
+      EXISTS (
+        SELECT 1 FROM bids b1, bids b2
+        WHERE b1.ip_address = b2.ip_address
+        AND b1.auction_id != b2.auction_id
+        AND b1.bidder_id = auction2.listing.farm.owner_id
+        AND b2.bidder_id = auction1.listing.farm.owner_id
+      )
+    action: |
+      FLAG accounts_for_review
+      ALERT admin
+    applies_to: [Bid]
+
+  - id: BR-AUC-008
+    name: Auction Duration Limits
+    description: Thời gian đấu giá tối thiểu 2h, tối đa 7 ngày
+    priority: medium
+    condition: |
+      (auction.end_at - auction.start_at) >= INTERVAL '2 hours' AND
+      (auction.end_at - auction.start_at) <= INTERVAL '7 days'
+    action: reject_if_violated
+    message: "Thời gian đấu giá phải từ 2 giờ đến 7 ngày"
+    applies_to: [Auction]
+
+validation_order:
+  - BR-AUC-002
+  - BR-AUC-001
+  - BR-AUC-008

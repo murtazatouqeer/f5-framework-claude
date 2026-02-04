@@ -1,0 +1,438 @@
+name: housekeeping-workflow
+display_name: Housekeeping Operations Workflow
+display_name_vi: Quy trình vận hành buồng phòng
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Daily housekeeping operations workflow including task assignment,
+  room cleaning, inspection, and status reporting.
+
+description_vi: |
+  Quy trình vận hành buồng phòng hàng ngày bao gồm phân công nhiệm vụ,
+  dọn phòng, kiểm tra và báo cáo trạng thái.
+
+workflow:
+  id: WF-HK-OPS
+  name: Housekeeping Operations
+  type: daily_cycle
+
+  trigger:
+    types:
+      - shift_start
+      - checkout_notification
+      - service_request
+      - inspection_required
+
+  actors:
+    - hk_manager: Executive Housekeeper
+    - supervisor: Floor Supervisor
+    - attendant: Room Attendant
+    - inspector: Quality Inspector
+    - system: PMS/Housekeeping Module
+    - front_desk: Front Office
+
+  states:
+    - shift_prepared
+    - tasks_assigned
+    - cleaning_in_progress
+    - cleaning_complete
+    - inspection_pending
+    - inspection_complete
+    - room_released
+
+steps:
+  - id: STEP-01
+    name: Shift Preparation
+    name_vi: Chuẩn bị ca làm
+    description: Morning preparation and briefing
+    state: shift_prepared
+    actor: hk_manager | supervisor
+    timing: shift_start (typically 7:00-8:00 AM)
+    process:
+      - review_occupancy:
+          - rooms_occupied
+          - departures_expected
+          - arrivals_expected
+          - stayovers
+          - VIP_arrivals
+      - check_room_status:
+          from_previous_night
+          discrepancies_flagged
+      - review_special_requests:
+          guest_preferences
+          maintenance_issues
+      - check_staffing:
+          attendance
+          section_coverage
+      - prepare_supplies:
+          linen_par_levels
+          amenity_stocks
+          cleaning_supplies
+      - conduct_briefing:
+          priorities_today
+          VIP_requirements
+          special_events
+          quality_focus
+    outputs:
+      - daily_briefing_complete
+      - room_counts_verified
+      - staffing_confirmed
+    next: STEP-02
+
+  - id: STEP-02
+    name: Task Generation
+    name_vi: Tạo nhiệm vụ
+    description: System generates and prioritizes tasks
+    state: tasks_assigned
+    actor: system
+    process:
+      - generate_checkout_tasks:
+          for_each: due_out_room
+          type: checkout_clean
+          priority: based_on_arrivals
+      - generate_stayover_tasks:
+          for_each: occupied_room
+          type: stayover_service
+          check: DND_status
+      - generate_special_tasks:
+          VIP_preparations
+          deep_clean_due
+          special_requests
+      - calculate_priorities:
+          1: VIP_arrivals (first)
+          2: early_check_in_requests
+          3: checkout_with_same_day_arrival
+          4: regular_checkouts
+          5: stayovers
+      - estimate_workload:
+          total_credits: sum_of_tasks
+          per_attendant: balanced_distribution
+    outputs:
+      - task_list: complete
+      - priority_sequence: ordered
+      - workload_estimate: by_attendant
+    next: STEP-03
+
+  - id: STEP-03
+    name: Task Assignment
+    name_vi: Phân công nhiệm vụ
+    description: Distribute tasks to attendants
+    state: tasks_assigned
+    actor: supervisor | system
+    process:
+      - assign_by_section:
+          maintain: consistent_assignments
+          consider: experience_level
+      - balance_workload:
+          target: equal_credits_per_attendant
+          adjust: for_experience
+      - distribute_assignments:
+          method: mobile_device OR paper_list
+          include:
+            - room_list
+            - priority_order
+            - special_instructions
+            - VIP_flags
+      - issue_supplies:
+          cart_setup
+          linen_allocation
+          amenity_packs
+      - confirm_understanding:
+          questions_answered
+          priorities_clear
+    outputs:
+      - assignments_distributed
+      - supplies_issued
+      - attendants_deployed
+    next: STEP-04
+
+  - id: STEP-04
+    name: Room Cleaning
+    name_vi: Dọn phòng
+    description: Attendant cleans assigned rooms
+    state: cleaning_in_progress
+    actor: attendant
+    for_each: assigned_room
+
+    sub_steps:
+      - id: STEP-04A
+        name: Room Entry
+        process:
+          - knock_and_announce:
+              "Housekeeping!"
+              wait: 10_seconds
+              repeat: twice
+          - IF DND_displayed:
+              skip_room
+              record: DND_status
+              return_later
+          - IF guest_present:
+              ask: service_desired?
+              IF no: skip_and_record
+          - enter_room:
+              prop_door_open
+              assess_condition
+
+      - id: STEP-04B
+        name: Checkout Clean Process
+        condition: task_type = checkout_clean
+        checklist:
+          bedroom:
+            - strip_bed_completely
+            - check_under_bed_furniture
+            - inspect_for_damages
+            - inspect_for_left_items
+            - dust_all_surfaces
+            - clean_mirrors
+            - vacuum_or_mop_floor
+            - make_bed_fresh_linen
+            - arrange_pillows
+            - check_curtains_blinds
+          bathroom:
+            - remove_used_towels_amenities
+            - scrub_toilet_inside_out
+            - clean_shower_tub
+            - clean_sink_counter
+            - clean_mirror
+            - mop_floor
+            - restock_towels
+            - restock_amenities
+            - check_drains
+          common:
+            - empty_all_trash
+            - clean_minibar_area
+            - check_minibar_consumption
+            - dust_tv_electronics
+            - wipe_remote_controls
+            - check_lights_working
+            - reset_thermostat
+            - replenish_collateral
+            - final_inspection
+
+      - id: STEP-04C
+        name: Stayover Service Process
+        condition: task_type = stayover_service
+        checklist:
+          bedroom:
+            - make_bed (straighten_or_change)
+            - tidy_guest_belongings (dont_move)
+            - empty_trash
+            - dust_visible_surfaces
+            - vacuum_high_traffic
+          bathroom:
+            - clean_toilet
+            - wipe_surfaces
+            - replace_used_towels
+            - restock_if_needed
+            - tidy_guest_items
+          common:
+            - empty_trash
+            - check_minibar
+            - general_tidy
+
+      - id: STEP-04D
+        name: Update Status
+        process:
+          - report_completion:
+              via: mobile_device OR phone
+              new_status: cleaned
+          - record_details:
+              start_time
+              end_time
+              issues_found
+              items_used
+          - IF issues_found:
+              report_maintenance
+              note_on_system
+          - IF lost_item_found:
+              report_immediately
+              do_not_discard
+          - move_to_next_room
+
+    outputs:
+      - room_cleaned: boolean
+      - issues_reported: array
+      - completion_time: timestamp
+    next: STEP-05
+
+  - id: STEP-05
+    name: Quality Inspection
+    name_vi: Kiểm tra chất lượng
+    description: Supervisor inspects cleaned rooms
+    state: inspection_pending
+    actor: supervisor | inspector
+    trigger:
+      mandatory:
+        - VIP_arrivals
+        - suites
+        - after_deep_clean
+        - new_attendant_work
+      random:
+        - 20%_of_rooms_daily
+    process:
+      - inspect_room:
+          use: inspection_checklist
+          score: each_area
+      - verify_completeness:
+          all_tasks_done
+          standards_met
+      - identify_deficiencies:
+          document: issues
+          photograph: if_significant
+      - score_room:
+          scale: 1-10
+          threshold: 8.0_pass
+      - IF passed:
+          approve_room
+          update_status: inspected
+      - IF failed:
+          notify_attendant
+          list_corrections
+          re-inspect_after_fix
+    outputs:
+      - inspection_score
+      - deficiencies_list
+      - pass_fail_status
+    next: STEP-06 (if_pass) | STEP-04D (if_fail)
+
+  - id: STEP-06
+    name: Room Release
+    name_vi: Giải phóng phòng
+    description: Release room for front desk sale
+    state: room_released
+    actor: system | supervisor
+    process:
+      - update_room_status:
+          new_status: vacant_clean OR vacant_inspected
+      - notify_front_desk:
+          room_available
+          special_notes
+      - update_availability:
+          for: same_day_arrivals
+          sync: to_channels
+      - IF arrival_assigned:
+          confirm: ready_for_guest
+          notify: front_desk_of_readiness
+    outputs:
+      - room_status: released
+      - front_desk_notified
+    next: END
+
+  - id: STEP-07
+    name: End of Shift
+    name_vi: Kết thúc ca
+    description: Shift wrap-up and reporting
+    state: shift_complete
+    actor: supervisor | attendant
+    timing: shift_end
+    process:
+      - complete_assignments:
+          all_rooms_done OR
+          handover_pending
+      - report_status:
+          rooms_cleaned
+          rooms_pending
+          issues_found
+      - return_supplies:
+          unused_linen
+          unused_amenities
+          equipment
+      - reconcile_minibar:
+          charges_reported
+      - handover_to_next_shift:
+          pending_tasks
+          special_notes
+          priority_items
+      - generate_reports:
+          productivity_report
+          quality_scores
+          discrepancy_report
+    outputs:
+      - shift_report_complete
+      - handover_documented
+    next: END
+
+special_flows:
+  dnd_handling:
+    trigger: DND_sign_displayed
+    process:
+      - skip_room_initially
+      - record_on_report
+      - return_later (after_2PM)
+      - IF still_DND:
+          contact_front_desk
+          security_check (if_extended)
+
+  rush_room:
+    trigger: urgent_arrival_request
+    process:
+      - prioritize_room
+      - pull_from_other_tasks
+      - expedited_cleaning
+      - supervisor_inspection
+      - immediate_release
+
+  vip_preparation:
+    trigger: VIP_arrival
+    process:
+      - enhanced_cleaning
+      - supervisor_inspection_mandatory
+      - amenity_placement
+      - preference_setup
+      - management_sign_off
+
+  discrepancy_resolution:
+    trigger: status_mismatch
+    process:
+      - investigate_immediately
+      - physical_check
+      - update_system
+      - notify_relevant_parties
+
+  deep_clean:
+    trigger: scheduled_or_triggered
+    process:
+      - schedule_extended_time
+      - additional_resources
+      - comprehensive_checklist
+      - supervisor_sign_off
+
+turndown_service:
+  timing: 6:00-8:00 PM
+  trigger: property_offers_turndown
+  process:
+    - turn_down_bed
+    - close_drapes
+    - adjust_lighting
+    - refresh_bathroom
+    - leave_amenity
+    - place_breakfast_menu
+
+metrics:
+  productivity:
+    - rooms_per_attendant
+    - credits_per_attendant
+    - time_per_room
+
+  quality:
+    - inspection_pass_rate
+    - guest_complaint_rate
+    - re-clean_rate
+
+  efficiency:
+    - room_turnaround_time
+    - on_time_arrivals_ready
+
+reporting:
+  daily:
+    - room_status_report
+    - productivity_report
+    - discrepancy_report
+  weekly:
+    - quality_trend_report
+    - supply_usage_report
+  monthly:
+    - deep_clean_schedule
+    - performance_reviews

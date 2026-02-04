@@ -1,0 +1,86 @@
+# Microservices Example - Orders Service
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-service
+  namespace: microservices
+  labels:
+    app.kubernetes.io/name: orders-service
+    app.kubernetes.io/component: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: orders-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: orders-service
+    spec:
+      containers:
+        - name: orders
+          image: your-registry/orders-service:latest
+          ports:
+            - containerPort: 8082
+          env:
+            - name: PORT
+              value: "8082"
+            - name: USERS_SERVICE_URL
+              value: "http://users-service:8081"
+            - name: AUTH_SERVICE_URL
+              value: "http://auth-service:8083"
+          envFrom:
+            - configMapRef:
+                name: shared-config
+            - secretRef:
+                name: orders-secrets
+                optional: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8082
+            initialDelaySeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8082
+            initialDelaySeconds: 5
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-service
+  namespace: microservices
+spec:
+  selector:
+    app.kubernetes.io/name: orders-service
+  ports:
+    - port: 8082
+      targetPort: 8082
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: orders-service
+  namespace: microservices
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: orders-service
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70

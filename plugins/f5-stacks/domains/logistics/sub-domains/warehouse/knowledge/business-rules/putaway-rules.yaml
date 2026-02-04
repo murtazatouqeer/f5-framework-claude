@@ -1,0 +1,262 @@
+name: PutawayRules
+display_name: Putaway Business Rules
+description: |
+  Business rules governing inventory putaway, location assignment,
+  and storage optimization strategies.
+
+domain: logistics
+subdomain: warehouse
+category: business-rules
+
+rules:
+  # Location Assignment
+  - id: BR-PUT-001
+    name: Directed Putaway
+    description: |
+      System directs putaway to optimal location based on item attributes,
+      storage requirements, and slot optimization.
+    severity: high
+    entities: [PutawayTask, Item, Location]
+    conditions:
+      - putaway_strategy == 'directed'
+    actions:
+      - calculate_optimal_location
+      - consider_velocity_slotting
+      - respect_storage_requirements
+      - minimize_travel_distance
+
+  - id: BR-PUT-002
+    name: Storage Class Matching
+    description: |
+      Items must be stored in locations matching their storage class.
+      Frozen items in frozen zones, ambient in ambient zones.
+    severity: critical
+    entities: [Item, Location, Zone]
+    conditions:
+      - item.storage_class == location.storage_class OR
+      - item.storage_class compatible_with location.storage_class
+    actions:
+      - reject_incompatible_location
+      - suggest_appropriate_location
+      - alert_supervisor_on_override
+
+  - id: BR-PUT-003
+    name: Weight Capacity Validation
+    description: |
+      Location weight capacity must not be exceeded.
+      Consider existing inventory weight plus new inventory.
+    severity: critical
+    entities: [PutawayTask, Location, Inventory]
+    conditions:
+      - current_weight + new_item_weight <= location.max_weight_kg
+    actions:
+      - reject_overweight_putaway
+      - suggest_higher_capacity_location
+
+  - id: BR-PUT-004
+    name: Volume Capacity Validation
+    description: |
+      Location volume capacity must accommodate new inventory.
+      Account for pallet footprint and height restrictions.
+    severity: high
+    entities: [PutawayTask, Location, Item]
+    conditions:
+      - current_volume + new_item_volume <= location.max_volume_cbm
+      - item_height <= location.max_height
+    actions:
+      - reject_oversized_putaway
+      - suggest_appropriate_location
+
+  # Consolidation
+  - id: BR-PUT-005
+    name: Same-Item Consolidation
+    description: |
+      When possible, consolidate same item/lot into existing locations.
+      Reduces location count and improves pick efficiency.
+    severity: medium
+    entities: [PutawayTask, Inventory, Location]
+    conditions:
+      - existing_inventory_same_item_lot
+      - location_has_capacity
+      - consolidation_allowed
+    actions:
+      - suggest_consolidation_location
+      - prioritize_consolidation_over_new_location
+
+  - id: BR-PUT-006
+    name: Lot Consolidation Rules
+    description: |
+      Only consolidate same lot numbers together.
+      Different lots must be in separate LPNs or locations.
+    severity: high
+    entities: [PutawayTask, Lot, Inventory]
+    conditions:
+      - consolidate_only_same_lot
+      - respect_lot_segregation
+    actions:
+      - prevent_mixed_lot_consolidation
+      - require_new_lpn_for_different_lot
+
+  # Priority Handling
+  - id: BR-PUT-007
+    name: Urgent Putaway Priority
+    description: |
+      Cross-dock and urgent items prioritized for immediate putaway.
+      Must be completed within 1 hour of receipt.
+    severity: high
+    entities: [PutawayTask, InboundOrder]
+    conditions:
+      - priority == 'urgent' OR
+      - order.order_type == 'cross_dock'
+    actions:
+      - assign_immediately
+      - escalate_if_not_started_30min
+      - route_to_staging_for_cross_dock
+
+  - id: BR-PUT-008
+    name: FIFO Putaway Sequence
+    description: |
+      Process putaway tasks in order received.
+      Older receipts should be put away before newer.
+    severity: low
+    entities: [PutawayTask, Receipt]
+    conditions:
+      - normal_priority
+    actions:
+      - sequence_by_receipt_time
+      - balance_with_location_proximity
+
+  # Equipment Requirements
+  - id: BR-PUT-009
+    name: Forklift Certification Required
+    description: |
+      Pallet putaway to high locations requires forklift.
+      Only certified operators can perform forklift putaway.
+    severity: critical
+    entities: [PutawayTask, WarehouseWorker, Location]
+    conditions:
+      - equipment_required == 'forklift'
+      - worker.is_certified_forklift == true
+    actions:
+      - filter_tasks_by_certification
+      - reject_uncertified_assignment
+    compliance: [OSHA]
+
+  - id: BR-PUT-010
+    name: Equipment Assignment
+    description: |
+      System assigns appropriate equipment based on item/location.
+      Pallet jack for floor level, forklift for elevated.
+    severity: medium
+    entities: [PutawayTask, Item, Location]
+    conditions:
+      - determine_equipment_from_location_height
+      - determine_equipment_from_item_weight
+    actions:
+      - assign_appropriate_equipment
+      - validate_worker_certification
+
+  # Location Selection Priorities
+  - id: BR-PUT-011
+    name: Velocity Slotting Priority
+    description: |
+      Fast-moving items (A class) placed in prime pick locations.
+      Slow-moving items in less accessible locations.
+    severity: medium
+    entities: [PutawayTask, Item, Location]
+    conditions:
+      - match_item_velocity_to_location_velocity
+    actions:
+      - prioritize_golden_zone_for_A_items
+      - use_high_low_locations_for_C_items
+
+  - id: BR-PUT-012
+    name: Travel Distance Optimization
+    description: |
+      When multiple locations available, choose closest to staging.
+      Minimize putaway travel time.
+    severity: low
+    entities: [PutawayTask, Location]
+    conditions:
+      - multiple_valid_locations
+    actions:
+      - sort_by_travel_distance
+      - prefer_closest_location
+
+  - id: BR-PUT-013
+    name: Empty Location Preference
+    description: |
+      Prefer empty locations over partial locations when appropriate.
+      Depends on item characteristics and storage strategy.
+    severity: low
+    entities: [PutawayTask, Location]
+    conditions:
+      - consider_consolidation_benefit
+      - consider_pick_efficiency
+    actions:
+      - balance_empty_vs_partial_preference
+      - apply_item_specific_rules
+
+  # Zone Restrictions
+  - id: BR-PUT-014
+    name: Zone Authorization
+    description: |
+      Workers can only putaway to zones they're authorized for.
+      Hazmat zones require special certification.
+    severity: high
+    entities: [PutawayTask, WarehouseWorker, Zone]
+    conditions:
+      - zone IN worker.authorized_zones
+      - hazmat_zone requires hazmat_certification
+    actions:
+      - filter_locations_by_authorization
+      - reject_unauthorized_zone_putaway
+
+  - id: BR-PUT-015
+    name: Quarantine Zone Handling
+    description: |
+      Items pending QC or with quality issues go to quarantine zone.
+      Regular items cannot be placed in quarantine zone.
+    severity: high
+    entities: [PutawayTask, Item, Zone]
+    conditions:
+      - qc_pending OR quality_issue implies quarantine_zone
+      - normal_items cannot_go_to quarantine_zone
+    actions:
+      - route_qc_items_to_quarantine
+      - release_after_qc_pass
+
+  # Verification
+  - id: BR-PUT-016
+    name: Location Scan Verification
+    description: |
+      Worker must scan location barcode to confirm putaway.
+      System validates correct location.
+    severity: critical
+    entities: [PutawayTask, Location]
+    conditions:
+      - scanned_location == assigned_location OR
+      - scanned_location == approved_alternate
+    actions:
+      - require_location_scan
+      - reject_wrong_location
+      - allow_alternate_with_reason
+
+validation_triggers:
+  - before_putaway_assignment
+  - during_putaway_execution
+  - after_putaway_completion
+
+metrics:
+  - name: putaway_accuracy
+    formula: (correct_putaways / total_putaways) * 100
+    target: "> 99%"
+  - name: putaway_uph
+    formula: completed_putaways / labor_hours
+    target: "> 25 UPH"
+  - name: directed_compliance
+    formula: (followed_system_location / total_putaways) * 100
+    target: "> 95%"
+  - name: staging_dwell_time
+    formula: avg(putaway_complete_time - receipt_time)
+    target: "< 4 hours"

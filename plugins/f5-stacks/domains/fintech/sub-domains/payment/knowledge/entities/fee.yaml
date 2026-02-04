@@ -1,0 +1,423 @@
+# Fee Entity - Fee records and calculations
+# Domain: fintech/payment
+# Purpose: Tracks all fees charged in the payment system
+
+name: Fee
+display_name: Fee
+description: |
+  Represents a fee charged for payment processing, refunds, disputes,
+  or other services. Provides detailed breakdown of fee calculations
+  for transparency and reconciliation.
+
+  Vietnamese: Đại diện cho phí tính cho xử lý thanh toán, hoàn tiền,
+  tranh chấp hoặc các dịch vụ khác. Cung cấp chi tiết tính phí.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier
+
+  - name: fee_id
+    type: string
+    required: true
+    description: External ID (FEE-XXXXXXXX)
+    validation:
+      pattern: "^FEE-[A-Z0-9]{8}$"
+
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant charged
+
+  # Related Entity
+  - name: fee_type
+    type: enum
+    required: true
+    description: Type of fee (Loại phí)
+    validation:
+      values: [processing, refund, dispute, payout, monthly, setup, chargeback_reversal, instant_payout, international, currency_conversion, platform]
+
+  - name: related_entity_type
+    type: enum
+    required: true
+    description: Related entity type
+    validation:
+      values: [payment, refund, dispute, payout, settlement, subscription]
+
+  - name: related_entity_id
+    type: uuid
+    required: true
+    description: ID of related entity
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Fee amount (Số tiền phí)
+    validation:
+      min: 0
+
+  - name: currency
+    type: string
+    required: true
+    description: Fee currency
+    validation:
+      pattern: "^[A-Z]{3}$"
+
+  # Calculation Details
+  - name: calculation_type
+    type: enum
+    required: true
+    description: How fee was calculated
+    validation:
+      values: [percentage, fixed, percentage_plus_fixed, tiered, custom]
+
+  - name: percentage_rate
+    type: decimal
+    required: false
+    description: Percentage rate applied
+    validation:
+      min: 0
+      max: 100
+
+  - name: fixed_amount
+    type: decimal
+    required: false
+    description: Fixed amount component
+    validation:
+      min: 0
+
+  - name: base_amount
+    type: decimal
+    required: false
+    description: Base amount fee was calculated on
+
+  - name: calculation_details
+    type: json
+    required: false
+    description: |
+      Detailed calculation breakdown:
+      {
+        "base_amount": 1000000,
+        "percentage_rate": 2.9,
+        "percentage_fee": 29000,
+        "fixed_fee": 2000,
+        "total_fee": 31000,
+        "tier_applied": "standard"
+      }
+
+  # Fee Plan Reference
+  - name: fee_plan_id
+    type: uuid
+    required: false
+    description: Fee plan used for calculation
+
+  - name: fee_plan_name
+    type: string
+    required: false
+    description: Name of fee plan
+    validation:
+      max: 100
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Fee status
+    validation:
+      values: [pending, collected, waived, refunded]
+
+  - name: collected_at
+    type: timestamp
+    required: false
+    description: When fee was collected
+
+  - name: waived_at
+    type: timestamp
+    required: false
+    description: When fee was waived
+
+  - name: waived_by
+    type: uuid
+    required: false
+    description: Who waived the fee
+
+  - name: waived_reason
+    type: string
+    required: false
+    description: Reason for waiving
+    validation:
+      max: 500
+
+  # Refund
+  - name: refunded_amount
+    type: decimal
+    required: true
+    description: Amount refunded
+    validation:
+      min: 0
+    default: 0
+
+  - name: refunded_at
+    type: timestamp
+    required: false
+    description: When fee was refunded
+
+  # Settlement
+  - name: settlement_id
+    type: uuid
+    required: false
+    description: Settlement that includes this fee
+
+  # Description
+  - name: description
+    type: string
+    required: true
+    description: Human-readable description (Mô tả)
+    validation:
+      max: 500
+
+  # Tax
+  - name: tax_amount
+    type: decimal
+    required: true
+    description: Tax on fee (VAT)
+    validation:
+      min: 0
+    default: 0
+
+  - name: tax_rate
+    type: decimal
+    required: false
+    description: Tax rate applied
+    validation:
+      min: 0
+      max: 100
+
+  - name: gross_amount
+    type: decimal
+    required: true
+    description: Fee + tax
+
+  # Metadata
+  - name: metadata
+    type: json
+    required: false
+    description: Custom key-value pairs
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+relationships:
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant charged
+
+  - name: payment
+    type: belongs_to
+    entity: Payment
+    required: false
+    description: Related payment (if processing fee)
+
+  - name: refund
+    type: belongs_to
+    entity: Refund
+    required: false
+    description: Related refund
+
+  - name: dispute
+    type: belongs_to
+    entity: Dispute
+    required: false
+    description: Related dispute
+
+  - name: payout
+    type: belongs_to
+    entity: Payout
+    required: false
+    description: Related payout
+
+  - name: settlement
+    type: belongs_to
+    entity: Settlement
+    required: false
+    description: Settlement
+
+indexes:
+  - [fee_id]
+  - [merchant_id, created_at]
+  - [related_entity_type, related_entity_id]
+  - [fee_type, created_at]
+  - [settlement_id]
+  - [status]
+
+events:
+  - name: fee.created
+    description: Fee record created
+    payload: [id, fee_id, merchant_id, fee_type, amount]
+
+  - name: fee.collected
+    description: Fee collected
+    payload: [id, fee_id, amount, collected_at]
+
+  - name: fee.waived
+    description: Fee waived
+    payload: [id, fee_id, waived_by, waived_reason]
+
+  - name: fee.refunded
+    description: Fee refunded
+    payload: [id, fee_id, refunded_amount]
+
+business_rules:
+  - id: BR-FEE-001
+    description: Processing fee calculation
+    rule: |
+      IF fee_type = 'processing'
+      THEN amount = (base_amount * percentage_rate / 100) + fixed_amount
+    vietnamese: Công thức tính phí xử lý
+
+  - id: BR-FEE-002
+    description: Volume discounts apply
+    rule: |
+      IF merchant.monthly_volume > tier_threshold
+      THEN apply_discounted_rate()
+    vietnamese: Áp dụng giảm giá theo doanh số
+
+  - id: BR-FEE-003
+    description: International card surcharge
+    rule: |
+      IF payment.card_issuer_country != merchant.country
+      THEN add_international_fee()
+    vietnamese: Phụ phí thẻ quốc tế
+
+  - id: BR-FEE-004
+    description: Dispute fee refunded if merchant wins
+    rule: |
+      IF fee_type = 'dispute' AND dispute.outcome = 'won'
+      THEN refund_fee()
+    vietnamese: Hoàn phí dispute nếu merchant thắng
+
+  - id: BR-FEE-005
+    description: VAT on fees
+    rule: |
+      tax_amount = amount * vat_rate
+      gross_amount = amount + tax_amount
+    vietnamese: VAT trên phí
+
+  - id: BR-FEE-006
+    description: Fee waiver requires approval
+    rule: |
+      IF waive_fee_requested AND amount > waiver_threshold
+      THEN require_approval = true
+    vietnamese: Miễn phí cần phê duyệt
+
+api_endpoints:
+  - method: GET
+    path: /v1/fees
+    description: List fees with filters
+
+  - method: GET
+    path: /v1/fees/{id}
+    description: Get fee details
+
+  - method: GET
+    path: /v1/merchants/{merchant_id}/fees
+    description: List merchant fees
+
+  - method: GET
+    path: /v1/payments/{payment_id}/fees
+    description: Get fees for payment
+
+fee_schedule:
+  processing:
+    domestic_card:
+      rate: 2.9
+      fixed: 2000
+      currency: "VND"
+    international_card:
+      rate: 3.5
+      fixed: 2000
+      currency: "VND"
+    e_wallet:
+      rate: 1.5
+      fixed: 0
+      currency: "VND"
+    bank_transfer:
+      rate: 0.5
+      fixed: 0
+      min: 5000
+      max: 50000
+      currency: "VND"
+
+  refund:
+    card:
+      rate: 0
+      fixed: 0
+      note: "Processing fee not returned"
+    e_wallet:
+      rate: 0
+      fixed: 0
+
+  dispute:
+    chargeback:
+      fixed: 300000
+      currency: "VND"
+      refundable_if_won: true
+
+  payout:
+    standard:
+      rate: 0
+      fixed: 0
+    instant:
+      rate: 0.5
+      min: 5000
+      currency: "VND"
+
+  monthly:
+    basic: 0
+    premium: 500000
+    enterprise: "custom"
+
+volume_tiers:
+  - tier: "starter"
+    volume_up_to: 100000000
+    rate: 2.9
+    fixed: 2000
+
+  - tier: "growth"
+    volume_up_to: 500000000
+    rate: 2.7
+    fixed: 2000
+
+  - tier: "scale"
+    volume_up_to: 2000000000
+    rate: 2.5
+    fixed: 2000
+
+  - tier: "enterprise"
+    volume_above: 2000000000
+    rate: "negotiated"
+    fixed: "negotiated"
+
+security_considerations:
+  - Fee calculations must be auditable
+  - Waiver approval workflow required
+  - Fee changes require merchant notification
+  - Historical fee records immutable
+  - Tax calculations must comply with regulations

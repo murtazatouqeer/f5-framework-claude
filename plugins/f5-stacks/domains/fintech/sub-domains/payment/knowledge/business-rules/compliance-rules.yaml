@@ -1,0 +1,413 @@
+# Compliance Rules
+# Domain: fintech/payment
+# Purpose: Rules for PCI-DSS, AML, KYC, and regulatory compliance
+
+name: Compliance Rules
+display_name: Compliance Rules
+description: |
+  Business rules ensuring compliance with PCI-DSS, AML (Anti-Money Laundering),
+  KYC (Know Your Customer), and local regulatory requirements.
+
+  Vietnamese: Quy tắc đảm bảo tuân thủ PCI-DSS, AML (Chống rửa tiền),
+  KYC (Biết khách hàng) và các yêu cầu quy định địa phương.
+
+domain: fintech
+sub_domain: payment
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # ============ PCI-DSS COMPLIANCE ============
+  pci_dss:
+    - id: BR-CMP-001
+      name: Card Data Tokenization
+      description: Never store raw card data - tokenize immediately
+      vietnamese: Không bao giờ lưu dữ liệu thẻ thô - tokenize ngay lập tức
+      requirement: PCI-DSS 3.4
+      condition: |
+        raw_pan MUST NOT be stored
+        raw_cvv MUST NOT be stored
+        raw_track_data MUST NOT be stored
+      implementation: |
+        1. Tokenize card data immediately upon receipt
+        2. Store only tokens, last4, and expiry
+        3. Use hardware security modules (HSM) for tokenization
+      violation_action: critical_security_alert
+      audit_frequency: continuous
+
+    - id: BR-CMP-002
+      name: CVV Never Stored
+      description: CVV must never be stored after authorization
+      vietnamese: CVV không bao giờ được lưu sau khi ủy quyền
+      requirement: PCI-DSS 3.2.2
+      condition: |
+        cvv MUST be purged after authorization_complete
+        cvv NOT IN any_database
+        cvv NOT IN any_log
+      violation_action: immediate_purge_and_alert
+
+    - id: BR-CMP-003
+      name: Encryption in Transit
+      description: All data encrypted during transmission
+      vietnamese: Tất cả dữ liệu được mã hóa khi truyền
+      requirement: PCI-DSS 4.1
+      condition: |
+        transport_layer = 'TLS 1.2+' OR 'TLS 1.3'
+        cipher_suite IN approved_cipher_suites
+        certificate_valid = true
+      parameters:
+        approved_cipher_suites:
+          - TLS_AES_256_GCM_SHA384
+          - TLS_CHACHA20_POLY1305_SHA256
+          - TLS_AES_128_GCM_SHA256
+
+    - id: BR-CMP-004
+      name: Encryption at Rest
+      description: Sensitive data encrypted at rest
+      vietnamese: Dữ liệu nhạy cảm được mã hóa khi lưu trữ
+      requirement: PCI-DSS 3.4
+      condition: |
+        sensitive_fields ENCRYPTED WITH approved_algorithm
+      parameters:
+        sensitive_fields:
+          - card_token
+          - bank_account_number
+          - ssn_tax_id
+        approved_algorithm: AES-256-GCM
+        key_rotation_period: 90 days
+
+    - id: BR-CMP-005
+      name: Access Control
+      description: Restrict access to cardholder data
+      vietnamese: Hạn chế truy cập dữ liệu chủ thẻ
+      requirement: PCI-DSS 7.1
+      condition: |
+        access_to_cardholder_data REQUIRES role_based_permission
+        all_access_logged = true
+        principle_of_least_privilege = enforced
+      audit_requirement: access_log_review_monthly
+
+    - id: BR-CMP-006
+      name: Secure Key Management
+      description: Cryptographic keys securely managed
+      vietnamese: Quản lý khóa mã hóa an toàn
+      requirement: PCI-DSS 3.6
+      condition: |
+        key_storage = 'HSM' OR 'secure_key_vault'
+        key_rotation_automated = true
+        split_knowledge = enforced FOR master_keys
+      parameters:
+        key_types:
+          - data_encryption_key
+          - key_encryption_key
+          - token_encryption_key
+
+  # ============ AML (ANTI-MONEY LAUNDERING) ============
+  aml:
+    - id: BR-CMP-010
+      name: Large Transaction Reporting
+      description: Report transactions above threshold
+      vietnamese: Báo cáo giao dịch trên ngưỡng
+      requirement: AML Regulations
+      condition: |
+        single_transaction.amount >= reporting_threshold
+        OR daily_cumulative.amount >= daily_threshold
+      parameters:
+        reporting_threshold: 200000000  # 200M VND
+        daily_threshold: 500000000  # 500M VND
+      action: |
+        generate_ctr(transaction)  # Currency Transaction Report
+        submit_to_fiu()  # Financial Intelligence Unit
+
+    - id: BR-CMP-011
+      name: Suspicious Activity Detection
+      description: Detect and report suspicious patterns
+      vietnamese: Phát hiện và báo cáo các mẫu đáng ngờ
+      requirement: AML Regulations
+      suspicious_patterns:
+        - id: structuring
+          description: Breaking up transactions to avoid reporting
+          condition: |
+            multiple_transactions.same_day
+            AND each_transaction < reporting_threshold
+            AND total > reporting_threshold
+          risk_indicator: high
+
+        - id: rapid_movement
+          description: Funds moved rapidly through account
+          condition: |
+            funds_received_and_withdrawn_within(24 hours)
+            AND amount > threshold
+          risk_indicator: high
+
+        - id: unusual_pattern
+          description: Activity inconsistent with customer profile
+          condition: |
+            transaction_pattern != customer.expected_pattern
+            AND significant_deviation = true
+          risk_indicator: medium
+
+        - id: high_risk_jurisdiction
+          description: Transactions involving high-risk countries
+          condition: |
+            counterparty_country IN high_risk_countries
+          risk_indicator: medium
+
+      action: |
+        IF suspicious_pattern_detected
+        THEN file_sar()  # Suspicious Activity Report
+             AND flag_account_for_review()
+
+    - id: BR-CMP-012
+      name: Transaction Monitoring
+      description: Continuous transaction monitoring
+      vietnamese: Theo dõi giao dịch liên tục
+      monitoring_rules:
+        - volume_monitoring:
+            threshold: merchant.expected_volume * 3
+            period: daily
+            action: alert_compliance_team
+
+        - velocity_monitoring:
+            threshold: 100 transactions per hour
+            action: flag_for_review
+
+        - geographic_monitoring:
+            new_countries: flag_for_review
+            sanctioned_countries: block
+
+    - id: BR-CMP-013
+      name: Sanctions Screening
+      description: Screen against sanctions lists
+      vietnamese: Sàng lọc theo danh sách trừng phạt
+      requirement: OFAC, UN, EU Sanctions
+      condition: |
+        screen_against = [
+          'OFAC SDN List',
+          'UN Consolidated List',
+          'EU Sanctions List',
+          'Local Sanctions List'
+        ]
+      screening_points:
+        - customer_onboarding
+        - transaction_processing
+        - periodic_batch_screening
+      action_on_match: |
+        block_transaction()
+        escalate_to_compliance()
+        do_not_tip_off()
+
+  # ============ KYC (KNOW YOUR CUSTOMER) ============
+  kyc:
+    - id: BR-CMP-020
+      name: Merchant KYC Tiers
+      description: KYC requirements based on volume
+      vietnamese: Yêu cầu KYC theo mức doanh số
+      tiers:
+        - tier: 1
+          name: Basic
+          volume_limit: 100000000  # 100M VND/month
+          requirements:
+            - government_id
+            - selfie_verification
+            - phone_verification
+            - email_verification
+
+        - tier: 2
+          name: Standard
+          volume_limit: 1000000000  # 1B VND/month
+          requirements:
+            - all_tier_1_requirements
+            - business_registration
+            - tax_certificate
+            - bank_statement_3_months
+
+        - tier: 3
+          name: Enhanced
+          volume_limit: unlimited
+          requirements:
+            - all_tier_2_requirements
+            - audited_financial_statements
+            - beneficial_ownership_declaration
+            - source_of_funds_documentation
+            - on_site_verification (if required)
+
+    - id: BR-CMP-021
+      name: Customer Identity Verification
+      description: Verify customer identity for high-risk transactions
+      vietnamese: Xác minh danh tính khách hàng cho giao dịch rủi ro cao
+      condition: |
+        IF transaction.amount > threshold
+           OR risk_score > risk_threshold
+           OR first_transaction = true
+        THEN require_identity_verification
+      parameters:
+        threshold: 50000000  # VND
+        risk_threshold: 70
+      verification_methods:
+        - document_verification
+        - biometric_verification
+        - knowledge_based_authentication
+
+    - id: BR-CMP-022
+      name: Periodic Re-verification
+      description: Re-verify customer/merchant periodically
+      vietnamese: Xác minh lại định kỳ
+      condition: |
+        last_verification_date + verification_period < today
+      parameters:
+        verification_period:
+          low_risk: 365 days
+          medium_risk: 180 days
+          high_risk: 90 days
+      action: |
+        trigger_reverification_workflow()
+        limit_transactions_if_not_completed()
+
+    - id: BR-CMP-023
+      name: Beneficial Ownership
+      description: Identify beneficial owners for business accounts
+      vietnamese: Xác định chủ sở hữu hưởng lợi cho tài khoản doanh nghiệp
+      requirement: AML 4th Directive
+      condition: |
+        IF merchant.business_type != 'individual'
+        THEN require_beneficial_ownership_declaration
+      threshold: 25%  # ownership threshold
+      required_information:
+        - full_name
+        - date_of_birth
+        - nationality
+        - ownership_percentage
+        - government_id
+
+  # ============ DATA PROTECTION ============
+  data_protection:
+    - id: BR-CMP-030
+      name: Data Retention Limits
+      description: Retain data only as required
+      vietnamese: Chỉ lưu giữ dữ liệu theo yêu cầu
+      retention_periods:
+        - data_type: transaction_data
+          retention: 7 years
+          reason: Tax and audit requirements
+
+        - data_type: customer_pii
+          retention: account_lifetime + 5 years
+          reason: Legal and compliance
+
+        - data_type: card_data
+          retention: never_stored (tokenized)
+          reason: PCI-DSS
+
+        - data_type: access_logs
+          retention: 1 year
+          reason: Security monitoring
+
+        - data_type: audit_logs
+          retention: 7 years
+          reason: Compliance audit
+
+    - id: BR-CMP-031
+      name: Data Minimization
+      description: Collect only necessary data
+      vietnamese: Chỉ thu thập dữ liệu cần thiết
+      principle: |
+        collect_only_data_required_for_purpose
+        do_not_collect_unnecessary_sensitive_data
+      prohibited_collection:
+        - religious_belief
+        - political_affiliation
+        - health_information
+        - biometric_data (unless required for verification)
+
+    - id: BR-CMP-032
+      name: Right to Deletion
+      description: Honor data deletion requests
+      vietnamese: Tôn trọng yêu cầu xóa dữ liệu
+      condition: |
+        IF deletion_request_received
+           AND no_legal_hold
+           AND retention_period_expired
+        THEN execute_deletion
+      exceptions:
+        - active_legal_hold
+        - ongoing_investigation
+        - regulatory_retention_requirement
+
+  # ============ REGULATORY REPORTING ============
+  reporting:
+    - id: BR-CMP-040
+      name: SBV Payment Reporting
+      description: Report to State Bank of Vietnam
+      vietnamese: Báo cáo cho Ngân hàng Nhà nước Việt Nam
+      reports:
+        - name: Monthly Transaction Report
+          frequency: monthly
+          due_date: 10th of following month
+          contents:
+            - total_transaction_volume
+            - transaction_count_by_type
+            - average_transaction_value
+            - dispute_rate
+
+        - name: Quarterly Compliance Report
+          frequency: quarterly
+          due_date: 15th of following quarter
+          contents:
+            - aml_screening_summary
+            - suspicious_activity_summary
+            - kyc_verification_status
+
+    - id: BR-CMP-041
+      name: Tax Authority Reporting
+      description: Report merchant earnings to tax authority
+      vietnamese: Báo cáo thu nhập merchant cho cơ quan thuế
+      condition: |
+        merchant.annual_volume > tax_reporting_threshold
+      parameters:
+        tax_reporting_threshold: 100000000  # VND
+      report_contents:
+        - merchant_tax_id
+        - total_gross_payments
+        - total_fees_collected
+
+audit_requirements:
+  internal_audit:
+    frequency: quarterly
+    scope:
+      - pci_dss_controls
+      - aml_procedures
+      - kyc_processes
+      - data_protection
+
+  external_audit:
+    frequency: annual
+    auditors: qualified_security_assessor
+    certifications:
+      - pci_dss_aoc
+      - soc2_type2
+
+incident_response:
+  data_breach:
+    notification_timeline:
+      regulators: 72 hours
+      affected_parties: 72 hours (if high risk)
+    required_actions:
+      - contain_breach
+      - assess_impact
+      - notify_authorities
+      - notify_affected_parties
+      - remediate_vulnerability
+      - document_lessons_learned
+
+compliance_training:
+  required_for:
+    - all_employees_with_data_access
+    - customer_support_staff
+    - engineering_team
+  frequency: annual
+  topics:
+    - pci_dss_awareness
+    - aml_red_flags
+    - data_protection
+    - incident_reporting

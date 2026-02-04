@@ -1,0 +1,472 @@
+name: bank-file
+display_name: Bank Payment File
+description: |
+  Bank payment file generation for salary disbursement, supporting
+  multiple Vietnamese bank formats and payment methods.
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: BankFile
+  table_name: bank_files
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: file_number
+      type: string
+      length: 30
+      unique: true
+      format: "BF-{YYYYMMDD}-{NNN}"
+
+    - name: payroll_run_id
+      type: uuid
+      required: true
+
+    # Bank Details
+    - name: bank_code
+      type: string
+      length: 20
+      required: true
+      description: "VCB, TCB, ACB, BIDV, etc."
+
+    - name: bank_name
+      type: string
+      length: 100
+      required: true
+
+    - name: bank_branch
+      type: string
+      length: 100
+
+    - name: company_account_number
+      type: string
+      length: 30
+      required: true
+
+    - name: company_account_name
+      type: string
+      length: 200
+      required: true
+
+    # File Details
+    - name: file_format
+      type: enum
+      values: [vcb_format, tcb_format, acb_format, bidv_format, generic_csv, iso20022]
+      required: true
+
+    - name: file_name
+      type: string
+      length: 200
+      required: true
+
+    - name: file_path
+      type: string
+      length: 500
+
+    - name: file_size_bytes
+      type: integer
+
+    - name: checksum
+      type: string
+      length: 64
+      description: SHA-256 hash
+
+    # Batch Info
+    - name: batch_reference
+      type: string
+      length: 50
+      description: Bank batch reference
+
+    - name: payment_date
+      type: date
+      required: true
+
+    - name: value_date
+      type: date
+      description: Effective payment date
+
+    # Transaction Summary
+    - name: total_transactions
+      type: integer
+      default: 0
+
+    - name: successful_transactions
+      type: integer
+      default: 0
+
+    - name: failed_transactions
+      type: integer
+      default: 0
+
+    - name: pending_transactions
+      type: integer
+      default: 0
+
+    - name: total_amount
+      type: decimal
+      precision: 18
+      scale: 2
+      required: true
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, generated, validated, submitted, processing, completed, partial, failed, cancelled]
+      default: draft
+
+    # Generation Info
+    - name: generated_at
+      type: timestamp
+
+    - name: generated_by
+      type: uuid
+
+    # Submission Info
+    - name: submitted_at
+      type: timestamp
+
+    - name: submitted_by
+      type: uuid
+
+    - name: submission_method
+      type: enum
+      values: [manual_upload, api, sftp, email]
+
+    - name: submission_reference
+      type: string
+      length: 100
+
+    # Response Info
+    - name: bank_response_code
+      type: string
+      length: 20
+
+    - name: bank_response_message
+      type: text
+
+    - name: response_received_at
+      type: timestamp
+
+    - name: response_file_path
+      type: string
+      length: 500
+
+    # Reconciliation
+    - name: reconciled
+      type: boolean
+      default: false
+
+    - name: reconciled_at
+      type: timestamp
+
+    - name: reconciled_by
+      type: uuid
+
+    - name: reconciliation_notes
+      type: text
+
+    # Error Handling
+    - name: errors
+      type: jsonb
+      description: Transaction errors
+      example: |
+        [
+          {
+            "employee_id": "xxx",
+            "account_number": "****1234",
+            "error_code": "INVALID_ACCOUNT",
+            "message": "Account number not found"
+          }
+        ]
+
+    # Retry
+    - name: retry_count
+      type: integer
+      default: 0
+
+    - name: max_retries
+      type: integer
+      default: 3
+
+    - name: last_retry_at
+      type: timestamp
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: payroll_run
+      type: belongs_to
+      entity: PayrollRun
+      foreign_key: payroll_run_id
+
+    - name: transactions
+      type: has_many
+      entity: BankTransaction
+      foreign_key: bank_file_id
+
+    - name: generator
+      type: belongs_to
+      entity: User
+      foreign_key: generated_by
+
+    - name: submitter
+      type: belongs_to
+      entity: User
+      foreign_key: submitted_by
+
+  indexes:
+    - columns: [file_number]
+      unique: true
+    - columns: [payroll_run_id]
+    - columns: [bank_code]
+    - columns: [status]
+    - columns: [payment_date]
+    - columns: [batch_reference]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: generated
+        action: generate
+        guards: [payroll_approved, accounts_validated]
+        triggers: [create_file, calculate_checksum]
+
+      - from: generated
+        to: validated
+        action: validate
+        guards: [file_integrity_check, format_valid]
+        triggers: [log_validation]
+
+      - from: validated
+        to: submitted
+        action: submit
+        guards: [authorized_submitter]
+        triggers: [record_submission, notify_finance]
+
+      - from: submitted
+        to: processing
+        action: acknowledge
+        guards: [bank_acknowledged]
+        triggers: [update_tracking]
+
+      - from: processing
+        to: completed
+        action: complete
+        guards: [all_transactions_processed]
+        triggers: [update_payslips, notify_payroll]
+
+      - from: processing
+        to: partial
+        action: partial_complete
+        guards: [some_transactions_failed]
+        triggers: [log_failures, notify_payroll]
+
+      - from: processing
+        to: failed
+        action: fail
+        guards: [critical_error]
+        triggers: [alert_finance, log_error]
+
+      - from: [failed, partial]
+        to: draft
+        action: retry
+        guards: [retry_allowed]
+        triggers: [increment_retry, prepare_retry_file]
+
+      - from: [draft, generated, validated]
+        to: cancelled
+        action: cancel
+        triggers: [log_cancellation]
+
+  bank_formats:
+    vcb_format:
+      bank: Vietcombank
+      encoding: UTF-8
+      delimiter: ","
+      header_rows: 1
+      columns:
+        - sequence_number
+        - account_number
+        - account_name
+        - amount
+        - description
+      max_records: 9999
+
+    tcb_format:
+      bank: Techcombank
+      encoding: UTF-8
+      delimiter: "|"
+      header_rows: 2
+      columns:
+        - record_type
+        - account_number
+        - account_name
+        - id_number
+        - amount
+        - description
+      max_records: 5000
+
+    acb_format:
+      bank: ACB
+      encoding: Windows-1252
+      delimiter: ","
+      header_rows: 1
+      columns:
+        - sequence_number
+        - beneficiary_account
+        - beneficiary_name
+        - amount
+        - remark
+      max_records: 10000
+
+    bidv_format:
+      bank: BIDV
+      encoding: UTF-8
+      delimiter: ","
+      header_rows: 1
+      columns:
+        - stt
+        - so_tai_khoan
+        - ten_nguoi_huong
+        - so_tien
+        - noi_dung
+      max_records: 5000
+
+    generic_csv:
+      encoding: UTF-8
+      delimiter: ","
+      columns:
+        - employee_code
+        - employee_name
+        - bank_name
+        - account_number
+        - amount
+        - description
+
+    iso20022:
+      standard: pain.001.001.03
+      encoding: UTF-8
+      format: XML
+      description: International standard format
+
+  file_generation:
+    security:
+      - encryption: AES-256
+      - checksum: SHA-256
+      - access_control: role_based
+
+    naming_convention:
+      pattern: "{COMPANY}_{BANK}_{YYYYMMDD}_{SEQ}.{EXT}"
+      example: "ACME_VCB_20241215_001.csv"
+
+    storage:
+      location: secure_file_storage
+      retention: 7_years
+      backup: required
+
+  submission_methods:
+    manual_upload:
+      description: Upload via bank's internet banking portal
+      steps:
+        - Login to bank portal
+        - Navigate to batch payment
+        - Upload file
+        - Authorize with OTP
+
+    api:
+      description: Direct API integration
+      requirements:
+        - API credentials
+        - Digital certificate
+        - Whitelist IP
+
+    sftp:
+      description: Secure file transfer
+      requirements:
+        - SFTP credentials
+        - SSH key
+        - Scheduled pickup
+
+  validations:
+    - field: total_amount
+      rule: positive
+      message: "Total amount must be positive"
+
+    - field: total_transactions
+      rule: positive
+      message: "Must have at least one transaction"
+
+    - field: checksum
+      rule: valid_sha256
+      message: "Invalid file checksum"
+
+  computed_fields:
+    - name: successful_transactions
+      formula: "COUNT(transactions WHERE status = 'completed')"
+
+    - name: failed_transactions
+      formula: "COUNT(transactions WHERE status = 'failed')"
+
+    - name: pending_transactions
+      formula: "total_transactions - successful_transactions - failed_transactions"
+
+  hooks:
+    on_generate:
+      - validate_employee_accounts
+      - format_bank_file
+      - calculate_checksum
+      - store_file
+
+    on_submit:
+      - record_submission_time
+      - archive_file
+      - notify_stakeholders
+
+    on_response:
+      - parse_bank_response
+      - update_transactions
+      - reconcile_payments
+      - update_payslips
+
+  audit:
+    track:
+      - status
+      - total_amount
+      - submitted_by
+      - submitted_at
+
+    retention: 10_years
+
+compliance:
+  - standard: Banking_Regulations
+    requirement: Secure file transmission
+  - standard: Data_Protection
+    requirement: Encrypted storage of account numbers

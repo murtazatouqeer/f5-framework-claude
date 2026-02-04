@@ -1,0 +1,321 @@
+# Instructor Entity
+# F5 Framework v2.0 - Education/LMS
+# Course instructor/teacher profile
+
+entity:
+  id: instructor
+  name: Instructor
+  name_ja: 講師
+  description: Course creator and facilitator profile
+  domain: education
+  subdomain: lms
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    user_id:
+      type: uuid
+      references: user
+      required: true
+      unique: true
+      
+    instructor_id:
+      type: string
+      max_length: 20
+      unique: true
+      pattern: "^INS-[A-Z0-9]{6}$"
+      auto_generate: true
+      
+    # Status
+    status:
+      type: enum
+      values: [pending, active, suspended, inactive]
+      default: pending
+      
+    # Profile Information
+    first_name:
+      type: string
+      max_length: 100
+      required: true
+      
+    last_name:
+      type: string
+      max_length: 100
+      required: true
+      
+    display_name:
+      type: string
+      max_length: 100
+      
+    email:
+      type: string
+      format: email
+      required: true
+      
+    phone:
+      type: string
+      max_length: 20
+      
+    # Branding
+    avatar_url:
+      type: string
+      format: url
+      
+    cover_image_url:
+      type: string
+      format: url
+      
+    # Bio
+    headline:
+      type: string
+      max_length: 200
+      description: Short professional tagline
+      
+    bio:
+      type: text
+      max_length: 5000
+      supports_markdown: true
+      
+    # Expertise
+    expertise_areas:
+      type: array
+      items: string
+      max_items: 20
+      
+    teaching_style:
+      type: text
+      max_length: 1000
+      
+    # Social Links
+    social_links:
+      type: json
+      properties:
+        website: string
+        linkedin: string
+        twitter: string
+        youtube: string
+        github: string
+        
+    # Credentials
+    qualifications:
+      type: array
+      items:
+        type: object
+        properties:
+          degree: string
+          field: string
+          institution: string
+          year: integer
+          
+    certifications:
+      type: array
+      items:
+        type: object
+        properties:
+          name: string
+          issuer: string
+          issue_date: date
+          expiry_date: date
+          credential_url: string
+          
+    years_of_experience:
+      type: integer
+      min: 0
+      
+    # Teaching Statistics
+    courses_created:
+      type: integer
+      default: 0
+      computed: true
+      
+    courses_published:
+      type: integer
+      default: 0
+      computed: true
+      
+    total_students:
+      type: integer
+      default: 0
+      computed: true
+      
+    total_enrollments:
+      type: integer
+      default: 0
+      computed: true
+      
+    average_rating:
+      type: decimal
+      precision: 3
+      scale: 2
+      computed: true
+      
+    total_reviews:
+      type: integer
+      default: 0
+      computed: true
+      
+    total_teaching_hours:
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      computed: true
+      
+    # Payout (for marketplace model)
+    payout_enabled:
+      type: boolean
+      default: false
+      
+    payout_method:
+      type: enum
+      values: [paypal, bank_transfer, stripe]
+      
+    payout_details:
+      type: json
+      encrypted: true
+      
+    revenue_share_percent:
+      type: integer
+      min: 0
+      max: 100
+      default: 70
+      
+    total_earnings:
+      type: decimal
+      precision: 12
+      scale: 2
+      default: 0
+      
+    pending_payout:
+      type: decimal
+      precision: 12
+      scale: 2
+      default: 0
+      
+    # Verification
+    is_verified:
+      type: boolean
+      default: false
+      
+    verified_at:
+      type: datetime
+      
+    verification_documents:
+      type: array
+      items: string
+      description: Document URLs
+      
+    # Availability
+    accepting_students:
+      type: boolean
+      default: true
+      
+    response_time_hours:
+      type: integer
+      description: Average response time to student questions
+      
+    # Organization (for enterprise instructors)
+    organization_id:
+      type: uuid
+      references: organization
+      
+    # Metadata
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+      
+    last_activity_at:
+      type: datetime
+
+  state_machine:
+    field: status
+    initial: pending
+    transitions:
+      - from: pending
+        to: active
+        action: approve
+        conditions:
+          - profile_complete
+        triggers:
+          - send_welcome_email
+          - enable_course_creation
+          
+      - from: pending
+        to: inactive
+        action: reject
+        triggers:
+          - send_rejection_notification
+          
+      - from: active
+        to: suspended
+        action: suspend
+        triggers:
+          - hide_courses
+          - notify_instructor
+          
+      - from: suspended
+        to: active
+        action: reinstate
+        triggers:
+          - show_courses
+          
+      - from: active
+        to: inactive
+        action: deactivate
+        triggers:
+          - archive_courses
+
+  relationships:
+    user:
+      type: belongs_to
+      entity: user
+      foreign_key: user_id
+      
+    organization:
+      type: belongs_to
+      entity: organization
+      foreign_key: organization_id
+      
+    courses:
+      type: has_many
+      entity: course
+      foreign_key: primary_instructor_id
+      
+    co_taught_courses:
+      type: many_to_many
+      entity: course
+      through: course_instructor
+      
+    reviews:
+      type: has_many
+      entity: review
+      foreign_key: instructor_id
+
+  indexes:
+    - columns: [instructor_id]
+      unique: true
+    - columns: [user_id]
+      unique: true
+    - columns: [email]
+    - columns: [status]
+    - columns: [is_verified]
+    - columns: [average_rating]
+    - columns: [total_students]
+
+  validations:
+    - name: payout_details_for_enabled
+      condition: "payout_enabled == true"
+      validation: "payout_method IS NOT NULL AND payout_details IS NOT NULL"
+      message: "Payout method and details required when payout is enabled"
+
+  audit:
+    enabled: true
+    track_changes: true
+    pii_fields: [first_name, last_name, email, phone, payout_details]

@@ -1,0 +1,565 @@
+name: employment-contract
+display_name: Employment Contract
+description: |
+  Employment contract entity managing labor agreements between employer
+  and employee, compliant with Vietnam Labor Code requirements.
+
+domain: hr-management
+subdomain: core
+category: entities
+version: "1.0.0"
+status: active
+
+compliance:
+  vietnam_labor_code:
+    contract_types:
+      indefinite:
+        description: "Hợp đồng không xác định thời hạn"
+        requirements: "After 2 consecutive definite contracts"
+      definite:
+        description: "Hợp đồng xác định thời hạn"
+        duration: "12-36 months"
+        max_renewals: 2
+      seasonal:
+        description: "Hợp đồng theo mùa vụ hoặc công việc nhất định"
+        duration: "Less than 12 months"
+      probation:
+        description: "Thử việc"
+        max_duration:
+          complex_work: "60 days"
+          standard_work: "30 days"
+          simple_work: "6 days"
+
+entity:
+  name: EmploymentContract
+  table_name: employment_contracts
+  primary_key: id
+
+  attributes:
+    # Identification
+    identification:
+      - name: id
+        type: uuid
+        required: true
+        description: "System-generated unique identifier"
+
+      - name: contract_number
+        type: string
+        required: true
+        unique: true
+        format: "CTR-YYYY-XXXXXX"
+        description: "Contract number"
+
+      - name: employee_id
+        type: uuid
+        required: true
+        foreign_key: employees.id
+        description: "Employee this contract belongs to"
+
+      - name: status
+        type: enum
+        required: true
+        default: "draft"
+        values:
+          - draft
+          - pending_signature
+          - active
+          - amended
+          - expired
+          - terminated
+          - cancelled
+        description: "Contract status"
+
+    # Contract Type
+    contract_type:
+      - name: contract_type
+        type: enum
+        required: true
+        values:
+          - indefinite
+          - definite
+          - seasonal
+          - probation
+        description: "Type of employment contract"
+
+      - name: contract_category
+        type: enum
+        values:
+          - new_hire
+          - renewal
+          - conversion
+          - amendment
+        description: "Category of this contract"
+
+      - name: previous_contract_id
+        type: uuid
+        foreign_key: employment_contracts.id
+        description: "Reference to previous contract (for renewals)"
+
+      - name: sequence_number
+        type: integer
+        default: 1
+        description: "Contract sequence number for this employee"
+
+    # Term
+    term:
+      - name: start_date
+        type: date
+        required: true
+        description: "Contract start date"
+
+      - name: end_date
+        type: date
+        description: "Contract end date (null for indefinite)"
+
+      - name: duration_months
+        type: integer
+        description: "Contract duration in months"
+
+      - name: probation_months
+        type: decimal
+        description: "Probation period in months"
+
+      - name: probation_end_date
+        type: date
+        computed: true
+        description: "Calculated probation end date"
+
+      - name: notice_period_days
+        type: integer
+        required: true
+        description: "Required notice period for termination"
+        defaults:
+          indefinite: 45
+          definite: 30
+          probation: 3
+
+      - name: auto_renew
+        type: boolean
+        default: false
+        description: "Whether contract auto-renews"
+
+    # Work Details
+    work_details:
+      - name: position_title
+        type: string
+        required: true
+        description: "Position title as stated in contract"
+
+      - name: position_id
+        type: uuid
+        foreign_key: positions.id
+        description: "Reference to position entity"
+
+      - name: department_name
+        type: string
+        required: true
+        description: "Department name as stated in contract"
+
+      - name: department_id
+        type: uuid
+        foreign_key: departments.id
+        description: "Reference to department entity"
+
+      - name: work_location
+        type: string
+        required: true
+        description: "Primary work location"
+
+      - name: work_location_id
+        type: uuid
+        foreign_key: work_locations.id
+        description: "Reference to work location entity"
+
+      - name: job_description
+        type: text
+        description: "Job description and responsibilities"
+
+      - name: working_hours_per_week
+        type: integer
+        default: 48
+        max: 48
+        description: "Weekly working hours"
+
+      - name: work_schedule
+        type: string
+        description: "Work schedule description"
+
+    # Compensation
+    compensation:
+      - name: base_salary
+        type: decimal
+        required: true
+        precision: 15
+        scale: 2
+        description: "Base monthly salary"
+
+      - name: probation_salary
+        type: decimal
+        precision: 15
+        scale: 2
+        description: "Salary during probation (min 85% of base)"
+
+      - name: currency
+        type: string
+        default: "VND"
+        description: "Salary currency"
+
+      - name: payment_frequency
+        type: enum
+        default: "monthly"
+        values: [monthly, bi_weekly, weekly]
+        description: "Payment frequency"
+
+      - name: payment_method
+        type: enum
+        default: "bank_transfer"
+        values: [bank_transfer, cash, check]
+        description: "Payment method"
+
+      - name: allowances
+        type: jsonb
+        description: "Array of allowances"
+        schema:
+          type: array
+          items:
+            allowance_type: string
+            amount: decimal
+            taxable: boolean
+
+      - name: bonus_eligible
+        type: boolean
+        default: true
+        description: "Whether eligible for bonuses"
+
+      - name: insurance_base_salary
+        type: decimal
+        precision: 15
+        scale: 2
+        description: "Salary base for insurance calculation"
+
+    # Benefits
+    benefits:
+      - name: annual_leave_days
+        type: integer
+        default: 12
+        description: "Annual leave entitlement"
+
+      - name: sick_leave_policy
+        type: string
+        description: "Sick leave policy reference"
+
+      - name: other_benefits
+        type: jsonb
+        description: "Array of other benefits"
+
+      - name: insurance_coverage
+        type: jsonb
+        description: "Insurance coverage details"
+        schema:
+          social_insurance: boolean
+          health_insurance: boolean
+          unemployment_insurance: boolean
+          additional_insurance: array
+
+    # Terms and Conditions
+    terms:
+      - name: terms_and_conditions
+        type: text
+        description: "General terms and conditions"
+
+      - name: confidentiality_clause
+        type: boolean
+        default: true
+        description: "Includes confidentiality agreement"
+
+      - name: non_compete_clause
+        type: boolean
+        default: false
+        description: "Includes non-compete agreement"
+
+      - name: non_compete_duration_months
+        type: integer
+        description: "Non-compete period after termination"
+
+      - name: intellectual_property_clause
+        type: boolean
+        default: true
+        description: "IP assignment clause included"
+
+      - name: special_clauses
+        type: text
+        description: "Any special clauses or conditions"
+
+    # Documents
+    documents:
+      - name: contract_document_url
+        type: string
+        description: "URL to signed contract PDF"
+
+      - name: contract_template_id
+        type: uuid
+        description: "Template used to generate contract"
+
+      - name: attachments
+        type: jsonb
+        description: "Array of attachment URLs"
+
+    # Signatures
+    signatures:
+      - name: prepared_by
+        type: uuid
+        foreign_key: users.id
+        description: "HR staff who prepared contract"
+
+      - name: prepared_date
+        type: date
+        description: "Date contract was prepared"
+
+      - name: employee_signed
+        type: boolean
+        default: false
+        description: "Whether employee has signed"
+
+      - name: employee_signed_date
+        type: date
+        description: "Date employee signed"
+
+      - name: employee_signature_url
+        type: string
+        description: "URL to employee signature image"
+
+      - name: company_signatory_id
+        type: uuid
+        foreign_key: employees.id
+        description: "Company representative who signed"
+
+      - name: company_signed_date
+        type: date
+        description: "Date company representative signed"
+
+      - name: company_signature_url
+        type: string
+        description: "URL to company signature image"
+
+      - name: witness_name
+        type: string
+        description: "Witness name if applicable"
+
+    # Amendments
+    amendments:
+      - name: amendments
+        type: jsonb
+        description: "Array of contract amendments"
+        schema:
+          type: array
+          items:
+            amendment_number: integer
+            amendment_date: date
+            description: string
+            changes: object
+            document_url: string
+            effective_date: date
+
+      - name: amendment_count
+        type: integer
+        default: 0
+        description: "Number of amendments"
+
+    # Termination
+    termination:
+      - name: termination_date
+        type: date
+        description: "Actual termination date"
+
+      - name: termination_reason
+        type: enum
+        values:
+          - contract_expiry
+          - resignation
+          - mutual_agreement
+          - termination_for_cause
+          - redundancy
+          - retirement
+          - death
+        description: "Reason for contract end"
+
+      - name: termination_notes
+        type: text
+        description: "Notes about termination"
+
+    # System
+    system:
+      - name: created_at
+        type: timestamp
+        auto_generate: true
+
+      - name: updated_at
+        type: timestamp
+        auto_update: true
+
+      - name: created_by
+        type: uuid
+        foreign_key: users.id
+
+      - name: updated_by
+        type: uuid
+        foreign_key: users.id
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+      description: "Employee this contract belongs to"
+
+    - name: position
+      type: belongs_to
+      entity: Position
+      foreign_key: position_id
+      description: "Position referenced in contract"
+
+    - name: department
+      type: belongs_to
+      entity: Department
+      foreign_key: department_id
+      description: "Department referenced in contract"
+
+    - name: previous_contract
+      type: belongs_to
+      entity: EmploymentContract
+      foreign_key: previous_contract_id
+      description: "Previous contract (for renewals)"
+
+    - name: next_contract
+      type: has_one
+      entity: EmploymentContract
+      foreign_key: previous_contract_id
+      description: "Following contract"
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending_signature
+        event: submit_for_signature
+        conditions:
+          - all_required_fields_complete
+        actions:
+          - generate_contract_document
+          - notify_employee
+
+      - from: pending_signature
+        to: active
+        event: activate
+        conditions:
+          - employee_signed
+          - company_signed
+        actions:
+          - update_employee_contract
+          - create_onboarding_tasks
+
+      - from: pending_signature
+        to: cancelled
+        event: cancel
+        actions:
+          - notify_stakeholders
+
+      - from: active
+        to: amended
+        event: amend
+        conditions:
+          - amendment_approved
+        actions:
+          - record_amendment
+          - update_employee_record
+
+      - from: amended
+        to: active
+        event: finalize_amendment
+
+      - from: active
+        to: expired
+        event: expire
+        trigger: "end_date reached"
+        conditions:
+          - not auto_renew
+        actions:
+          - notify_renewal_needed
+          - update_employee_status
+
+      - from: active
+        to: terminated
+        event: terminate
+        conditions:
+          - termination_approved
+        actions:
+          - initiate_separation
+          - calculate_final_settlement
+
+  indexes:
+    - columns: [contract_number]
+      unique: true
+    - columns: [employee_id]
+    - columns: [status]
+    - columns: [contract_type]
+    - columns: [start_date]
+    - columns: [end_date]
+
+  validations:
+    - field: probation_salary
+      rule: "must_be_at_least_85_percent_of_base"
+      message: "Probation salary must be at least 85% of base salary"
+
+    - field: end_date
+      rule: "must_be_after_start_date"
+      message: "End date must be after start date"
+
+    - field: duration_months
+      rule: "definite_contract_12_to_36_months"
+      condition: "contract_type == 'definite'"
+      message: "Definite contract must be 12-36 months"
+
+    - field: sequence_number
+      rule: "max_2_definite_contracts"
+      message: "Maximum 2 consecutive definite contracts allowed"
+
+  hooks:
+    before_create:
+      - generate_contract_number
+      - validate_contract_type_rules
+      - calculate_probation_dates
+
+    after_create:
+      - log_contract_creation
+      - notify_hr_admin
+
+    before_update:
+      - validate_status_transition
+      - log_changes
+
+    after_update:
+      - sync_to_employee
+      - notify_relevant_parties
+
+  audit:
+    enabled: true
+    tracked_fields:
+      - status
+      - base_salary
+      - position_title
+      - end_date
+    retention: "10 years after contract end"
+
+  compliance_checks:
+    - name: probation_duration
+      rule: "Probation cannot exceed Labor Code limits"
+      complex_work: "max 60 days"
+      standard_work: "max 30 days"
+
+    - name: definite_contract_renewal
+      rule: "After 2 definite contracts, must convert to indefinite"
+
+    - name: notice_period
+      rule: "Notice periods must meet Labor Code minimums"

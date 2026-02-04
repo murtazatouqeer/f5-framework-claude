@@ -1,0 +1,247 @@
+name: ProductVariant
+display_name: Product Variant / Biến thể sản phẩm
+description: |
+  Represents a specific variation of a product based on attributes like
+  size, color, material, etc. Each variant has its own SKU, price, and inventory.
+  A t-shirt product might have variants: Blue-S, Blue-M, Blue-L, Red-S, Red-M, Red-L.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the variant
+
+  - name: product_id
+    type: uuid
+    required: true
+    description: Reference to parent product
+
+  - name: sku
+    type: string
+    required: true
+    description: Unique SKU for this variant
+    validation:
+      pattern: "^[A-Z0-9-]{3,50}$"
+    example: "SHIRT-BLU-M-001"
+
+  - name: name
+    type: string
+    required: false
+    description: Variant display name (auto-generated if not set)
+    validation:
+      max_length: 255
+    example: "Blue - Medium"
+
+  - name: status
+    type: enum
+    required: true
+    description: Variant availability status
+    validation:
+      values: [active, inactive, discontinued]
+    default: active
+
+  - name: option1_name
+    type: string
+    required: false
+    description: First option name (e.g., "Size")
+    validation:
+      max_length: 50
+
+  - name: option1_value
+    type: string
+    required: false
+    description: First option value (e.g., "Medium")
+    validation:
+      max_length: 100
+
+  - name: option2_name
+    type: string
+    required: false
+    description: Second option name (e.g., "Color")
+    validation:
+      max_length: 50
+
+  - name: option2_value
+    type: string
+    required: false
+    description: Second option value (e.g., "Blue")
+    validation:
+      max_length: 100
+
+  - name: option3_name
+    type: string
+    required: false
+    description: Third option name (e.g., "Material")
+    validation:
+      max_length: 50
+
+  - name: option3_value
+    type: string
+    required: false
+    description: Third option value (e.g., "Cotton")
+    validation:
+      max_length: 100
+
+  - name: price
+    type: decimal
+    required: false
+    description: Variant-specific price (overrides product price if set)
+    validation:
+      min: 0
+
+  - name: sale_price
+    type: decimal
+    required: false
+    description: Variant-specific sale price
+    validation:
+      min: 0
+
+  - name: cost_price
+    type: decimal
+    required: false
+    description: Cost of goods for this variant
+    validation:
+      min: 0
+
+  - name: weight
+    type: decimal
+    required: false
+    description: Variant weight in grams (if different from product)
+    validation:
+      min: 0
+
+  - name: dimensions
+    type: object
+    required: false
+    description: Variant dimensions in cm (if different from product)
+
+  - name: barcode
+    type: string
+    required: false
+    description: Barcode/UPC/EAN for this variant
+    validation:
+      pattern: "^[0-9]{8,14}$"
+
+  - name: image_url
+    type: string
+    required: false
+    description: Variant-specific image URL
+    validation:
+      format: url
+
+  - name: position
+    type: integer
+    required: true
+    description: Display order among variants
+    validation:
+      min: 0
+    default: 0
+
+  - name: is_default
+    type: boolean
+    required: true
+    description: Default variant shown on product page
+    default: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: product
+    type: belongs_to
+    entity: Product
+    required: true
+    description: Parent product
+
+  - name: inventory
+    type: has_many
+    entity: Inventory
+    required: false
+    description: Inventory records for this variant
+
+  - name: cart_items
+    type: has_many
+    entity: CartItem
+    required: false
+    description: Cart items referencing this variant
+
+  - name: order_items
+    type: has_many
+    entity: OrderItem
+    required: false
+    description: Order items referencing this variant
+
+state_machine:
+  initial: active
+  states:
+    - name: active
+      description: Variant is available for purchase
+    - name: inactive
+      description: Variant temporarily unavailable
+    - name: discontinued
+      description: Variant no longer sold
+  transitions:
+    - from: active
+      to: inactive
+      trigger: deactivate
+      description: Temporarily disable variant
+    - from: inactive
+      to: active
+      trigger: activate
+      description: Re-enable variant
+    - from: [active, inactive]
+      to: discontinued
+      trigger: discontinue
+      description: Permanently discontinue variant
+
+indexes:
+  - [sku]
+  - [product_id]
+  - [product_id, status]
+  - [barcode]
+  - [product_id, option1_value, option2_value]
+
+business_rules:
+  - BR-VAR-001: SKU must be unique across all variants and products
+  - BR-VAR-002: Barcode must be unique if provided
+  - BR-VAR-003: Only one default variant per product
+  - BR-VAR-004: Variant combination (option1, option2, option3) must be unique per product
+  - BR-VAR-005: Effective price = variant.price ?? product.base_price
+  - BR-VAR-006: Discontinuing variant does not affect existing orders
+  - BR-VAR-007: Cannot delete variant with order history (discontinue instead)
+
+computed_fields:
+  - name: effective_price
+    formula: price ?? product.base_price
+    description: Actual price for this variant
+
+  - name: effective_sale_price
+    formula: sale_price ?? product.sale_price
+    description: Actual sale price for this variant
+
+  - name: option_values
+    formula: CONCAT(option1_value, ' / ', option2_value, ' / ', option3_value)
+    description: Combined option values for display
+
+events:
+  - name: variant.created
+    payload: [id, product_id, sku]
+    description: Fired when a new variant is created
+
+  - name: variant.price_changed
+    payload: [id, old_price, new_price]
+    description: Fired when variant price changes
+
+  - name: variant.discontinued
+    payload: [id, product_id, sku]
+    description: Fired when variant is discontinued

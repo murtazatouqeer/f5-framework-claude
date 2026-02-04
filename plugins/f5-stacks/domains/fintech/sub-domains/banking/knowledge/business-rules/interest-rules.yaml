@@ -1,0 +1,588 @@
+name: Interest Rules
+display_name: Interest Business Rules / Quy tắc nghiệp vụ lãi suất
+description: |
+  Business rules governing interest calculation, payment, and
+  management for savings accounts, term deposits, and overdrafts.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# INTEREST CALCULATION RULES
+# =============================================================================
+calculation_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-001: Simple Interest Calculation
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-001
+    name: Simple Interest Calculation
+    name_vi: Tính lãi đơn
+    priority: critical
+    category: calculation
+
+    description: |
+      Simple interest calculation for term deposits paid at maturity.
+
+    formula: |
+      interest = principal × rate × (term_days / 365)
+
+    example:
+      principal: 100000000
+      annual_rate: 0.065  # 6.5%
+      term_months: 6
+      calculation: |
+        interest = 100,000,000 × 0.065 × (180/365)
+        interest = 3,205,479 VND
+
+    applicability:
+      - term_deposits_at_maturity
+      - short_term_savings
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-002: Compound Interest - Monthly
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-002
+    name: Compound Interest - Monthly
+    name_vi: Tính lãi kép hàng tháng
+    priority: critical
+    category: calculation
+
+    description: |
+      Monthly compound interest for savings with monthly payouts.
+
+    formula: |
+      total = principal × (1 + rate/12)^months
+      interest = total - principal
+
+    example:
+      principal: 100000000
+      annual_rate: 0.065  # 6.5%
+      term_months: 12
+      calculation: |
+        total = 100,000,000 × (1 + 0.065/12)^12
+        total = 106,697,002 VND
+        interest = 6,697,002 VND
+
+    applicability:
+      - long_term_savings
+      - recurring_deposits
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-003: Daily Balance Interest
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-003
+    name: Daily Balance Interest
+    name_vi: Tính lãi theo số dư hàng ngày
+    priority: high
+    category: calculation
+
+    description: |
+      Interest calculated on daily closing balance.
+
+    formula: |
+      daily_interest = closing_balance × (annual_rate / 365)
+      monthly_interest = sum(daily_interest for each day in month)
+
+    rule: |
+      AT end_of_day:
+        balance = get_closing_balance()
+        rate = get_applicable_rate(balance)
+        daily_interest = balance × (rate / 365)
+        accrued_interest += daily_interest
+
+      AT end_of_month:
+        credit_interest(accrued_interest)
+        reset_accrued()
+
+    applicability:
+      - demand_savings
+      - checking_with_interest
+
+# =============================================================================
+# INTEREST RATE RULES
+# =============================================================================
+rate_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-010: Interest Rates by Term
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-010
+    name: Interest Rates by Term
+    name_vi: Lãi suất theo kỳ hạn
+    priority: high
+    category: rates
+
+    description: |
+      Interest rate schedule based on deposit term.
+
+    rate_schedule:
+      demand_savings:
+        description: "No fixed term"
+        rate: 0.001  # 0.1%
+        calculation: daily_balance
+
+      term_deposits:
+        - term_months: 1
+          rate: 0.035  # 3.5%
+        - term_months: 2
+          rate: 0.038  # 3.8%
+        - term_months: 3
+          rate: 0.045  # 4.5%
+        - term_months: 6
+          rate: 0.055  # 5.5%
+        - term_months: 9
+          rate: 0.060  # 6.0%
+        - term_months: 12
+          rate: 0.065  # 6.5%
+        - term_months: 18
+          rate: 0.065  # 6.5%
+        - term_months: 24
+          rate: 0.065  # 6.5%
+        - term_months: 36
+          rate: 0.065  # 6.5%
+
+    rule: |
+      ON deposit_creation:
+        rate = get_rate_for_term(term_months)
+        IF promotion_applicable
+          rate += promotion_bonus_rate
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-011: Tiered Interest Rates
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-011
+    name: Tiered Interest Rates
+    name_vi: Lãi suất theo bậc thang
+    priority: medium
+    category: rates
+
+    description: |
+      Higher rates for larger deposit balances.
+
+    tiers:
+      demand_savings:
+        - min_balance: 0
+          max_balance: 50000000
+          rate: 0.001  # 0.1%
+        - min_balance: 50000000
+          max_balance: 500000000
+          rate: 0.003  # 0.3%
+        - min_balance: 500000000
+          max_balance: null
+          rate: 0.005  # 0.5%
+
+      term_deposits:
+        - min_amount: 0
+          max_amount: 100000000
+          bonus: 0.0
+        - min_amount: 100000000
+          max_amount: 500000000
+          bonus: 0.001  # +0.1%
+        - min_amount: 500000000
+          max_amount: null
+          bonus: 0.002  # +0.2%
+
+    rule: |
+      FOR demand_savings:
+        # Apply each tier to its portion of balance
+        total_interest = 0
+        FOR each tier:
+          tier_balance = min(balance, tier.max) - tier.min
+          IF tier_balance > 0
+            total_interest += tier_balance × tier.rate / 365
+
+      FOR term_deposits:
+        base_rate = get_term_rate(term)
+        tier_bonus = get_tier_bonus(principal)
+        effective_rate = base_rate + tier_bonus
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-012: Promotional Rates
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-012
+    name: Promotional Interest Rates
+    name_vi: Lãi suất khuyến mãi
+    priority: medium
+    category: rates
+
+    description: |
+      Special promotional rates for marketing campaigns.
+
+    promotion_structure:
+      online_bonus:
+        channel: [mobile_app, web_banking]
+        bonus_rate: 0.001  # +0.1%
+        applicable_to: new_term_deposits
+
+      new_customer_bonus:
+        eligibility: first_90_days
+        bonus_rate: 0.002  # +0.2%
+        max_amount: 500000000
+
+      loyalty_bonus:
+        eligibility: customer_tenure > 2_years
+        bonus_rate: 0.001  # +0.1%
+
+      seasonal_campaign:
+        validity_period: defined
+        bonus_rate: varies
+        terms_and_conditions: apply
+
+    rule: |
+      ON deposit_creation:
+        base_rate = get_base_rate(term)
+        bonus_rate = 0
+
+        IF channel IN ['mobile_app', 'web_banking']
+          bonus_rate += online_bonus
+
+        IF customer.is_new
+          bonus_rate += new_customer_bonus
+
+        IF has_active_campaign()
+          bonus_rate += campaign_bonus
+
+        final_rate = base_rate + bonus_rate
+
+# =============================================================================
+# EARLY WITHDRAWAL RULES
+# =============================================================================
+early_withdrawal_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-020: Early Withdrawal Penalty
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-020
+    name: Early Withdrawal Penalty
+    name_vi: Phạt rút trước hạn
+    priority: critical
+    category: early_withdrawal
+
+    description: |
+      Penalty applied when withdrawing term deposit before maturity.
+
+    rule: |
+      IF withdrawal_date < maturity_date
+      THEN
+        applied_rate = demand_savings_rate  # Typically 0.1%
+        forfeited_interest = accrued_at_term_rate - accrued_at_demand_rate
+        final_interest = principal × demand_rate × actual_days / 365
+
+    penalty_structure:
+      withdrawal_within:
+        - days: 30
+          rate_applied: 0  # No interest
+        - days: 90
+          rate_applied: demand_rate
+        - days: 180
+          rate_applied: demand_rate
+        - days: null
+          rate_applied: demand_rate
+
+    example:
+      principal: 100000000
+      term_rate: 0.065
+      demand_rate: 0.001
+      term_months: 12
+      actual_days: 90
+      calculation: |
+        Would have earned: 100M × 0.065 × 90/365 = 1,602,740 VND
+        Actually earned:   100M × 0.001 × 90/365 = 24,658 VND
+        Forfeited: 1,578,082 VND
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-021: Partial Withdrawal
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-021
+    name: Partial Withdrawal
+    name_vi: Rút một phần
+    priority: high
+    category: early_withdrawal
+
+    description: |
+      Rules for partial withdrawal from term deposits.
+
+    standard_terms:
+      allowed: false
+      exception: special_products_only
+
+    flexible_deposit:
+      allowed: true
+      minimum_remaining: 10000000
+      interest_treatment:
+        withdrawn_portion: demand_rate
+        remaining_portion: original_rate
+        recalculation: from_start_date
+
+    rule: |
+      IF product.allows_partial_withdrawal
+      AND remaining_balance >= minimum_remaining
+      THEN
+        calculate_interest_for_withdrawn(demand_rate)
+        recalculate_interest_for_remaining(original_rate)
+
+# =============================================================================
+# INTEREST PAYMENT RULES
+# =============================================================================
+payment_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-030: Interest Payment Timing
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-030
+    name: Interest Payment Timing
+    name_vi: Thời điểm trả lãi
+    priority: high
+    category: payment
+
+    description: |
+      When interest is credited to accounts.
+
+    payment_schedules:
+      at_maturity:
+        trigger: maturity_date
+        applicable: term_deposits
+        action: credit_principal_and_interest
+
+      monthly:
+        trigger: end_of_month
+        day: last_business_day
+        applicable: [demand_savings, long_term_deposits_monthly]
+        action: credit_interest_only
+
+      quarterly:
+        trigger: end_of_quarter
+        months: [3, 6, 9, 12]
+        applicable: quarterly_interest_products
+
+      annually:
+        trigger: anniversary_date
+        applicable: annual_interest_products
+
+    rule: |
+      AT payment_trigger:
+        interest = calculate_accrued_interest()
+        credit_to_account(interest)
+        reset_accrual()
+        generate_interest_statement()
+        notify_customer()
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-031: Interest Destination
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-031
+    name: Interest Payment Destination
+    name_vi: Tài khoản nhận lãi
+    priority: medium
+    category: payment
+
+    description: |
+      Where interest payments are credited.
+
+    options:
+      same_account:
+        description: "Add to deposit (compound)"
+        default_for: [demand_savings, term_compound]
+
+      linked_checking:
+        description: "Credit to checking account"
+        requirement: customer_designated
+
+      separate_savings:
+        description: "Credit to another savings"
+        requirement: customer_designated
+
+    rule: |
+      ON interest_payment:
+        destination = deposit.interest_destination
+        IF destination = 'same_account'
+          add_to_principal()
+        ELSE
+          transfer_to(destination_account)
+
+# =============================================================================
+# MATURITY RULES
+# =============================================================================
+maturity_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-040: Auto-Renewal
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-040
+    name: Auto-Renewal at Maturity
+    name_vi: Tự động tái tục khi đáo hạn
+    priority: high
+    category: maturity
+
+    description: |
+      Automatic renewal of term deposits at maturity.
+
+    renewal_options:
+      renew_principal_only:
+        action: "Renew principal, transfer interest"
+        new_rate: current_market_rate
+
+      renew_principal_and_interest:
+        action: "Renew total amount"
+        new_rate: current_market_rate
+
+      transfer_to_checking:
+        action: "Move all to checking account"
+        no_renewal: true
+
+      hold_in_savings:
+        action: "Keep in demand savings"
+        rate: demand_rate
+        no_renewal: true
+
+    default: renew_principal_and_interest
+
+    rule: |
+      AT maturity_date:
+        IF auto_renew = true
+          SWITCH maturity_instruction:
+            CASE 'renew_principal_only':
+              transfer_interest_to_destination()
+              create_new_term(principal, current_rate)
+            CASE 'renew_principal_and_interest':
+              create_new_term(principal + interest, current_rate)
+        ELSE
+          transfer_to_demand_savings()
+          earn_demand_rate()
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-041: Maturity Notification
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-041
+    name: Maturity Notification
+    name_vi: Thông báo đáo hạn
+    priority: medium
+    category: maturity
+
+    description: |
+      Notification schedule before deposit maturity.
+
+    notification_schedule:
+      - days_before: 30
+        channel: [email, push]
+        content: maturity_reminder
+
+      - days_before: 14
+        channel: [email, push, sms]
+        content: maturity_options
+
+      - days_before: 7
+        channel: [sms, push]
+        content: final_reminder
+
+      - days_before: 0
+        channel: [sms, push]
+        content: maturity_confirmation
+
+    rule: |
+      FOR each notification_point:
+        IF days_to_maturity = notification_point.days
+          send_notification(customer, notification_point.content)
+
+# =============================================================================
+# OVERDRAFT INTEREST RULES
+# =============================================================================
+overdraft_interest_rules:
+  # ---------------------------------------------------------------------------
+  # BR-INT-050: Overdraft Interest Calculation
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-050
+    name: Overdraft Interest Calculation
+    name_vi: Tính lãi thấu chi
+    priority: critical
+    category: overdraft
+
+    description: |
+      Interest charged on overdraft usage.
+
+    rate_structure:
+      approved_overdraft:
+        rate: 0.12  # 12% per annum
+        calculation: daily_balance
+        minimum_charge: 10000
+
+      unauthorized_overdraft:
+        rate: 0.18  # 18% per annum
+        calculation: daily_balance
+        additional_fee: 50000  # per occurrence
+
+    formula: |
+      daily_overdraft_interest = overdraft_balance × (rate / 365)
+      monthly_charge = sum(daily_overdraft_interest) + minimum_fee
+
+    rule: |
+      AT end_of_day:
+        IF account.balance < 0
+          overdraft_amount = abs(balance)
+          IF overdraft_amount <= approved_limit
+            rate = approved_rate
+          ELSE
+            rate = unauthorized_rate
+            charge_unauthorized_fee()
+
+          daily_interest = overdraft_amount × (rate / 365)
+          accrued_overdraft_interest += daily_interest
+
+      AT end_of_month:
+        charge_overdraft_interest(accrued_overdraft_interest)
+
+  # ---------------------------------------------------------------------------
+  # BR-INT-051: Overdraft Interest Cap
+  # ---------------------------------------------------------------------------
+  - id: BR-INT-051
+    name: Overdraft Interest Cap
+    name_vi: Giới hạn lãi thấu chi
+    priority: high
+    category: overdraft
+
+    description: |
+      Maximum overdraft interest charges.
+
+    caps:
+      monthly_cap:
+        percentage_of_principal: 0.03  # 3% of overdraft used
+        description: "Cap at 3% of average overdraft per month"
+
+      annual_cap:
+        percentage_of_principal: 0.24  # 24% of limit
+        description: "Cap at 24% of approved limit per year"
+
+    rule: |
+      calculated_interest = normal_calculation()
+      IF calculated_interest > cap_amount
+        charge = cap_amount
+        log_cap_applied()
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  calculation_engine:
+    - "Simple interest calculator"
+    - "Compound interest calculator"
+    - "Daily balance tracker"
+    - "Tiered rate calculator"
+
+  batch_processes:
+    - "Daily interest accrual"
+    - "Monthly interest payment"
+    - "Maturity processing"
+    - "Auto-renewal execution"
+
+  notifications:
+    - "Maturity reminders"
+    - "Interest credit notifications"
+    - "Rate change notifications"
+
+  reporting:
+    - "Interest earned statements"
+    - "Interest paid reports"
+    - "Rate comparison reports"
+
+  rate_management:
+    - "Rate maintenance interface"
+    - "Promotion configuration"
+    - "Rate history tracking"

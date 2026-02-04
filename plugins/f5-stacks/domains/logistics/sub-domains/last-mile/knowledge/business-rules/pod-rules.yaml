@@ -1,0 +1,442 @@
+name: PODRules
+display_name: Proof of Delivery Rules
+description: |
+  Business rules for Proof of Delivery capture and validation.
+  Covers POD requirements, photo standards, signature capture, and verification.
+
+domain: logistics
+subdomain: last-mile
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - pod_requirements
+  - photo_standards
+  - signature_rules
+  - verification_rules
+  - storage_rules
+
+rules:
+  # POD Requirements by Delivery Type
+  - id: POD-001
+    name: Standard Delivery POD
+    category: pod_requirements
+    description: POD requirements for standard deliveries
+    priority: high
+    condition: |
+      delivery.service_level = 'standard'
+    required_pod:
+      photo: required
+      signature: optional
+      otp: not_required
+      location: required
+
+  - id: POD-002
+    name: High-Value Delivery POD
+    category: pod_requirements
+    description: Enhanced POD for high-value items
+    priority: critical
+    condition: |
+      delivery.declared_value > 2000000  # VND
+    required_pod:
+      photo: required
+      signature: required
+      otp: required
+      id_verification: required
+      location: required
+    additional_requirements:
+      - photo_of_recipient: true
+      - package_condition_photo: true
+
+  - id: POD-003
+    name: COD Delivery POD
+    category: pod_requirements
+    description: POD requirements for Cash on Delivery
+    priority: critical
+    condition: |
+      delivery.is_cod = true
+    required_pod:
+      photo: required
+      signature: required
+      payment_confirmation: required
+      location: required
+    payment_proof:
+      - cash_receipt_photo
+      - amount_confirmed
+      - denomination_breakdown
+
+  - id: POD-004
+    name: Contactless Delivery POD
+    category: pod_requirements
+    description: POD for contactless/no-contact deliveries
+    priority: high
+    condition: |
+      delivery.delivery_method = 'contactless'
+    required_pod:
+      photo: required
+      signature: not_applicable
+      otp: optional
+      location: required
+    photo_requirements:
+      - package_at_door
+      - door_number_visible
+      - safe_placement_shown
+
+  - id: POD-005
+    name: Locker Delivery POD
+    category: pod_requirements
+    description: POD for smart locker deliveries
+    priority: high
+    condition: |
+      delivery.delivery_method = 'locker'
+    required_pod:
+      locker_confirmation: required
+      compartment_photo: required
+      access_code_sent: required
+      location: automatic
+    system_captured:
+      - locker_id
+      - compartment_id
+      - deposit_timestamp
+      - locker_event_id
+
+  - id: POD-006
+    name: Pickup Point Delivery POD
+    category: pod_requirements
+    description: POD for PUDO deliveries
+    priority: high
+    condition: |
+      delivery.delivery_method = 'pickup_point'
+    required_pod:
+      handover_confirmation: required
+      staff_acknowledgment: required
+      location: automatic
+    store_captured:
+      - staff_id
+      - handover_time
+      - storage_location
+
+  # Photo Standards
+  - id: POD-010
+    name: Delivery Photo Quality
+    category: photo_standards
+    description: Minimum quality standards for delivery photos
+    priority: high
+    requirements:
+      min_resolution: "640x480"
+      max_file_size: "5MB"
+      format: ["jpeg", "png", "webp"]
+      blur_detection: true
+      brightness_check: true
+    validation: |
+      photo.resolution >= min_resolution AND
+      photo.file_size <= max_file_size AND
+      photo.blur_score < 0.3 AND
+      photo.brightness BETWEEN 0.2 AND 0.9
+
+  - id: POD-011
+    name: Photo Content Requirements
+    category: photo_standards
+    description: What must be visible in delivery photo
+    priority: high
+    standard_delivery:
+      - package_visible: true
+      - recipient_visible: optional
+      - door_number_visible: preferred
+      - timestamp_overlay: required
+    contactless_delivery:
+      - package_at_location: true
+      - safe_placement: true
+      - identifiable_landmark: preferred
+      - door_visible: required
+
+  - id: POD-012
+    name: Multiple Photo Requirements
+    category: photo_standards
+    description: When multiple photos are required
+    priority: medium
+    conditions:
+      high_value:
+        photos_required: 3
+        types: [package, recipient_with_id, signature]
+      damaged_package:
+        photos_required: 4
+        types: [all_sides, damage_closeup, seal_intact, label]
+      contactless:
+        photos_required: 2
+        types: [package_at_door, wide_shot]
+
+  - id: POD-013
+    name: Photo Timestamp Validation
+    category: photo_standards
+    description: Photo must be taken at delivery time
+    priority: critical
+    validation: |
+      photo.taken_at BETWEEN delivery.arrived_at AND delivery.completed_at
+      photo.taken_at - delivery.completed_at < 5 minutes
+    anti_fraud:
+      gps_required: true
+      camera_app_only: true
+      no_gallery_upload: true
+
+  - id: POD-014
+    name: Location in Photo Metadata
+    category: photo_standards
+    description: GPS coordinates in photo EXIF required
+    priority: high
+    validation: |
+      photo.location IS NOT NULL AND
+      distance(photo.location, delivery.address.location) < 100 meters
+    tolerance_exceptions:
+      - indoor_delivery
+      - gps_signal_weak
+
+  # Signature Rules
+  - id: POD-020
+    name: Signature Capture Requirements
+    category: signature_rules
+    description: Standards for digital signature capture
+    priority: high
+    requirements:
+      min_stroke_points: 20
+      canvas_size: "300x150"
+      stroke_width_range: [1, 5]
+      capture_time_max: 60 seconds
+    validation: |
+      signature.stroke_count >= min_stroke_points AND
+      signature.capture_duration <= capture_time_max
+
+  - id: POD-021
+    name: Signer Identity Confirmation
+    category: signature_rules
+    description: Confirm identity of person signing
+    priority: high
+    required_fields:
+      - signer_name: required
+      - relationship: required  # self, family, colleague, building_staff
+      - id_number: conditional  # required for high-value
+    relationship_options:
+      - self
+      - family_member
+      - neighbor
+      - colleague
+      - building_staff
+      - security_guard
+
+  - id: POD-022
+    name: Third-Party Signature Authorization
+    category: signature_rules
+    description: Rules for non-recipient signatures
+    priority: high
+    condition: |
+      signer.relationship != 'self'
+    requirements:
+      - recipient_consent_verified: true
+      - signer_id_captured: conditional
+      - signer_contact_captured: true
+    restrictions:
+      high_value: third_party_not_allowed
+      cod: third_party_requires_authorization
+      sensitive: third_party_not_allowed
+
+  - id: POD-023
+    name: Signature Fraud Detection
+    category: signature_rules
+    description: Detect potentially fraudulent signatures
+    priority: critical
+    checks:
+      - too_simple: "stroke_count < 10"
+      - too_fast: "capture_duration < 2 seconds"
+      - single_line: "unique_y_values < 5"
+      - repeated_pattern: "pattern_repetition_score > 0.8"
+    action_on_detection: |
+      FLAG for_review
+      REQUEST re-signature
+      ALERT operations
+
+  # Verification Rules
+  - id: POD-030
+    name: OTP Verification
+    category: verification_rules
+    description: One-Time Password verification process
+    priority: critical
+    condition: |
+      delivery.otp_required = true
+    process:
+      - generate_otp: 6 digits
+      - send_to: recipient.phone
+      - valid_for: 10 minutes
+      - max_attempts: 3
+    validation: |
+      entered_otp = generated_otp AND
+      entry_time <= otp_expiry AND
+      attempt_count <= max_attempts
+
+  - id: POD-031
+    name: PIN Verification
+    category: verification_rules
+    description: Pre-set PIN verification
+    priority: high
+    condition: |
+      delivery.verification_method = 'pin'
+    validation: |
+      entered_pin = delivery.verification_pin
+    max_attempts: 3
+    action_on_fail: |
+      LOCK delivery
+      NOTIFY customer
+      ESCALATE to_operations
+
+  - id: POD-032
+    name: ID Verification
+    category: verification_rules
+    description: Identity document verification
+    priority: critical
+    condition: |
+      delivery.id_verification_required = true
+    accepted_documents:
+      - national_id
+      - passport
+      - drivers_license
+    capture_required:
+      - document_photo: true
+      - document_number: true
+      - name_match_check: true
+    validation: |
+      document.name MATCHES recipient.name (fuzzy 80%)
+
+  - id: POD-033
+    name: Geofence Verification
+    category: verification_rules
+    description: Verify delivery within geofence
+    priority: high
+    validation: |
+      agent.current_location WITHIN geofence(delivery.address, 150 meters)
+    exceptions:
+      - indoor_delivery
+      - gps_drift_detected
+      - customer_directed_location
+
+  - id: POD-034
+    name: Time Window Verification
+    category: verification_rules
+    description: Verify delivery within scheduled window
+    priority: medium
+    validation: |
+      delivery.completed_at BETWEEN slot.start_time AND slot.end_time
+    tolerance: 15 minutes
+    sla_impact: |
+      IF outside_window THEN
+        MARK as late_delivery
+        TRIGGER sla_breach_check
+      END IF
+
+  # Storage Rules
+  - id: POD-040
+    name: POD Data Retention
+    category: storage_rules
+    description: How long to retain POD data
+    priority: high
+    retention_periods:
+      standard: 2 years
+      high_value: 5 years
+      disputed: 7 years
+      legal_hold: indefinite
+    storage_location:
+      photos: cloud_storage
+      signatures: database
+      verification_logs: audit_log
+
+  - id: POD-041
+    name: POD Access Control
+    category: storage_rules
+    description: Who can access POD data
+    priority: critical
+    access_levels:
+      customer:
+        - own_delivery_pod
+        - within_90_days
+      agent:
+        - own_deliveries
+        - within_30_days
+      operations:
+        - all_deliveries
+        - within_retention_period
+      legal:
+        - all_deliveries
+        - all_time
+        - requires_authorization
+
+  - id: POD-042
+    name: POD Backup Requirements
+    category: storage_rules
+    description: Backup and redundancy for POD data
+    priority: critical
+    requirements:
+      backup_frequency: daily
+      backup_retention: 90 days
+      geographic_redundancy: true
+      encryption_at_rest: true
+      encryption_in_transit: true
+
+  - id: POD-043
+    name: POD Privacy Compliance
+    category: storage_rules
+    description: Privacy requirements for POD data
+    priority: critical
+    requirements:
+      - gdpr_compliance: true
+      - pdpa_compliance: true
+      - face_blur_option: true
+      - data_deletion_request: honored
+    sensitive_data:
+      - id_documents: encrypted
+      - signatures: encrypted
+      - photos_with_faces: blur_available
+
+pod_types:
+  - type: photo
+    description: Photograph of delivery
+    required_for: [standard, express, contactless]
+
+  - type: signature
+    description: Digital signature capture
+    required_for: [high_value, cod, sensitive]
+
+  - type: otp
+    description: One-time password verification
+    required_for: [high_value, mobile_payment]
+
+  - type: pin
+    description: Pre-set PIN verification
+    required_for: [locker, pickup_point]
+
+  - type: id_verification
+    description: Identity document check
+    required_for: [high_value, age_restricted]
+
+  - type: geolocation
+    description: GPS coordinates at delivery
+    required_for: [all]
+
+events:
+  - name: pod.captured
+    description: POD was successfully captured
+    payload: [delivery_id, pod_type, captured_at]
+
+  - name: pod.verified
+    description: POD verification completed
+    payload: [delivery_id, verification_type, result]
+
+  - name: pod.failed
+    description: POD capture or verification failed
+    payload: [delivery_id, pod_type, failure_reason]
+
+  - name: pod.disputed
+    description: Customer disputes POD
+    payload: [delivery_id, dispute_reason]
+
+  - name: pod.reviewed
+    description: POD manually reviewed
+    payload: [delivery_id, reviewer_id, decision]

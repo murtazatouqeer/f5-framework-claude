@@ -1,0 +1,397 @@
+name: PickingWorkflow
+display_name: Order Picking Process Workflow
+description: |
+  End-to-end workflow for picking items for outbound orders.
+  Supports discrete, batch, wave, zone, and cluster picking methods.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: outbound_order.allocated
+  conditions:
+    - outbound_order.status == 'allocated'
+    - inventory_allocated == true
+
+actors:
+  - role: picker
+    responsibilities:
+      - Execute pick tasks
+      - Verify items and quantities
+      - Report shorts and issues
+  - role: wave_planner
+    responsibilities:
+      - Create and release waves
+      - Optimize pick paths
+      - Balance workloads
+  - role: supervisor
+    responsibilities:
+      - Handle exceptions
+      - Approve shorts and substitutions
+      - Monitor progress
+
+steps:
+  - id: step_01
+    name: Wave Planning
+    description: |
+      Group orders into waves based on priority, carrier cutoff,
+      and picker capacity.
+    actor: wave_planner
+    actions:
+      - action: select_orders_for_wave
+        input: [priority, cutoff_time, capacity]
+        output: wave_orders
+      - action: optimize_pick_path
+        input: [wave_orders]
+        output: optimized_sequence
+      - action: create_wave
+        input: [wave_orders, optimized_sequence]
+        output: wave_created
+      - action: create_pick_tasks
+        input: [wave_id]
+        output: pick_tasks
+    validations:
+      - wave within capacity limits
+      - orders meet cutoff requirements
+    outputs:
+      - wave_id
+      - total_picks
+      - estimated_time
+    events:
+      - name: wave.released
+        payload: [wave_id, total_tasks]
+    next_step: step_02
+
+  - id: step_02
+    name: Task Assignment
+    description: |
+      Assign pick tasks to qualified pickers.
+      Balance workload across team.
+    actor: wave_planner
+    actions:
+      - action: identify_available_pickers
+        input: [warehouse_id, zone]
+        output: available_pickers
+      - action: assign_tasks
+        input: [pick_tasks, available_pickers]
+        output: tasks_assigned
+    validations:
+      - pickers certified for equipment
+      - pickers authorized for zones
+    outputs:
+      - assignments
+    next_step: step_03
+
+  - id: step_03
+    name: Receive Task
+    description: |
+      Picker receives task on RF device.
+      View pick details and path.
+    actor: picker
+    actions:
+      - action: display_task
+        input: [task_id]
+        output: task_displayed
+      - action: show_pick_details
+        input: [location, item, quantity]
+        output: details_shown
+      - action: get_pick_container
+        input: [pick_method]
+        output: container_ready
+    validations:
+      - task visible on device
+      - container obtained if needed
+    outputs:
+      - task_acknowledged
+      - container_id
+    next_step: step_04
+
+  - id: step_04
+    name: Travel to Location
+    description: |
+      Travel to pick location following optimized path.
+    actor: picker
+    actions:
+      - action: navigate_to_location
+        input: [from_location_id]
+        output: navigation_active
+      - action: travel_to_pick_location
+        input: [path]
+        output: at_location
+    outputs:
+      - travel_time
+    next_step: step_05
+
+  - id: step_05
+    name: Verify Location
+    description: |
+      Scan location barcode to confirm correct pick location.
+    actor: picker
+    actions:
+      - action: scan_location
+        input: [location_barcode]
+        output: location_scanned
+      - action: validate_location
+        input: [scanned_location, expected_location]
+        output: location_validated
+    validations:
+      - scanned location matches task
+    decision:
+      condition: location_validated == false
+      true_path: step_05a
+      false_path: step_06
+    outputs:
+      - location_confirmed
+
+  - id: step_05a
+    name: Wrong Location
+    description: |
+      Handle location mismatch.
+      Guide picker to correct location.
+    actor: picker
+    actions:
+      - action: display_error
+        input: [expected_location, scanned_location]
+        output: error_shown
+      - action: redirect_picker
+        input: [correct_location]
+        output: picker_redirected
+    outputs:
+      - location_correction
+    next_step: step_04
+
+  - id: step_06
+    name: Verify Item
+    description: |
+      Scan item barcode to confirm correct product.
+    actor: picker
+    actions:
+      - action: scan_item
+        input: [item_barcode]
+        output: item_scanned
+      - action: validate_item
+        input: [scanned_item, expected_item]
+        output: item_validated
+    validations:
+      - scanned item matches task
+    decision:
+      condition: item_validated == false
+      true_path: step_06a
+      false_path: step_07
+    outputs:
+      - item_confirmed
+
+  - id: step_06a
+    name: Wrong Item
+    description: |
+      Handle item mismatch.
+      Alert picker and log discrepancy.
+    actor: picker
+    actions:
+      - action: display_item_error
+        input: [expected_item, scanned_item]
+        output: error_shown
+      - action: log_discrepancy
+        input: [location_id, expected_item, found_item]
+        output: discrepancy_logged
+    outputs:
+      - discrepancy_reported
+    next_step: step_06
+
+  - id: step_07
+    name: Pick Items
+    description: |
+      Physically pick the required quantity.
+      Place in container/tote.
+    actor: picker
+    actions:
+      - action: pick_quantity
+        input: [quantity_requested]
+        output: quantity_picked
+      - action: place_in_container
+        input: [items, container_id]
+        output: items_placed
+    decision:
+      condition: quantity_picked < quantity_requested
+      true_path: step_08
+      false_path: step_09
+    outputs:
+      - picked_quantity
+
+  - id: step_08
+    name: Short Pick Handling
+    description: |
+      Handle short pick when full quantity unavailable.
+      Record reason and attempt reallocation.
+    actor: picker
+    actions:
+      - action: confirm_short_quantity
+        input: [available_quantity]
+        output: short_confirmed
+      - action: select_short_reason
+        input: [reason_codes]
+        output: reason_selected
+      - action: record_short_pick
+        input: [task_id, quantity_picked, short_reason]
+        output: short_recorded
+    validations:
+      - reason code selected
+    decision:
+      condition: short_percent > 10
+      true_path: step_08a
+      false_path: step_09
+    outputs:
+      - short_quantity
+      - short_reason
+    events:
+      - name: pick.short
+        payload: [task_id, quantity_requested, quantity_picked, reason]
+
+  - id: step_08a
+    name: Supervisor Short Approval
+    description: |
+      Large shorts require supervisor review.
+      Attempt reallocation or customer notification.
+    actor: supervisor
+    actions:
+      - action: review_short
+        input: [task_id, short_details]
+        output: short_reviewed
+      - action: attempt_reallocation
+        input: [item_id, quantity_needed]
+        output: reallocation_result
+      - action: approve_short
+        input: [task_id, approval_notes]
+        output: short_approved
+    outputs:
+      - reallocation_status
+      - approval_status
+    next_step: step_09
+
+  - id: step_09
+    name: Confirm Pick
+    description: |
+      Confirm quantity picked.
+      Update inventory and task status.
+    actor: picker
+    actions:
+      - action: enter_picked_quantity
+        input: [quantity]
+        output: quantity_confirmed
+      - action: scan_to_lpn
+        input: [to_lpn, items]
+        output: lpn_scanned
+      - action: update_inventory
+        input: [from_location, item, quantity]
+        output: inventory_updated
+    validations:
+      - quantity confirmed
+      - inventory decremented
+    outputs:
+      - pick_confirmed
+    events:
+      - name: pick.completed
+        payload: [task_id, quantity_picked]
+    next_step: step_10
+
+  - id: step_10
+    name: More Picks in Path?
+    description: |
+      Check if more picks remaining in sequence.
+      Continue or proceed to staging.
+    actor: picker
+    decision:
+      condition: remaining_picks > 0
+      true_path: step_04
+      false_path: step_11
+
+  - id: step_11
+    name: Travel to Staging
+    description: |
+      Travel to packing/staging area.
+      Deliver completed picks.
+    actor: picker
+    actions:
+      - action: navigate_to_staging
+        input: [staging_location]
+        output: navigation_active
+      - action: travel_to_staging
+        input: [path]
+        output: at_staging
+    outputs:
+      - staging_arrival_time
+    next_step: step_12
+
+  - id: step_12
+    name: Drop at Staging
+    description: |
+      Deliver picked items to staging/packing.
+      Scan to confirm drop-off.
+    actor: picker
+    actions:
+      - action: scan_staging_location
+        input: [staging_barcode]
+        output: staging_confirmed
+      - action: drop_container
+        input: [container_id, staging_location]
+        output: container_dropped
+      - action: complete_wave_tasks
+        input: [task_ids]
+        output: tasks_completed
+    validations:
+      - container delivered to correct area
+    outputs:
+      - drop_confirmed
+      - wave_tasks_completed
+    events:
+      - name: pick_wave.completed
+        payload: [wave_id, worker_id, total_picks]
+    next_step: step_13
+
+  - id: step_13
+    name: Complete and Next
+    description: |
+      Record completion metrics.
+      Receive next wave assignment or end shift.
+    actor: picker
+    actions:
+      - action: record_wave_completion
+        input: [wave_id, start_time, end_time]
+        output: metrics_recorded
+      - action: check_next_wave
+        input: [worker_id]
+        output: next_assignment
+    outputs:
+      - wave_completed
+      - next_wave_id
+
+sla:
+  - name: wave_completion_time
+    description: Time from wave release to all picks complete
+    target: "< 45 minutes"
+  - name: picks_per_hour
+    description: Units picked per labor hour
+    target: "> 100 UPH"
+  - name: pick_accuracy
+    description: Correct picks percentage
+    target: "> 99.5%"
+
+exceptions:
+  - name: item_not_found
+    handling: Record short, trigger cycle count
+  - name: location_empty
+    handling: Record variance, reallocate
+  - name: damaged_item
+    handling: Set aside, pick from alternate
+  - name: equipment_failure
+    handling: Report to maintenance, reassign
+
+integrations:
+  - system: RF_Device
+    purpose: Task display, scanning
+  - system: WMS
+    purpose: Inventory updates, task management
+  - system: Wave_Engine
+    purpose: Wave optimization

@@ -1,0 +1,699 @@
+# Lease Renewal Workflow
+# F5 Framework v2.0 - Real Estate/Property Management
+# Quy trình gia hạn hợp đồng / リース更新ワークフロー
+
+workflow:
+  name: LeaseRenewalWorkflow
+  name_vi: Quy trình gia hạn hợp đồng
+  name_ja: リース更新ワークフロー
+  domain: real-estate
+  subdomain: property-management
+  version: "1.0.0"
+
+  description: |
+    End-to-end workflow for lease renewal process
+    including tenant evaluation, rent adjustment,
+    offer generation, negotiation, and execution.
+
+  # Workflow Triggers
+  triggers:
+    - event: lease_expiring_soon
+      timing: 90_days_before_expiry
+      source: scheduler
+    - event: tenant_renewal_request
+      source: tenant_portal
+    - event: manual_initiation
+      source: property_manager
+
+  # Primary Actors
+  actors:
+    primary:
+      - tenant
+      - property_manager
+    supporting:
+      - property_owner
+      - leasing_agent
+      - accounting
+
+  # Referenced Entities
+  entities:
+    - Lease
+    - Tenant
+    - Unit
+    - RentCharge
+
+  # Business Rules Applied
+  business_rules:
+    - LeaseRules
+    - RentRules
+
+  # ==========================================
+  # WORKFLOW STEPS
+  # ==========================================
+
+  steps:
+    - step_id: WF-RNW-001
+      name: Identify Expiring Leases
+      name_vi: Xác định hợp đồng sắp hết hạn
+      order: 1
+      description: |
+        Automatically identify leases approaching
+        expiration for renewal processing.
+
+      trigger:
+        timing: 90_days_before_lease_expiry
+        automatic: true
+        frequency: daily_check
+
+      inputs:
+        - active_leases
+        - expiration_dates
+        - renewal_window: 90_days
+
+      actions:
+        - action: query_expiring_leases
+          criteria:
+            - status: active
+            - expiry_within: 90_days
+            - not_already_in_renewal: true
+        - action: create_renewal_task
+          entity: Lease
+          add_flag: renewal_pending
+        - action: notify_property_manager
+          system: notification
+          content: lease_expiring_list
+        - action: add_to_renewal_queue
+          system: property_management
+
+      outputs:
+        - expiring_lease_list
+        - renewal_tasks_created
+        - manager_notification
+
+      next_step: WF-RNW-002
+
+    - step_id: WF-RNW-002
+      name: Evaluate Tenant
+      name_vi: Đánh giá người thuê
+      order: 2
+      description: |
+        Comprehensive evaluation of tenant for
+        renewal consideration.
+
+      inputs:
+        - tenant_record
+        - payment_history
+        - lease_compliance_history
+        - maintenance_history
+
+      actions:
+        - action: analyze_payment_history
+          criteria:
+            - on_time_payment_rate
+            - late_payment_frequency
+            - outstanding_balances
+        - action: review_lease_compliance
+          criteria:
+            - violation_history
+            - noise_complaints
+            - property_condition
+            - rule_adherence
+        - action: check_maintenance_requests
+          pattern: reasonable_vs_excessive
+        - action: calculate_tenant_score
+          factors:
+            - payment_history: 40%
+            - lease_compliance: 30%
+            - maintenance_behavior: 15%
+            - communication: 15%
+        - action: generate_evaluation_report
+          system: property_management
+
+      outputs:
+        - tenant_evaluation_score
+        - payment_summary
+        - compliance_summary
+        - renewal_recommendation
+
+      decision_point:
+        condition: evaluation_result
+        outcomes:
+          excellent_tenant: WF-RNW-003
+          good_tenant: WF-RNW-003
+          marginal_tenant: WF-RNW-002a
+          problem_tenant: WF-RNW-NONRENEW
+
+    - step_id: WF-RNW-002a
+      name: Review Marginal Tenant
+      name_vi: Xem xét người thuê cần lưu ý
+      order: 2.5
+      description: |
+        Additional review for tenants with
+        mixed performance records.
+
+      inputs:
+        - tenant_evaluation
+        - specific_concerns
+        - mitigating_factors
+
+      actions:
+        - action: detailed_review
+          by: property_manager
+          consider:
+            - improvement_trend
+            - communication_quality
+            - circumstances
+            - market_conditions
+        - action: consult_owner
+          if: significant_concerns
+        - action: determine_conditions
+          options:
+            - standard_renewal
+            - conditional_renewal
+            - month_to_month
+            - non_renewal
+
+      outputs:
+        - review_decision
+        - special_conditions
+        - owner_input
+
+      decision_point:
+        condition: review_outcome
+        outcomes:
+          proceed_with_conditions: WF-RNW-003
+          month_to_month: WF-RNW-003
+          non_renewal: WF-RNW-NONRENEW
+
+    - step_id: WF-RNW-003
+      name: Determine Rental Terms
+      name_vi: Xác định điều khoản thuê
+      order: 3
+      description: |
+        Analyze market and determine new rental
+        terms for renewal offer.
+
+      inputs:
+        - current_lease_terms
+        - market_conditions
+        - tenant_evaluation
+        - owner_preferences
+
+      actions:
+        - action: conduct_market_analysis
+          data_points:
+            - comparable_rents
+            - vacancy_rates
+            - market_trends
+            - seasonal_factors
+        - action: calculate_rent_adjustment
+          factors:
+            - market_rate_increase
+            - property_improvements
+            - tenant_value
+            - inflation_adjustment
+          constraints:
+            - reasonable_increase: recommended
+            - no_legal_cap: "In most Vietnam jurisdictions"
+          rule: BR-RNT-050
+        - action: determine_term_options
+          options:
+            - 6_month_term
+            - 12_month_term
+            - 24_month_term
+            - month_to_month
+        - action: prepare_term_scenarios
+          for_each: term_option
+
+      outputs:
+        - market_analysis
+        - proposed_rent
+        - term_options
+        - incentive_options
+
+      next_step: WF-RNW-004
+
+    - step_id: WF-RNW-004
+      name: Get Owner Approval
+      name_vi: Xin phê duyệt chủ nhà
+      order: 4
+      description: |
+        Obtain property owner approval for
+        proposed renewal terms.
+
+      inputs:
+        - tenant_evaluation
+        - proposed_terms
+        - market_analysis
+
+      actions:
+        - action: prepare_approval_request
+          content:
+            - tenant_summary
+            - current_vs_proposed_rent
+            - market_justification
+            - term_recommendation
+            - alternative_scenarios
+        - action: submit_to_owner
+          method: per_owner_preference
+        - action: receive_feedback
+          options:
+            - approve_as_proposed
+            - modify_terms
+            - decline_renewal
+        - action: document_approval
+          system: property_management
+
+      outputs:
+        - owner_decision
+        - approved_terms
+        - any_modifications
+
+      sla:
+        decision: 5_business_days
+
+      decision_point:
+        condition: owner_response
+        outcomes:
+          approved: WF-RNW-005
+          modified: WF-RNW-003
+          declined: WF-RNW-NONRENEW
+
+    - step_id: WF-RNW-005
+      name: Send Renewal Offer
+      name_vi: Gửi đề nghị gia hạn
+      order: 5
+      description: |
+        Send formal renewal offer to tenant
+        with all terms and options.
+
+      inputs:
+        - approved_terms
+        - tenant_contact
+        - response_deadline
+
+      actions:
+        - action: generate_renewal_offer
+          content:
+            - current_lease_summary
+            - proposed_new_rent
+            - term_options
+            - any_changes_to_terms
+            - incentives_if_applicable
+            - response_deadline
+        - action: deliver_offer
+          methods:
+            - email: primary
+            - tenant_portal: required
+            - mail: optional
+          rule: BR-LSE-040
+        - action: log_offer
+          system: property_management
+        - action: set_follow_up_reminder
+          timing: 14_days
+
+      outputs:
+        - renewal_offer_document
+        - delivery_confirmation
+        - response_deadline
+
+      sla:
+        send_by: 60_days_before_expiry
+        response_deadline: 30_days_before_expiry
+
+      next_step: WF-RNW-006
+
+    - step_id: WF-RNW-006
+      name: Receive Response
+      name_vi: Nhận phản hồi
+      order: 6
+      description: |
+        Process tenant response to renewal offer.
+
+      inputs:
+        - renewal_offer
+        - tenant_response
+        - response_deadline
+
+      actions:
+        - action: receive_tenant_response
+          options:
+            - accept_as_offered
+            - accept_with_modifications
+            - decline_renewal
+            - no_response
+        - action: document_response
+          system: property_management
+        - action: evaluate_counter_proposals
+          if: modifications_requested
+
+      outputs:
+        - tenant_decision
+        - counter_proposals_if_any
+        - negotiation_points
+
+      decision_point:
+        condition: tenant_response
+        outcomes:
+          accepts: WF-RNW-008
+          counter_proposal: WF-RNW-007
+          declines: WF-RNW-MOVEOUT
+          no_response: WF-RNW-006a
+
+    - step_id: WF-RNW-006a
+      name: Follow Up Non-Response
+      name_vi: Theo dõi không phản hồi
+      order: 6.5
+      description: |
+        Follow up with tenant who has not
+        responded to renewal offer.
+
+      inputs:
+        - original_offer
+        - days_elapsed
+
+      actions:
+        - action: send_reminder
+          timing: 7_days_before_deadline
+        - action: attempt_direct_contact
+          methods:
+            - phone_call
+            - in_person_if_possible
+        - action: document_attempts
+          system: property_management
+        - action: send_final_notice
+          timing: 3_days_before_deadline
+
+      outputs:
+        - follow_up_record
+        - contact_attempts
+
+      decision_point:
+        condition: response_received
+        outcomes:
+          response_received: WF-RNW-006
+          still_no_response: WF-RNW-MTM
+
+    - step_id: WF-RNW-MTM
+      name: Convert to Month-to-Month
+      name_vi: Chuyển sang thuê theo tháng
+      order: 6.6
+      description: |
+        Handle lease conversion to month-to-month
+        when no renewal agreement reached.
+
+      inputs:
+        - expiring_lease
+        - no_response_documentation
+
+      actions:
+        - action: notify_tenant
+          content:
+            - lease_converting_to_mtm
+            - new_rent_if_applicable
+            - notice_period_required
+            - ongoing_terms
+          rule: BR-LSE-042
+        - action: update_lease_record
+          entity: Lease
+          lease_type: month_to_month
+        - action: update_rent_if_applicable
+          with_proper_notice: 30_days
+        - action: document_conversion
+          system: property_management
+
+      outputs:
+        - month_to_month_notice
+        - updated_lease_record
+
+      workflow_complete: true
+
+    - step_id: WF-RNW-007
+      name: Negotiate Terms
+      name_vi: Đàm phán điều khoản
+      order: 7
+      description: |
+        Handle negotiation of renewal terms
+        with tenant.
+
+      inputs:
+        - original_offer
+        - tenant_counter_proposal
+        - negotiation_boundaries
+
+      actions:
+        - action: evaluate_counter_proposal
+          consider:
+            - rent_requested
+            - term_requested
+            - other_modifications
+        - action: determine_response
+          options:
+            - accept_counter
+            - counter_offer
+            - hold_firm
+            - decline_renewal
+        - action: consult_owner
+          if: outside_approved_parameters
+        - action: communicate_response
+          to: tenant
+        - action: iterate_if_needed
+          max_rounds: 3
+
+      outputs:
+        - negotiation_outcome
+        - final_agreed_terms
+        - owner_approval_if_modified
+
+      decision_point:
+        condition: negotiation_result
+        outcomes:
+          agreement_reached: WF-RNW-008
+          no_agreement: WF-RNW-MOVEOUT
+          convert_to_mtm: WF-RNW-MTM
+
+    - step_id: WF-RNW-008
+      name: Prepare Renewal Lease
+      name_vi: Chuẩn bị hợp đồng gia hạn
+      order: 8
+      description: |
+        Generate renewal lease with agreed terms.
+
+      inputs:
+        - agreed_terms
+        - current_lease
+        - any_addenda_changes
+
+      actions:
+        - action: generate_renewal_document
+          options:
+            - lease_renewal_addendum: "Extends current lease"
+            - new_lease_agreement: "Replaces current lease"
+        - action: incorporate_changes
+          updates:
+            - new_rent_amount
+            - new_term_dates
+            - updated_provisions
+            - removed_provisions
+        - action: review_for_accuracy
+          by: property_manager
+        - action: prepare_for_signing
+          system: e_signature_or_print
+
+      outputs:
+        - renewal_lease_document
+        - comparison_summary
+        - signing_instructions
+
+      next_step: WF-RNW-009
+
+    - step_id: WF-RNW-009
+      name: Execute Renewal
+      name_vi: Ký kết gia hạn
+      order: 9
+      description: |
+        Obtain signatures and finalize renewal.
+
+      inputs:
+        - prepared_renewal_document
+        - all_parties
+
+      actions:
+        - action: send_for_signature
+          to: tenant
+          method: e_signature_or_in_person
+        - action: obtain_tenant_signature
+          all_adults_if_required: per_original_lease
+        - action: obtain_landlord_signature
+          or: authorized_representative
+        - action: notarize
+          if: term_over_6_months
+          or: per_policy
+        - action: distribute_copies
+          to:
+            - tenant
+            - landlord
+            - property_manager
+
+      outputs:
+        - executed_renewal
+        - distribution_confirmation
+
+      sla:
+        completion: before_current_lease_expiry
+
+      next_step: WF-RNW-010
+
+    - step_id: WF-RNW-010
+      name: Update Systems
+      name_vi: Cập nhật hệ thống
+      order: 10
+      description: |
+        Update all systems with new lease terms.
+
+      inputs:
+        - executed_renewal
+        - new_terms
+
+      actions:
+        - action: update_lease_record
+          entity: Lease
+          fields:
+            - start_date
+            - end_date
+            - monthly_rent
+            - status: active
+            - version: increment
+        - action: update_rent_schedule
+          entity: RentCharge
+          new_amount: per_renewal
+          effective_date: new_term_start
+        - action: update_recurring_charges
+          if_changed: true
+        - action: send_confirmation
+          to: tenant
+          content:
+            - renewal_summary
+            - new_rent_effective_date
+            - next_steps_if_any
+        - action: notify_stakeholders
+          to:
+            - property_owner
+            - accounting
+
+      outputs:
+        - updated_lease_record
+        - updated_rent_schedule
+        - confirmation_sent
+
+      workflow_complete: true
+
+    # Non-Renewal Branch
+    - step_id: WF-RNW-NONRENEW
+      name: Non-Renewal Notice
+      name_vi: Thông báo không gia hạn
+      order: 97
+      description: |
+        Handle decision not to renew tenant's lease.
+
+      inputs:
+        - non_renewal_decision
+        - reason_category
+        - current_lease
+
+      actions:
+        - action: prepare_non_renewal_notice
+          content:
+            - notice_of_non_renewal
+            - lease_end_date
+            - move_out_requirements
+            - security_deposit_process
+          rule: BR-LSE-050
+        - action: deliver_notice
+          timing: 60_days_before_expiry
+          methods:
+            - certified_mail
+            - hand_delivery
+        - action: document_service
+          proof_required: true
+        - action: initiate_move_out_workflow
+          timing: as_lease_approaches_end
+
+      outputs:
+        - non_renewal_notice
+        - delivery_confirmation
+        - move_out_initiated
+
+      legal_requirements:
+        - minimum_notice: 60_days
+        - written_notice: required
+        - proper_service: documented
+
+      workflow_complete: true
+      triggers_workflow: MoveOutWorkflow
+
+    # Tenant Declines Branch
+    - step_id: WF-RNW-MOVEOUT
+      name: Tenant Move-Out
+      name_vi: Người thuê dọn đi
+      order: 98
+      description: |
+        Handle tenant decision not to renew.
+
+      inputs:
+        - tenant_decline_notice
+        - current_lease
+
+      actions:
+        - action: acknowledge_non_renewal
+          to: tenant
+        - action: confirm_move_out_date
+          default: lease_end_date
+        - action: provide_move_out_instructions
+          content:
+            - move_out_checklist
+            - inspection_scheduling
+            - key_return
+            - deposit_return_process
+        - action: initiate_move_out_workflow
+          entity: MoveInOut
+          move_type: move_out
+        - action: begin_re_leasing
+          if_applicable: true
+
+      outputs:
+        - move_out_confirmation
+        - instructions_provided
+        - move_out_workflow_initiated
+
+      workflow_complete: true
+      triggers_workflow: MoveOutWorkflow
+
+  # ==========================================
+  # WORKFLOW METRICS
+  # ==========================================
+
+  metrics:
+    - name: renewal_rate
+      description: "Percentage of leases renewed"
+      target: ">75%"
+
+    - name: average_rent_increase
+      description: "Average rent increase on renewal"
+      target: "Market rate + tenant value adjustment"
+
+    - name: time_to_renewal
+      description: "Average days from offer to execution"
+      target: "<30 days"
+
+    - name: negotiation_success_rate
+      description: "Percentage of negotiations reaching agreement"
+      target: ">85%"
+
+  # Summary
+  summary:
+    total_steps: 13
+    decision_points: 5
+    average_duration: 30-60_days
+    critical_timeline: "90 days → 60 days → 30 days before expiry"
+    ideal_outcome: "Seamless renewal with satisfied tenant at market rate"

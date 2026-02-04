@@ -1,0 +1,376 @@
+name: PutawayWorkflow
+display_name: Putaway Process Workflow
+description: |
+  End-to-end workflow for moving received inventory from staging to storage.
+  Covers task assignment through location confirmation.
+
+domain: logistics
+subdomain: warehouse
+category: workflow
+version: "1.0.0"
+
+trigger:
+  event: putaway_task.created
+  conditions:
+    - receipt.completed == true
+    - lpn.status == 'staged'
+
+actors:
+  - role: putaway_worker
+    responsibilities:
+      - Execute putaway tasks
+      - Confirm locations
+      - Report issues
+  - role: supervisor
+    responsibilities:
+      - Assign tasks
+      - Handle exceptions
+      - Override locations
+
+steps:
+  - id: step_01
+    name: Task Assignment
+    description: |
+      Assign putaway task to qualified worker.
+      Consider certifications and zone authorization.
+    actor: supervisor
+    actions:
+      - action: identify_available_workers
+        input: [warehouse_id, shift]
+        output: available_workers
+      - action: match_task_requirements
+        input: [task.equipment_required, task.zone_id]
+        output: qualified_workers
+      - action: assign_task
+        input: [task_id, worker_id]
+        output: task_assigned
+    validations:
+      - worker certified for equipment
+      - worker authorized for zone
+    outputs:
+      - assigned_worker_id
+      - assigned_at
+    events:
+      - name: putaway.assigned
+        payload: [task_id, worker_id]
+    next_step: step_02
+
+  - id: step_02
+    name: Receive Task on Device
+    description: |
+      Worker receives task on RF device.
+      View task details and destination.
+    actor: putaway_worker
+    actions:
+      - action: display_task
+        input: [task_id]
+        output: task_displayed
+      - action: show_details
+        input: [lpn, item, quantity, from_location, to_location]
+        output: details_shown
+    validations:
+      - task visible on device
+    outputs:
+      - task_acknowledged
+    next_step: step_03
+
+  - id: step_03
+    name: Travel to Staging
+    description: |
+      Travel to staging area to retrieve LPN.
+      Get appropriate equipment if needed.
+    actor: putaway_worker
+    actions:
+      - action: obtain_equipment
+        input: [task.equipment_required]
+        output: equipment_ready
+      - action: travel_to_staging
+        input: [from_location_id]
+        output: at_staging
+    validations:
+      - correct equipment obtained
+    outputs:
+      - travel_start_time
+    next_step: step_04
+
+  - id: step_04
+    name: Verify Source LPN
+    description: |
+      Scan LPN at staging location.
+      Confirm correct inventory.
+    actor: putaway_worker
+    actions:
+      - action: scan_lpn
+        input: [lpn_barcode]
+        output: lpn_scanned
+      - action: validate_lpn
+        input: [scanned_lpn, expected_lpn]
+        output: lpn_validated
+    validations:
+      - scanned LPN matches task
+      - LPN in expected location
+    decision:
+      condition: lpn_validated == false
+      true_path: step_04a
+      false_path: step_05
+    outputs:
+      - lpn_confirmed
+
+  - id: step_04a
+    name: LPN Mismatch Resolution
+    description: |
+      Handle LPN not found or mismatch.
+      Search or escalate to supervisor.
+    actor: putaway_worker
+    actions:
+      - action: search_nearby
+        input: [from_location_id]
+        output: search_results
+      - action: report_discrepancy
+        input: [task_id, expected_lpn, actual_situation]
+        output: discrepancy_reported
+    decision:
+      condition: lpn_found
+      true_path: step_05
+      false_path: step_04b
+    outputs:
+      - discrepancy_type
+
+  - id: step_04b
+    name: Supervisor Intervention
+    description: |
+      Supervisor investigates missing LPN.
+      Reassign or cancel task.
+    actor: supervisor
+    actions:
+      - action: investigate_lpn
+        input: [lpn, last_known_location]
+        output: investigation_result
+      - action: resolve_task
+        input: [task_id, resolution_action]
+        output: task_resolved
+    outputs:
+      - resolution_action
+    next_step: step_10
+
+  - id: step_05
+    name: Pick Up Inventory
+    description: |
+      Physically pick up the LPN.
+      Verify quantity and condition.
+    actor: putaway_worker
+    actions:
+      - action: pick_up_lpn
+        input: [lpn]
+        output: lpn_picked
+      - action: verify_quantity
+        input: [lpn, expected_quantity]
+        output: quantity_verified
+      - action: check_condition
+        input: [lpn]
+        output: condition_ok
+    validations:
+      - quantity matches expected
+      - no visible damage
+    decision:
+      condition: condition_ok == false
+      true_path: step_05a
+      false_path: step_06
+    outputs:
+      - pickup_confirmed
+
+  - id: step_05a
+    name: Condition Issue
+    description: |
+      Handle damaged or problematic inventory.
+      Route to damage area if needed.
+    actor: putaway_worker
+    actions:
+      - action: document_issue
+        input: [lpn, issue_description]
+        output: issue_documented
+      - action: reroute_to_damage
+        input: [lpn, damage_zone]
+        output: rerouted
+    outputs:
+      - damage_reported
+    next_step: step_10
+
+  - id: step_06
+    name: Travel to Destination
+    description: |
+      Travel to assigned putaway location.
+      Follow optimized path.
+    actor: putaway_worker
+    actions:
+      - action: navigate_to_location
+        input: [to_location_id]
+        output: navigation_active
+      - action: travel_to_destination
+        input: [path]
+        output: at_destination
+    outputs:
+      - travel_time
+    next_step: step_07
+
+  - id: step_07
+    name: Verify Destination Location
+    description: |
+      Scan destination location barcode.
+      Confirm correct location.
+    actor: putaway_worker
+    actions:
+      - action: scan_location
+        input: [location_barcode]
+        output: location_scanned
+      - action: validate_location
+        input: [scanned_location, expected_location]
+        output: location_validated
+    validations:
+      - location matches assignment
+      - location has capacity
+    decision:
+      condition: location_validated == false
+      true_path: step_07a
+      false_path: step_08
+    outputs:
+      - location_confirmed
+
+  - id: step_07a
+    name: Alternate Location
+    description: |
+      Original location unavailable.
+      Request or select alternate location.
+    actor: putaway_worker
+    actions:
+      - action: request_alternate
+        input: [original_location, reason]
+        output: alternate_options
+      - action: select_alternate
+        input: [alternate_options]
+        output: alternate_selected
+      - action: supervisor_approval
+        input: [alternate_location, reason]
+        output: approval_status
+    validations:
+      - alternate meets storage requirements
+    decision:
+      condition: approval_status == 'approved'
+      true_path: step_08
+      false_path: step_07b
+    outputs:
+      - alternate_location_id
+
+  - id: step_07b
+    name: Location Assignment Failed
+    description: |
+      Cannot find suitable location.
+      Return to staging or escalate.
+    actor: supervisor
+    actions:
+      - action: assess_situation
+        input: [item, quantity]
+        output: assessment
+      - action: find_solution
+        input: [assessment]
+        output: solution
+    outputs:
+      - resolution_action
+    next_step: step_10
+
+  - id: step_08
+    name: Place Inventory
+    description: |
+      Physically place LPN in location.
+      Ensure safe and proper placement.
+    actor: putaway_worker
+    actions:
+      - action: place_lpn
+        input: [lpn, location]
+        output: lpn_placed
+      - action: verify_placement
+        input: [lpn, location]
+        output: placement_verified
+    validations:
+      - inventory safely placed
+      - no obstruction
+    outputs:
+      - placement_confirmed
+    next_step: step_09
+
+  - id: step_09
+    name: Confirm Putaway
+    description: |
+      Scan location to confirm putaway complete.
+      Update inventory records.
+    actor: putaway_worker
+    actions:
+      - action: scan_confirm_location
+        input: [location_barcode]
+        output: confirmation_scan
+      - action: update_inventory_location
+        input: [lpn, location_id]
+        output: inventory_updated
+      - action: complete_task
+        input: [task_id]
+        output: task_completed
+    validations:
+      - confirmation scan matches
+      - inventory record updated
+    outputs:
+      - completed_at
+      - actual_location_id
+    events:
+      - name: putaway.completed
+        payload: [task_id, lpn, location_id]
+    next_step: step_10
+
+  - id: step_10
+    name: Update Task Status
+    description: |
+      Finalize task record.
+      Calculate performance metrics.
+    actor: putaway_worker
+    actions:
+      - action: record_completion
+        input: [task_id, completion_status]
+        output: task_finalized
+      - action: calculate_metrics
+        input: [start_time, end_time, travel_distance]
+        output: performance_metrics
+      - action: release_equipment
+        input: [equipment_id]
+        output: equipment_released
+    outputs:
+      - task_status
+      - task_time_seconds
+      - travel_distance_m
+
+sla:
+  - name: putaway_time
+    description: Time from task assignment to completion
+    target: "< 15 minutes"
+  - name: putaway_throughput
+    description: Putaways per labor hour
+    target: "> 25 UPH"
+  - name: location_accuracy
+    description: Correct location usage
+    target: "> 99%"
+
+exceptions:
+  - name: lpn_not_found
+    handling: Search staging, create cycle count
+  - name: location_full
+    handling: System suggests alternate
+  - name: equipment_failure
+    handling: Report to maintenance, reassign
+  - name: damaged_discovered
+    handling: Route to damage zone
+
+integrations:
+  - system: RF_Device
+    purpose: Task display, scanning
+  - system: WMS
+    purpose: Inventory updates
+  - system: Slotting_Engine
+    purpose: Location optimization

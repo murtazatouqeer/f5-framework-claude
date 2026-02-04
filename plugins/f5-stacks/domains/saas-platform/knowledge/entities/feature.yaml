@@ -1,0 +1,443 @@
+name: Feature
+display_name: Feature Flag / Cờ tính năng
+description: |
+  Controls feature availability across plans and tenants.
+  Enables gradual rollouts, A/B testing, and tier-based feature gating.
+
+domain: saas-platform
+entity_type: reference
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: key
+    type: string
+    required: true
+    unique: true
+    max_length: 100
+    description: Feature key identifier
+    description_vi: Khóa định danh tính năng
+    pattern: "^[a-z][a-z0-9_]{2,99}$"
+    examples: [sso_enabled, advanced_analytics, custom_domain, api_access]
+
+  - name: name
+    type: string
+    required: true
+    max_length: 255
+    description: Human-readable feature name
+    description_vi: Tên tính năng dễ đọc
+
+  - name: description
+    type: text
+    description: Feature description
+    description_vi: Mô tả tính năng
+
+  # Type & Configuration
+  - name: type
+    type: enum
+    values: [boolean, percentage, variant, numeric]
+    default: boolean
+    description: Feature flag type
+    description_vi: Loại cờ tính năng
+
+  - name: default_value
+    type: json
+    description: Default value when not specifically set
+    description_vi: Giá trị mặc định khi không được đặt cụ thể
+    examples:
+      boolean: false
+      percentage: 0
+      variant: "control"
+      numeric: 0
+
+  # Plan-based Enablement
+  - name: enabled_tiers
+    type: json
+    description: Which tiers have this feature enabled
+    description_vi: Các gói nào có tính năng này được bật
+    schema:
+      free: boolean
+      starter: boolean
+      professional: boolean
+      enterprise: boolean
+    example:
+      free: false
+      starter: false
+      professional: true
+      enterprise: true
+
+  - name: min_tier
+    type: enum
+    values: [free, starter, professional, enterprise]
+    description: Minimum tier required (simplified)
+    description_vi: Gói tối thiểu yêu cầu
+
+  # Rollout Configuration
+  - name: rollout_percentage
+    type: integer
+    default: 100
+    min: 0
+    max: 100
+    description: Percentage of eligible tenants with feature enabled
+    description_vi: Phần trăm khách thuê đủ điều kiện có tính năng được bật
+
+  - name: rollout_strategy
+    type: enum
+    values: [all, percentage, allowlist, blocklist, gradual]
+    default: all
+    description: How to roll out the feature
+    description_vi: Cách triển khai tính năng
+
+  # Targeting
+  - name: tenant_allowlist
+    type: json
+    description: Tenant IDs with feature always enabled
+    description_vi: ID khách thuê luôn có tính năng được bật
+    schema:
+      type: array
+      items: uuid
+
+  - name: tenant_blocklist
+    type: json
+    description: Tenant IDs with feature always disabled
+    description_vi: ID khách thuê luôn có tính năng bị tắt
+    schema:
+      type: array
+      items: uuid
+
+  - name: user_allowlist
+    type: json
+    description: User IDs with feature always enabled
+    description_vi: ID người dùng luôn có tính năng được bật
+    schema:
+      type: array
+      items: uuid
+
+  # Variants (for A/B testing)
+  - name: variants
+    type: json
+    description: Variant configurations for A/B testing
+    description_vi: Cấu hình biến thể cho A/B testing
+    schema:
+      - name: string
+        weight: integer (0-100)
+        value: any
+
+  # Status
+  - name: status
+    type: enum
+    values: [draft, active, deprecated, archived]
+    default: draft
+    description: Feature flag status
+    description_vi: Trạng thái cờ tính năng
+
+  - name: is_operational
+    type: boolean
+    default: false
+    description: Is this an operational flag (kill switch)
+    description_vi: Đây có phải cờ vận hành (công tắc tắt) không
+
+  # Categorization
+  - name: category
+    type: string
+    max_length: 50
+    description: Feature category
+    description_vi: Danh mục tính năng
+    examples: [security, integrations, analytics, ui, billing]
+
+  - name: tags
+    type: json
+    description: Feature tags
+    description_vi: Thẻ tính năng
+    schema:
+      type: array
+      items: string
+
+  # Dependencies
+  - name: depends_on
+    type: json
+    description: Features this depends on
+    description_vi: Các tính năng mà tính năng này phụ thuộc vào
+    schema:
+      type: array
+      items: string (feature key)
+
+  # Lifecycle
+  - name: enabled_at
+    type: timestamp
+    description: When feature was enabled
+    description_vi: Thời điểm tính năng được bật
+
+  - name: deprecated_at
+    type: timestamp
+    description: When feature was deprecated
+    description_vi: Thời điểm tính năng bị ngừng hỗ trợ
+
+  - name: sunset_at
+    type: timestamp
+    description: When feature will be removed
+    description_vi: Thời điểm tính năng sẽ bị xóa
+
+  # Documentation
+  - name: documentation_url
+    type: url
+    description: Link to feature documentation
+    description_vi: Liên kết đến tài liệu tính năng
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: updated_at
+    type: timestamp
+    auto: true
+
+  - name: created_by
+    type: uuid
+    description: Who created this feature flag
+
+indexes:
+  - name: idx_feature_key
+    columns: [key]
+    unique: true
+
+  - name: idx_feature_status
+    columns: [status]
+    description: Filter by status
+
+  - name: idx_feature_category
+    columns: [category]
+    description: Filter by category
+
+  - name: idx_feature_min_tier
+    columns: [min_tier]
+    description: Filter by minimum tier
+
+business_rules:
+  - id: BR-FEA-001
+    name: Feature Key Immutable
+    description: Feature key cannot be changed after creation
+    description_vi: Khóa tính năng không thể thay đổi sau khi tạo
+
+  - id: BR-FEA-002
+    name: Dependency Check
+    description: Cannot enable feature if dependencies are not met
+    description_vi: Không thể bật tính năng nếu các phụ thuộc chưa được đáp ứng
+
+  - id: BR-FEA-003
+    name: Tier Cascade
+    description: Higher tiers inherit lower tier features
+    description_vi: Các gói cao hơn kế thừa tính năng của gói thấp hơn
+
+  - id: BR-FEA-004
+    name: Allowlist Override
+    description: Allowlist overrides tier and percentage restrictions
+    description_vi: Danh sách cho phép ghi đè các hạn chế gói và phần trăm
+
+  - id: BR-FEA-005
+    name: Blocklist Priority
+    description: Blocklist has highest priority, always disables
+    description_vi: Danh sách chặn có ưu tiên cao nhất, luôn tắt
+
+computed_fields:
+  - name: is_enabled_for_all
+    formula: "status = 'active' AND rollout_percentage = 100 AND min_tier = 'free'"
+    description: Feature enabled for all tenants
+
+  - name: is_beta
+    formula: "status = 'active' AND rollout_percentage < 100"
+    description: Feature in beta/limited rollout
+
+events:
+  - name: feature.created
+    payload: [feature_id, key, type]
+
+  - name: feature.enabled
+    payload: [feature_id, key, enabled_at]
+    triggers: [notify_product_team]
+
+  - name: feature.rollout_changed
+    payload: [feature_id, old_percentage, new_percentage]
+
+  - name: feature.deprecated
+    payload: [feature_id, key, sunset_at]
+    triggers: [notify_affected_tenants]
+
+system_features:
+  # Security Features
+  - key: sso_enabled
+    name: Single Sign-On
+    type: boolean
+    min_tier: enterprise
+    category: security
+    description: SAML/OIDC single sign-on integration
+
+  - key: two_factor_enforcement
+    name: 2FA Enforcement
+    type: boolean
+    min_tier: professional
+    category: security
+    description: Require 2FA for all users
+
+  - key: ip_whitelist
+    name: IP Whitelisting
+    type: boolean
+    min_tier: enterprise
+    category: security
+    description: Restrict access by IP address
+
+  # API & Integration
+  - key: api_access
+    name: API Access
+    type: boolean
+    min_tier: starter
+    category: integrations
+    description: Access to REST API
+
+  - key: webhooks
+    name: Webhooks
+    type: boolean
+    min_tier: professional
+    category: integrations
+    description: Outgoing webhook notifications
+
+  - key: custom_integrations
+    name: Custom Integrations
+    type: numeric
+    min_tier: starter
+    category: integrations
+    description: Number of allowed integrations
+
+  # Branding & Customization
+  - key: custom_domain
+    name: Custom Domain
+    type: boolean
+    min_tier: enterprise
+    category: branding
+    description: Use custom domain
+
+  - key: white_label
+    name: White Label
+    type: boolean
+    min_tier: enterprise
+    category: branding
+    description: Remove platform branding
+
+  - key: custom_branding
+    name: Custom Branding
+    type: boolean
+    min_tier: professional
+    category: branding
+    description: Custom logo and colors
+
+  # Analytics & Reporting
+  - key: advanced_analytics
+    name: Advanced Analytics
+    type: boolean
+    min_tier: professional
+    category: analytics
+    description: Detailed analytics dashboard
+
+  - key: custom_reports
+    name: Custom Reports
+    type: boolean
+    min_tier: enterprise
+    category: analytics
+    description: Build custom reports
+
+  - key: data_export
+    name: Data Export
+    type: boolean
+    min_tier: starter
+    category: analytics
+    description: Export data to CSV/Excel
+
+  # Support
+  - key: priority_support
+    name: Priority Support
+    type: boolean
+    min_tier: professional
+    category: support
+    description: Priority customer support
+
+  - key: dedicated_account_manager
+    name: Dedicated Account Manager
+    type: boolean
+    min_tier: enterprise
+    category: support
+    description: Personal account manager
+
+  - key: sla_guarantee
+    name: SLA Guarantee
+    type: boolean
+    min_tier: enterprise
+    category: support
+    description: Guaranteed uptime SLA
+
+  # Team Features
+  - key: custom_roles
+    name: Custom Roles
+    type: boolean
+    min_tier: professional
+    category: team
+    description: Create custom user roles
+
+  - key: audit_logs
+    name: Audit Logs
+    type: boolean
+    min_tier: professional
+    category: team
+    description: Activity audit trail
+
+  - key: teams
+    name: Teams/Workspaces
+    type: boolean
+    min_tier: professional
+    category: team
+    description: Organize users into teams
+
+evaluation_logic:
+  priority_order:
+    1: blocklist (always disable)
+    2: allowlist (always enable)
+    3: user_allowlist (user-specific enable)
+    4: tier_check (plan tier requirement)
+    5: rollout_percentage (gradual rollout)
+    6: default_value (fallback)
+
+  pseudocode: |
+    function isFeatureEnabled(feature, tenant, user):
+      # 1. Check blocklist
+      if tenant.id in feature.tenant_blocklist:
+        return false
+
+      # 2. Check allowlist
+      if tenant.id in feature.tenant_allowlist:
+        return true
+
+      # 3. Check user allowlist
+      if user.id in feature.user_allowlist:
+        return true
+
+      # 4. Check tier requirement
+      if tenant.tier < feature.min_tier:
+        return false
+
+      # 5. Check tier enablement
+      if not feature.enabled_tiers[tenant.tier]:
+        return false
+
+      # 6. Check rollout percentage
+      if feature.rollout_percentage < 100:
+        hash = consistentHash(tenant.id + feature.key)
+        if hash > feature.rollout_percentage:
+          return false
+
+      # 7. Feature is enabled
+      return true

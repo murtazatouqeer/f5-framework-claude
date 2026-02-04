@@ -1,0 +1,372 @@
+name: kyc-rules
+display_name: Customer Verification Rules (KYC)
+description: |
+  Collection of business rules related to KYC (Know Your Customer) process.
+  Includes identity verification, risk assessment, and compliance requirements
+  according to State Bank of Vietnam regulations.
+
+domain: fintech
+version: "1.0"
+effective_date: "2024-01-01"
+last_updated: "2024-12-01"
+
+references:
+  - Circular 16/2020/TT-NHNN on eKYC
+  - Circular 23/2019/TT-NHNN on anti-money laundering
+  - Anti-Money Laundering Law 2022
+
+rules:
+  # ===== IDENTITY VERIFICATION =====
+  - id: BR-KYC-001
+    name: Minimum age verification
+    description: |
+      Individual customers must be at least 18 years old at the time of registration.
+      Calculated based on date of birth on identification document.
+    category: validation
+    severity: error
+    condition: |
+      IF customer.type == 'individual' THEN
+        DATEDIFF(YEAR, customer.date_of_birth, CURRENT_DATE) >= 18
+      END IF
+    parameters:
+      min_age: 18
+    message: "Customer must be at least 18 years old to register an account"
+    applies_to: [Customer]
+
+  - id: BR-KYC-002
+    name: Valid identification document
+    description: |
+      Identification documents (Citizen ID, National ID, Passport) must be valid at registration
+      and throughout service usage.
+    category: validation
+    severity: error
+    condition: |
+      IF id_document.expiry_date IS NOT NULL THEN
+        id_document.expiry_date > CURRENT_DATE
+      ELSE
+        TRUE  -- Old National ID has no expiry date
+      END IF
+    message: "Identification document has expired. Please update with a new document"
+    applies_to: [Customer, KYCDocument]
+
+  - id: BR-KYC-003
+    name: Unique identification number
+    description: |
+      Each Citizen ID/National ID/Passport number can only be used to register
+      one unique account in the system.
+    category: validation
+    severity: error
+    condition: |
+      NOT EXISTS (
+        SELECT 1 FROM customers
+        WHERE id_type = :id_type
+        AND id_number = :id_number
+        AND id != :current_id
+        AND status NOT IN ('closed', 'rejected')
+      )
+    message: "This identification number has already been used to register another account"
+    applies_to: [Customer]
+
+  - id: BR-KYC-004
+    name: Phone number verification via OTP
+    description: |
+      Registered phone number must be verified via OTP code.
+      OTP is valid for 3 minutes with a maximum of 5 incorrect attempts.
+    category: validation
+    severity: error
+    condition: |
+      customer.phone_verified == TRUE
+      AND phone_verification.verified_at <= NOW() - INTERVAL '30 days'
+    parameters:
+      otp_validity_seconds: 180
+      max_attempts: 5
+      reverification_days: 30
+    message: "Please verify your phone number with an OTP code"
+    applies_to: [Customer]
+
+  - id: BR-KYC-005
+    name: Email verification via OTP
+    description: |
+      Registered email must be verified via link or OTP code.
+      Verification link is valid for 24 hours.
+    category: validation
+    severity: warning
+    condition: |
+      customer.email_verified == TRUE
+    parameters:
+      link_validity_hours: 24
+    message: "Please verify your email address to receive transaction notifications"
+    applies_to: [Customer]
+
+  # ===== eKYC RULES =====
+  - id: BR-KYC-010
+    name: Document image quality
+    description: |
+      Identification document image must meet minimum quality requirements:
+      - Resolution >= 300 DPI or 1000x600 pixels
+      - Not blurred, smudged, or obscured
+      - All 4 corners visible
+    category: validation
+    severity: error
+    condition: |
+      document_image.quality_score >= 0.7
+      AND document_image.blur_score <= 0.3
+      AND document_image.corners_detected == 4
+    parameters:
+      min_quality_score: 0.7
+      max_blur_score: 0.3
+      min_resolution_width: 1000
+      min_resolution_height: 600
+    message: "Document image quality is insufficient. Please retake in good lighting conditions"
+    applies_to: [KYCDocument]
+
+  - id: BR-KYC-011
+    name: Face match with document
+    description: |
+      Face in selfie/video must match the photo on identification document
+      with confidence >= 80%.
+    category: validation
+    severity: error
+    condition: |
+      face_match.confidence_score >= 0.80
+    parameters:
+      min_match_score: 0.80
+    message: "Face does not match the photo on the document. Please try again"
+    applies_to: [Customer, KYCDocument]
+
+  - id: BR-KYC-012
+    name: Liveness verification
+    description: |
+      Must verify that the person performing eKYC is real (not a photo or fake video)
+      through liveness check with confidence >= 85%.
+    category: validation
+    severity: error
+    condition: |
+      liveness_check.is_live == TRUE
+      AND liveness_check.confidence_score >= 0.85
+    parameters:
+      min_liveness_score: 0.85
+    message: "Unable to verify you are a real person. Please follow the instructions"
+    applies_to: [Customer]
+
+  - id: BR-KYC-013
+    name: OCR matches input information
+    description: |
+      OCR information from document must match customer input information
+      (name, date of birth, document number) with accuracy >= 95%.
+    category: validation
+    severity: warning
+    condition: |
+      ocr_result.name_match_score >= 0.95
+      AND ocr_result.dob_match == TRUE
+      AND ocr_result.id_number_match == TRUE
+    parameters:
+      min_name_match: 0.95
+    message: "Information does not match the document. Please check again"
+    applies_to: [Customer, KYCDocument]
+
+  # ===== RISK ASSESSMENT =====
+  - id: BR-KYC-020
+    name: Customer risk assessment
+    description: |
+      Each customer must be assessed and classified by risk level
+      based on factors: nationality, occupation, income source, etc.
+    category: compliance
+    severity: error
+    condition: |
+      customer.risk_rating IS NOT NULL
+      AND customer.risk_rating IN ('low', 'medium', 'high', 'critical')
+    message: "Customer must be risk-assessed before activation"
+    applies_to: [Customer]
+
+  - id: BR-KYC-021
+    name: PEP list check
+    description: |
+      Must check if customer is a Politically Exposed Person (PEP)
+      or a relative of a PEP.
+    category: compliance
+    severity: error
+    condition: |
+      pep_check.performed == TRUE
+      AND pep_check.performed_at >= customer.created_at
+    message: "Must check PEP list before approving customer"
+    applies_to: [Customer]
+
+  - id: BR-KYC-022
+    name: Sanctions list check
+    description: |
+      Must check if customer is on international sanctions lists (OFAC, UN, EU)
+      or internal blacklist.
+    category: compliance
+    severity: error
+    condition: |
+      sanctions_check.performed == TRUE
+      AND sanctions_check.result NOT IN ('matched', 'potential_match')
+    message: "Customer is on sanctions list. Registration rejected"
+    applies_to: [Customer]
+
+  - id: BR-KYC-023
+    name: PEP requires senior approval
+    description: |
+      Customers identified as PEP must be approved by
+      management level (Manager) or higher.
+    category: authorization
+    severity: error
+    condition: |
+      IF customer.is_pep == TRUE THEN
+        approval.approver_role IN ('manager', 'director', 'compliance_officer')
+      END IF
+    message: "PEP customer must be approved by management level"
+    applies_to: [Customer]
+
+  - id: BR-KYC-024
+    name: High-risk customers require EDD
+    description: |
+      Customers assessed as high-risk must undergo
+      Enhanced Due Diligence (EDD) with additional information.
+    category: compliance
+    severity: error
+    condition: |
+      IF customer.risk_rating IN ('high', 'critical') THEN
+        customer.edd_completed == TRUE
+        AND customer.source_of_funds IS NOT NULL
+        AND customer.source_of_wealth IS NOT NULL
+      END IF
+    message: "High-risk customer must complete EDD"
+    applies_to: [Customer]
+
+  # ===== KYC LEVEL RULES =====
+  - id: BR-KYC-030
+    name: Limits by KYC Level
+    description: |
+      Transaction limits are determined by completed KYC level:
+      - Level 0: 0 VND (not verified)
+      - Level 1: 10 million VND/day (OTP only)
+      - Level 2: 100 million VND/day (eKYC)
+      - Level 3: Unlimited (Full KYC + approval)
+    category: calculation
+    severity: error
+    condition: |
+      CASE customer.kyc_level
+        WHEN 'level_0' THEN customer.daily_limit = 0
+        WHEN 'level_1' THEN customer.daily_limit <= 10000000
+        WHEN 'level_2' THEN customer.daily_limit <= 100000000
+        WHEN 'level_3' THEN TRUE
+      END
+    parameters:
+      level_0_limit: 0
+      level_1_limit: 10000000
+      level_2_limit: 100000000
+      level_3_limit: null
+    message: "Transaction limit exceeds KYC Level allowance"
+    applies_to: [Customer, Account]
+
+  - id: BR-KYC-031
+    name: KYC upgrade recommendation
+    description: |
+      When transactions exceed 80% of current KYC level limit,
+      the system must recommend KYC upgrade.
+    category: validation
+    severity: warning
+    condition: |
+      daily_usage / kyc_level_limit >= 0.80
+    parameters:
+      threshold_percentage: 80
+    message: "You are nearing your limit. Upgrade KYC to increase limit"
+    applies_to: [Customer]
+
+  # ===== RE-VERIFICATION RULES =====
+  - id: BR-KYC-040
+    name: Periodic re-verification
+    description: |
+      Customers must be re-verified periodically:
+      - Low risk: 3 years
+      - Medium risk: 2 years
+      - High risk: 1 year
+    category: compliance
+    severity: warning
+    condition: |
+      CASE customer.risk_rating
+        WHEN 'low' THEN customer.last_kyc_review >= CURRENT_DATE - INTERVAL '3 years'
+        WHEN 'medium' THEN customer.last_kyc_review >= CURRENT_DATE - INTERVAL '2 years'
+        WHEN 'high' THEN customer.last_kyc_review >= CURRENT_DATE - INTERVAL '1 year'
+        WHEN 'critical' THEN customer.last_kyc_review >= CURRENT_DATE - INTERVAL '6 months'
+      END
+    parameters:
+      low_risk_months: 36
+      medium_risk_months: 24
+      high_risk_months: 12
+      critical_risk_months: 6
+    message: "KYC information needs to be re-verified per regulations"
+    applies_to: [Customer]
+
+  - id: BR-KYC-041
+    name: Update on information change
+    description: |
+      When customer changes important information (address, occupation, etc.),
+      risk level must be reassessed.
+    category: compliance
+    severity: info
+    condition: |
+      IF customer.info_changed == TRUE THEN
+        risk_reassessment.performed == TRUE
+      END IF
+    message: "Risk reassessment needed after information update"
+    applies_to: [Customer]
+
+  - id: BR-KYC-042
+    name: Document expiring soon
+    description: |
+      Notify customer when identification document will expire within 90 days.
+      Lock account if not updated after expiration.
+    category: validation
+    severity: warning
+    condition: |
+      id_document.expiry_date <= CURRENT_DATE + INTERVAL '90 days'
+    parameters:
+      warning_days: 90
+    message: "Your document will expire within 90 days. Please update soon"
+    applies_to: [Customer, KYCDocument]
+
+  # ===== FRAUD PREVENTION =====
+  - id: BR-KYC-050
+    name: Fake image detection
+    description: |
+      System must detect and reject edited document images,
+      photocopies, or screenshots.
+    category: validation
+    severity: error
+    condition: |
+      document_analysis.is_authentic == TRUE
+      AND document_analysis.is_photocopy == FALSE
+      AND document_analysis.is_screenshot == FALSE
+    message: "Fake document or non-original detected"
+    applies_to: [KYCDocument]
+
+  - id: BR-KYC-051
+    name: eKYC attempt limit
+    description: |
+      Customer can only attempt eKYC maximum 5 times in 24 hours.
+      After that must wait or perform KYC at branch.
+    category: validation
+    severity: error
+    condition: |
+      ekyc_attempts.count_24h <= 5
+    parameters:
+      max_attempts_24h: 5
+    message: "You have tried too many times. Please visit a branch for verification"
+    applies_to: [Customer]
+
+  - id: BR-KYC-052
+    name: Multiple account detection
+    description: |
+      Alert when detecting multiple accounts with same address, phone number,
+      or registered device.
+    category: validation
+    severity: warning
+    condition: |
+      (COUNT(customers WHERE address = :address) > 3)
+      OR (COUNT(customers WHERE phone = :phone) > 1)
+      OR (COUNT(customers WHERE device_id = :device_id) > 2)
+    message: "Signs of multiple account creation detected"
+    applies_to: [Customer]

@@ -1,0 +1,473 @@
+# Listing Creation Workflow
+# F5 Framework v2.0 - Real Estate/Listing
+# Complete workflow for creating property listings
+
+workflow:
+  id: listing_creation
+  name: Listing Creation Workflow
+  name_ja: 物件掲載作成ワークフロー
+  name_vi: Quy trình tạo tin đăng
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    End-to-end workflow for creating a new property listing, from
+    property registration through media upload to publication readiness.
+
+  actors:
+    - id: agent
+      name: Real Estate Agent
+      permissions: [create_listing, edit_own_listings, upload_media]
+    - id: owner
+      name: Property Owner
+      permissions: [create_listing, edit_own_properties, upload_media]
+    - id: admin
+      name: Platform Admin
+      permissions: [all]
+    - id: system
+      name: Automated System
+      permissions: [process, validate, notify]
+
+  triggers:
+    - type: user_action
+      action: start_listing
+      actors: [agent, owner]
+    - type: api_call
+      endpoint: POST /api/listings/create
+
+  # Workflow States
+  states:
+    - id: initiated
+      name: Initiated
+      type: start
+
+    - id: property_selection
+      name: Property Selection
+      description: Select existing property or create new
+
+    - id: property_creation
+      name: Property Creation
+      description: Create new property record
+
+    - id: listing_details
+      name: Listing Details
+      description: Enter listing information
+
+    - id: media_upload
+      name: Media Upload
+      description: Upload photos and media
+
+    - id: preview_review
+      name: Preview & Review
+      description: Review listing before saving
+
+    - id: draft_saved
+      name: Draft Saved
+      description: Listing saved as draft
+
+    - id: validation_pending
+      name: Validation Pending
+      description: System validating listing
+
+    - id: ready_for_publication
+      name: Ready for Publication
+      description: Can be published
+
+    - id: completed
+      name: Completed
+      type: end
+
+    - id: cancelled
+      name: Cancelled
+      type: end
+
+  # Workflow Steps
+  steps:
+    - id: step_1
+      name: Initiate Listing
+      state: initiated
+      actor: [agent, owner]
+      actions:
+        - action: verify_user_permissions
+          system: true
+        - action: check_listing_quota
+          system: true
+      ui:
+        screen: listing_wizard_start
+        components: [listing_type_selector, property_type_selector]
+      transitions:
+        - to: property_selection
+          condition: user_has_quota
+        - to: cancelled
+          condition: quota_exceeded
+          message: "Listing quota exceeded. Upgrade subscription."
+
+    - id: step_2
+      name: Select or Create Property
+      state: property_selection
+      actor: [agent, owner]
+      actions:
+        - action: search_existing_properties
+          description: Search user's existing properties
+        - action: select_property
+          description: Choose existing property
+        - action: create_new_property
+          description: Start new property creation
+      ui:
+        screen: property_selection
+        components:
+          - property_search_box
+          - property_list
+          - create_new_button
+      transitions:
+        - to: listing_details
+          condition: property_selected
+          action: load_property_data
+        - to: property_creation
+          condition: create_new_selected
+
+    - id: step_3
+      name: Create Property
+      state: property_creation
+      actor: [agent, owner]
+      substeps:
+        - id: step_3a
+          name: Basic Information
+          fields:
+            - property_type_id (required)
+            - property_category (required)
+            - property_subtype
+          validation:
+            - rule: property_type_valid
+
+        - id: step_3b
+          name: Location
+          fields:
+            - address.street_number
+            - address.street_name
+            - address.ward (required)
+            - address.district (required)
+            - address.city (required)
+            - full_address (auto-generated)
+            - latitude (auto-geocoded)
+            - longitude (auto-geocoded)
+          validation:
+            - rule: address_geocodable
+          actions:
+            - action: geocode_address
+              system: true
+
+        - id: step_3c
+          name: Specifications
+          fields:
+            - total_area_sqm (required)
+            - usable_area_sqm
+            - land_area_sqm
+            - frontage_meters
+            - floors
+            - floor_number
+            - bedrooms
+            - bathrooms
+            - direction
+            - year_built
+          validation:
+            - rule: specs_match_property_type
+
+        - id: step_3d
+          name: Features
+          fields:
+            - amenities (multi-select)
+            - interior_status
+            - parking_spaces
+            - parking_type
+            - view
+          ui:
+            component: amenities_checklist
+
+        - id: step_3e
+          name: Legal Information
+          fields:
+            - ownership_type
+            - legal_status
+            - land_use_rights_expiry
+            - zoning
+          validation:
+            - rule: legal_info_complete
+
+      ui:
+        screen: property_creation_wizard
+        layout: multi_step_form
+        progress_indicator: true
+      transitions:
+        - to: listing_details
+          condition: property_saved
+          action: create_property_record
+
+    - id: step_4
+      name: Enter Listing Details
+      state: listing_details
+      actor: [agent, owner]
+      substeps:
+        - id: step_4a
+          name: Listing Type & Price
+          fields:
+            - listing_type (required)
+            - asking_price (required unless hidden)
+            - price_currency
+            - price_negotiable
+            - price_display
+            - rent_period (if rental)
+            - deposit_months (if rental)
+            - minimum_lease_months (if rental)
+          validation:
+            - rule: price_sanity_check
+            - rule: rental_fields_if_rent
+
+        - id: step_4b
+          name: Listing Content
+          fields:
+            - title (required, min 10 chars)
+            - headline
+            - description (required, min 50 chars)
+            - highlights (array)
+            - tags
+          validation:
+            - rule: content_quality_check
+            - rule: fair_housing_compliance
+          actions:
+            - action: auto_generate_description
+              optional: true
+              ai_assisted: true
+
+        - id: step_4c
+          name: Availability
+          fields:
+            - available_from
+            - move_in_ready
+            - listing_duration_days
+            - auto_renew
+          defaults:
+            listing_duration_days: 30
+            move_in_ready: true
+
+        - id: step_4d
+          name: Visibility Settings
+          fields:
+            - visibility (public/private/unlisted)
+            - hide_address
+            - featured (if eligible)
+            - premium (if eligible)
+          validation:
+            - rule: feature_eligibility
+
+      ui:
+        screen: listing_details_form
+        layout: tabbed_form
+      transitions:
+        - to: media_upload
+          condition: listing_details_complete
+
+    - id: step_5
+      name: Upload Media
+      state: media_upload
+      actor: [agent, owner]
+      requirements:
+        minimum_photos: 5
+        primary_photo: required
+      actions:
+        - action: upload_photos
+          ui: drag_drop_uploader
+          validation:
+            - min_resolution: 800x600
+            - max_file_size: 10MB
+            - allowed_formats: [jpg, png, webp]
+        - action: upload_videos
+          optional: true
+          validation:
+            - max_duration: 300
+            - max_file_size: 50MB
+        - action: add_virtual_tour
+          optional: true
+        - action: upload_floor_plan
+          optional: true
+        - action: set_primary_photo
+          required: true
+        - action: arrange_photo_order
+          ui: drag_to_reorder
+      system_actions:
+        - action: process_media
+          async: true
+          steps:
+            - generate_thumbnails
+            - extract_exif
+            - quality_assessment
+            - auto_moderation
+            - cdn_upload
+            - classify_room_type
+      ui:
+        screen: media_upload_screen
+        components:
+          - photo_uploader
+          - video_uploader
+          - virtual_tour_embed
+          - media_gallery
+          - reorder_interface
+      transitions:
+        - to: preview_review
+          condition: minimum_photos_uploaded
+        - to: listing_details
+          condition: back_button
+          preserve_uploads: true
+
+    - id: step_6
+      name: Preview & Review
+      state: preview_review
+      actor: [agent, owner]
+      actions:
+        - action: generate_preview
+          system: true
+        - action: validate_listing
+          system: true
+        - action: check_quality_score
+          system: true
+      ui:
+        screen: listing_preview
+        components:
+          - listing_card_preview
+          - listing_detail_preview
+          - quality_score_display
+          - validation_checklist
+          - edit_buttons
+      validation_display:
+        - photos_count: "✓ {count} photos uploaded"
+        - description_quality: "✓ Description quality: Good"
+        - price_competitive: "✓ Price within market range"
+        - completeness: "✓ All required fields complete"
+      transitions:
+        - to: draft_saved
+          condition: save_as_draft
+        - to: validation_pending
+          condition: proceed_to_validate
+        - to: listing_details
+          condition: edit_details
+        - to: media_upload
+          condition: edit_media
+
+    - id: step_7
+      name: System Validation
+      state: validation_pending
+      actor: system
+      actions:
+        - action: run_all_validations
+          validations:
+            - listing_rules
+            - pricing_rules
+            - media_rules
+            - fair_housing_check
+            - duplicate_check
+        - action: calculate_quality_score
+        - action: assess_publication_readiness
+      auto_transition: true
+      transitions:
+        - to: ready_for_publication
+          condition: all_validations_passed
+        - to: preview_review
+          condition: validation_failed
+          action: show_validation_errors
+
+    - id: step_8
+      name: Ready for Publication
+      state: ready_for_publication
+      actor: [agent, owner]
+      actions:
+        - action: review_final_checklist
+        - action: confirm_terms
+          required: true
+      ui:
+        screen: publication_ready
+        components:
+          - final_checklist
+          - terms_acceptance
+          - publish_button
+          - schedule_publish_option
+      transitions:
+        - to: completed
+          condition: save_draft
+          action: save_listing_draft
+        - to: completed
+          condition: publish_now
+          action: trigger_publication_workflow
+        - to: completed
+          condition: schedule_publish
+          action: schedule_publication
+
+    - id: step_9
+      name: Completion
+      state: completed
+      actor: system
+      actions:
+        - action: send_confirmation
+        - action: update_metrics
+        - action: log_completion
+
+  # Error Handling
+  error_handling:
+    - error: upload_failed
+      action: retry_with_exponential_backoff
+      max_retries: 3
+      fallback: save_partial_progress
+
+    - error: geocoding_failed
+      action: allow_manual_entry
+      flag_for_review: true
+
+    - error: validation_error
+      action: show_specific_errors
+      allow_correction: true
+
+    - error: session_timeout
+      action: auto_save_draft
+      notification: session_timeout_notice
+
+  # Auto-save
+  auto_save:
+    enabled: true
+    interval_seconds: 30
+    fields: all
+    notification: silent
+
+  # Progress Tracking
+  progress:
+    save_progress: true
+    resume_enabled: true
+    expiry_days: 30
+
+  # Notifications
+  notifications:
+    - event: draft_saved
+      channel: [email, push]
+      template: listing_draft_saved
+    - event: ready_for_publication
+      channel: [email, push]
+      template: listing_ready_to_publish
+    - event: validation_failed
+      channel: [email]
+      template: listing_validation_issues
+
+  # Analytics
+  analytics:
+    track_events:
+      - step_started
+      - step_completed
+      - step_abandoned
+      - field_interaction
+      - time_per_step
+      - completion_rate
+      - error_occurrences
+
+  # Performance
+  performance:
+    target_completion_time: 15 minutes
+    optimize_for: mobile
+    lazy_load: media_gallery

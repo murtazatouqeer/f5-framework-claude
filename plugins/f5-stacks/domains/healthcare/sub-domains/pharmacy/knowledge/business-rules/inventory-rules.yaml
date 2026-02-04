@@ -1,0 +1,470 @@
+# Inventory Rules
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Drug inventory management business rules
+
+business_rules:
+  id: inventory-rules
+  name: Inventory Management Rules
+  name_ja: 在庫管理ルール
+  description: Rules for pharmacy drug inventory management
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  categories:
+    - id: stock_management
+      name: Stock Level Management
+      description: Par levels and reorder rules
+      
+    - id: expiration
+      name: Expiration Management
+      description: Expiration date tracking and removal
+      
+    - id: receiving
+      name: Receiving Process
+      description: Order receiving and verification
+      
+    - id: returns
+      name: Returns Processing
+      description: Return to wholesaler rules
+      
+    - id: storage
+      name: Storage Requirements
+      description: Drug storage and handling
+      
+    - id: waste
+      name: Waste Management
+      description: Expired/damaged product disposal
+
+  rules:
+    # Stock Level Management
+    - id: BR-INV-001
+      name: Par Level Maintenance
+      category: stock_management
+      severity: high
+      
+      description: Maintain inventory between par and max levels
+      
+      par_level_calculation:
+        factors:
+          - Average daily usage (last 90 days)
+          - Lead time from wholesaler
+          - Safety stock buffer
+          - Seasonal variations
+          
+        formula: |
+          par_level = (avg_daily_usage * lead_time_days) + safety_stock
+          
+      condition: |
+        quantity_on_hand >= par_level
+        
+      action: |
+        IF below par:
+          TRIGGER reorder
+          CALCULATE order quantity to max level
+          
+    - id: BR-INV-002
+      name: Automatic Reorder Generation
+      category: stock_management
+      severity: medium
+      
+      description: Generate automatic purchase orders
+      
+      reorder_triggers:
+        - Quantity falls below par
+        - Anticipated demand (scheduled refills)
+        - Manual request
+        
+      order_quantity: |
+        order_qty = max_level - quantity_on_hand - quantity_on_order
+        
+      wholesaler_selection:
+        primary: "Default wholesaler"
+        secondary: "If primary out of stock"
+        contract: "Consider contract pricing"
+        
+      action: |
+        GENERATE purchase order
+        SELECT wholesaler
+        SUBMIT order electronically
+        
+    - id: BR-INV-003
+      name: Slow Mover Identification
+      category: stock_management
+      severity: low
+      
+      description: Identify and manage slow-moving inventory
+      
+      slow_mover_criteria:
+        no_dispense_days: 90
+        turns_per_year: "< 2"
+        
+      condition: |
+        last_dispensed_date < (current_date - 90 days) OR
+        inventory_turns < 2
+        
+      action: |
+        FLAG as slow mover
+        REVIEW for return eligibility
+        CONSIDER reducing par level
+        EVALUATE discontinuation
+        
+    - id: BR-INV-004
+      name: Zero Balance Prevention
+      category: stock_management
+      severity: high
+      
+      description: Prevent stock-outs of critical medications
+      
+      critical_medications:
+        - Controlled substances
+        - Maintenance medications
+        - Emergency medications
+        - High-volume items
+        
+      condition: |
+        critical_item.quantity_on_hand > safety_stock
+        
+      action: |
+        IF approaching zero:
+          URGENT reorder
+          CHECK alternative suppliers
+          NOTIFY pharmacy manager
+
+    # Expiration Management
+    - id: BR-INV-005
+      name: Expiration Date Tracking
+      category: expiration
+      severity: high
+      
+      description: Track and manage expiration dates
+      
+      tracking_requirements:
+        - Record expiration at receipt
+        - FIFO (First In First Out) dispensing
+        - Regular expiration audits
+        
+      alert_thresholds:
+        90_days: "Return if eligible"
+        60_days: "Review for return/use"
+        30_days: "Priority dispensing"
+        expired: "Remove from inventory"
+        
+      condition: |
+        expiration_date > current_date
+        
+      action: |
+        GENERATE expiration reports
+        PRIORITIZE short-dated products
+        INITIATE returns for eligible items
+        
+    - id: BR-INV-006
+      name: Expired Product Removal
+      category: expiration
+      severity: critical
+      
+      description: Remove expired products from dispensing inventory
+      
+      condition: |
+        expiration_date < current_date
+        
+      action: |
+        QUARANTINE expired product
+        REMOVE from active inventory
+        DOCUMENT removal
+        DISPOSE per regulations (controlled vs non-controlled)
+        
+    - id: BR-INV-007
+      name: Short-Dated Product Handling
+      category: expiration
+      severity: medium
+      
+      description: Manage products approaching expiration
+      
+      short_dated_window: "90 days before expiration"
+      
+      options:
+        returnable:
+          action: "Process return to wholesaler"
+          condition: "Within return window, unopened"
+        dispensable:
+          action: "Prioritize for dispensing"
+          condition: "Will be dispensed before expiration"
+        donation:
+          action: "Consider donation program"
+          condition: "Non-controlled, sufficient dating"
+          
+      action: |
+        IDENTIFY short-dated inventory
+        EVALUATE best option
+        PROCESS accordingly
+
+    # Receiving Process
+    - id: BR-INV-008
+      name: Order Receiving Verification
+      category: receiving
+      severity: high
+      
+      description: Verify received orders against purchase orders
+      
+      verification_steps:
+        1: Match to purchase order
+        2: Verify quantities received
+        3: Check expiration dates acceptable
+        4: Inspect for damage
+        5: Verify pricing
+        6: Check lot numbers
+        
+      condition: |
+        received_items MATCH purchase_order AND
+        expiration_dates ACCEPTABLE AND
+        no_damage
+        
+      action: |
+        VERIFY each item
+        DOCUMENT discrepancies
+        CONTACT wholesaler for issues
+        UPDATE inventory
+        
+    - id: BR-INV-009
+      name: Controlled Substance Receiving
+      category: receiving
+      severity: critical
+      
+      description: Special handling for controlled substance receipts
+      
+      additional_requirements:
+        schedule_II:
+          - Match to DEA Form 222 or CSOS order
+          - Verify quantities exactly
+          - Update perpetual inventory immediately
+          - Two-person verification recommended
+        schedule_III_V:
+          - Match to invoice
+          - Update perpetual inventory
+          
+      condition: |
+        dea_schedule IN ['II', 'III', 'IV', 'V']
+        
+      action: |
+        VERIFY against order
+        UPDATE controlled substance log
+        STORE in secure location
+        FILE documentation
+        
+    - id: BR-INV-010
+      name: Refrigerated Product Receiving
+      category: receiving
+      severity: high
+      
+      description: Verify cold chain for refrigerated items
+      
+      verification:
+        - Check temperature indicator if present
+        - Verify packaging integrity
+        - Measure current temperature
+        - Store immediately
+        
+      temperature_limits:
+        refrigerated: "2-8°C (36-46°F)"
+        frozen: "-25 to -10°C"
+        
+      condition: |
+        cold_chain_maintained == true AND
+        temperature_within_range
+        
+      action: |
+        IF cold chain compromised:
+          QUARANTINE product
+          CONTACT manufacturer
+          DO NOT dispense
+
+    # Returns Processing
+    - id: BR-INV-011
+      name: Return Eligibility Determination
+      category: returns
+      severity: medium
+      
+      description: Determine eligibility for return to wholesaler
+      
+      general_criteria:
+        - Unopened original packaging
+        - Within return window (typically 6-12 months)
+        - Not recalled
+        - Proper documentation
+        
+      non_returnable:
+        - Opened packages
+        - Refrigerated after removal
+        - Past return window
+        - Recalled products (separate process)
+        - Controlled substances (special handling)
+        
+      action: |
+        EVALUATE return eligibility
+        PROCESS eligible returns
+        WRITE OFF non-returnable items
+        
+    - id: BR-INV-012
+      name: Controlled Substance Returns
+      category: returns
+      severity: critical
+      
+      description: Special handling for controlled substance returns
+      
+      return_options:
+        reverse_distributor:
+          description: "DEA-registered reverse distributor"
+          required_for: "All controlled substance returns"
+        witnessed_destruction:
+          description: "On-site destruction with witnesses"
+          required_for: "Small quantities, expired"
+          
+      documentation:
+        - DEA Form 41 (destruction)
+        - Reverse distributor manifest
+        - Witness signatures
+        
+      action: |
+        USE registered reverse distributor
+        MAINTAIN chain of custody
+        DOCUMENT completely
+        UPDATE perpetual inventory
+
+    # Storage Requirements
+    - id: BR-INV-013
+      name: Temperature Storage Compliance
+      category: storage
+      severity: high
+      
+      description: Store drugs at proper temperatures
+      
+      storage_areas:
+        room_temperature:
+          range: "20-25°C (68-77°F)"
+          excursions: "15-30°C permitted"
+        controlled_room_temp:
+          range: "20-25°C (68-77°F)"
+          monitoring: "Daily logging required"
+        refrigerated:
+          range: "2-8°C (36-46°F)"
+          monitoring: "Continuous monitoring"
+        frozen:
+          range: "-25 to -10°C"
+          monitoring: "Continuous monitoring"
+          
+      condition: |
+        storage_temperature WITHIN required_range
+        
+      action: |
+        MONITOR temperatures
+        LOG daily readings
+        ALERT on excursions
+        QUARANTINE affected product
+        
+    - id: BR-INV-014
+      name: Controlled Substance Storage
+      category: storage
+      severity: critical
+      
+      description: Secure storage for controlled substances
+      
+      requirements:
+        location: "Locked cabinet, safe, or vault"
+        access: "Limited to authorized personnel"
+        keys: "Pharmacist maintains keys"
+        cameras: "Recommended"
+        
+      condition: |
+        controlled_substances IN locked_storage
+        
+      action: |
+        STORE in secure location
+        LIMIT access
+        DOCUMENT access
+
+    # Waste Management
+    - id: BR-INV-015
+      name: Non-Controlled Waste Disposal
+      category: waste
+      severity: medium
+      
+      description: Proper disposal of expired/damaged non-controlled drugs
+      
+      disposal_methods:
+        general_waste:
+          suitable_for: "Non-hazardous, non-controlled"
+          method: "Pharmaceutical waste collection"
+        hazardous_waste:
+          suitable_for: "USP <800> hazardous drugs"
+          method: "Hazardous waste disposal company"
+          
+      documentation:
+        - Date of disposal
+        - Drug name, NDC, quantity
+        - Reason for disposal
+        - Method of disposal
+        - Witness if required
+        
+      action: |
+        SEGREGATE waste by type
+        USE appropriate disposal method
+        DOCUMENT all disposals
+        
+    - id: BR-INV-016
+      name: Controlled Substance Destruction
+      category: waste
+      severity: critical
+      
+      description: DEA-compliant controlled substance destruction
+      
+      destruction_methods:
+        reverse_distributor:
+          preferred: true
+          process: "Ship to registered reverse distributor"
+        on_site:
+          allowed: "With proper witnessing"
+          requirements: "Two witnesses, documented"
+          
+      documentation:
+        required:
+          - DEA Form 41 (on-site destruction)
+          - Reverse distributor manifest
+          - Perpetual inventory update
+        retention: "2 years minimum"
+        
+      action: |
+        SELECT destruction method
+        WITNESS destruction
+        COMPLETE documentation
+        UPDATE perpetual inventory
+
+  decision_flow:
+    inventory_replenishment:
+      steps:
+        1: Check current inventory level
+        2: Compare to par level (BR-INV-001)
+        3: Generate order if below par (BR-INV-002)
+        4: Select wholesaler
+        5: Submit order
+        6: Receive and verify (BR-INV-008, BR-INV-009)
+        7: Update inventory
+        
+    expiration_management:
+      steps:
+        1: Run expiration report daily
+        2: Identify short-dated items (BR-INV-005)
+        3: Evaluate return eligibility (BR-INV-011)
+        4: Process returns or prioritize dispensing
+        5: Remove expired items (BR-INV-006)
+        6: Dispose properly (BR-INV-015, BR-INV-016)
+
+  audit:
+    log_all_transactions: true
+    retention_days: 2555
+    required_documentation:
+      - All inventory adjustments
+      - Receiving discrepancies
+      - Returns and disposals
+      - Temperature excursions
+      - Controlled substance transactions

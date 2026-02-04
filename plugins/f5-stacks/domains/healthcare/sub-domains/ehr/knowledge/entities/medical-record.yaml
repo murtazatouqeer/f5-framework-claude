@@ -1,0 +1,515 @@
+name: MedicalRecord
+display_name: Medical Record / Hồ sơ bệnh án
+description: |
+  Electronic medical record document representing clinical documentation,
+  reports, and other healthcare-related documents with versioning,
+  authentication, and access control.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: document
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: record_number
+      display_name: Record Number
+      type: string
+      pattern: "^REC-[0-9]{12}$"
+      auto_generated: true
+
+    - name: document_id
+      display_name: Document ID
+      type: string
+      description: External document identifier
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: draft
+      description: Document in progress, not yet signed
+
+    - value: pending_signature
+      description: Awaiting provider signature
+
+    - value: pending_cosign
+      description: Awaiting co-signature (trainee documents)
+
+    - value: final
+      description: Signed and finalized
+
+    - value: amended
+      description: Modified after finalization
+
+    - value: addended
+      description: Additional information added
+
+    - value: entered_in_error
+      description: Marked as error, retained for audit
+
+  default: draft
+
+state_machine:
+  initial: draft
+  transitions:
+    draft:
+      - to: pending_signature
+        event: submit_for_signature
+      - to: entered_in_error
+        event: mark_error
+
+    pending_signature:
+      - to: final
+        event: sign_document
+        condition: co_signature_not_required
+      - to: pending_cosign
+        event: sign_document
+        condition: co_signature_required
+      - to: draft
+        event: return_to_draft
+
+    pending_cosign:
+      - to: final
+        event: cosign_document
+
+    final:
+      - to: amended
+        event: amend_document
+      - to: addended
+        event: add_addendum
+
+    amended:
+      - to: amended
+        event: amend_document
+      - to: addended
+        event: add_addendum
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  classification:
+    - name: record_type
+      type: enum
+      required: true
+      values:
+        - value: chart
+          description: Patient chart document
+
+        - value: note
+          description: Clinical note
+
+        - value: report
+          description: Clinical report
+
+        - value: summary
+          description: Summary document
+
+        - value: letter
+          description: Correspondence
+
+        - value: form
+          description: Structured form
+
+        - value: consent
+          description: Consent document
+
+        - value: discharge
+          description: Discharge documentation
+
+    - name: category
+      type: enum
+      required: true
+      values:
+        - clinical
+        - administrative
+        - legal
+        - billing
+        - research
+
+    - name: document_class
+      type: enum
+      values:
+        - progress_note
+        - history_and_physical
+        - consultation_note
+        - operative_report
+        - procedure_note
+        - discharge_summary
+        - transfer_summary
+        - referral_letter
+        - death_summary
+        - nursing_note
+        - therapy_note
+        - radiology_report
+        - pathology_report
+        - lab_report
+
+  content:
+    - name: title
+      type: string
+      required: true
+      max_length: 255
+
+    - name: description
+      type: string
+      max_length: 1000
+
+    - name: content_type
+      type: enum
+      values:
+        - text
+        - structured
+        - document
+        - scanned
+
+    - name: content_text
+      type: text
+      description: Free-text content
+
+    - name: content_structured
+      type: json
+      description: Structured content (templates)
+
+    - name: content_format
+      type: enum
+      values: [plain, html, markdown, rtf, cda]
+
+    - name: template_id
+      type: uuid
+      references: DocumentTemplate
+
+    - name: template_name
+      type: string
+
+  clinical_context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: author_id
+      type: uuid
+      required: true
+      references: Provider
+
+    - name: author_name
+      type: string
+
+    - name: author_role
+      type: string
+
+    - name: specialty
+      type: string
+
+    - name: department_id
+      type: uuid
+      references: Department
+
+    - name: facility_id
+      type: uuid
+      references: Facility
+
+    - name: service_date
+      type: date
+      description: Date of service documented
+
+    - name: service_time
+      type: time
+
+  versioning:
+    - name: version
+      type: integer
+      default: 1
+
+    - name: previous_version_id
+      type: uuid
+      references: MedicalRecord
+
+    - name: amendment_reason
+      type: string
+      max_length: 500
+
+    - name: amendment_date
+      type: timestamp
+
+    - name: is_current_version
+      type: boolean
+      default: true
+
+  authentication:
+    - name: created_by
+      type: uuid
+      references: User
+
+    - name: created_at
+      type: timestamp
+      auto_set: on_create
+
+    - name: last_modified_by
+      type: uuid
+      references: User
+
+    - name: last_modified_at
+      type: timestamp
+      auto_set: on_update
+
+    - name: signed_by
+      type: uuid
+      references: Provider
+
+    - name: signed_at
+      type: timestamp
+
+    - name: signature_method
+      type: enum
+      values: [electronic, digital, wet]
+
+    - name: co_signed_by
+      type: uuid
+      references: Provider
+
+    - name: co_signed_at
+      type: timestamp
+
+    - name: co_signature_required
+      type: boolean
+      default: false
+
+    - name: transcribed_by
+      type: uuid
+      references: User
+      description: For dictated documents
+
+    - name: transcribed_at
+      type: timestamp
+
+  access_control:
+    - name: access_level
+      type: enum
+      values:
+        - normal
+        - restricted
+        - highly_restricted
+      default: normal
+
+    - name: break_the_glass_required
+      type: boolean
+      default: false
+
+    - name: sensitive_categories
+      type: array
+      items:
+        type: enum
+        values: [hiv, mental_health, substance_abuse, sti, genetic, abuse, vip]
+
+    - name: restricted_to_providers
+      type: array
+      items:
+        type: uuid
+        references: Provider
+
+    - name: restricted_to_departments
+      type: array
+      items:
+        type: uuid
+        references: Department
+
+  attachments:
+    - name: attachments
+      type: array
+      items:
+        type: object
+        properties:
+          id:
+            type: uuid
+          file_name:
+            type: string
+          file_type:
+            type: string
+          file_size:
+            type: integer
+          storage_url:
+            type: string
+          uploaded_by:
+            type: uuid
+          uploaded_at:
+            type: timestamp
+          description:
+            type: string
+
+    - name: linked_documents
+      type: array
+      items:
+        type: uuid
+        references: MedicalRecord
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: author
+    type: many_to_one
+    target: Provider
+    foreign_key: author_id
+
+  - name: signer
+    type: many_to_one
+    target: Provider
+    foreign_key: signed_by
+
+  - name: co_signer
+    type: many_to_one
+    target: Provider
+    foreign_key: co_signed_by
+
+  - name: previous_version
+    type: many_to_one
+    target: MedicalRecord
+    foreign_key: previous_version_id
+
+  - name: versions
+    type: one_to_many
+    target: MedicalRecord
+    foreign_key: previous_version_id
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-REC-001
+    name: Patient Required
+    description: Every medical record must be linked to a patient
+    rule: patient_id IS NOT NULL
+
+  - id: BR-REC-002
+    name: Author Required
+    description: Every medical record must have an author
+    rule: author_id IS NOT NULL
+
+  - id: BR-REC-003
+    name: Signature Required for Final
+    description: Final documents must be signed
+    rule: |
+      status = 'final' REQUIRES
+        signed_by IS NOT NULL AND
+        signed_at IS NOT NULL
+
+  - id: BR-REC-004
+    name: Co-signature for Trainees
+    description: Trainee documents require co-signature
+    rule: |
+      author.classification IN ('resident', 'fellow', 'intern', 'student')
+      REQUIRES co_signature_required = TRUE
+
+  - id: BR-REC-005
+    name: Amendment Documentation
+    description: Amendments must include reason
+    rule: |
+      status = 'amended' REQUIRES
+        amendment_reason IS NOT NULL AND
+        amendment_reason.length >= 10
+
+  - id: BR-REC-006
+    name: No Delete After Sign
+    description: Signed documents cannot be deleted
+    rule: |
+      status IN ('final', 'amended', 'addended')
+      PREVENTS DELETE
+
+  - id: BR-REC-007
+    name: Version Tracking
+    description: Amendments create new version, link to previous
+    rule: |
+      ON_AMEND:
+        CREATE new_version WITH previous_version_id = current.id
+        SET current.is_current_version = FALSE
+        SET new_version.version = current.version + 1
+
+  - id: BR-REC-008
+    name: Documentation Timeline
+    description: Progress notes must be documented timely
+    rule: |
+      document_class = 'progress_note' REQUIRES
+        created_at <= service_date + INTERVAL '24 hours'
+      WARN IF created_at > service_date + INTERVAL '24 hours'
+
+  - id: BR-REC-009
+    name: Late Entry Marking
+    description: Late entries must be clearly marked
+    rule: |
+      IF created_at > service_date + INTERVAL '24 hours'
+      THEN mark_as_late_entry = TRUE
+
+  - id: BR-REC-010
+    name: Sensitive Access Control
+    description: Sensitive records require additional authorization
+    rule: |
+      IF sensitive_categories IS NOT EMPTY
+      THEN verify_additional_authorization()
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_record_number
+    columns: [record_number]
+    unique: true
+
+  - name: idx_record_patient
+    columns: [patient_id]
+
+  - name: idx_record_encounter
+    columns: [encounter_id]
+
+  - name: idx_record_author
+    columns: [author_id]
+
+  - name: idx_record_status
+    columns: [status]
+
+  - name: idx_record_type
+    columns: [record_type, document_class]
+
+  - name: idx_record_date
+    columns: [service_date]
+
+  - name: idx_record_created
+    columns: [created_at]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  phi_access_logging: true
+  track_all_access: true
+  track_modifications: true
+  immutable_after_sign: true
+  retention_years: 10

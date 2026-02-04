@@ -1,0 +1,598 @@
+name: risk_assessment_workflow
+display_name: Risk Assessment Workflow
+description: |
+  End-to-end workflow for assessing and scoring applicant risk
+  across all underwriting dimensions.
+
+domain: insurance
+subdomain: underwriting
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow_id: WF-UW-001
+trigger:
+  event: underwriting_case_created
+  source: new_business_application
+  conditions:
+    - case_status: pending
+    - application_complete: true
+
+participants:
+  roles:
+    - underwriter
+    - senior_underwriter
+    - medical_officer
+    - financial_underwriter
+    - system
+
+  systems:
+    - underwriting_system
+    - risk_scoring_engine
+    - medical_database
+    - occupation_database
+    - reinsurance_system
+
+stages:
+  - id: RA-001
+    name: Case Receipt and Triage
+    description: Initial receipt and categorization of new case
+    actor: system
+
+    inputs:
+      - application_data
+      - disclosed_information
+      - product_details
+      - sum_insured
+      - applicant_demographics
+
+    activities:
+      - id: RA-001-A
+        name: Extract Application Data
+        type: automated
+        action: Parse application and extract key data fields
+        output: structured_application_data
+
+      - id: RA-001-B
+        name: Calculate Initial Complexity
+        type: automated
+        action: Score case complexity based on triggers
+        rules:
+          simple:
+            conditions:
+              - sum_below_non_medical
+              - no_disclosures
+              - standard_occupation
+            score: 1
+          moderate:
+            conditions:
+              - sum_above_non_medical
+              - minor_disclosures
+              - class_3_occupation
+            score: 2
+          complex:
+            conditions:
+              - sum_above_2B
+              - significant_disclosures
+              - class_4_5_occupation
+            score: 3
+          highly_complex:
+            conditions:
+              - sum_above_5B
+              - serious_medical_history
+              - hazardous_occupation
+            score: 4
+
+      - id: RA-001-C
+        name: Assign to Underwriter
+        type: automated
+        action: Route to appropriate underwriter based on complexity
+        routing:
+          simple: auto_underwriting_queue
+          moderate: underwriter_queue
+          complex: senior_underwriter_queue
+          highly_complex: chief_underwriter_queue
+
+    outputs:
+      - case_id
+      - complexity_score
+      - assigned_underwriter
+
+    sla: 15_minutes
+    next_stage: RA-002
+
+  - id: RA-002
+    name: Disclosure Analysis
+    description: Analyze disclosed information from application
+    actor: underwriter
+
+    inputs:
+      - structured_application_data
+      - health_declaration
+      - lifestyle_questionnaire
+
+    activities:
+      - id: RA-002-A
+        name: Review Health Declaration
+        type: manual
+        action: Review all health-related disclosures
+        checklist:
+          - current_medications
+          - ongoing_treatments
+          - past_surgeries
+          - hospitalizations
+          - chronic_conditions
+          - family_history
+
+      - id: RA-002-B
+        name: Review Lifestyle Disclosures
+        type: manual
+        action: Review lifestyle and activity disclosures
+        checklist:
+          - smoking_status
+          - alcohol_consumption
+          - hazardous_activities
+          - travel_frequency
+          - residence_history
+
+      - id: RA-002-C
+        name: Identify Risk Factors
+        type: manual_assisted
+        action: Map disclosures to standard risk factors
+        output: identified_risk_factors
+
+      - id: RA-002-D
+        name: Flag Inconsistencies
+        type: manual
+        action: Note any inconsistencies or concerns
+        output: inconsistency_flags
+
+    outputs:
+      - analyzed_disclosures
+      - identified_risk_factors
+      - inconsistency_flags
+
+    sla: 2_hours
+    next_stage: RA-003
+
+  - id: RA-003
+    name: Medical Risk Scoring
+    description: Score medical risk based on disclosures and evidence
+    actor: underwriter
+
+    inputs:
+      - identified_risk_factors
+      - medical_evidence
+      - age
+      - gender
+
+    activities:
+      - id: RA-003-A
+        name: Score Current Conditions
+        type: manual_assisted
+        action: Assign scores for each current medical condition
+        scoring:
+          use_table: medical_condition_scores
+          severity_adjustment: true
+          treatment_adjustment: true
+
+      - id: RA-003-B
+        name: Score Medical History
+        type: manual_assisted
+        action: Score past medical events
+        considerations:
+          - time_since_event
+          - recovery_status
+          - current_sequelae
+
+      - id: RA-003-C
+        name: Score Family History
+        type: manual_assisted
+        action: Score hereditary risk factors
+        conditions:
+          - heart_disease
+          - cancer
+          - diabetes
+          - genetic_disorders
+
+      - id: RA-003-D
+        name: Calculate Medical Risk Score
+        type: automated
+        action: Aggregate medical scores with weights
+        formula: |
+          Medical_Score = (Current × 0.50) + (History × 0.30) + (Family × 0.20)
+        output: medical_risk_score
+
+    outputs:
+      - condition_scores
+      - history_scores
+      - family_scores
+      - medical_risk_score
+
+    sla: 1_hour
+    next_stage: RA-004
+
+  - id: RA-004
+    name: Lifestyle Risk Scoring
+    description: Score lifestyle-related risks
+    actor: underwriter
+
+    inputs:
+      - lifestyle_disclosures
+      - hazardous_activities
+      - smoking_alcohol_data
+
+    activities:
+      - id: RA-004-A
+        name: Score Smoking Risk
+        type: automated
+        action: Calculate smoking risk score
+        table:
+          never: 0
+          former_5_plus_years: 5
+          former_1_5_years: 15
+          current_light: 30
+          current_moderate: 40
+          current_heavy: 50
+
+      - id: RA-004-B
+        name: Score Alcohol Risk
+        type: automated
+        action: Calculate alcohol consumption risk
+        table:
+          none_social: 0
+          moderate: 5
+          heavy: 25
+          very_heavy: 50
+
+      - id: RA-004-C
+        name: Score Activity Risk
+        type: manual_assisted
+        action: Score hazardous activities
+        considerations:
+          - frequency
+          - risk_level
+          - safety_measures
+
+      - id: RA-004-D
+        name: Calculate Lifestyle Score
+        type: automated
+        action: Aggregate lifestyle scores
+        formula: |
+          Lifestyle_Score = MAX(Smoking, Alcohol) + Activity_Score
+          (capped at 100)
+        output: lifestyle_risk_score
+
+    outputs:
+      - smoking_score
+      - alcohol_score
+      - activity_score
+      - lifestyle_risk_score
+
+    sla: 30_minutes
+    next_stage: RA-005
+
+  - id: RA-005
+    name: Occupation Risk Scoring
+    description: Score occupation-related risks
+    actor: underwriter
+
+    inputs:
+      - occupation_details
+      - employer_information
+      - work_environment
+
+    activities:
+      - id: RA-005-A
+        name: Classify Occupation
+        type: manual_assisted
+        action: Assign occupation class
+        lookup: occupation_classification_database
+        output: occupation_class
+
+      - id: RA-005-B
+        name: Assess Work Environment
+        type: manual
+        action: Evaluate specific work hazards
+        factors:
+          - physical_demands
+          - hazard_exposure
+          - travel_requirements
+          - work_location
+
+      - id: RA-005-C
+        name: Calculate Occupation Score
+        type: automated
+        action: Calculate occupation risk score
+        formula: |
+          Occupation_Score = Class_Base_Score + Environment_Modifier
+        output: occupation_risk_score
+
+    outputs:
+      - occupation_class
+      - environment_assessment
+      - occupation_risk_score
+
+    sla: 30_minutes
+    next_stage: RA-006
+
+  - id: RA-006
+    name: Financial Risk Scoring
+    description: Score financial underwriting risks
+    actor: financial_underwriter
+
+    inputs:
+      - income_documentation
+      - asset_declarations
+      - sum_insured_requested
+      - coverage_purpose
+
+    activities:
+      - id: RA-006-A
+        name: Verify Income
+        type: manual
+        action: Validate declared income
+        sources:
+          - salary_slips
+          - tax_returns
+          - bank_statements
+
+      - id: RA-006-B
+        name: Calculate Income Multiple
+        type: automated
+        action: Calculate sum as multiple of income
+        formula: |
+          Income_Multiple = Sum_Insured / Annual_Income
+        comparison: income_multiple_guidelines
+
+      - id: RA-006-C
+        name: Assess Justification
+        type: manual
+        action: Evaluate financial justification for coverage
+        considerations:
+          - family_obligations
+          - debt_coverage
+          - business_needs
+          - estate_planning
+
+      - id: RA-006-D
+        name: Calculate Financial Score
+        type: automated
+        action: Generate financial risk score
+        factors:
+          - income_multiple_reasonableness
+          - asset_verification
+          - justification_adequacy
+        output: financial_risk_score
+
+    outputs:
+      - verified_income
+      - income_multiple
+      - justification_assessment
+      - financial_risk_score
+
+    sla: 1_hour
+    conditions:
+      required_when:
+        - sum_above_threshold
+        - business_coverage
+        - keyman_insurance
+    next_stage: RA-007
+
+  - id: RA-007
+    name: Aggregate Risk Calculation
+    description: Combine all risk scores into final risk assessment
+    actor: system
+
+    inputs:
+      - medical_risk_score
+      - lifestyle_risk_score
+      - occupation_risk_score
+      - financial_risk_score
+      - geographic_risk_score
+
+    activities:
+      - id: RA-007-A
+        name: Apply Category Weights
+        type: automated
+        action: Weight category scores
+        weights:
+          medical: 0.40
+          lifestyle: 0.20
+          occupation: 0.15
+          financial: 0.10
+          family_history: 0.10
+          geographic: 0.05
+
+      - id: RA-007-B
+        name: Calculate Base Score
+        type: automated
+        action: Calculate weighted aggregate score
+        formula: |
+          Base_Score = Σ(Category_Score × Weight)
+
+      - id: RA-007-C
+        name: Apply Interaction Effects
+        type: automated
+        action: Apply synergistic/offsetting adjustments
+        synergistic:
+          - diabetes_hypertension: +10
+          - smoking_cardiovascular: +15
+        offsetting:
+          - exercise_obesity: -5
+          - nonsmoker_family_history: -5
+
+      - id: RA-007-D
+        name: Apply Age Adjustment
+        type: automated
+        action: Adjust for age
+        adjustments:
+          18_35: -5
+          36_50: 0
+          51_60: +5
+          61_65: +10
+          66_plus: +15
+
+      - id: RA-007-E
+        name: Determine Classification
+        type: automated
+        action: Map final score to risk classification
+        thresholds:
+          preferred: 0_10
+          standard: 11_30
+          substandard_1: 31_45
+          substandard_2: 46_60
+          substandard_3: 61_75
+          substandard_4: 76_85
+          decline: 86_100
+
+    outputs:
+      - weighted_scores
+      - adjustments_applied
+      - final_risk_score
+      - risk_classification
+
+    sla: 5_minutes
+    next_stage: RA-008
+
+  - id: RA-008
+    name: Risk Assessment Review
+    description: Review and validate risk assessment results
+    actor: underwriter
+
+    inputs:
+      - risk_assessment_results
+      - classification
+      - score_breakdown
+
+    activities:
+      - id: RA-008-A
+        name: Review Score Breakdown
+        type: manual
+        action: Review each category contribution
+        validation:
+          - scoring_accuracy
+          - factor_completeness
+          - interaction_appropriateness
+
+      - id: RA-008-B
+        name: Validate Classification
+        type: manual
+        action: Confirm classification is appropriate
+        considerations:
+          - score_boundary_cases
+          - unusual_combinations
+          - overall_risk_picture
+
+      - id: RA-008-C
+        name: Document Rationale
+        type: manual
+        action: Document assessment rationale
+        includes:
+          - key_risk_drivers
+          - mitigating_factors
+          - concerns_noted
+
+      - id: RA-008-D
+        name: Approve or Escalate
+        type: decision
+        options:
+          approve:
+            condition: within_authority
+            next: RA-009
+          escalate:
+            condition: exceeds_authority
+            next: escalation_workflow
+          request_info:
+            condition: information_gaps
+            next: RA-002
+
+    outputs:
+      - validated_assessment
+      - assessment_rationale
+      - approval_status
+
+    sla: 1_hour
+    next_stage: RA-009
+
+  - id: RA-009
+    name: Finalize Risk Assessment
+    description: Complete and record final risk assessment
+    actor: system
+
+    inputs:
+      - validated_assessment
+      - approval
+
+    activities:
+      - id: RA-009-A
+        name: Lock Assessment
+        type: automated
+        action: Lock assessment record
+        creates: immutable_assessment_record
+
+      - id: RA-009-B
+        name: Generate Assessment Report
+        type: automated
+        action: Create formal assessment document
+        includes:
+          - applicant_summary
+          - risk_factors_identified
+          - score_breakdown
+          - classification_result
+          - underwriter_comments
+
+      - id: RA-009-C
+        name: Update Case Status
+        type: automated
+        action: Update underwriting case
+        sets:
+          - assessment_complete: true
+          - risk_classification: determined_value
+          - ready_for_decision: true
+
+      - id: RA-009-D
+        name: Trigger Next Workflow
+        type: automated
+        action: Initiate decision workflow
+        triggers: decision_workflow
+
+    outputs:
+      - assessment_record
+      - assessment_report
+      - case_status_update
+
+    sla: 15_minutes
+    next_stage: complete
+
+completion_criteria:
+  - risk_score_calculated: true
+  - classification_assigned: true
+  - assessment_approved: true
+  - documentation_complete: true
+
+exception_handling:
+  missing_information:
+    action: pause_workflow
+    notification: underwriter
+    resume_condition: information_received
+
+  system_error:
+    action: flag_for_manual
+    notification: system_admin
+    fallback: manual_calculation
+
+  escalation_required:
+    action: route_to_senior
+    sla: 4_hours
+
+metrics:
+  - average_completion_time
+  - scores_by_classification
+  - escalation_rate
+  - accuracy_vs_claims
+
+version_history:
+  - version: "1.0.0"
+    date: "2024-01-15"
+    changes: Initial release

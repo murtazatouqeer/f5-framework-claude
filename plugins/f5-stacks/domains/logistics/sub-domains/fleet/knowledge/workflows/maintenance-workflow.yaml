@@ -1,0 +1,454 @@
+name: MaintenanceWorkflow
+display_name: Maintenance Workflow
+description: |
+  End-to-end workflow for vehicle maintenance management.
+  Covers scheduling, execution, and documentation of maintenance.
+
+domain: logistics
+subdomain: fleet
+category: workflows
+version: "1.0.0"
+
+trigger:
+  events:
+    - schedule.maintenance_due
+    - inspection.defect_found
+    - vehicle.breakdown
+    - manual.create_maintenance
+  schedule:
+    cron: "0 6 * * *"  # Daily check at 6 AM
+    check: vehicles_due_for_service
+
+actors:
+  - name: Fleet Manager
+    role: approver
+    responsibilities:
+      - Approve maintenance requests
+      - Manage budget
+      - Vendor selection
+  - name: Maintenance Coordinator
+    role: primary
+    responsibilities:
+      - Schedule maintenance
+      - Assign work orders
+      - Track progress
+  - name: Mechanic
+    role: executor
+    responsibilities:
+      - Perform maintenance
+      - Document work
+      - Report issues
+  - name: Driver
+    role: reporter
+    responsibilities:
+      - Report issues
+      - Drop off/pick up vehicle
+  - name: System
+    role: automated
+    responsibilities:
+      - Track schedules
+      - Generate alerts
+      - Update records
+
+inputs:
+  - name: vehicle
+    type: entity
+    entity: Vehicle
+    required: true
+  - name: maintenance_type
+    type: enum
+    values: [preventive, corrective, inspection, recall, emergency]
+    required: true
+  - name: trigger_source
+    type: enum
+    values: [schedule, inspection, breakdown, manual]
+    required: true
+  - name: defects
+    type: array
+    required: false
+
+outputs:
+  - name: maintenance_record
+    type: entity
+    entity: MaintenanceRecord
+  - name: updated_vehicle
+    type: entity
+    entity: Vehicle
+  - name: invoice
+    type: document
+
+steps:
+  - id: create_work_order
+    name: Create Work Order
+    type: automated
+    description: Initialize maintenance work order
+    actions:
+      - create MaintenanceRecord entity
+      - set maintenance_type
+      - set priority based on trigger
+      - link defects if from inspection
+      - calculate estimated_cost
+    priority_rules:
+      emergency: immediate
+      defect_critical: within_24h
+      defect_major: within_7d
+      preventive: schedule_optimal
+    outputs:
+      - work_order
+    next: determine_service_location
+
+  - id: determine_service_location
+    name: Determine Service Location
+    type: decision
+    description: Decide where to perform maintenance
+    conditions:
+      - IF warranty_covered AND dealer_required: external_dealer
+      - IF maintenance.category IN [engine, transmission]: prefer_dealer
+      - IF in_house_capable AND cost_effective: in_house
+      - ELSE: external_shop
+    business_rules:
+      - BR-MN-008  # Preferred Vendor Usage
+    next:
+      in_house: schedule_in_house
+      external_dealer: schedule_external
+      external_shop: schedule_external
+
+  - id: check_approval_required
+    name: Check Approval Requirements
+    type: automated
+    description: Determine if approval needed
+    conditions:
+      - IF estimated_cost > 500: require_approval
+      - IF maintenance_type == 'emergency': notify_only
+      - ELSE: auto_approve
+    business_rules:
+      - BR-MN-004  # Standard Maintenance Approval
+      - BR-MN-005  # Supervisor Approval
+      - BR-MN-006  # Manager Approval
+      - BR-MN-007  # Emergency Bypass
+    next:
+      require_approval: request_approval
+      notify_only: notify_and_proceed
+      auto_approve: schedule_in_house
+
+  - id: request_approval
+    name: Request Approval
+    type: manual
+    actor: Fleet Manager
+    description: Manager reviews and approves maintenance
+    ui_screen: maintenance_approval
+    actions:
+      - display work order details
+      - show cost estimate
+      - show vehicle history
+      - show budget status
+    decision_points:
+      - approve: Approve as is
+      - approve_modified: Approve with modifications
+      - reject: Reject request
+      - defer: Defer to later date
+    timeout: 24h
+    escalation:
+      - after: 4h
+        notify: fleet_director
+      - after: 24h
+        auto_action: escalate_to_director
+    next:
+      approve: schedule_in_house
+      approve_modified: update_work_order
+      reject: close_rejected
+      defer: defer_maintenance
+
+  - id: notify_and_proceed
+    name: Notify and Proceed
+    type: automated
+    description: Notify manager of emergency maintenance
+    actions:
+      - send notification to fleet_manager
+      - log emergency authorization
+      - proceed with scheduling
+    notifications:
+      - to: fleet_manager
+        template: emergency_maintenance_notification
+        channel: [sms, email]
+    next: schedule_in_house
+
+  - id: update_work_order
+    name: Update Work Order
+    type: automated
+    description: Update work order with modifications
+    actions:
+      - apply modifications from approval
+      - recalculate estimates
+      - update work scope
+    next: determine_service_location
+
+  - id: schedule_in_house
+    name: Schedule In-House Maintenance
+    type: manual
+    actor: Maintenance Coordinator
+    description: Schedule work with in-house team
+    ui_screen: maintenance_scheduling
+    actions:
+      - check mechanic availability
+      - check parts availability
+      - select optimal time slot
+      - assign mechanic
+      - create appointment
+    considerations:
+      - minimize_vehicle_downtime
+      - group_related_work
+      - parts_availability
+    outputs:
+      - scheduled_appointment
+    next: notify_parties
+
+  - id: schedule_external
+    name: Schedule External Service
+    type: manual
+    actor: Maintenance Coordinator
+    description: Schedule with external vendor
+    ui_screen: vendor_scheduling
+    actions:
+      - select vendor from approved list
+      - request appointment
+      - get cost estimate
+      - confirm appointment
+    business_rules:
+      - BR-MN-009  # External Vendor Cost Threshold
+    outputs:
+      - vendor_appointment
+    next: check_approval_required
+
+  - id: notify_parties
+    name: Notify Relevant Parties
+    type: automated
+    description: Send notifications about scheduled maintenance
+    actions:
+      - notify driver of vehicle unavailability
+      - notify dispatcher to adjust planning
+      - add to maintenance calendar
+    notifications:
+      - to: driver
+        template: vehicle_maintenance_scheduled
+        channel: [mobile_app]
+      - to: dispatcher
+        template: vehicle_unavailable
+        channel: [dashboard]
+    next: prepare_for_service
+
+  - id: prepare_for_service
+    name: Prepare for Service
+    type: parallel
+    description: Preparation activities
+    parallel_tasks:
+      - id: order_parts
+        name: Order Required Parts
+        type: automated
+        condition: parts_needed
+        actions:
+          - check inventory for required parts
+          - create purchase order if needed
+          - track delivery
+      - id: prepare_vehicle
+        name: Prepare Vehicle
+        type: manual
+        actor: Driver
+        actions:
+          - remove personal items
+          - bring to service location
+          - hand over keys
+    next: perform_maintenance
+
+  - id: perform_maintenance
+    name: Perform Maintenance
+    type: manual
+    actor: Mechanic
+    description: Execute maintenance work
+    ui_screen: maintenance_execution
+    actions:
+      - check in vehicle
+      - follow work order instructions
+      - replace parts as specified
+      - document work performed
+      - record time spent
+      - capture photos if needed
+    documentation:
+      required:
+        - work_performed
+        - parts_used
+        - labor_hours
+      optional:
+        - photos
+        - additional_findings
+    next: quality_check
+
+  - id: quality_check
+    name: Quality Check
+    type: manual
+    actor: Mechanic
+    description: Verify work quality
+    ui_screen: maintenance_qa
+    actions:
+      - inspect completed work
+      - test repaired systems
+      - verify no new issues introduced
+      - document QA results
+    checks:
+      - all_items_completed
+      - proper_installation
+      - no_leaks
+      - functional_test_passed
+    next:
+      passed: document_completion
+      failed: rework_required
+
+  - id: rework_required
+    name: Rework Required
+    type: automated
+    description: Handle QA failure
+    actions:
+      - document failure reason
+      - reassign to mechanic
+      - adjust timeline
+    next: perform_maintenance
+
+  - id: document_completion
+    name: Document Completion
+    type: manual
+    actor: Mechanic
+    description: Complete maintenance documentation
+    ui_screen: maintenance_completion
+    actions:
+      - enter final parts used
+      - enter final labor hours
+      - enter odometer reading
+      - attach receipts/invoices
+      - note any recommendations
+      - sign off on work
+    outputs:
+      - completed_work_order
+    next: calculate_costs
+
+  - id: calculate_costs
+    name: Calculate Final Costs
+    type: automated
+    description: Calculate total maintenance cost
+    actions:
+      - sum parts costs
+      - calculate labor cost
+      - add any additional charges
+      - check warranty coverage
+      - apply any discounts
+      - create invoice record
+    outputs:
+      - final_cost
+      - invoice
+    next: update_vehicle_records
+
+  - id: update_vehicle_records
+    name: Update Vehicle Records
+    type: automated
+    description: Update vehicle with maintenance info
+    actions:
+      - update vehicle.last_service_odometer
+      - calculate next_service_date
+      - calculate next_service_odometer
+      - update maintenance history
+      - set vehicle.status = 'available'
+    business_rules:
+      - BR-MN-001  # Preventive Maintenance Schedule
+    outputs:
+      - updated_vehicle
+    next: notify_completion
+
+  - id: notify_completion
+    name: Notify Completion
+    type: automated
+    description: Notify stakeholders of completion
+    actions:
+      - notify driver vehicle is ready
+      - notify dispatcher vehicle available
+      - send cost summary to fleet manager
+    notifications:
+      - to: driver
+        template: vehicle_ready_for_pickup
+        channel: [mobile_app, sms]
+      - to: dispatcher
+        template: vehicle_available
+        channel: [dashboard]
+      - to: fleet_manager
+        template: maintenance_completed
+        channel: [email]
+    events:
+      emit: maintenance.completed
+    next: close_work_order
+
+  - id: close_work_order
+    name: Close Work Order
+    type: automated
+    description: Finalize and close work order
+    actions:
+      - set maintenance.status = 'completed'
+      - archive documentation
+      - update fleet cost records
+    next: complete
+
+  - id: close_rejected
+    name: Close Rejected Request
+    type: automated
+    description: Close rejected maintenance request
+    actions:
+      - set maintenance.status = 'cancelled'
+      - document rejection reason
+      - notify requestor
+    notifications:
+      - to: maintenance_coordinator
+        template: maintenance_rejected
+        channel: [email]
+    next: complete
+
+  - id: defer_maintenance
+    name: Defer Maintenance
+    type: automated
+    description: Defer maintenance to later date
+    actions:
+      - set new scheduled_date
+      - update work order
+      - add to calendar
+    next: complete
+
+  - id: complete
+    name: Complete Workflow
+    type: automated
+    description: Finalize workflow
+    actions:
+      - log workflow completion
+      - calculate metrics
+
+exception_handling:
+  - exception: parts_unavailable
+    action: back_order_parts
+    notification: maintenance_coordinator
+
+  - exception: vendor_unavailable
+    action: find_alternate_vendor
+    notification: maintenance_coordinator
+
+  - exception: additional_repairs_found
+    action: create_supplemental_work_order
+    requires_approval: true
+
+metrics:
+  - average_repair_time
+  - first_time_fix_rate
+  - cost_per_vehicle
+  - maintenance_compliance_rate
+  - parts_availability_rate
+
+sla:
+  emergency: "4 hours"
+  critical: "24 hours"
+  major: "7 days"
+  preventive: "scheduled date"
+  approval_response: "24 hours"

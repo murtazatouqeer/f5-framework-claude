@@ -1,0 +1,333 @@
+name: matchmaking-rules
+display_name: Matchmaking Rules
+description: |
+  Rules governing player matchmaking in multiplayer games.
+  Covers skill-based matching, queue management, and match quality.
+
+domain: entertainment
+subdomain: gaming
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_sets:
+  # ============================================
+  # SKILL-BASED MATCHMAKING
+  # ============================================
+  - id: BR-MM-001
+    name: MMR Calculation
+    description: Rules for calculating and updating player MMR
+    category: skill_matching
+    priority: critical
+    rules:
+      - id: R001
+        name: Initial MMR Assignment
+        description: New players start at baseline MMR
+        condition: player.ranked_matches_played = 0
+        action: |
+          - Set initial_mmr = 1000
+          - Set uncertainty = HIGH
+          - Enable placement_mode for 10 matches
+        rationale: Fresh accounts need calibration period
+
+      - id: R002
+        name: MMR Update After Win
+        description: Calculate MMR gain on victory
+        condition: match.result = 'win'
+        action: |
+          base_gain = 25
+          opponent_factor = (avg_enemy_mmr - player_mmr) / 400
+          uncertainty_factor = player.uncertainty_multiplier
+          mmr_change = base_gain * (1 + opponent_factor) * uncertainty_factor
+
+          player.mmr += mmr_change
+          reduce_uncertainty()
+        rationale: Winners gain more against stronger opponents
+
+      - id: R003
+        name: MMR Update After Loss
+        description: Calculate MMR loss on defeat
+        condition: match.result = 'loss'
+        action: |
+          base_loss = 25
+          opponent_factor = (player_mmr - avg_enemy_mmr) / 400
+          streak_factor = min(player.loss_streak * 0.1, 0.5)
+          mmr_change = base_loss * (1 + opponent_factor) * (1 - streak_factor)
+
+          player.mmr -= mmr_change
+          player.mmr = max(player.mmr, 0)
+        rationale: Losing to weaker opponents costs more MMR
+
+      - id: R004
+        name: Placement Match Multiplier
+        description: Higher volatility during placement
+        condition: player.placement_matches_remaining > 0
+        action: |
+          mmr_change *= 2.0
+          uncertainty = HIGH
+        rationale: Faster calibration during placement
+
+  # ============================================
+  # QUEUE MANAGEMENT
+  # ============================================
+  - id: BR-MM-010
+    name: Queue Rules
+    description: Managing player queues and wait times
+    category: queue_management
+    priority: high
+    rules:
+      - id: R010
+        name: Queue Entry Validation
+        description: Validate player can enter queue
+        condition: player.requests_queue
+        action: |
+          CHECK:
+          - player.status = 'active'
+          - NOT player.in_match
+          - NOT player.queue_banned
+          - player.game_version >= min_required_version
+          - player.rank_eligible (if ranked queue)
+
+          IF party:
+          - all_members_valid
+          - party_size <= queue.max_party_size
+        validation:
+          - Must be online and not in another match
+          - Account must be in good standing
+          - Party members must meet same requirements
+
+      - id: R011
+        name: Queue Priority
+        description: Prioritize certain players in queue
+        condition: player.in_queue
+        action: |
+          base_priority = queue_time_seconds / 10
+
+          BONUSES:
+          - premium_account: +5 priority
+          - match_cancelled_victim: +20 priority
+          - dodge_victim: +10 priority
+          - good_behavior: +3 priority
+
+          PENALTIES:
+          - recent_dodge: -10 priority
+          - recent_afk: -5 priority
+        rationale: Reward positive behavior and compensate victims
+
+      - id: R012
+        name: Queue Timeout Expansion
+        description: Expand search range as wait time increases
+        condition: queue_time > thresholds
+        action: |
+          AT 30 seconds: mmr_range += 50
+          AT 60 seconds: mmr_range += 100
+          AT 120 seconds: mmr_range += 200
+          AT 180 seconds: mmr_range += 300, region_expand = true
+          AT 300 seconds: mmr_range = unlimited
+        rationale: Balance match quality vs wait time
+
+  # ============================================
+  # MATCH FORMATION
+  # ============================================
+  - id: BR-MM-020
+    name: Match Formation Rules
+    description: Rules for creating balanced matches
+    category: match_formation
+    priority: critical
+    rules:
+      - id: R020
+        name: Team Balance
+        description: Ensure balanced teams
+        condition: forming_match
+        action: |
+          CALCULATE team_mmr_difference
+
+          IF team_mmr_difference > 100:
+            REJECT match formation
+            REBALANCE teams
+
+          IF team_mmr_difference > 50:
+            ACCEPTABLE but prefer better balance
+
+          IDEAL: team_mmr_difference < 25
+        validation:
+          - Max MMR difference between teams: 100
+          - Individual MMR range in match: 400
+          - Party vs solo consideration
+
+      - id: R021
+        name: Party Matching
+        description: Handle premade groups fairly
+        condition: queue.has_parties
+        action: |
+          IF 5-stack_party:
+            PREFER match against 5-stack
+            ALLOW vs 3+2 stack after 120s
+            NEVER vs 5 solo players
+
+          IF 3-stack:
+            PREFER 3+2 vs 3+2
+            ALLOW 3+2 vs 3+1+1 after 60s
+
+          APPLY party_mmr_bonus:
+            2-stack: +25 effective MMR
+            3-stack: +50 effective MMR
+            4-stack: +75 effective MMR
+            5-stack: +100 effective MMR
+        rationale: Parties have coordination advantage
+
+      - id: R022
+        name: Role Queue Balance
+        description: Match based on selected roles
+        condition: game.has_role_queue
+        action: |
+          REQUIRE each team has:
+            - Required roles filled
+            - No duplicate restricted roles
+
+          MATCH players by:
+            - Primary role when possible
+            - Secondary role if needed
+            - Autofill with bonus only if necessary
+
+          TRACK autofill_count per player
+          REWARD autofill with bonus currency
+        validation:
+          - Every match must have valid team composition
+
+  # ============================================
+  # NEW PLAYER PROTECTION
+  # ============================================
+  - id: BR-MM-030
+    name: New Player Protection
+    description: Protect new players from smurfs and veterans
+    category: player_protection
+    priority: high
+    rules:
+      - id: R030
+        name: New Player Pool
+        description: Separate queue for new players
+        condition: player.total_matches < 50
+        action: |
+          IF player.level < 30:
+            RESTRICT to new_player_pool
+            ONLY match with players level < 50
+
+          IF suspected_smurf:
+            REMOVE from new_player_pool
+            APPLY accelerated_mmr_calibration
+        rationale: New players need protected environment
+
+      - id: R031
+        name: Smurf Detection
+        description: Identify potential smurf accounts
+        condition: new_account AND exceptional_performance
+        action: |
+          CALCULATE smurf_score based on:
+            - Win rate > 70% in first 20 games
+            - KDA > 3.0 consistently
+            - Advanced mechanics detected
+            - Play patterns match veteran
+
+          IF smurf_score > 0.8:
+            FLAG for review
+            APPLY mmr_boost = 500
+            REMOVE from new_player_pool
+        rationale: Quickly move smurfs to appropriate skill level
+
+  # ============================================
+  # REGION AND LATENCY
+  # ============================================
+  - id: BR-MM-040
+    name: Region Rules
+    description: Server region selection and cross-region play
+    category: region_management
+    priority: high
+    rules:
+      - id: R040
+        name: Region Preference
+        description: Honor player region preferences
+        condition: searching_for_match
+        action: |
+          PRIORITY 1: Player's selected region
+          PRIORITY 2: Nearby regions (< 100ms)
+          PRIORITY 3: Same continent
+          PRIORITY 4: Any region (last resort)
+
+          NEVER match to region with ping > 200ms
+          unless player explicitly accepts
+        validation:
+          - Respect player latency preferences
+          - Cross-region only with consent
+
+      - id: R041
+        name: Latency Balancing
+        description: Consider ping in match formation
+        condition: forming_match
+        action: |
+          CALCULATE avg_ping per team
+
+          IF ping_difference > 30ms between teams:
+            ADJUST match quality score
+            PREFER more balanced alternative
+
+          WARN players if expected_ping > 100ms
+        rationale: Latency affects competitive fairness
+
+  # ============================================
+  # PENALTIES AND RESTRICTIONS
+  # ============================================
+  - id: BR-MM-050
+    name: Queue Penalties
+    description: Penalties for negative matchmaking behavior
+    category: penalties
+    priority: high
+    rules:
+      - id: R050
+        name: Queue Dodge Penalty
+        description: Penalize declining/dodging matches
+        condition: player.dodges_match
+        action: |
+          INCREMENT player.dodge_count
+
+          1st dodge (24h): 5 minute queue ban
+          2nd dodge (24h): 15 minute queue ban
+          3rd dodge (24h): 60 minute queue ban
+          4th+ dodge (24h): 24 hour queue ban
+
+          IF ranked:
+            APPLY mmr_penalty = -10 per dodge
+
+          RESET dodge_count after 24 hours clean
+        rationale: Discourage queue manipulation
+
+      - id: R051
+        name: AFK Penalty
+        description: Penalize going AFK in matches
+        condition: player.afk_detected
+        action: |
+          INCREMENT player.afk_count
+
+          1st offense: Warning
+          2nd offense: 15 minute queue ban
+          3rd offense: 60 minute queue ban
+          4th+ offense: 24 hour ban + MMR penalty
+
+          IF ranked:
+            LOSS applied regardless of match result
+            MMR penalty = -50
+
+          TRACK pattern for escalation
+        validation:
+          - Distinguish intentional AFK from disconnects
+          - Consider reconnection attempts
+
+compliance:
+  standards:
+    - Fair matchmaking principles
+    - Anti-smurf policies
+    - Queue health monitoring
+  monitoring:
+    - Queue times by region/rank
+    - Match quality scores
+    - Player satisfaction metrics

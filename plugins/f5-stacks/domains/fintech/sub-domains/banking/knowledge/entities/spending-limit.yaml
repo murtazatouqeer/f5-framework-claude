@@ -1,0 +1,534 @@
+name: SpendingLimit
+display_name: Spending Limit / Hạn mức chi tiêu
+description: |
+  Custom spending limits set by customers to control their spending
+  by category, merchant, or time period. Includes budget tracking
+  and alert functionality.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique limit identifier
+
+  account_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: BankAccount
+    description: Account this limit applies to
+
+  card_id:
+    type: uuid
+    nullable: true
+    indexed: true
+    references: Card
+    description: Specific card (null = all cards)
+
+  account_holder_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: AccountHolder
+
+  # ---------------------------------------------------------------------------
+  # Limit Type
+  # ---------------------------------------------------------------------------
+  limit_type:
+    type: enum
+    values: [category, merchant, channel, overall, country]
+    required: true
+    indexed: true
+    description: Type of spending limit
+    description_vi: Loại hạn mức
+    value_descriptions:
+      category: "Limit by spending category / Theo danh mục"
+      merchant: "Limit for specific merchant / Theo đơn vị"
+      channel: "Limit by transaction channel / Theo kênh"
+      overall: "Overall spending limit / Tổng chi tiêu"
+      country: "Limit by country / Theo quốc gia"
+
+  # ---------------------------------------------------------------------------
+  # Limit Target
+  # ---------------------------------------------------------------------------
+  category_code:
+    type: string
+    max_length: 50
+    nullable: true
+    indexed: true
+    description: MCC category or category group
+    description_vi: Mã danh mục
+    examples: ["groceries", "restaurants", "travel", "entertainment", "5812"]
+
+  category_name:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Category display name
+
+  merchant_id:
+    type: string
+    max_length: 50
+    nullable: true
+    description: Specific merchant ID
+
+  merchant_name:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Merchant name
+
+  channel:
+    type: enum
+    values: [pos, online, atm, contactless, international]
+    nullable: true
+    description: Transaction channel
+
+  country_code:
+    type: string
+    format: "^[A-Z]{2}$"
+    nullable: true
+    description: Country code for country-based limits
+
+  # ---------------------------------------------------------------------------
+  # Limit Amount
+  # ---------------------------------------------------------------------------
+  limit_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Maximum spending amount
+    description_vi: Số tiền hạn mức
+
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+    description: Limit currency
+
+  # ---------------------------------------------------------------------------
+  # Period
+  # ---------------------------------------------------------------------------
+  period_type:
+    type: enum
+    values: [daily, weekly, monthly, yearly, custom]
+    required: true
+    description: Limit period type
+    description_vi: Loại kỳ hạn mức
+
+  period_start:
+    type: date
+    nullable: true
+    description: Start of custom period
+
+  period_end:
+    type: date
+    nullable: true
+    description: End of custom period
+
+  reset_day:
+    type: integer
+    minimum: 1
+    maximum: 31
+    nullable: true
+    description: Day of month to reset (for monthly)
+
+  # ---------------------------------------------------------------------------
+  # Usage Tracking
+  # ---------------------------------------------------------------------------
+  current_spent:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Amount spent in current period
+    description_vi: Đã chi trong kỳ
+
+  remaining_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    computed: true
+    description: Remaining limit
+    description_vi: Còn lại
+
+  usage_percentage:
+    type: decimal
+    precision: 5
+    scale: 2
+    computed: true
+    description: Percentage of limit used
+
+  transaction_count:
+    type: integer
+    default: 0
+    description: Number of transactions in period
+
+  last_transaction_at:
+    type: timestamp
+    nullable: true
+    description: Last transaction timestamp
+
+  period_reset_at:
+    type: timestamp
+    nullable: true
+    description: When current period started
+
+  next_reset_at:
+    type: timestamp
+    nullable: true
+    description: When limit will reset
+
+  # ---------------------------------------------------------------------------
+  # Alert Settings
+  # ---------------------------------------------------------------------------
+  alert_enabled:
+    type: boolean
+    default: true
+    description: Enable limit alerts
+    description_vi: Bật cảnh báo hạn mức
+
+  alert_thresholds:
+    type: json
+    description: Alert threshold percentages
+    description_vi: Ngưỡng cảnh báo
+    default: [50, 80, 100]
+    example: [50, 75, 90, 100]
+
+  alerts_sent:
+    type: json
+    nullable: true
+    description: Which threshold alerts have been sent
+    example: {"50": true, "80": false, "100": false}
+
+  # ---------------------------------------------------------------------------
+  # Enforcement
+  # ---------------------------------------------------------------------------
+  enforcement_type:
+    type: enum
+    values: [block, alert_only, soft_block]
+    default: alert_only
+    description: What happens when limit reached
+    description_vi: Cách thức áp dụng
+    value_descriptions:
+      block: "Block transactions / Chặn giao dịch"
+      alert_only: "Alert but allow / Cảnh báo nhưng cho phép"
+      soft_block: "Require confirmation / Yêu cầu xác nhận"
+
+  allow_override:
+    type: boolean
+    default: true
+    description: Allow customer to override limit
+    description_vi: Cho phép vượt hạn mức
+
+  override_authentication:
+    type: enum
+    values: [pin, otp, biometric]
+    nullable: true
+    description: Authentication for override
+
+  # ---------------------------------------------------------------------------
+  # Status
+  # ---------------------------------------------------------------------------
+  status:
+    type: enum
+    values: [active, paused, expired, deleted]
+    default: active
+    indexed: true
+    description: Limit status
+    description_vi: Trạng thái
+
+  # ---------------------------------------------------------------------------
+  # Validity
+  # ---------------------------------------------------------------------------
+  effective_from:
+    type: date
+    required: true
+    description: When limit becomes effective
+    description_vi: Ngày bắt đầu hiệu lực
+
+  effective_until:
+    type: date
+    nullable: true
+    description: When limit expires (null = indefinite)
+    description_vi: Ngày hết hiệu lực
+
+  # ---------------------------------------------------------------------------
+  # Additional Settings
+  # ---------------------------------------------------------------------------
+  name:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Customer-defined name for limit
+    description_vi: Tên hạn mức
+    example: "Monthly dining budget"
+
+  notes:
+    type: string
+    max_length: 500
+    nullable: true
+    description: Customer notes
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: account_id
+
+  card:
+    type: belongs_to
+    entity: Card
+    foreign_key: card_id
+    optional: true
+
+  account_holder:
+    type: belongs_to
+    entity: AccountHolder
+    foreign_key: account_holder_id
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: active
+
+  states:
+    active:
+      description: "Limit is active and being enforced"
+      allowed_operations: [track, alert, modify, pause, delete]
+
+    paused:
+      description: "Limit temporarily disabled"
+      allowed_operations: [resume, delete]
+
+    expired:
+      description: "Limit has expired"
+      final: true
+
+    deleted:
+      description: "Limit deleted by user"
+      final: true
+
+  transitions:
+    - from: active
+      to: paused
+      event: pause
+      actions:
+        - "Stop enforcement"
+
+    - from: paused
+      to: active
+      event: resume
+      actions:
+        - "Resume enforcement"
+        - "Do not reset spent amount"
+
+    - from: active
+      to: expired
+      event: expire
+      conditions:
+        - "effective_until < current_date"
+
+    - from: [active, paused]
+      to: deleted
+      event: delete
+      actions:
+        - "Soft delete"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-LMT-001
+    name: Limit Check
+    description: Check spending against limit
+    rule: |
+      IF limit_type = transaction.category AND enforcement_type = 'block'
+      AND current_spent + transaction_amount > limit_amount
+      THEN decline('SPENDING_LIMIT_EXCEEDED')
+
+  - id: BR-LMT-002
+    name: Alert Trigger
+    description: Trigger alerts at thresholds
+    rule: |
+      FOR each threshold IN alert_thresholds
+      IF usage_percentage >= threshold AND NOT alerts_sent[threshold]
+      THEN send_alert(threshold)
+           alerts_sent[threshold] = true
+
+  - id: BR-LMT-003
+    name: Period Reset
+    description: Reset spent amount at period end
+    rule: |
+      WHEN current_time >= next_reset_at
+      THEN current_spent = 0
+           transaction_count = 0
+           alerts_sent = {}
+           calculate next_reset_at
+
+  - id: BR-LMT-004
+    name: Soft Block Override
+    description: Allow override with authentication
+    rule: |
+      IF enforcement_type = 'soft_block' AND limit_exceeded
+      THEN prompt for override_authentication
+           IF authenticated THEN allow transaction
+
+  - id: BR-LMT-005
+    name: Multiple Limits
+    description: Transaction must pass all applicable limits
+    rule: |
+      FOR each applicable limit
+      IF ANY limit fails AND enforcement_type = 'block'
+      THEN decline transaction
+
+# =============================================================================
+# CATEGORY MAPPING
+# =============================================================================
+category_mapping:
+  groceries:
+    name: "Groceries"
+    name_vi: "Tạp hóa"
+    mcc_codes: ["5411", "5422", "5441"]
+
+  restaurants:
+    name: "Restaurants & Dining"
+    name_vi: "Ăn uống"
+    mcc_codes: ["5812", "5813", "5814"]
+
+  travel:
+    name: "Travel"
+    name_vi: "Du lịch"
+    mcc_codes: ["3000-3299", "4111", "4112", "4511", "7011"]
+
+  entertainment:
+    name: "Entertainment"
+    name_vi: "Giải trí"
+    mcc_codes: ["7832", "7841", "7922", "7929", "7941"]
+
+  shopping:
+    name: "Shopping"
+    name_vi: "Mua sắm"
+    mcc_codes: ["5311", "5611", "5621", "5651", "5691"]
+
+  transportation:
+    name: "Transportation"
+    name_vi: "Đi lại"
+    mcc_codes: ["4121", "4131", "5541", "5542"]
+
+  utilities:
+    name: "Utilities"
+    name_vi: "Tiện ích"
+    mcc_codes: ["4900"]
+
+  healthcare:
+    name: "Healthcare"
+    name_vi: "Y tế"
+    mcc_codes: ["5912", "8011", "8021", "8031", "8041"]
+
+  education:
+    name: "Education"
+    name_vi: "Giáo dục"
+    mcc_codes: ["8211", "8220", "8241", "8244", "8249"]
+
+  gambling:
+    name: "Gambling"
+    name_vi: "Cờ bạc"
+    mcc_codes: ["7995"]
+    default_blocked: true
+
+# =============================================================================
+# SUGGESTED LIMITS
+# =============================================================================
+suggested_limits:
+  - name: "Monthly Dining Budget"
+    category: "restaurants"
+    period_type: monthly
+    suggested_amount: 5000000
+
+  - name: "Weekly Entertainment"
+    category: "entertainment"
+    period_type: weekly
+    suggested_amount: 2000000
+
+  - name: "ATM Withdrawal Daily"
+    channel: "atm"
+    period_type: daily
+    suggested_amount: 10000000
+
+  - name: "Online Shopping Monthly"
+    channel: "online"
+    period_type: monthly
+    suggested_amount: 20000000
+
+  - name: "International Monthly"
+    channel: "international"
+    period_type: monthly
+    suggested_amount: 50000000
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_limit_account
+    fields: [account_id]
+
+  - name: idx_limit_card
+    fields: [card_id]
+
+  - name: idx_limit_type
+    fields: [limit_type]
+
+  - name: idx_limit_category
+    fields: [category_code]
+
+  - name: idx_limit_status
+    fields: [status]
+
+  - name: idx_limit_effective
+    fields: [effective_from, effective_until]
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  events:
+    - limit_created
+    - limit_modified
+    - limit_paused
+    - limit_resumed
+    - limit_deleted
+    - limit_reset
+    - alert_sent
+    - limit_exceeded
+    - override_requested
+    - override_approved

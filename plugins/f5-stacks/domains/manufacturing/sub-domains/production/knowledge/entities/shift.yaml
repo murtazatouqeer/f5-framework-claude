@@ -1,0 +1,270 @@
+name: shift
+display_name: Production Shift
+display_name_vi: Ca sản xuất
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: entity
+
+description: |
+  Defines production shifts including timing, breaks, and assignments
+  to work centers and operators.
+
+description_vi: |
+  Xác định ca sản xuất bao gồm thời gian, nghỉ giải lao và phân công
+  cho trung tâm làm việc và công nhân.
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      required: true
+
+    - name: shift_code
+      type: string
+      required: true
+      unique: true
+      pattern: "^SFT-[A-Z0-9]+$"
+      description: Shift code
+      description_vi: Mã ca
+
+    - name: name
+      type: string
+      required: true
+      description: Shift name
+      description_vi: Tên ca
+
+    - name: description
+      type: string
+      description: Description
+      description_vi: Mô tả
+
+    - name: shift_type
+      type: enum
+      required: true
+      values:
+        - day: Day shift
+        - evening: Evening shift
+        - night: Night shift
+        - split: Split shift
+        - rotating: Rotating shift
+      description_vi: Loại ca
+
+    - name: status
+      type: enum
+      default: active
+      values:
+        - active: Active
+        - inactive: Inactive
+      description_vi: Trạng thái
+
+  timing:
+    - name: start_time
+      type: time
+      required: true
+      description: Shift start time
+      description_vi: Giờ bắt đầu
+
+    - name: end_time
+      type: time
+      required: true
+      description: Shift end time
+      description_vi: Giờ kết thúc
+
+    - name: duration_hours
+      type: decimal
+      description: Total shift duration
+      description_vi: Thời lượng ca (giờ)
+
+    - name: crosses_midnight
+      type: boolean
+      default: false
+      description: Shift spans midnight
+      description_vi: Ca qua nửa đêm
+
+  breaks:
+    - name: breaks
+      type: array
+      item_type: object
+      properties:
+        name:
+          type: string
+          description: Break name (Lunch, Tea, etc.)
+        start_minutes:
+          type: integer
+          description: Minutes from shift start
+        duration_minutes:
+          type: integer
+          description: Break duration
+        paid:
+          type: boolean
+          default: false
+      description: Scheduled breaks
+      description_vi: Giờ nghỉ
+
+    - name: total_break_minutes
+      type: integer
+      description: Total break time
+      description_vi: Tổng thời gian nghỉ
+
+    - name: productive_hours
+      type: decimal
+      description: Productive hours (minus breaks)
+      description_vi: Giờ làm việc thực
+
+  assignment:
+    - name: work_center_id
+      type: uuid
+      description: Assigned work center
+      description_vi: Trung tâm làm việc
+
+    - name: plant_id
+      type: uuid
+      description: Plant location
+      description_vi: Nhà máy
+
+    - name: days_of_week
+      type: array
+      item_type: enum
+      values: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+      description: Days shift operates
+      description_vi: Ngày trong tuần
+
+  capacity:
+    - name: operator_capacity
+      type: integer
+      description: Number of operators
+      description_vi: Số công nhân
+
+    - name: capacity_factor
+      type: decimal
+      default: 1.0
+      description: Capacity multiplier
+      description_vi: Hệ số công suất
+
+  premium:
+    - name: shift_premium_percent
+      type: decimal
+      default: 0
+      description: Shift premium percentage
+      description_vi: Phụ cấp ca (%)
+
+    - name: overtime_after_hours
+      type: decimal
+      description: OT after this many hours
+      description_vi: Làm thêm sau số giờ
+
+  effectivity:
+    - name: effective_from
+      type: date
+      description: Effective from date
+      description_vi: Hiệu lực từ
+
+    - name: effective_to
+      type: date
+      description: Effective to date
+      description_vi: Hiệu lực đến
+
+  supervisor:
+    - name: supervisor_id
+      type: uuid
+      description: Shift supervisor
+      description_vi: Giám sát ca
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: uuid
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+relationships:
+  - name: work_center
+    type: belongs_to
+    entity: work_center
+    foreign_key: work_center_id
+
+  - name: supervisor
+    type: belongs_to
+    entity: operator
+    foreign_key: supervisor_id
+
+  - name: operators
+    type: has_many
+    entity: operator
+    through: shift_assignments
+
+  - name: production_outputs
+    type: has_many
+    entity: production_output
+    foreign_key: shift_id
+
+  - name: downtimes
+    type: has_many
+    entity: downtime
+    foreign_key: shift_id
+
+indexes:
+  - columns: [shift_code]
+    unique: true
+  - columns: [work_center_id, status]
+  - columns: [shift_type]
+
+validation_rules:
+  - rule: "duration_hours > 0"
+    message: "Shift duration must be positive"
+
+  - rule: "productive_hours <= duration_hours"
+    message: "Productive hours cannot exceed duration"
+
+computed_fields:
+  - name: duration_minutes
+    formula: "duration_hours * 60"
+    description: Duration in minutes
+
+  - name: available_minutes
+    formula: "(duration_hours * 60) - total_break_minutes"
+    description: Available production minutes
+
+shift_patterns:
+  standard_day:
+    shifts:
+      - name: Day Shift
+        start: "07:00"
+        end: "15:30"
+        breaks:
+          - name: Tea Break
+            start_minutes: 120
+            duration: 15
+          - name: Lunch
+            start_minutes: 240
+            duration: 30
+          - name: Tea Break
+            start_minutes: 390
+            duration: 15
+
+  two_shift:
+    shifts:
+      - name: Morning
+        start: "06:00"
+        end: "14:00"
+      - name: Afternoon
+        start: "14:00"
+        end: "22:00"
+
+  three_shift:
+    shifts:
+      - name: Morning
+        start: "06:00"
+        end: "14:00"
+      - name: Afternoon
+        start: "14:00"
+        end: "22:00"
+      - name: Night
+        start: "22:00"
+        end: "06:00"

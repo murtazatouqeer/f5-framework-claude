@@ -1,0 +1,257 @@
+name: talent-pool
+display_name: Talent Pool
+description: |
+  A collection of candidates grouped by criteria for future opportunities.
+  Enables proactive talent pipeline building and nurturing.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: TalentPool
+  table_name: talent_pools
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: pool_id
+      type: string
+      length: 20
+      unique: true
+      format: "POOL-{NNNN}"
+
+    - name: name
+      type: string
+      length: 200
+      required: true
+
+    - name: description
+      type: text
+
+    # Status
+    - name: status
+      type: enum
+      values: [active, archived]
+      default: active
+
+    - name: pool_type
+      type: enum
+      values: [function, skill, level, location, source, campaign, custom]
+      required: true
+
+    # Ownership
+    - name: owner_id
+      type: uuid
+      required: true
+      description: Primary owner/manager
+
+    - name: shared_with
+      type: jsonb
+      description: Users with access
+      example: |
+        [
+          {"user_id": "xxx", "access": "edit"},
+          {"user_id": "yyy", "access": "view"}
+        ]
+
+    - name: department_id
+      type: uuid
+      description: If department-specific
+
+    - name: visibility
+      type: enum
+      values: [private, team, department, company]
+      default: team
+
+    # Criteria
+    - name: criteria
+      type: jsonb
+      description: Automatic inclusion criteria
+      example: |
+        {
+          "skills": ["Python", "AWS"],
+          "experience_min_years": 5,
+          "locations": ["San Francisco", "Remote"],
+          "education_level": ["bachelor", "master"],
+          "source": ["linkedin", "referral"]
+        }
+
+    - name: auto_add_enabled
+      type: boolean
+      default: false
+      description: Automatically add matching candidates
+
+    - name: auto_remove_on_hire
+      type: boolean
+      default: true
+      description: Remove when candidate is hired
+
+    # Members
+    - name: candidates_count
+      type: integer
+      default: 0
+
+    - name: active_candidates_count
+      type: integer
+      default: 0
+      description: Not hired, not blacklisted
+
+    # Engagement
+    - name: nurture_campaign_id
+      type: uuid
+      description: Associated email nurture campaign
+
+    - name: last_engagement_at
+      type: timestamp
+      description: Last outreach to pool
+
+    - name: engagement_cadence_days
+      type: integer
+      description: How often to engage
+
+    # Metrics
+    - name: conversion_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: % of pool hired
+
+    - name: response_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      description: % responding to outreach
+
+    - name: hires_from_pool
+      type: integer
+      default: 0
+
+    # Tags & Organization
+    - name: tags
+      type: jsonb
+      description: Custom tags
+
+    - name: color
+      type: string
+      length: 7
+      description: Display color (hex)
+
+    - name: icon
+      type: string
+      length: 50
+
+    # Associated Requisitions
+    - name: target_requisitions
+      type: jsonb
+      description: Requisitions this pool feeds into
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: owner
+      type: belongs_to
+      entity: User
+      foreign_key: owner_id
+
+    - name: department
+      type: belongs_to
+      entity: Department
+      foreign_key: department_id
+
+    - name: candidates
+      type: many_to_many
+      entity: Candidate
+      through: candidate_talent_pools
+      through_attributes:
+        - added_at: timestamp
+        - added_by_id: uuid
+        - notes: text
+        - status: enum[active, removed, hired]
+
+  indexes:
+    - columns: [pool_id]
+      unique: true
+    - columns: [name]
+    - columns: [status]
+    - columns: [pool_type]
+    - columns: [owner_id]
+
+  hooks:
+    on_candidate_match:
+      - condition: auto_add_enabled
+      - action: add_to_pool
+
+    on_candidate_hired:
+      - condition: auto_remove_on_hire
+      - action: update_status_to_hired
+      - action: increment_hires_count
+
+    periodic_refresh:
+      - recalculate_counts
+      - check_auto_add_matches
+      - send_engagement_reminders
+
+  validations:
+    - field: name
+      rule: unique_per_owner
+      scope: owner_id
+      message: "You already have a pool with this name"
+
+through_entity:
+  name: CandidateTalentPool
+  table_name: candidate_talent_pools
+  attributes:
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: candidate_id
+      type: uuid
+      required: true
+
+    - name: talent_pool_id
+      type: uuid
+      required: true
+
+    - name: added_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: added_by_id
+      type: uuid
+      required: true
+
+    - name: status
+      type: enum
+      values: [active, removed, hired]
+      default: active
+
+    - name: notes
+      type: text
+
+    - name: source
+      type: enum
+      values: [manual, auto, import]
+      default: manual
+
+  indexes:
+    - columns: [candidate_id, talent_pool_id]
+      unique: true
+    - columns: [talent_pool_id, status]

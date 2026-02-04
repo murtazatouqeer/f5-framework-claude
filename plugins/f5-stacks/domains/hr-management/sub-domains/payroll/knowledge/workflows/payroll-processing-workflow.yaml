@@ -1,0 +1,530 @@
+name: payroll-processing-workflow
+display_name: Monthly Payroll Processing Workflow
+description: |
+  End-to-end monthly payroll processing workflow from period opening
+  to salary disbursement and statutory reporting.
+
+domain: hr-management
+subdomain: payroll
+category: workflows
+version: "1.0.0"
+status: active
+
+workflow:
+  id: WF-PAY-001
+  name: monthly_payroll_processing
+  trigger: monthly_schedule
+  frequency: monthly
+
+  actors:
+    - role: payroll_admin
+      responsibilities:
+        - open_period
+        - run_calculation
+        - review_results
+        - generate_bank_file
+
+    - role: hr_manager
+      responsibilities:
+        - approve_payroll
+        - handle_exceptions
+
+    - role: finance_manager
+      responsibilities:
+        - approve_payment
+        - process_bank_transfer
+
+    - role: department_manager
+      responsibilities:
+        - approve_overtime
+        - approve_leave
+
+  timeline:
+    period_open: "1st of month"
+    data_cutoff: "20th of month"
+    calculation_start: "21st of month"
+    review_complete: "23rd of month"
+    approval_deadline: "25th of month"
+    payment_date: "Last working day"
+
+  stages:
+    - id: STAGE-1
+      name: period_preparation
+      description: Open payroll period and prepare for processing
+      duration: "Days 1-5"
+
+      steps:
+        - id: STEP-1.1
+          name: open_payroll_period
+          actor: payroll_admin
+          action: create_period
+          inputs:
+            - period_year
+            - period_month
+            - pay_date
+            - cutoff_date
+          outputs:
+            - period_id
+          validations:
+            - previous_period_closed
+            - no_duplicate_period
+          system_actions:
+            - load_employee_list
+            - load_salary_structures
+            - initialize_period_totals
+
+        - id: STEP-1.2
+          name: load_attendance_data
+          actor: system
+          action: import_attendance
+          inputs:
+            - timesheet_data
+            - leave_records
+            - overtime_approvals
+          outputs:
+            - attendance_summary_per_employee
+          validations:
+            - all_employees_have_records
+            - overtime_within_limits
+
+        - id: STEP-1.3
+          name: process_changes
+          actor: payroll_admin
+          action: apply_period_changes
+          inputs:
+            - salary_revisions
+            - new_hires
+            - terminations
+            - transfers
+          outputs:
+            - updated_employee_payroll_records
+          validations:
+            - changes_within_cutoff
+
+    - id: STAGE-2
+      name: data_collection
+      description: Collect all payroll-related data
+      duration: "Days 6-20"
+
+      steps:
+        - id: STEP-2.1
+          name: overtime_collection
+          actor: department_manager
+          action: approve_overtime
+          inputs:
+            - overtime_requests
+          outputs:
+            - approved_overtime_records
+          deadline: "20th of month"
+          escalation:
+            condition: "pending_approvals > 0"
+            action: notify_hr_manager
+
+        - id: STEP-2.2
+          name: leave_processing
+          actor: system
+          action: process_leave_records
+          inputs:
+            - approved_leaves
+          outputs:
+            - leave_deductions
+            - unpaid_leave_days
+          automatic: true
+
+        - id: STEP-2.3
+          name: bonus_collection
+          actor: payroll_admin
+          action: collect_bonuses
+          inputs:
+            - approved_bonuses
+            - performance_ratings
+          outputs:
+            - bonus_earning_entries
+          conditional: "if_bonuses_in_period"
+
+        - id: STEP-2.4
+          name: loan_deduction_setup
+          actor: system
+          action: schedule_loan_deductions
+          inputs:
+            - active_loans
+          outputs:
+            - loan_deduction_entries
+          automatic: true
+
+        - id: STEP-2.5
+          name: data_cutoff
+          actor: payroll_admin
+          action: close_data_entry
+          inputs:
+            - period_id
+          outputs:
+            - cutoff_confirmation
+          actions:
+            - lock_attendance_changes
+            - lock_leave_changes
+            - snapshot_employee_data
+
+    - id: STAGE-3
+      name: calculation
+      description: Calculate payroll for all employees
+      duration: "Days 21-22"
+
+      steps:
+        - id: STEP-3.1
+          name: initiate_payroll_run
+          actor: payroll_admin
+          action: create_payroll_run
+          inputs:
+            - period_id
+            - run_type: regular
+            - employee_scope: all
+          outputs:
+            - payroll_run_id
+          validations:
+            - period_data_complete
+            - no_pending_approvals
+
+        - id: STEP-3.2
+          name: calculate_earnings
+          actor: system
+          action: process_earnings
+          sequence:
+            - calculate_base_salary
+            - calculate_allowances
+            - calculate_overtime
+            - calculate_bonuses
+            - apply_proration
+          outputs:
+            - earnings_per_employee
+          parallel: true
+
+        - id: STEP-3.3
+          name: calculate_insurance
+          actor: system
+          action: process_insurance
+          sequence:
+            - determine_contribution_base
+            - apply_contribution_caps
+            - calculate_employee_contributions
+            - calculate_employer_contributions
+          outputs:
+            - insurance_deductions
+            - employer_insurance_costs
+
+        - id: STEP-3.4
+          name: calculate_tax
+          actor: system
+          action: process_tax
+          sequence:
+            - calculate_taxable_income
+            - apply_personal_deduction
+            - apply_dependent_deductions
+            - apply_insurance_deductions
+            - calculate_assessable_income
+            - apply_tax_brackets
+          outputs:
+            - tax_amount_per_employee
+
+        - id: STEP-3.5
+          name: apply_deductions
+          actor: system
+          action: process_deductions
+          sequence:
+            - apply_loan_repayments
+            - apply_union_dues
+            - apply_voluntary_deductions
+            - apply_penalties
+          outputs:
+            - total_deductions_per_employee
+
+        - id: STEP-3.6
+          name: calculate_net_pay
+          actor: system
+          action: finalize_calculation
+          formula: "gross_earnings - total_deductions"
+          validations:
+            - net_pay_non_negative
+            - net_pay_above_minimum
+          outputs:
+            - payslips_draft
+
+        - id: STEP-3.7
+          name: generate_run_totals
+          actor: system
+          action: aggregate_totals
+          outputs:
+            - run_summary
+            - variance_report
+            - exception_report
+
+    - id: STAGE-4
+      name: review_and_approval
+      description: Review calculation results and approve
+      duration: "Days 22-25"
+
+      steps:
+        - id: STEP-4.1
+          name: initial_review
+          actor: payroll_admin
+          action: review_calculation
+          inputs:
+            - payroll_run_summary
+            - variance_report
+            - exception_report
+          checks:
+            - compare_to_previous_period
+            - verify_headcount
+            - check_anomalies
+          outputs:
+            - review_notes
+            - correction_list
+
+        - id: STEP-4.2
+          name: handle_exceptions
+          actor: payroll_admin
+          action: process_exceptions
+          inputs:
+            - exception_list
+          actions:
+            - investigate_anomalies
+            - apply_manual_adjustments
+            - document_reasons
+          outputs:
+            - resolved_exceptions
+
+        - id: STEP-4.3
+          name: recalculate_if_needed
+          actor: system
+          action: recalculate
+          condition: "if_corrections_applied"
+          inputs:
+            - correction_list
+          outputs:
+            - updated_payslips
+
+        - id: STEP-4.4
+          name: hr_approval
+          actor: hr_manager
+          action: approve_payroll
+          inputs:
+            - payroll_run_summary
+            - review_notes
+          outputs:
+            - hr_approval_status
+          sla: 24_hours
+
+        - id: STEP-4.5
+          name: finance_approval
+          actor: finance_manager
+          action: approve_payment
+          inputs:
+            - payroll_run_summary
+            - hr_approval
+          outputs:
+            - finance_approval_status
+            - payment_authorization
+          sla: 24_hours
+
+        - id: STEP-4.6
+          name: finalize_payslips
+          actor: system
+          action: finalize
+          inputs:
+            - all_approvals
+          actions:
+            - lock_payslips
+            - update_ytd_totals
+            - generate_payslip_pdfs
+          outputs:
+            - finalized_payslips
+
+    - id: STAGE-5
+      name: payment_processing
+      description: Generate bank files and process payments
+      duration: "Days 25-last_working_day"
+
+      steps:
+        - id: STEP-5.1
+          name: generate_bank_file
+          actor: payroll_admin
+          action: create_bank_file
+          inputs:
+            - payroll_run_id
+            - bank_format
+          outputs:
+            - bank_file_id
+            - file_path
+          validations:
+            - all_employees_have_bank_accounts
+            - file_format_valid
+
+        - id: STEP-5.2
+          name: validate_bank_file
+          actor: system
+          action: validate_file
+          checks:
+            - checksum_valid
+            - total_matches_run
+            - no_duplicate_accounts
+          outputs:
+            - validation_status
+
+        - id: STEP-5.3
+          name: submit_to_bank
+          actor: finance_manager
+          action: upload_bank_file
+          method: [online_banking, sftp, api]
+          outputs:
+            - submission_reference
+            - submission_timestamp
+
+        - id: STEP-5.4
+          name: monitor_payment
+          actor: system
+          action: track_payment_status
+          polling:
+            interval: 1_hour
+            timeout: 48_hours
+          outputs:
+            - payment_status_per_employee
+
+        - id: STEP-5.5
+          name: confirm_payment
+          actor: finance_manager
+          action: confirm_completion
+          inputs:
+            - bank_confirmation
+          outputs:
+            - payment_confirmation
+
+        - id: STEP-5.6
+          name: update_payslip_status
+          actor: system
+          action: mark_paid
+          inputs:
+            - payment_confirmation
+          outputs:
+            - updated_payslips
+
+    - id: STAGE-6
+      name: post_processing
+      description: Distribute payslips and generate reports
+      duration: "After payment"
+
+      steps:
+        - id: STEP-6.1
+          name: distribute_payslips
+          actor: system
+          action: send_payslips
+          methods:
+            - email_notification
+            - portal_availability
+          outputs:
+            - distribution_log
+
+        - id: STEP-6.2
+          name: generate_statutory_reports
+          actor: system
+          action: create_reports
+          reports:
+            - bhxh_monthly_report
+            - pit_monthly_declaration
+          outputs:
+            - statutory_report_ids
+
+        - id: STEP-6.3
+          name: update_accounting
+          actor: system
+          action: post_journal_entries
+          entries:
+            - salary_expense
+            - insurance_expense
+            - tax_liability
+            - accruals
+          outputs:
+            - journal_entry_ids
+
+        - id: STEP-6.4
+          name: close_period
+          actor: payroll_admin
+          action: close_payroll_period
+          inputs:
+            - period_id
+          validations:
+            - all_payslips_paid
+            - reports_generated
+          outputs:
+            - period_closed_confirmation
+
+  exception_handling:
+    calculation_error:
+      detection: "Validation failure during calculation"
+      action:
+        - pause_processing
+        - notify_payroll_admin
+        - log_error_details
+      resolution: "Manual investigation and correction"
+
+    missing_data:
+      detection: "Employee missing required data"
+      action:
+        - flag_employee
+        - exclude_from_run
+        - notify_hr
+      resolution: "Update data and process in off-cycle"
+
+    approval_timeout:
+      detection: "Approval not received by deadline"
+      action:
+        - escalate_to_hr_director
+        - send_reminder
+      resolution: "Emergency approval or delay payment"
+
+    payment_failure:
+      detection: "Bank rejects transaction"
+      action:
+        - mark_employee_as_failed
+        - investigate_cause
+        - prepare_manual_payment
+      resolution: "Correct data and retry or manual payment"
+
+  notifications:
+    - event: period_opened
+      recipients: [all_managers]
+      template: "Payroll period {period} is now open"
+
+    - event: cutoff_reminder
+      recipients: [department_managers]
+      timing: 2_days_before_cutoff
+      template: "Data cutoff in 2 days"
+
+    - event: approval_required
+      recipients: [approvers]
+      template: "Payroll approval required"
+
+    - event: payment_complete
+      recipients: [all_employees]
+      template: "Salary for {period} has been deposited"
+
+    - event: payslip_available
+      recipients: [employee]
+      template: "Your payslip is now available"
+
+  audit:
+    logged_events:
+      - period_state_changes
+      - calculation_runs
+      - approvals
+      - payment_submissions
+      - manual_adjustments
+
+    retention: 10_years
+
+  compliance:
+    - standard: Vietnam_Labor_Code
+      requirement: Timely salary payment
+    - standard: BHXH_Law
+      requirement: Timely contribution
+    - standard: PIT_Law
+      requirement: Tax withholding and reporting

@@ -1,0 +1,556 @@
+name: Tenant Onboarding
+display_name: Tenant Onboarding Workflow / Quy trình đưa khách thuê vào sử dụng
+description: |
+  Complete workflow for onboarding new tenants from signup to activation.
+  Includes account setup, initial configuration, and welcome sequence.
+
+domain: saas-platform
+workflow_type: customer_journey
+version: "1.0"
+
+# =============================================================================
+# WORKFLOW OVERVIEW
+# =============================================================================
+overview:
+  trigger: "User initiates signup"
+  outcome: "Fully configured, active tenant with first user"
+  estimated_duration: "5-15 minutes (self-service)"
+  complexity: medium
+
+  stages:
+    - stage: signup
+      description: "User registration and account creation"
+    - stage: verification
+      description: "Email verification and identity confirmation"
+    - stage: tenant_creation
+      description: "Tenant provisioning and configuration"
+    - stage: plan_selection
+      description: "Subscription plan and billing setup"
+    - stage: initial_setup
+      description: "Basic configuration and preferences"
+    - stage: activation
+      description: "Account activation and welcome"
+
+# =============================================================================
+# STAGE 1: SIGNUP
+# =============================================================================
+stages:
+  signup:
+    name: Signup
+    name_vi: Đăng ký
+    order: 1
+    duration: "2-5 minutes"
+
+    entry_points:
+      - type: marketing_website
+        path: "/signup"
+        source_tracking: true
+
+      - type: product_trial
+        path: "/start-trial"
+        plan_context: true
+
+      - type: invitation
+        path: "/invite/{token}"
+        inviter_context: true
+
+    steps:
+      - id: S1-01
+        name: Collect Basic Info
+        name_vi: Thu thập thông tin cơ bản
+        type: form_input
+        fields:
+          - name: email
+            type: email
+            required: true
+            validation: "Valid email format"
+            unique_check: true
+
+          - name: password
+            type: password
+            required: true
+            validation:
+              min_length: 12
+              require_uppercase: true
+              require_lowercase: true
+              require_number: true
+              require_special: true
+
+          - name: full_name
+            type: text
+            required: true
+            max_length: 100
+
+        actions:
+          on_submit:
+            - validate_inputs
+            - check_email_exists
+            - rate_limit_check
+
+      - id: S1-02
+        name: Collect Company Info
+        name_vi: Thu thập thông tin công ty
+        type: form_input
+        conditional: "Not invitation signup"
+        fields:
+          - name: company_name
+            type: text
+            required: true
+            max_length: 255
+
+          - name: company_size
+            type: select
+            options: [1-10, 11-50, 51-200, 201-1000, 1000+]
+            required: false
+
+          - name: industry
+            type: select
+            options: [technology, finance, healthcare, retail, education, other]
+            required: false
+
+          - name: use_case
+            type: select
+            options: [product_development, marketing, customer_support, analytics, other]
+            required: false
+
+        actions:
+          on_submit:
+            - store_metadata
+            - segment_for_onboarding_path
+
+      - id: S1-03
+        name: Social Signup Option
+        name_vi: Tùy chọn đăng ký qua mạng xã hội
+        type: oauth_flow
+        providers:
+          - google
+          - github
+          - microsoft
+        fields_obtained:
+          - email
+          - full_name
+          - avatar_url
+        actions:
+          on_success:
+            - verify_oauth_email
+            - skip_password_creation
+            - mark_oauth_provider
+
+    outputs:
+      - user_record_created
+      - signup_source_tracked
+      - initial_segment_assigned
+
+    error_handling:
+      email_exists:
+        message: "An account with this email already exists"
+        actions:
+          - offer_login_link
+          - offer_password_reset
+
+      oauth_failure:
+        message: "Unable to sign in with {provider}"
+        actions:
+          - log_error
+          - offer_email_signup
+
+  # =============================================================================
+  # STAGE 2: VERIFICATION
+  # =============================================================================
+  verification:
+    name: Email Verification
+    name_vi: Xác minh email
+    order: 2
+    duration: "1-5 minutes"
+
+    steps:
+      - id: V1-01
+        name: Send Verification Email
+        name_vi: Gửi email xác minh
+        type: automated_action
+        trigger: "After signup submission"
+        actions:
+          - generate_verification_token
+          - send_verification_email
+          - start_verification_timer
+
+        email_template:
+          subject: "Verify your email to get started"
+          content:
+            - "Welcome to {platform_name}!"
+            - "Click the button below to verify your email"
+            - "Link expires in 24 hours"
+          cta: "Verify Email"
+
+      - id: V1-02
+        name: Handle Verification Click
+        name_vi: Xử lý nhấp xác minh
+        type: automated_action
+        trigger: "User clicks verification link"
+        actions:
+          - validate_token
+          - check_expiration
+          - mark_email_verified
+          - proceed_to_tenant_creation
+
+      - id: V1-03
+        name: Resend Option
+        name_vi: Tùy chọn gửi lại
+        type: user_action
+        trigger: "User requests resend"
+        cooldown: 60_seconds
+        max_resends: 5
+        actions:
+          - invalidate_previous_token
+          - generate_new_token
+          - send_verification_email
+
+    timeout_handling:
+      duration: 24_hours
+      actions:
+        - send_reminder_at_1_hour
+        - send_reminder_at_6_hours
+        - expire_token
+        - delete_unverified_account_after_7_days
+
+  # =============================================================================
+  # STAGE 3: TENANT CREATION
+  # =============================================================================
+  tenant_creation:
+    name: Tenant Provisioning
+    name_vi: Cung cấp khách thuê
+    order: 3
+    duration: "5-30 seconds"
+
+    steps:
+      - id: T1-01
+        name: Create Tenant Record
+        name_vi: Tạo bản ghi khách thuê
+        type: automated_action
+        actions:
+          - generate_tenant_id
+          - generate_tenant_slug
+          - create_tenant_record
+          - set_initial_status: pending
+
+        data_created:
+          tenant:
+            id: generated_uuid
+            name: from_company_name
+            slug: generated_from_name
+            status: pending
+            tier: free
+            created_at: now
+
+      - id: T1-02
+        name: Provision Resources
+        name_vi: Cung cấp tài nguyên
+        type: automated_action
+        parallel: true
+        actions:
+          - create_default_settings
+          - initialize_feature_flags
+          - setup_storage_namespace
+          - create_audit_log_table_partition
+
+        resources_provisioned:
+          - tenant_settings: default_config
+          - feature_flags: tier_defaults
+          - storage: "s3://bucket/{tenant_id}/"
+          - cache: "redis_namespace_{tenant_id}"
+
+      - id: T1-03
+        name: Create Owner User
+        name_vi: Tạo người dùng chủ sở hữu
+        type: automated_action
+        actions:
+          - assign_user_to_tenant
+          - create_owner_role_assignment
+          - create_user_settings
+
+        user_setup:
+          role: owner
+          permissions: "*:*"
+          is_primary_contact: true
+
+      - id: T1-04
+        name: Setup Tenant Isolation
+        name_vi: Thiết lập cách ly khách thuê
+        type: automated_action
+        critical: true
+        actions:
+          - enable_rls_for_tenant
+          - verify_isolation
+          - create_tenant_context_function
+
+    error_handling:
+      provisioning_failure:
+        actions:
+          - rollback_all_changes
+          - log_error
+          - alert_engineering
+          - show_error_to_user
+
+  # =============================================================================
+  # STAGE 4: PLAN SELECTION
+  # =============================================================================
+  plan_selection:
+    name: Plan Selection
+    name_vi: Chọn gói
+    order: 4
+    duration: "1-5 minutes"
+
+    steps:
+      - id: P1-01
+        name: Display Plan Options
+        name_vi: Hiển thị tùy chọn gói
+        type: ui_display
+        content:
+          - plan_comparison_table
+          - feature_highlights
+          - pricing_by_billing_cycle
+
+        plans_displayed:
+          - free:
+              highlight: false
+              cta: "Start Free"
+
+          - starter:
+              highlight: false
+              cta: "Start 14-Day Trial"
+
+          - professional:
+              highlight: true
+              badge: "Most Popular"
+              cta: "Start 14-Day Trial"
+
+          - enterprise:
+              highlight: false
+              cta: "Contact Sales"
+
+      - id: P1-02
+        name: Handle Plan Selection
+        name_vi: Xử lý chọn gói
+        type: user_action
+        branches:
+          free:
+            next_step: P1-04
+            actions:
+              - create_free_subscription
+              - skip_payment_setup
+
+          trial:
+            next_step: P1-03
+            actions:
+              - create_trial_subscription
+              - set_trial_end_date
+
+          enterprise:
+            next_step: enterprise_contact_flow
+            actions:
+              - create_sales_lead
+              - send_to_sales_team
+
+      - id: P1-03
+        name: Payment Setup (Optional for Trial)
+        name_vi: Thiết lập thanh toán (Tùy chọn cho dùng thử)
+        type: form_input
+        optional: true
+        encouragement: "Add payment method to avoid service interruption after trial"
+        fields:
+          - name: card_element
+            type: stripe_card_element
+            required: false
+
+        actions:
+          on_submit:
+            - tokenize_card
+            - create_payment_method
+            - attach_to_subscription
+
+          on_skip:
+            - mark_payment_pending
+            - schedule_payment_reminders
+
+      - id: P1-04
+        name: Create Subscription
+        name_vi: Tạo đăng ký
+        type: automated_action
+        actions:
+          - create_subscription_record
+          - set_billing_anchor
+          - apply_trial_if_applicable
+          - sync_to_stripe
+
+        subscription_created:
+          status: "trialing | active"
+          current_period_start: now
+          current_period_end: calculated
+          trial_end: "now + trial_days (if trial)"
+
+  # =============================================================================
+  # STAGE 5: INITIAL SETUP
+  # =============================================================================
+  initial_setup:
+    name: Initial Configuration
+    name_vi: Cấu hình ban đầu
+    order: 5
+    duration: "2-10 minutes"
+
+    steps:
+      - id: I1-01
+        name: Setup Wizard
+        name_vi: Trình hướng dẫn thiết lập
+        type: wizard_flow
+        optional: true
+        skippable: true
+
+        wizard_steps:
+          - name: "Customize Your Workspace"
+            fields:
+              - logo_upload
+              - primary_color
+              - timezone
+
+          - name: "Invite Your Team"
+            fields:
+              - team_member_emails
+              - default_role
+            action: send_invitations
+
+          - name: "Connect Integrations"
+            fields:
+              - integration_selection
+            integrations_offered:
+              - slack
+              - github
+              - jira
+
+          - name: "Quick Tour"
+            type: product_tour
+            steps:
+              - dashboard_overview
+              - key_features
+              - help_resources
+
+      - id: I1-02
+        name: Apply Setup Choices
+        name_vi: Áp dụng lựa chọn thiết lập
+        type: automated_action
+        actions:
+          - save_branding_settings
+          - process_team_invitations
+          - setup_integrations
+          - mark_setup_complete
+
+    skip_handling:
+      action: "Mark as incomplete, show in dashboard"
+      reminder: "Prompt to complete setup after 24 hours"
+
+  # =============================================================================
+  # STAGE 6: ACTIVATION
+  # =============================================================================
+  activation:
+    name: Account Activation
+    name_vi: Kích hoạt tài khoản
+    order: 6
+    duration: "Immediate"
+
+    steps:
+      - id: A1-01
+        name: Activate Tenant
+        name_vi: Kích hoạt khách thuê
+        type: automated_action
+        actions:
+          - set_tenant_status: active
+          - enable_all_features
+          - start_usage_tracking
+          - emit_tenant_activated_event
+
+      - id: A1-02
+        name: Send Welcome Email
+        name_vi: Gửi email chào mừng
+        type: automated_action
+        email_template:
+          subject: "Welcome to {platform_name}!"
+          content:
+            - personalized_greeting
+            - quick_start_guide
+            - support_resources
+            - community_links
+
+      - id: A1-03
+        name: Trigger Welcome Sequence
+        name_vi: Kích hoạt chuỗi chào mừng
+        type: automated_action
+        drip_campaign:
+          - day_1: "Quick wins guide"
+          - day_3: "Feature highlight - {top_feature}"
+          - day_7: "How to get help"
+          - day_14: "Success story from similar company"
+
+      - id: A1-04
+        name: Redirect to Dashboard
+        name_vi: Chuyển hướng đến bảng điều khiển
+        type: navigation
+        destination: "/dashboard"
+        params:
+          show_welcome_modal: true
+          highlight_first_action: true
+
+# =============================================================================
+# POST-ONBOARDING
+# =============================================================================
+post_onboarding:
+  success_metrics:
+    tracked_events:
+      - first_api_call
+      - first_team_invite
+      - first_integration_connected
+      - completed_setup_wizard
+
+    success_criteria:
+      day_1: "At least one meaningful action"
+      day_7: "Active usage (3+ sessions)"
+      day_14: "Feature adoption (2+ features used)"
+
+  health_monitoring:
+    inactive_tenant:
+      threshold: "No activity for 7 days"
+      actions:
+        - send_re_engagement_email
+        - schedule_success_call
+
+    stuck_in_onboarding:
+      threshold: "Setup incomplete after 48 hours"
+      actions:
+        - send_help_offer_email
+        - trigger_in_app_guidance
+
+# =============================================================================
+# EVENTS EMITTED
+# =============================================================================
+events:
+  - name: tenant.signup_started
+    stage: signup
+    payload: [email, source, timestamp]
+
+  - name: tenant.email_verified
+    stage: verification
+    payload: [user_id, timestamp]
+
+  - name: tenant.created
+    stage: tenant_creation
+    payload: [tenant_id, name, tier]
+
+  - name: tenant.subscription_created
+    stage: plan_selection
+    payload: [tenant_id, plan_id, is_trial]
+
+  - name: tenant.setup_completed
+    stage: initial_setup
+    payload: [tenant_id, setup_steps_completed]
+
+  - name: tenant.activated
+    stage: activation
+    payload: [tenant_id, activation_time, source]

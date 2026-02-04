@@ -1,0 +1,212 @@
+name: Fraud Prevention Rules
+display_name: Fraud Prevention Rules / Quy tắc chống gian lận
+description: |
+  Quy tắc phát hiện và ngăn chặn gian lận trong giao dịch.
+  Bao gồm: bơm nước, tráo hàng, shill bidding, fake payment.
+
+domain: agriculture
+category: fraud_prevention
+
+rules:
+  # Water Injection Detection
+  - id: BR-FRAUD-001
+    name: Carcass Ratio Alert
+    description: Tỷ lệ móc hàm/hơi bất thường = nghi ngờ bơm nước
+    priority: critical
+    condition: |
+      quality_check.checkpoint = 'slaughterhouse' AND
+      quality_check.carcass_ratio > 85
+    action: |
+      CREATE alert(
+        type = 'water_injection_suspected',
+        severity = 'high',
+        order_id = order.id,
+        slaughterhouse_id = order.slaughterhouse_id
+      )
+      slaughterhouse.water_injection_reports += 1
+      IF slaughterhouse.water_injection_reports >= 3 THEN
+        slaughterhouse.status = 'suspended'
+      END IF
+    applies_to: [QualityCheck, Slaughterhouse]
+    config:
+      max_carcass_ratio: 85
+      reports_before_suspend: 3
+
+  - id: BR-FRAUD-002
+    name: Weight Variance Alert
+    description: Chênh lệch cân nặng giữa các checkpoint
+    priority: high
+    condition: |
+      ABS(current_check.weight_kg - previous_check.weight_kg) /
+      previous_check.weight_kg > 0.05
+    action: |
+      CREATE alert(
+        type = 'weight_variance',
+        severity = 'medium',
+        variance_percent = calculated_variance
+      )
+      IF variance > 0.10 THEN
+        auto_create_dispute()
+      END IF
+    applies_to: [QualityCheck]
+    config:
+      warning_threshold: 0.05
+      dispute_threshold: 0.10
+
+  # Product Swap Detection
+  - id: BR-FRAUD-003
+    name: Seal Integrity Check
+    description: Seal bị phá trước khi đến tay buyer
+    priority: critical
+    condition: |
+      quality_check.seal_status = 'broken' AND
+      quality_check.checkpoint NOT IN ('buyer_receive')
+    action: |
+      CREATE alert(
+        type = 'seal_broken',
+        severity = 'high',
+        checkpoint = quality_check.checkpoint
+      )
+      IF checkpoint = 'hub_release' THEN
+        hub.swap_reports += 1
+        IF hub.swap_reports >= 3 THEN
+          hub.status = 'suspended'
+        END IF
+      END IF
+    applies_to: [QualityCheck, Hub]
+
+  - id: BR-FRAUD-004
+    name: Photo Chain Verification
+    description: So sánh ảnh giữa các checkpoint
+    priority: medium
+    condition: |
+      -- AI/Manual comparison flags mismatch
+      photo_comparison.similarity_score < 0.7
+    action: |
+      CREATE alert(
+        type = 'product_mismatch',
+        severity = 'high'
+      )
+      flag_for_manual_review()
+    applies_to: [QualityCheck]
+
+  # Shill Bidding Detection
+  - id: BR-FRAUD-005
+    name: Same IP Bidding Pattern
+    description: Cùng IP bid trên nhiều listing liên quan
+    priority: critical
+    condition: |
+      COUNT(
+        SELECT DISTINCT auction_id
+        FROM bids
+        WHERE ip_address = current_bid.ip_address
+        AND bidder_id IN (
+          SELECT owner_id FROM farms
+          WHERE id IN (SELECT farm_id FROM listings WHERE auction.listing_id = id)
+        )
+      ) > 0
+    action: |
+      FLAG bidder_account
+      FLAG seller_account
+      ALERT admin('Possible shill bidding detected')
+    applies_to: [Bid]
+
+  - id: BR-FRAUD-006
+    name: Bid Pattern Analysis
+    description: Phát hiện pattern bid bất thường
+    priority: high
+    condition: |
+      -- Luôn bid thấp hơn winner 1 bước
+      -- Bid count cao nhưng không bao giờ thắng
+      -- Bid ở phút cuối rồi rút (nếu cho phép)
+      suspicious_pattern_detected = true
+    action: |
+      FLAG account_for_review
+      IF confirmed_shill THEN
+        BAN accounts
+        CANCEL all_bids
+      END IF
+    applies_to: [Bid, User]
+
+  # Fake Payment Detection
+  - id: BR-FRAUD-007
+    name: Payment Verification
+    description: Chỉ xác nhận đã thanh toán khi tiền về tài khoản thực
+    priority: critical
+    condition: |
+      payment.method = 'bank_transfer' AND
+      payment.verified_by_bank = false
+    action: |
+      DO NOT update order.payment_status
+      WARN seller('Vui lòng kiểm tra tài khoản trước khi giao hàng')
+    applies_to: [Payment, Order]
+
+  # Hub Product Swap
+  - id: BR-FRAUD-008
+    name: Hub Storage Time Limit
+    description: Hàng lưu Hub quá 24h phải xử lý
+    priority: high
+    condition: |
+      order.status = 'at_hub' AND
+      NOW() - order.arrived_hub_at > INTERVAL '24 hours'
+    action: |
+      ALERT buyer('Hàng của bạn sắp hết hạn lưu tại Hub')
+      ALERT hub_staff('Hàng quá hạn cần xử lý')
+      IF > INTERVAL '48 hours' THEN
+        initiate_return_to_seller()
+      END IF
+    applies_to: [Order, Hub]
+    config:
+      warning_hours: 24
+      force_return_hours: 48
+
+  # Seller Fraud
+  - id: BR-FRAUD-009
+    name: Accuracy Rate Monitoring
+    description: Theo dõi tỷ lệ mô tả chính xác của seller
+    priority: medium
+    condition: |
+      farm.accuracy_rate < 70
+    action: |
+      WARN farmer('Tỷ lệ mô tả chính xác của bạn đang thấp')
+      IF accuracy_rate < 50 THEN
+        farm.status = 'suspended'
+        ALERT admin
+      END IF
+    applies_to: [Farm]
+    config:
+      warning_threshold: 70
+      suspend_threshold: 50
+
+  # Buyer Fraud
+  - id: BR-FRAUD-010
+    name: False Dispute Detection
+    description: Phát hiện buyer khai gian để đòi bồi thường
+    priority: high
+    condition: |
+      buyer.dispute_rate > 0.3 AND
+      buyer.total_orders > 5
+    action: |
+      FLAG buyer_for_review
+      require_video_evidence_for_disputes
+    applies_to: [User, Dispute]
+    config:
+      dispute_rate_threshold: 0.3
+      min_orders_for_check: 5
+
+alerts:
+  - type: water_injection_suspected
+    channels: [admin_dashboard, email_admin]
+    severity: high
+
+  - type: shill_bidding_detected
+    channels: [admin_dashboard, email_admin, sms_admin]
+    severity: critical
+
+  - type: seal_broken
+    channels: [admin_dashboard, notify_buyer, notify_seller]
+    severity: high
+
+  - type: weight_variance
+    channels: [admin_dashboard, notify_buyer]
+    severity: medium

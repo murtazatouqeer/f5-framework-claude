@@ -1,0 +1,252 @@
+name: bom
+display_name: Bill of Materials
+display_name_vi: Định mức vật tư
+version: "1.0"
+domain: manufacturing
+subdomain: production
+type: entity
+
+description: |
+  Bill of Materials (BOM) defines the list of materials, components, and
+  quantities required to manufacture a product. Supports multiple versions
+  and date-based effectivity.
+
+description_vi: |
+  Định mức vật tư (BOM) xác định danh sách nguyên vật liệu, linh kiện và
+  số lượng cần thiết để sản xuất sản phẩm. Hỗ trợ nhiều phiên bản và
+  hiệu lực theo ngày.
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      required: true
+
+    - name: bom_code
+      type: string
+      required: true
+      unique: true
+      pattern: "^BOM-[A-Z0-9-]+$"
+      description: BOM identifier
+      description_vi: Mã định mức
+
+    - name: product_id
+      type: uuid
+      required: true
+      description: Product this BOM is for
+      description_vi: Sản phẩm
+
+    - name: status
+      type: enum
+      required: true
+      default: draft
+      values:
+        - draft: Under development
+        - pending_approval: Awaiting approval
+        - active: Current active version
+        - obsolete: No longer used
+      description_vi: Trạng thái
+
+    - name: version
+      type: string
+      required: true
+      default: "1.0"
+      description: BOM version number
+      description_vi: Phiên bản
+
+    - name: bom_type
+      type: enum
+      required: true
+      default: manufacturing
+      values:
+        - manufacturing: Production BOM
+        - engineering: Engineering BOM
+        - planning: Planning BOM
+        - costing: Cost calculation BOM
+      description_vi: Loại định mức
+
+  header:
+    - name: name
+      type: string
+      required: true
+      description: BOM name
+      description_vi: Tên định mức
+
+    - name: description
+      type: text
+      description: BOM description
+      description_vi: Mô tả
+
+    - name: effective_from
+      type: date
+      required: true
+      description: Start of effectivity
+      description_vi: Hiệu lực từ ngày
+
+    - name: effective_to
+      type: date
+      description: End of effectivity (null = indefinite)
+      description_vi: Hiệu lực đến ngày
+
+    - name: base_quantity
+      type: decimal
+      required: true
+      default: 1
+      description: Output quantity this BOM produces
+      description_vi: Số lượng cơ sở
+
+    - name: unit_of_measure
+      type: string
+      required: true
+      description: UOM for base quantity
+      description_vi: Đơn vị tính
+
+  yield:
+    - name: expected_yield_percent
+      type: decimal
+      default: 100
+      min: 0
+      max: 100
+      description: Expected yield percentage
+      description_vi: Tỷ lệ sản lượng dự kiến
+
+    - name: scrap_percent
+      type: decimal
+      default: 0
+      min: 0
+      max: 100
+      description: Expected scrap percentage
+      description_vi: Tỷ lệ phế liệu
+
+  costing:
+    - name: total_material_cost
+      type: decimal
+      precision: 15
+      scale: 4
+      description: Calculated total material cost
+      description_vi: Tổng chi phí vật tư
+
+    - name: cost_last_calculated
+      type: timestamp
+      description: When cost was last rolled up
+
+  alternatives:
+    - name: is_primary
+      type: boolean
+      default: true
+      description: Primary BOM for product
+      description_vi: Định mức chính
+
+    - name: has_alternatives
+      type: boolean
+      default: false
+      description: Has alternative BOMs
+      description_vi: Có định mức thay thế
+
+    - name: alternative_bom_ids
+      type: array
+      item_type: uuid
+      description: List of alternative BOMs
+
+  approval:
+    - name: approved_by
+      type: uuid
+      description: User who approved
+
+    - name: approved_at
+      type: timestamp
+      description: Approval timestamp
+
+    - name: approval_notes
+      type: text
+      description: Approval comments
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: uuid
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+    - name: updated_by
+      type: uuid
+
+relationships:
+  - name: product
+    type: belongs_to
+    entity: product
+    foreign_key: product_id
+    description: Parent product
+
+  - name: items
+    type: has_many
+    entity: bom_item
+    foreign_key: bom_id
+    order_by: sequence_number
+    description: BOM line items
+
+  - name: work_orders
+    type: has_many
+    entity: work_order
+    foreign_key: bom_id
+    description: Work orders using this BOM
+
+  - name: alternative_boms
+    type: has_many
+    entity: bom
+    through: alternative_bom_ids
+    description: Alternative BOMs
+
+indexes:
+  - columns: [bom_code]
+    unique: true
+  - columns: [product_id, status]
+  - columns: [product_id, effective_from]
+  - columns: [status, bom_type]
+
+state_machine:
+  field: status
+  initial: draft
+  transitions:
+    - from: draft
+      to: pending_approval
+      event: submit
+      guard: has_items
+
+    - from: pending_approval
+      to: active
+      event: approve
+      action: set_previous_obsolete
+
+    - from: pending_approval
+      to: draft
+      event: reject
+
+    - from: active
+      to: obsolete
+      event: obsolete
+
+validation_rules:
+  - rule: "effective_to IS NULL OR effective_to > effective_from"
+    message: "End date must be after start date"
+
+  - rule: "base_quantity > 0"
+    message: "Base quantity must be positive"
+
+  - rule: "expected_yield_percent + scrap_percent <= 100"
+    message: "Yield plus scrap cannot exceed 100%"
+
+business_rules:
+  - id: BR-BOM-001
+    name: Single active BOM
+    description: Only one active BOM per product at any time
+    description_vi: Chỉ một định mức active cho mỗi sản phẩm
+
+  - id: BR-BOM-002
+    name: Effectivity validation
+    description: Active BOMs must have valid effectivity dates

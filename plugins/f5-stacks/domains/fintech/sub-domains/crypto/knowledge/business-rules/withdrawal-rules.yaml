@@ -1,0 +1,469 @@
+name: WithdrawalRules
+display_name: Withdrawal Business Rules / Quy tắc rút tiền
+description: |
+  Business rules governing cryptocurrency withdrawal operations
+  including security checks, limits, and compliance requirements.
+
+domain: fintech
+sub_domain: crypto
+rule_category: withdrawal
+version: "1.0"
+status: active
+
+# =============================================================================
+# VERIFICATION REQUIREMENTS
+# =============================================================================
+verification:
+  - id: WD-001
+    name: 2FA Required
+    name_vi: Yêu cầu 2FA
+    description: All withdrawals require 2FA verification
+    severity: critical
+    enforcement: application_logic
+    condition: |
+      two_fa_verified = true
+    methods:
+      - google_auth
+      - sms
+      - email
+    message: Please verify with 2FA to continue
+
+  - id: WD-002
+    name: Email Confirmation
+    name_vi: Xác nhận email
+    description: Large withdrawals require email confirmation
+    severity: error
+    enforcement: application_logic
+    threshold:
+      btc: 1
+      eth: 10
+      usdt: 10000
+    condition: |
+      IF amount >= threshold:
+        email_confirmed = true
+    expiry: 30 minutes
+    message: Please confirm withdrawal via email
+
+  - id: WD-003
+    name: Password Verification
+    name_vi: Xác minh mật khẩu
+    description: Password required after security changes
+    severity: error
+    enforcement: application_logic
+    triggers:
+      - new_device_login
+      - password_changed_recently
+      - api_key_created
+    window: 24 hours
+    message: Please re-enter password for security
+
+# =============================================================================
+# ADDRESS RULES
+# =============================================================================
+address_rules:
+  - id: WD-010
+    name: Address Validation
+    name_vi: Xác thực địa chỉ
+    description: Destination address must be valid for network
+    severity: error
+    enforcement: validation
+    checks:
+      - format_valid
+      - checksum_valid
+      - network_compatible
+    message: Invalid withdrawal address
+
+  - id: WD-011
+    name: Address Blacklist
+    name_vi: Danh sách đen địa chỉ
+    description: Block withdrawals to sanctioned addresses
+    severity: critical
+    enforcement: application_logic
+    sources:
+      - ofac_sanctions_list
+      - internal_blacklist
+      - chainalysis_alerts
+    action: Reject and report
+    message: Withdrawal to this address is not permitted
+
+  - id: WD-012
+    name: New Address Cooling Period
+    name_vi: Thời gian chờ địa chỉ mới
+    description: 24-hour delay for withdrawals to new addresses
+    severity: warning
+    enforcement: application_logic
+    condition: |
+      IF NOT address_in_whitelist:
+        address_added_time + 24h <= now()
+    exception: Whitelist enabled addresses
+    message: New addresses have 24-hour cooling period
+
+  - id: WD-013
+    name: Whitelist Only Mode
+    name_vi: Chế độ chỉ whitelist
+    description: Users can enable withdrawals only to whitelisted addresses
+    severity: error
+    enforcement: application_logic
+    condition: |
+      IF user.whitelist_only_mode:
+        address IN user.whitelisted_addresses
+    message: Address not in your whitelist
+
+  - id: WD-014
+    name: Internal Address Detection
+    name_vi: Phát hiện địa chỉ nội bộ
+    description: Detect if destination is internal exchange address
+    severity: info
+    enforcement: application_logic
+    behavior: |
+      IF is_internal_address(destination):
+        Process as internal transfer
+        Skip blockchain transaction
+        Zero network fee
+
+# =============================================================================
+# AMOUNT LIMITS
+# =============================================================================
+amount_limits:
+  - id: WD-020
+    name: Minimum Withdrawal
+    name_vi: Rút tối thiểu
+    description: Withdrawal must meet minimum amount
+    severity: error
+    enforcement: validation
+    source: crypto_asset.min_withdrawal
+    message: Amount below minimum withdrawal
+
+  - id: WD-021
+    name: Daily Limit by KYC
+    name_vi: Giới hạn hàng ngày theo KYC
+    description: Daily withdrawal limit based on verification level
+    severity: error
+    enforcement: application_logic
+    limits:
+      kyc_none: 0
+      kyc_basic: 2          # BTC equivalent
+      kyc_advanced: 100     # BTC equivalent
+      kyc_vip: unlimited
+    message: Daily withdrawal limit exceeded
+
+  - id: WD-022
+    name: Per-Transaction Limit
+    name_vi: Giới hạn mỗi giao dịch
+    description: Single withdrawal cannot exceed limit
+    severity: error
+    enforcement: application_logic
+    limits:
+      kyc_basic: 1          # BTC equivalent
+      kyc_advanced: 50      # BTC equivalent
+      kyc_vip: unlimited
+    message: Amount exceeds per-transaction limit
+
+  - id: WD-023
+    name: Balance Sufficiency
+    name_vi: Đủ số dư
+    description: Must have sufficient available balance
+    severity: error
+    enforcement: validation
+    condition: |
+      available_balance >= amount + fee
+    message: Insufficient balance for withdrawal
+
+  - id: WD-024
+    name: Remaining Balance Minimum
+    name_vi: Số dư tối thiểu còn lại
+    description: Cannot withdraw entire balance (dust prevention)
+    severity: warning
+    enforcement: validation
+    exception: Withdraw all option selected
+    min_remaining: Dust threshold per asset
+    message: Small remaining balance will be left
+
+# =============================================================================
+# RISK ASSESSMENT
+# =============================================================================
+risk_assessment:
+  - id: WD-030
+    name: Risk Score Calculation
+    name_vi: Tính điểm rủi ro
+    description: Calculate risk score for each withdrawal
+    severity: info
+    enforcement: application_logic
+    factors:
+      new_address: +20
+      large_amount: +15
+      new_account: +25
+      unusual_time: +10
+      multiple_pending: +15
+      country_risk: +10-30
+      device_unknown: +20
+    thresholds:
+      low: 0-30
+      medium: 31-60
+      high: 61-100
+
+  - id: WD-031
+    name: Manual Review Threshold
+    name_vi: Ngưỡng xét duyệt thủ công
+    description: High-risk withdrawals require manual review
+    severity: warning
+    enforcement: application_logic
+    triggers:
+      - risk_score > 60
+      - amount > manual_review_threshold
+      - user.recent_security_incident
+    action: Hold for manual review
+    sla: 24 hours
+
+  - id: WD-032
+    name: Velocity Check
+    name_vi: Kiểm tra tốc độ
+    description: Detect unusual withdrawal patterns
+    severity: warning
+    enforcement: application_logic
+    checks:
+      - withdrawals_last_hour > 5
+      - total_amount_24h > usual_average * 3
+      - unique_addresses_24h > 10
+    action: Flag for review
+
+  - id: WD-033
+    name: Account Age Restriction
+    name_vi: Hạn chế tuổi tài khoản
+    description: New accounts have stricter limits
+    severity: error
+    enforcement: application_logic
+    condition: |
+      IF account_age < 30 days:
+        daily_limit = reduced_limit
+    reduced_limit: 0.5  # BTC equivalent
+    message: New accounts have reduced withdrawal limits
+
+# =============================================================================
+# NETWORK RULES
+# =============================================================================
+network_rules:
+  - id: WD-040
+    name: Network Availability
+    name_vi: Tính khả dụng mạng
+    description: Check if network is available for withdrawals
+    severity: error
+    enforcement: application_logic
+    condition: |
+      network.withdrawal_enabled = true AND
+      network.status = 'active'
+    message: Withdrawals temporarily unavailable for this network
+
+  - id: WD-041
+    name: Fee Estimation
+    name_vi: Ước tính phí
+    description: Show estimated network fee before confirmation
+    severity: info
+    enforcement: application_logic
+    display:
+      - estimated_fee
+      - fee_currency
+      - estimated_arrival_time
+
+  - id: WD-042
+    name: Memo/Tag Required
+    name_vi: Yêu cầu memo/tag
+    description: Some networks require memo or tag
+    severity: error
+    enforcement: validation
+    networks:
+      - xrp: destination_tag
+      - xlm: memo
+      - eos: memo
+      - atom: memo
+      - ton: comment
+    message: Memo/tag required for this network
+
+  - id: WD-043
+    name: Contract Address Verification
+    name_vi: Xác minh địa chỉ hợp đồng
+    description: Block withdrawals to smart contract addresses (where risky)
+    severity: warning
+    enforcement: application_logic
+    networks: [ethereum, bsc, polygon]
+    condition: |
+      NOT is_contract_address(destination) OR
+      user_confirmed_contract_withdrawal
+    message: Withdrawing to contract address may result in loss of funds
+
+# =============================================================================
+# PROCESSING RULES
+# =============================================================================
+processing:
+  - id: WD-050
+    name: Balance Lock on Initiation
+    name_vi: Khóa số dư khi khởi tạo
+    description: Lock withdrawal amount during processing
+    severity: critical
+    enforcement: application_logic
+    behavior: |
+      pending_withdrawal += amount + fee
+      available_balance -= amount + fee
+
+  - id: WD-051
+    name: Retry Limits
+    name_vi: Giới hạn thử lại
+    description: Maximum retry attempts for failed broadcasts
+    severity: info
+    enforcement: application_logic
+    max_retries: 3
+    retry_delay: exponential
+    final_action: Mark as failed, unlock balance
+
+  - id: WD-052
+    name: Confirmation Requirement
+    name_vi: Yêu cầu xác nhận
+    description: Wait for blockchain confirmations
+    severity: info
+    enforcement: application_logic
+    note: Only for withdrawal tracking, funds already sent
+
+  - id: WD-053
+    name: Timeout Handling
+    name_vi: Xử lý hết thời gian
+    description: Handle stuck withdrawals
+    severity: warning
+    enforcement: scheduled_job
+    timeout: 1 hour
+    action: Alert support team for investigation
+
+# =============================================================================
+# CANCELLATION RULES
+# =============================================================================
+cancellation:
+  - id: WD-060
+    name: Cancellation Window
+    name_vi: Cửa sổ hủy
+    description: Withdrawals can only be cancelled before broadcast
+    severity: error
+    enforcement: application_logic
+    allowed_statuses:
+      - pending_approval
+      - approved
+    message: Cannot cancel - withdrawal already processed
+
+  - id: WD-061
+    name: Balance Unlock on Cancel
+    name_vi: Mở khóa số dư khi hủy
+    description: Unlock balance when withdrawal cancelled
+    severity: critical
+    enforcement: application_logic
+    behavior: |
+      pending_withdrawal -= amount + fee
+      available_balance += amount + fee
+
+# =============================================================================
+# COMPLIANCE RULES
+# =============================================================================
+compliance:
+  - id: WD-070
+    name: Travel Rule Compliance
+    name_vi: Tuân thủ quy tắc du lịch
+    description: Large withdrawals require beneficiary information
+    severity: error
+    enforcement: application_logic
+    threshold: 1000  # USD equivalent
+    required_info:
+      - beneficiary_name
+      - beneficiary_address
+    regulation: FATF Travel Rule
+
+  - id: WD-071
+    name: Transaction Monitoring
+    name_vi: Giám sát giao dịch
+    description: All withdrawals monitored for suspicious activity
+    severity: info
+    enforcement: application_logic
+    integration: chainalysis OR elliptic
+    flags:
+      - darknet_market
+      - mixer_service
+      - ransomware
+      - sanctions
+
+  - id: WD-072
+    name: Suspicious Activity Report
+    name_vi: Báo cáo hoạt động đáng ngờ
+    description: File SAR for suspicious withdrawals
+    severity: critical
+    enforcement: application_logic
+    triggers:
+      - high_risk_destination
+      - structuring_detected
+      - unusual_pattern
+    action: Hold and report to compliance
+
+# =============================================================================
+# NOTIFICATION RULES
+# =============================================================================
+notifications:
+  - id: WD-080
+    name: Initiation Notification
+    name_vi: Thông báo khởi tạo
+    description: Notify user when withdrawal initiated
+    severity: info
+    enforcement: application_logic
+    channels:
+      - email
+      - push
+    content:
+      - amount
+      - destination_address
+      - estimated_time
+
+  - id: WD-081
+    name: Completion Notification
+    name_vi: Thông báo hoàn thành
+    description: Notify user when withdrawal completed
+    severity: info
+    enforcement: application_logic
+    channels:
+      - email
+      - push
+    content:
+      - amount
+      - tx_hash
+      - block_explorer_link
+
+  - id: WD-082
+    name: Failure Notification
+    name_vi: Thông báo thất bại
+    description: Notify user when withdrawal fails
+    severity: warning
+    enforcement: application_logic
+    channels:
+      - email
+      - push
+    content:
+      - reason
+      - next_steps
+      - support_contact
+
+# =============================================================================
+# VALIDATION SUMMARY
+# =============================================================================
+validation_summary:
+  pre_withdrawal:
+    - WD-001  # 2FA
+    - WD-010  # Address valid
+    - WD-011  # Not blacklisted
+    - WD-012  # Cooling period
+    - WD-020  # Minimum amount
+    - WD-021  # Daily limit
+    - WD-023  # Balance check
+    - WD-040  # Network available
+
+  risk_check:
+    - WD-030  # Risk score
+    - WD-031  # Manual review
+    - WD-032  # Velocity
+
+  compliance:
+    - WD-070  # Travel rule
+    - WD-071  # Transaction monitoring
+    - WD-072  # SAR filing

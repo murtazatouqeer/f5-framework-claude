@@ -1,0 +1,262 @@
+name: PickingRules
+display_name: Picking Business Rules
+description: |
+  Business rules governing order picking operations, wave planning,
+  allocation strategies, and pick accuracy.
+
+domain: logistics
+subdomain: warehouse
+category: business-rules
+
+rules:
+  # Allocation Rules
+  - id: BR-PICK-001
+    name: FIFO Allocation
+    description: |
+      For standard items, allocate oldest received inventory first.
+      Based on receipt date or lot received date.
+    severity: high
+    entities: [Inventory, Lot, OutboundOrder]
+    conditions:
+      - item.allocation_method == 'FIFO'
+    actions:
+      - allocate_oldest_receipt_first
+      - track_allocation_date
+    exceptions:
+      - supervisor_override_with_reason
+
+  - id: BR-PICK-002
+    name: FEFO Allocation
+    description: |
+      For perishable items, allocate earliest expiry inventory first.
+      Items expiring within minimum shelf life excluded.
+    severity: critical
+    entities: [Inventory, Lot, OutboundOrder]
+    conditions:
+      - item.allocation_method == 'FEFO'
+      - lot.expiry_date > today + minimum_shelf_life_days
+    actions:
+      - allocate_earliest_expiry_first
+      - exclude_expired_or_near_expiry
+      - alert_if_no_qualifying_inventory
+    compliance: [FDA, HACCP]
+
+  - id: BR-PICK-003
+    name: LIFO Allocation
+    description: |
+      For specific items (e.g., non-perishable bulk), allocate newest first.
+      Reduces handling of older inventory.
+    severity: medium
+    entities: [Inventory, Lot, OutboundOrder]
+    conditions:
+      - item.allocation_method == 'LIFO'
+    actions:
+      - allocate_newest_receipt_first
+
+  - id: BR-PICK-004
+    name: Lot-Specific Allocation
+    description: |
+      When customer requests specific lot, only allocate from that lot.
+      Reject if requested lot unavailable.
+    severity: high
+    entities: [OutboundOrder, Inventory, Lot]
+    conditions:
+      - order.requested_lot_number IS NOT NULL
+    actions:
+      - allocate_only_from_requested_lot
+      - reject_if_lot_unavailable
+
+  # Wave Planning
+  - id: BR-PICK-005
+    name: Wave Capacity Limits
+    description: |
+      Waves should not exceed picker capacity to ensure completion
+      within target time window.
+    severity: medium
+    entities: [Wave, PickTask, WarehouseWorker]
+    conditions:
+      - wave.total_picks <= available_pickers * picks_per_hour * wave_duration
+      - wave.total_lines <= max_lines_per_wave
+    actions:
+      - limit_wave_size
+      - split_large_orders_across_waves
+
+  - id: BR-PICK-006
+    name: Priority Wave Sequencing
+    description: |
+      Same-day and rush orders must be in earlier waves.
+      Standard orders can be in later waves.
+    severity: high
+    entities: [Wave, OutboundOrder]
+    conditions:
+      - priority == 'same_day' implies wave_sequence <= 2
+      - priority == 'rush' implies wave_sequence <= 3
+    actions:
+      - prioritize_urgent_orders
+      - alert_if_priority_order_delayed
+
+  - id: BR-PICK-007
+    name: Carrier Cutoff Compliance
+    description: |
+      Orders must be picked and packed before carrier cutoff time.
+      Buffer time of 30 minutes required.
+    severity: critical
+    entities: [OutboundOrder, Wave, Shipment]
+    conditions:
+      - order.pick_complete_time < carrier.cutoff_time - 30_minutes
+    actions:
+      - prioritize_near_cutoff_orders
+      - escalate_at_risk_orders
+      - suggest_expedited_carrier
+
+  # Pick Path Optimization
+  - id: BR-PICK-008
+    name: Zone Pick Sequence
+    description: |
+      For zone picking, maintain proper sequence to avoid backtracking.
+      Pick in serpentine pattern through aisles.
+    severity: low
+    entities: [PickTask, Location, Zone]
+    conditions:
+      - pick_method == 'zone'
+    actions:
+      - sequence_picks_by_location
+      - minimize_travel_distance
+
+  - id: BR-PICK-009
+    name: Batch Pick Grouping
+    description: |
+      For batch picking, group orders with similar items/zones.
+      Maximum 10 orders per batch for accuracy.
+    severity: medium
+    entities: [PickTask, OutboundOrder]
+    conditions:
+      - pick_method == 'batch'
+      - orders_per_batch <= 10
+    actions:
+      - group_orders_by_zone_affinity
+      - balance_batch_sizes
+
+  # Pick Accuracy
+  - id: BR-PICK-010
+    name: Location Verification
+    description: |
+      Picker must scan location barcode before picking.
+      System rejects pick from wrong location.
+    severity: critical
+    entities: [PickTask, Location]
+    conditions:
+      - scanned_location == task.from_location
+    actions:
+      - reject_wrong_location_pick
+      - log_location_scan_discrepancy
+
+  - id: BR-PICK-011
+    name: Item Verification
+    description: |
+      Picker must scan item barcode to confirm correct item.
+      Prevents mispicks and wrong item shipments.
+    severity: critical
+    entities: [PickTask, Item, Inventory]
+    conditions:
+      - scanned_item == task.item
+    actions:
+      - reject_wrong_item_pick
+      - log_item_scan_discrepancy
+      - require_supervisor_for_override
+
+  - id: BR-PICK-012
+    name: Quantity Verification
+    description: |
+      For each picks, system prompts for quantity confirmation.
+      Weight verification for high-value items.
+    severity: high
+    entities: [PickTask, Inventory]
+    conditions:
+      - confirmed_quantity == requested_quantity OR
+      - weight_within_tolerance
+    actions:
+      - prompt_quantity_confirmation
+      - enable_weight_check_for_high_value
+
+  # Short Picks
+  - id: BR-PICK-013
+    name: Short Pick Handling
+    description: |
+      When full quantity unavailable, record short pick with reason.
+      Trigger replenishment or reallocation.
+    severity: high
+    entities: [PickTask, Inventory, OutboundOrder]
+    conditions:
+      - picked_quantity < requested_quantity
+    actions:
+      - record_short_pick_reason
+      - attempt_reallocation
+      - create_backorder_if_no_inventory
+      - notify_supervisor_if_short_rate_high
+
+  - id: BR-PICK-014
+    name: Short Pick Threshold
+    description: |
+      Short pick rate above 5% triggers location audit.
+      Persistent shorts indicate inventory accuracy issue.
+    severity: medium
+    entities: [PickTask, Location, CycleCount]
+    conditions:
+      - location.short_pick_rate > 5%
+    actions:
+      - trigger_cycle_count
+      - review_inventory_accuracy
+      - investigate_root_cause
+
+  # Substitution
+  - id: BR-PICK-015
+    name: Item Substitution Rules
+    description: |
+      When original item unavailable, offer approved substitutes.
+      Customer must approve substitution if required.
+    severity: medium
+    entities: [PickTask, Item, OutboundOrder]
+    conditions:
+      - original_item_unavailable
+      - substitute_item_approved
+    actions:
+      - offer_substitute_item
+      - request_customer_approval_if_required
+      - update_order_with_substitution
+
+  # Equipment Requirements
+  - id: BR-PICK-016
+    name: Equipment Certification
+    description: |
+      Forklift picks only assigned to certified operators.
+      RF gun required for all picks.
+    severity: critical
+    entities: [PickTask, WarehouseWorker]
+    conditions:
+      - task.equipment_required == 'forklift' implies
+        worker.is_certified_forklift == true
+    actions:
+      - filter_tasks_by_certification
+      - reject_uncertified_assignment
+    compliance: [OSHA]
+
+validation_triggers:
+  - before_allocation
+  - before_pick_assignment
+  - during_pick_execution
+  - after_pick_completion
+
+metrics:
+  - name: pick_accuracy
+    formula: (correct_picks / total_picks) * 100
+    target: "> 99.5%"
+  - name: short_pick_rate
+    formula: (short_picks / total_picks) * 100
+    target: "< 2%"
+  - name: picks_per_hour
+    formula: completed_picks / labor_hours
+    target: "> 100 UPH"
+  - name: on_time_wave_completion
+    formula: (waves_on_time / total_waves) * 100
+    target: "> 95%"

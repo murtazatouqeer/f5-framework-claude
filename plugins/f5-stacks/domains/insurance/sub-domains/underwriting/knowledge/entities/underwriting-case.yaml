@@ -1,0 +1,494 @@
+name: underwriting_case
+display_name: Underwriting Case
+description: |
+  Central entity representing an underwriting case for insurance application
+  risk assessment and decision-making. Tracks the complete lifecycle from
+  case creation through final decision.
+
+domain: insurance
+subdomain: underwriting
+category: entities
+version: "1.0.0"
+status: active
+
+attributes:
+  identification:
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique case identifier
+
+    - name: case_number
+      type: string
+      format: "UW-{YYYYMMDD}-{NNNNNN}"
+      unique: true
+      generated: true
+      description: Human-readable case reference
+
+    - name: application_id
+      type: uuid
+      required: true
+      foreign_key: applications.id
+      description: Reference to insurance application
+
+    - name: policy_id
+      type: uuid
+      foreign_key: policies.id
+      description: Reference to policy (for increases/reinstatements)
+
+  status:
+    - name: status
+      type: enum
+      values:
+        - pending
+        - in_progress
+        - requirements_pending
+        - medical_pending
+        - financial_pending
+        - referred
+        - decided
+        - closed
+      default: pending
+      description: Current case status
+
+    - name: case_type
+      type: enum
+      values:
+        - new_business
+        - increase
+        - reinstatement
+        - conversion
+        - group_addition
+        - rider_addition
+      required: true
+      description: Type of underwriting case
+
+    - name: substatus
+      type: string
+      description: Detailed status description
+
+  risk_summary:
+    - name: proposed_sum_insured
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Proposed coverage amount
+
+    - name: proposed_coverages
+      type: array
+      items:
+        type: object
+        properties:
+          coverage_code:
+            type: string
+          coverage_name:
+            type: string
+          sum_insured:
+            type: decimal
+          premium:
+            type: decimal
+      description: Array of proposed coverage details
+
+    - name: risk_class_proposed
+      type: enum
+      values:
+        - preferred
+        - standard
+        - substandard
+        - decline
+      description: Initial proposed risk classification
+
+    - name: total_risk_score
+      type: integer
+      min: 0
+      max: 100
+      description: Overall risk score
+
+  applicant:
+    - name: applicant_id
+      type: uuid
+      required: true
+      description: Reference to applicant
+
+    - name: applicant_name
+      type: string
+      description: Applicant full name
+
+    - name: applicant_age
+      type: integer
+      description: Age at application
+
+    - name: applicant_gender
+      type: enum
+      values: [male, female]
+      description: Applicant gender
+
+    - name: applicant_occupation
+      type: string
+      description: Occupation description
+
+    - name: occupation_class
+      type: enum
+      values: ["1", "2", "3", "4", "declined"]
+      description: Occupation classification
+
+  assignment:
+    - name: assigned_underwriter_id
+      type: uuid
+      foreign_key: users.id
+      description: Assigned underwriter
+
+    - name: assigned_at
+      type: timestamp
+      description: Assignment timestamp
+
+    - name: priority
+      type: enum
+      values:
+        - low
+        - medium
+        - high
+        - urgent
+      default: medium
+      description: Case priority level
+
+    - name: sla_due_date
+      type: timestamp
+      description: SLA deadline for decision
+
+    - name: referred_to_id
+      type: uuid
+      foreign_key: users.id
+      description: If referred, to whom
+
+    - name: referral_reason
+      type: string
+      description: Reason for referral
+
+  requirements:
+    - name: requirements
+      type: array
+      items:
+        type: object
+        properties:
+          requirement_type:
+            type: string
+          status:
+            type: enum
+            values: [pending, ordered, received, reviewed, waived]
+          requested_at:
+            type: timestamp
+          received_at:
+            type: timestamp
+          reviewed_by:
+            type: uuid
+          notes:
+            type: string
+      description: Array of requirement tracking
+
+    - name: outstanding_requirements
+      type: integer
+      computed: true
+      description: Count of pending requirements
+
+  medical:
+    - name: medical_required
+      type: boolean
+      default: false
+      description: Whether medical exams required
+
+    - name: medical_status
+      type: enum
+      values:
+        - not_required
+        - pending
+        - ordered
+        - received
+        - reviewed
+      default: not_required
+      description: Overall medical status
+
+    - name: medical_exam_ids
+      type: array
+      items:
+        type: uuid
+      description: References to medical exams
+
+    - name: medical_risk_summary
+      type: text
+      description: Summary of medical findings
+
+  financial:
+    - name: financial_underwriting_required
+      type: boolean
+      default: false
+      description: Whether financial UW required
+
+    - name: financial_status
+      type: enum
+      values:
+        - not_required
+        - pending
+        - verified
+        - concerns
+      default: not_required
+      description: Financial verification status
+
+    - name: financial_underwriting_id
+      type: uuid
+      foreign_key: financial_underwriting.id
+      description: Reference to financial UW record
+
+  decision:
+    - name: decision_id
+      type: uuid
+      foreign_key: underwriting_decisions.id
+      description: Reference to final decision
+
+    - name: decision_status
+      type: enum
+      values:
+        - pending
+        - approved
+        - declined
+        - counter_offer
+        - postponed
+      default: pending
+      description: Decision outcome status
+
+    - name: decision_date
+      type: timestamp
+      description: Date of final decision
+
+  reinsurance:
+    - name: reinsurance_required
+      type: boolean
+      default: false
+      description: Whether RI referral needed
+
+    - name: facultative_case_id
+      type: uuid
+      foreign_key: facultative_cases.id
+      description: Reference to facultative case
+
+    - name: cession_percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage ceded to reinsurer
+
+  timeline:
+    - name: received_at
+      type: timestamp
+      required: true
+      description: Case receipt timestamp
+
+    - name: started_at
+      type: timestamp
+      description: Work started timestamp
+
+    - name: completed_at
+      type: timestamp
+      description: Case completion timestamp
+
+    - name: turnaround_days
+      type: integer
+      computed: true
+      description: Days from receipt to completion
+
+  audit:
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+      description: User who created case
+
+    - name: created_at
+      type: timestamp
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+
+    - name: notes
+      type: text
+      description: General case notes
+
+relationships:
+  - name: application
+    type: belongs_to
+    entity: application
+    foreign_key: application_id
+    description: Source application
+
+  - name: policy
+    type: belongs_to
+    entity: policy
+    foreign_key: policy_id
+    description: Related policy (if applicable)
+
+  - name: risk_assessment
+    type: has_one
+    entity: risk_assessment
+    inverse: underwriting_case
+    description: Risk assessment record
+
+  - name: medical_exams
+    type: has_many
+    entity: medical_exam
+    inverse: underwriting_case
+    description: Associated medical exams
+
+  - name: financial_underwriting
+    type: has_one
+    entity: financial_underwriting
+    inverse: underwriting_case
+    description: Financial UW record
+
+  - name: decision
+    type: has_one
+    entity: underwriting_decision
+    inverse: underwriting_case
+    description: Final decision
+
+  - name: facultative_case
+    type: has_one
+    entity: facultative_case
+    inverse: underwriting_case
+    description: Facultative RI case
+
+  - name: loadings
+    type: has_many
+    entity: loading
+    inverse: underwriting_case
+    description: Applied loadings
+
+  - name: exclusions
+    type: has_many
+    entity: exclusion
+    inverse: underwriting_case
+    description: Applied exclusions
+
+  - name: assigned_underwriter
+    type: belongs_to
+    entity: user
+    foreign_key: assigned_underwriter_id
+    description: Assigned underwriter
+
+state_machine:
+  initial: pending
+  states:
+    pending:
+      description: Awaiting underwriter assignment
+      allowed_transitions:
+        - in_progress
+
+    in_progress:
+      description: Under active review
+      allowed_transitions:
+        - requirements_pending
+        - medical_pending
+        - financial_pending
+        - referred
+        - decided
+
+    requirements_pending:
+      description: Awaiting requirement submission
+      allowed_transitions:
+        - in_progress
+        - closed  # If requirements not received
+
+    medical_pending:
+      description: Awaiting medical exam results
+      allowed_transitions:
+        - in_progress
+        - closed
+
+    financial_pending:
+      description: Awaiting financial verification
+      allowed_transitions:
+        - in_progress
+        - closed
+
+    referred:
+      description: Referred to higher authority
+      allowed_transitions:
+        - in_progress
+        - decided
+
+    decided:
+      description: Decision made
+      allowed_transitions:
+        - closed
+        - in_progress  # If counter-offer rejected
+
+    closed:
+      description: Case closed
+      terminal: true
+
+  transitions:
+    - name: start_review
+      from: pending
+      to: in_progress
+      action: Assign underwriter and begin review
+
+    - name: request_requirements
+      from: in_progress
+      to: requirements_pending
+      action: Order additional requirements
+
+    - name: receive_requirements
+      from: requirements_pending
+      to: in_progress
+      action: Process received requirements
+
+    - name: order_medical
+      from: in_progress
+      to: medical_pending
+      action: Order medical examinations
+
+    - name: receive_medical
+      from: medical_pending
+      to: in_progress
+      action: Process medical results
+
+    - name: request_financial
+      from: in_progress
+      to: financial_pending
+      action: Request financial documents
+
+    - name: verify_financial
+      from: financial_pending
+      to: in_progress
+      action: Complete financial verification
+
+    - name: refer_case
+      from: in_progress
+      to: referred
+      action: Refer to higher authority
+
+    - name: make_decision
+      from: [in_progress, referred]
+      to: decided
+      action: Record final decision
+
+    - name: close_case
+      from: decided
+      to: closed
+      action: Close case after completion
+
+indexes:
+  - columns: [case_number]
+    unique: true
+  - columns: [application_id]
+  - columns: [status]
+  - columns: [assigned_underwriter_id, status]
+  - columns: [decision_status]
+  - columns: [sla_due_date]
+  - columns: [created_at]
+
+business_rules:
+  - rule: Auto-assignment based on complexity
+  - rule: SLA calculation based on case type
+  - rule: Priority escalation for breaching SLA
+  - rule: Authority check before decision

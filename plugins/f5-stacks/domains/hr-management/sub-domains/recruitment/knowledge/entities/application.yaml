@@ -1,0 +1,391 @@
+name: application
+display_name: Application
+description: |
+  A candidate's application to a specific job requisition. Tracks the candidate
+  through the hiring pipeline from application to hire or rejection.
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Application
+  table_name: applications
+  primary_key: id
+  natural_key: application_id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: application_id
+      type: string
+      length: 20
+      unique: true
+      format: "APP-{YYYYMMDD}-{NNNN}"
+
+    - name: candidate_id
+      type: uuid
+      required: true
+
+    - name: requisition_id
+      type: uuid
+      required: true
+
+    - name: job_posting_id
+      type: uuid
+      description: Which posting candidate applied through
+
+    # Status & Stage
+    - name: status
+      type: enum
+      values: [new, screening, interviewing, offer, hired, rejected, withdrawn]
+      default: new
+
+    - name: stage
+      type: enum
+      values: [applied, phone_screen, assessment, interview_1, interview_2, interview_3, final, offer, background_check, hired]
+      default: applied
+      description: Current stage in pipeline
+
+    - name: sub_stage
+      type: string
+      length: 100
+      description: Custom sub-stage if needed
+
+    # Source
+    - name: source
+      type: enum
+      values: [career_site, job_board, referral, agency, linkedin, direct, event, internal]
+      required: true
+
+    - name: source_detail
+      type: string
+      length: 200
+      description: Specific source (e.g., "Indeed", "Employee Referral")
+
+    - name: referrer_id
+      type: uuid
+      description: Employee who referred (if referral)
+
+    - name: agency_id
+      type: uuid
+      description: Recruiting agency (if agency)
+
+    # Screening
+    - name: screening_answers
+      type: jsonb
+      description: Responses to screening questions
+      example: |
+        [
+          {"question_id": "q1", "answer": "Yes", "score": 1},
+          {"question_id": "q2", "answer": "5 years", "score": 1}
+        ]
+
+    - name: screening_score
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Total screening score
+
+    - name: screening_passed
+      type: boolean
+      description: Met knockout criteria
+
+    - name: resume_match_score
+      type: decimal
+      precision: 5
+      scale: 2
+      description: AI resume match percentage
+
+    # Evaluation
+    - name: overall_rating
+      type: decimal
+      precision: 3
+      scale: 2
+      description: Average rating (1-5 scale)
+
+    - name: evaluations
+      type: jsonb
+      description: Array of evaluator assessments
+      example: |
+        [
+          {"evaluator_id": "xxx", "rating": 4, "notes": "Strong technical skills", "date": "..."},
+          {"evaluator_id": "yyy", "rating": 3.5, "notes": "Good culture fit", "date": "..."}
+        ]
+
+    - name: strengths
+      type: jsonb
+      description: Identified strengths
+
+    - name: concerns
+      type: jsonb
+      description: Identified concerns
+
+    - name: recommendation
+      type: enum
+      values: [strong_hire, hire, no_decision, no_hire, strong_no_hire]
+      description: Final hiring recommendation
+
+    # Assignment
+    - name: assigned_recruiter_id
+      type: uuid
+      description: Recruiter managing application
+
+    - name: hiring_manager_id
+      type: uuid
+      description: Hiring manager for position
+
+    # Timeline
+    - name: applied_at
+      type: timestamp
+      required: true
+      description: When application was submitted
+
+    - name: last_stage_change_at
+      type: timestamp
+      description: When stage last changed
+
+    - name: time_in_current_stage_days
+      type: integer
+      computed: true
+
+    - name: days_since_application
+      type: integer
+      computed: true
+
+    - name: days_to_hire
+      type: integer
+      description: If hired, days from application to hire
+
+    # Stage Timestamps
+    - name: screened_at
+      type: timestamp
+
+    - name: interviewed_at
+      type: timestamp
+
+    - name: offered_at
+      type: timestamp
+
+    - name: hired_at
+      type: timestamp
+
+    - name: rejected_at
+      type: timestamp
+
+    - name: withdrawn_at
+      type: timestamp
+
+    # Rejection
+    - name: rejection_reason
+      type: enum
+      values: [not_qualified, overqualified, salary_mismatch, culture_fit, failed_assessment,
+               failed_background_check, position_filled, position_cancelled, candidate_withdrew, no_show, other]
+
+    - name: rejection_reason_detail
+      type: text
+
+    - name: rejection_email_sent
+      type: boolean
+      default: false
+
+    - name: rejection_email_sent_at
+      type: timestamp
+
+    # Dispositioning
+    - name: disposition_code
+      type: string
+      length: 50
+      description: EEO/compliance disposition code
+
+    # Flags
+    - name: is_internal_candidate
+      type: boolean
+      default: false
+
+    - name: is_rehire
+      type: boolean
+      default: false
+
+    - name: previous_employee_id
+      type: uuid
+      description: If rehire, previous employee record
+
+    - name: is_priority
+      type: boolean
+      default: false
+      description: High priority application
+
+    # Notes
+    - name: notes
+      type: text
+      description: General notes
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: candidate
+      type: belongs_to
+      entity: Candidate
+      foreign_key: candidate_id
+
+    - name: requisition
+      type: belongs_to
+      entity: JobRequisition
+      foreign_key: requisition_id
+
+    - name: job_posting
+      type: belongs_to
+      entity: JobPosting
+      foreign_key: job_posting_id
+
+    - name: recruiter
+      type: belongs_to
+      entity: User
+      foreign_key: assigned_recruiter_id
+
+    - name: hiring_manager
+      type: belongs_to
+      entity: User
+      foreign_key: hiring_manager_id
+
+    - name: referrer
+      type: belongs_to
+      entity: Employee
+      foreign_key: referrer_id
+
+    - name: interviews
+      type: has_many
+      entity: Interview
+      foreign_key: application_id
+
+    - name: assessments
+      type: has_many
+      entity: Assessment
+      foreign_key: application_id
+
+    - name: offer
+      type: has_one
+      entity: Offer
+      foreign_key: application_id
+
+    - name: background_check
+      type: has_one
+      entity: BackgroundCheck
+      foreign_key: application_id
+
+  indexes:
+    - columns: [application_id]
+      unique: true
+    - columns: [candidate_id, requisition_id]
+      unique: true
+    - columns: [status]
+    - columns: [stage]
+    - columns: [requisition_id]
+    - columns: [assigned_recruiter_id]
+    - columns: [applied_at]
+    - columns: [source]
+
+  state_machine:
+    field: status
+    initial: new
+    transitions:
+      - from: new
+        to: screening
+        action: start_screening
+        triggers: [notify_recruiter]
+
+      - from: screening
+        to: interviewing
+        action: advance_to_interview
+        guards: [passed_screening]
+        triggers: [notify_hiring_manager]
+
+      - from: interviewing
+        to: offer
+        action: make_offer
+        guards: [positive_interview_feedback]
+
+      - from: offer
+        to: hired
+        action: hire
+        guards: [offer_accepted, background_check_passed]
+        triggers: [create_employee_record, notify_hr, close_other_applications]
+
+      - from: [new, screening, interviewing, offer]
+        to: rejected
+        action: reject
+        triggers: [send_rejection_email, update_candidate_status]
+
+      - from: [new, screening, interviewing, offer]
+        to: withdrawn
+        action: withdraw
+        triggers: [update_candidate_status, log_withdrawal_reason]
+
+  stage_machine:
+    field: stage
+    transitions:
+      - from: applied
+        to: phone_screen
+        action: schedule_phone_screen
+
+      - from: phone_screen
+        to: assessment
+        action: send_assessment
+
+      - from: [phone_screen, assessment]
+        to: interview_1
+        action: schedule_interview
+
+      - from: interview_1
+        to: interview_2
+        action: advance_round
+
+      - from: interview_2
+        to: interview_3
+        action: advance_round
+
+      - from: [interview_1, interview_2, interview_3]
+        to: final
+        action: schedule_final
+
+      - from: final
+        to: offer
+        action: make_offer
+
+      - from: offer
+        to: background_check
+        action: initiate_background_check
+
+      - from: background_check
+        to: hired
+        action: complete_hire
+
+  validations:
+    - rule: unique
+      fields: [candidate_id, requisition_id]
+      message: "Candidate already applied to this requisition"
+
+  audit:
+    enabled: true
+    fields: [status, stage, assigned_recruiter_id, rejection_reason]
+
+compliance:
+  - standard: EEO
+    requirement: Track disposition codes for all applications
+  - standard: OFCCP
+    requirement: Maintain records for federal contractor compliance

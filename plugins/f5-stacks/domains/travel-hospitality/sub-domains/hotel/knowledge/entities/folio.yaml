@@ -1,0 +1,451 @@
+name: folio
+display_name: Folio
+display_name_vi: Hóa đơn lưu trú
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Guest folio entity representing the guest account/bill during stay.
+  Tracks all charges, payments, and adjustments for a reservation.
+  Supports multiple folio types including guest, master, and split folios.
+
+description_vi: |
+  Thực thể hóa đơn lưu trú đại diện cho tài khoản/hóa đơn của khách
+  trong thời gian lưu trú. Theo dõi tất cả các khoản phí, thanh toán
+  và điều chỉnh cho một đặt phòng.
+
+attributes:
+  identity:
+    - name: folio_id
+      type: string
+      format: "FOL-{property_code}-{YYYYMMDD}-{sequence}"
+      required: true
+      description: Unique folio identifier
+
+    - name: folio_number
+      type: string
+      max_length: 20
+      required: true
+      description: Display folio number
+
+    - name: property_id
+      type: string
+      required: true
+
+    - name: reservation_id
+      type: string
+      required: true
+      description: Parent reservation
+
+    - name: room_number
+      type: string
+      description: Associated room
+
+  folio_type:
+    - name: folio_type
+      type: enum
+      values:
+        - guest
+        - master
+        - incidentals
+        - deposit
+        - advance_deposit
+        - city_ledger
+        - group
+        - company
+        - travel_agent
+      required: true
+
+    - name: folio_sequence
+      type: integer
+      default: 1
+      description: For multiple folios per reservation
+
+    - name: parent_folio_id
+      type: string
+      description: Parent folio for split folios
+
+    - name: split_from_folio_id
+      type: string
+      description: Original folio if split
+
+  guest_info:
+    - name: guest_id
+      type: string
+      required: true
+      description: Primary folio owner
+
+    - name: guest_name
+      type: string
+      required: true
+      description: Guest name for display
+
+    - name: room_number
+      type: string
+
+    - name: company_id
+      type: string
+      description: For company billing
+
+    - name: company_name
+      type: string
+
+    - name: travel_agent_id
+      type: string
+      description: For agent billing
+
+  stay_details:
+    - name: arrival_date
+      type: date
+      required: true
+
+    - name: departure_date
+      type: date
+      required: true
+
+    - name: actual_departure_date
+      type: date
+      description: For early/late checkout
+
+    - name: nights
+      type: integer
+      computed: true
+
+  currency:
+    - name: currency_code
+      type: string
+      format: ISO 4217
+      required: true
+
+    - name: exchange_rate
+      type: decimal
+      default: 1.0
+      description: If different from property currency
+
+  balances:
+    - name: total_charges
+      type: decimal
+      default: 0
+      description: Sum of all charges
+
+    - name: total_payments
+      type: decimal
+      default: 0
+      description: Sum of all payments
+
+    - name: total_adjustments
+      type: decimal
+      default: 0
+      description: Sum of adjustments/allowances
+
+    - name: total_taxes
+      type: decimal
+      default: 0
+
+    - name: current_balance
+      type: decimal
+      computed: true
+      description: charges - payments - adjustments
+
+    - name: opening_balance
+      type: decimal
+      default: 0
+      description: Balance from previous folio
+
+    - name: deposit_balance
+      type: decimal
+      default: 0
+      description: Advance deposits received
+
+    - name: credit_limit
+      type: decimal
+      description: Maximum allowed credit
+
+  room_charges:
+    - name: room_rate_total
+      type: decimal
+      default: 0
+
+    - name: extra_person_total
+      type: decimal
+      default: 0
+
+    - name: package_total
+      type: decimal
+      default: 0
+
+  tax_breakdown:
+    - name: taxes
+      type: array
+      items:
+        type: object
+        properties:
+          tax_code: string
+          tax_name: string
+          tax_rate: decimal
+          tax_amount: decimal
+          taxable_amount: decimal
+
+    - name: service_charge
+      type: decimal
+      default: 0
+
+  billing_instructions:
+    - name: billing_type
+      type: enum
+      values:
+        - direct_bill
+        - credit_card
+        - cash
+        - company_account
+        - travel_agent
+        - split
+      required: true
+
+    - name: routing_instructions
+      type: array
+      items:
+        type: object
+        properties:
+          charge_code: string
+          route_to_folio: string
+          route_to_type: enum [room, master, company, agent]
+          percentage: decimal
+          amount_limit: decimal
+
+    - name: charge_routing_code
+      type: string
+      description: Default routing for charges
+
+    - name: billing_address
+      type: object
+      properties:
+        name: string
+        company: string
+        street: string
+        city: string
+        state: string
+        postal_code: string
+        country: string
+
+  payment_info:
+    - name: payment_method
+      type: enum
+      values:
+        - credit_card
+        - debit_card
+        - cash
+        - check
+        - bank_transfer
+        - direct_bill
+        - voucher
+        - points
+
+    - name: credit_card_token
+      type: string
+      description: Tokenized card reference
+
+    - name: card_type
+      type: string
+
+    - name: card_last_four
+      type: string
+      max_length: 4
+
+    - name: authorization_code
+      type: string
+
+    - name: authorization_amount
+      type: decimal
+
+  status:
+    - name: folio_status
+      type: enum
+      values:
+        - open
+        - closed
+        - transferred
+        - void
+        - disputed
+      required: true
+      default: open
+
+    - name: is_zero_checkout
+      type: boolean
+      default: false
+      description: Balance was zero at checkout
+
+    - name: is_express_checkout
+      type: boolean
+      default: false
+
+    - name: checkout_date
+      type: timestamp
+
+    - name: closed_date
+      type: timestamp
+
+    - name: closed_by
+      type: string
+
+  posting_rules:
+    - name: auto_post_room_charge
+      type: boolean
+      default: true
+
+    - name: post_inclusive_tax
+      type: boolean
+      default: true
+      description: Post taxes inclusively or separately
+
+    - name: charge_limit
+      type: decimal
+      description: Per-transaction limit
+
+    - name: daily_limit
+      type: decimal
+      description: Daily spending limit
+
+  city_ledger:
+    - name: is_city_ledger
+      type: boolean
+      default: false
+
+    - name: city_ledger_account
+      type: string
+      description: AR account reference
+
+    - name: invoice_number
+      type: string
+
+    - name: invoice_date
+      type: date
+
+    - name: payment_due_date
+      type: date
+
+    - name: aging_days
+      type: integer
+      computed: true
+
+  documents:
+    - name: invoice_generated
+      type: boolean
+      default: false
+
+    - name: invoice_url
+      type: string
+
+    - name: receipt_url
+      type: string
+
+    - name: statement_url
+      type: string
+
+  audit:
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+    - name: created_by
+      type: string
+
+    - name: last_posted_at
+      type: timestamp
+
+    - name: last_posted_by
+      type: string
+
+    - name: night_audit_date
+      type: date
+      description: Last night audit processed
+
+relationships:
+  - entity: property
+    type: many_to_one
+    required: true
+
+  - entity: reservation
+    type: many_to_one
+    required: true
+
+  - entity: guest
+    type: many_to_one
+    required: true
+
+  - entity: charge
+    type: one_to_many
+    description: Folio has many charges
+
+  - entity: payment
+    type: one_to_many
+    description: Folio has many payments
+
+indexes:
+  - fields: [property_id, folio_number]
+    unique: true
+  - fields: [reservation_id]
+  - fields: [guest_id]
+  - fields: [folio_status, property_id]
+  - fields: [checkout_date]
+  - fields: [city_ledger_account]
+
+state_machine:
+  name: folio_status
+  states:
+    - open
+    - closed
+    - transferred
+    - void
+    - disputed
+
+  transitions:
+    - from: open
+      to: closed
+      trigger: checkout_complete
+      condition: balance_zero_or_settled
+
+    - from: open
+      to: transferred
+      trigger: transfer_to_city_ledger
+      condition: balance_remaining
+
+    - from: open
+      to: void
+      trigger: void_folio
+      condition: manager_approval
+
+    - from: closed
+      to: disputed
+      trigger: guest_dispute
+      actor: front_desk
+
+    - from: disputed
+      to: closed
+      trigger: dispute_resolved
+
+business_rules:
+  - rule: BR-FOL-001
+    description: Folio number must be unique within property
+  - rule: BR-FOL-002
+    description: Closed folio cannot receive new charges
+  - rule: BR-FOL-003
+    description: Balance must be zero or transferred at checkout
+  - rule: BR-FOL-004
+    description: Void folio requires manager approval
+  - rule: BR-FOL-005
+    description: City ledger transfer creates AR entry
+
+pci_dss:
+  cardholder_data:
+    - credit_card_token (tokenized - compliant)
+    - card_last_four (masked - compliant)
+  prohibited_storage:
+    - full_card_number
+    - cvv
+    - pin

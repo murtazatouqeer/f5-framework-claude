@@ -1,0 +1,458 @@
+name: bonus
+display_name: Bonus
+description: |
+  Bonus payments including 13th month salary, performance bonuses, project
+  bonuses, and special occasion bonuses (Tet, holidays).
+
+domain: hr-management
+subdomain: payroll
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: Bonus
+  table_name: bonuses
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: bonus_code
+      type: string
+      length: 20
+      unique: true
+      format: "BNS-{YYYY}-{NNNNNN}"
+
+    # Employee Reference
+    - name: employee_id
+      type: uuid
+      required: true
+
+    - name: payslip_id
+      type: uuid
+
+    # Bonus Details
+    - name: bonus_type
+      type: enum
+      values: [thirteenth_month, performance, project, tet, holiday, referral, retention, signing, spot, other]
+      required: true
+
+    - name: bonus_name
+      type: string
+      length: 200
+      required: true
+
+    - name: description
+      type: text
+
+    # Period
+    - name: bonus_year
+      type: integer
+      required: true
+
+    - name: bonus_period
+      type: string
+      length: 20
+      description: "Q1, Q2, H1, FY, etc."
+
+    - name: reference_period_start
+      type: date
+      description: Performance period start
+
+    - name: reference_period_end
+      type: date
+      description: Performance period end
+
+    # Calculation
+    - name: calculation_method
+      type: enum
+      values: [fixed, salary_multiple, percentage, formula, discretionary]
+      required: true
+
+    - name: base_salary
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Salary used for calculation
+
+    - name: multiplier
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Salary months (e.g., 1.0 for 13th month)
+
+    - name: percentage
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of base
+
+    - name: fixed_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: formula
+      type: text
+
+    # Performance Bonus
+    - name: performance_rating
+      type: enum
+      values: [exceptional, exceeds, meets, needs_improvement, unsatisfactory]
+
+    - name: performance_score
+      type: decimal
+      precision: 5
+      scale: 2
+
+    - name: target_achievement
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Percentage of target achieved
+
+    - name: kpi_results
+      type: jsonb
+      description: KPI scores breakdown
+      example: |
+        {
+          "sales_target": {"weight": 40, "achievement": 110, "score": 44},
+          "customer_satisfaction": {"weight": 30, "achievement": 95, "score": 28.5},
+          "quality_metrics": {"weight": 30, "achievement": 100, "score": 30}
+        }
+
+    # Proration
+    - name: is_prorated
+      type: boolean
+      default: false
+
+    - name: proration_factor
+      type: decimal
+      precision: 5
+      scale: 4
+
+    - name: proration_reason
+      type: string
+      length: 200
+
+    - name: service_months
+      type: integer
+      description: Months of service in period
+
+    - name: eligible_months
+      type: integer
+      description: Total months in period
+
+    # Amount
+    - name: gross_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+
+    - name: net_amount
+      type: decimal
+      precision: 15
+      scale: 2
+
+    - name: tax_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Tax Treatment
+    - name: is_taxable
+      type: boolean
+      default: true
+
+    - name: tax_method
+      type: enum
+      values: [aggregate, separate]
+      default: aggregate
+      description: Include in monthly tax or separate
+
+    # Status
+    - name: status
+      type: enum
+      values: [draft, pending_approval, approved, processed, paid, cancelled]
+      default: draft
+
+    # Approval
+    - name: requested_by
+      type: uuid
+
+    - name: requested_at
+      type: timestamp
+
+    - name: approved_by
+      type: uuid
+
+    - name: approved_at
+      type: timestamp
+
+    - name: approval_notes
+      type: text
+
+    # Payment
+    - name: payment_date
+      type: date
+
+    - name: payment_method
+      type: enum
+      values: [with_salary, separate_transfer, cash]
+      default: with_salary
+
+    - name: payment_reference
+      type: string
+      length: 100
+
+    # Metadata
+    - name: notes
+      type: text
+
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: employee
+      type: belongs_to
+      entity: Employee
+      foreign_key: employee_id
+
+    - name: payslip
+      type: belongs_to
+      entity: PaySlip
+      foreign_key: payslip_id
+
+    - name: requester
+      type: belongs_to
+      entity: User
+      foreign_key: requested_by
+
+    - name: approver
+      type: belongs_to
+      entity: User
+      foreign_key: approved_by
+
+  indexes:
+    - columns: [bonus_code]
+      unique: true
+    - columns: [employee_id, bonus_type, bonus_year]
+    - columns: [bonus_type]
+    - columns: [status]
+    - columns: [bonus_year]
+    - columns: [payment_date]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: pending_approval
+        action: submit
+        guards: [amount_calculated, within_budget]
+        triggers: [notify_approvers]
+
+      - from: pending_approval
+        to: approved
+        action: approve
+        guards: [approver_authorized, budget_available]
+        triggers: [notify_employee, reserve_budget]
+
+      - from: pending_approval
+        to: draft
+        action: return
+        triggers: [notify_requester]
+
+      - from: approved
+        to: processed
+        action: process
+        guards: [payroll_run_active]
+        triggers: [create_earning, add_to_payslip]
+
+      - from: processed
+        to: paid
+        action: mark_paid
+        guards: [payment_confirmed]
+        triggers: [update_records]
+
+      - from: [draft, pending_approval, approved]
+        to: cancelled
+        action: cancel
+        triggers: [release_budget, log_cancellation]
+
+  bonus_types:
+    thirteenth_month:
+      name: Lương tháng 13
+      calculation: salary_multiple
+      multiplier: 1.0
+      proration: by_service_months
+      eligibility:
+        min_service: 12_months
+        prorated_under: true
+      payment_timing: year_end
+      taxable: true
+
+    performance:
+      name: Thưởng hiệu suất
+      calculation: formula
+      formula: "base_salary * multiplier * (performance_score / 100)"
+      proration: by_service_months
+      frequency: [quarterly, semi_annual, annual]
+      taxable: true
+
+    project:
+      name: Thưởng dự án
+      calculation: discretionary
+      proration: none
+      eligibility:
+        project_completion: required
+        role_in_project: defined
+      taxable: true
+
+    tet:
+      name: Thưởng Tết
+      calculation: fixed
+      proration: by_service_months
+      eligibility:
+        employed_at_tet: true
+        min_service: varies
+      payment_timing: before_tet
+      taxable: true
+
+    referral:
+      name: Thưởng giới thiệu
+      calculation: fixed
+      proration: none
+      eligibility:
+        referral_hired: true
+        referral_probation_passed: true
+      payment_timing: after_probation
+      taxable: true
+
+    retention:
+      name: Thưởng giữ chân
+      calculation: fixed
+      proration: none
+      conditions:
+        commitment_period: required
+        clawback: if_leave_early
+      taxable: true
+
+    spot:
+      name: Thưởng đột xuất
+      calculation: discretionary
+      proration: none
+      approval: immediate_manager
+      taxable: true
+
+  proration_methods:
+    by_service_months:
+      description: "Bonus prorated by months of service in period"
+      formula: "gross_amount * (service_months / eligible_months)"
+      example: "6 months service in 12 month period = 50% bonus"
+
+    by_calendar_days:
+      description: "Bonus prorated by calendar days"
+      formula: "gross_amount * (days_worked / total_days)"
+
+    none:
+      description: "Full bonus regardless of service period"
+
+  performance_bonus_scales:
+    exceptional:
+      rating: 5
+      multiplier_range: [1.5, 2.0]
+      description: "Significantly exceeds expectations"
+
+    exceeds:
+      rating: 4
+      multiplier_range: [1.2, 1.5]
+      description: "Exceeds expectations"
+
+    meets:
+      rating: 3
+      multiplier_range: [0.8, 1.2]
+      description: "Meets expectations"
+
+    needs_improvement:
+      rating: 2
+      multiplier_range: [0, 0.8]
+      description: "Below expectations"
+
+    unsatisfactory:
+      rating: 1
+      multiplier_range: [0, 0]
+      description: "Fails to meet expectations"
+
+  validations:
+    - field: gross_amount
+      rule: positive
+      message: "Bonus amount must be positive"
+
+    - field: proration_factor
+      rule: between
+      range: [0, 1]
+      when: is_prorated is true
+      message: "Proration factor must be between 0 and 1"
+
+    - field: service_months
+      rule: lte
+      compare_to: eligible_months
+      message: "Service months cannot exceed eligible months"
+
+  computed_fields:
+    - name: gross_amount
+      formula: |
+        CASE calculation_method
+          WHEN 'fixed' THEN fixed_amount
+          WHEN 'salary_multiple' THEN base_salary * multiplier
+          WHEN 'percentage' THEN base_salary * (percentage / 100)
+          ELSE fixed_amount
+        END * COALESCE(proration_factor, 1)
+
+    - name: proration_factor
+      formula: "service_months / eligible_months"
+
+  hooks:
+    on_create:
+      - validate_eligibility
+      - calculate_proration
+      - calculate_amount
+
+    on_approve:
+      - check_budget
+      - reserve_funds
+      - notify_payroll
+
+    on_process:
+      - create_earning_entry
+      - calculate_tax
+      - update_payslip
+
+  audit:
+    track:
+      - status
+      - gross_amount
+      - approved_by
+
+    retention: 10_years
+
+compliance:
+  - standard: Vietnam_Labor_Code
+    article: Article_104
+    requirement: Bonus payment regulations
+  - standard: PIT_Law
+    requirement: Bonus taxation

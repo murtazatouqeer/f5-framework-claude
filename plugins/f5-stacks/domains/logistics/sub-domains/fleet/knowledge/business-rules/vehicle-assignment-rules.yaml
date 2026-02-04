@@ -1,0 +1,255 @@
+name: VehicleAssignmentRules
+display_name: Vehicle Assignment Rules
+description: |
+  Business rules governing vehicle assignment to trips and drivers.
+  Ensures proper matching of vehicle capabilities to requirements.
+
+domain: logistics
+subdomain: fleet
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # Availability Rules
+  - id: BR-VA-001
+    name: Vehicle Availability Check
+    description: Vehicle must be in 'available' status for assignment
+    severity: critical
+    category: availability
+    condition: |
+      vehicle.status == 'available'
+    error_message: "Vehicle is not available for assignment"
+    applies_to: [trip_assignment, driver_assignment]
+
+  - id: BR-VA-002
+    name: No Double Assignment
+    description: Vehicle cannot be assigned to multiple active trips simultaneously
+    severity: critical
+    category: availability
+    condition: |
+      NOT EXISTS trip WHERE
+        trip.vehicle_id == vehicle.id AND
+        trip.status IN ['dispatched', 'in_progress']
+    error_message: "Vehicle is already assigned to an active trip"
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-003
+    name: Driver-Vehicle Compatibility
+    description: Driver must have required license class for vehicle
+    severity: critical
+    category: compliance
+    condition: |
+      driver.license_class >= vehicle.required_license_class
+    error_message: "Driver license class insufficient for vehicle type"
+    applies_to: [trip_assignment, driver_assignment]
+    examples:
+      - "Class A driver can operate any vehicle"
+      - "Class C driver cannot operate heavy duty trucks"
+
+  # Document Validity Rules
+  - id: BR-VA-004
+    name: Registration Validity
+    description: Vehicle registration must be valid
+    severity: critical
+    category: compliance
+    condition: |
+      vehicle.registration_expiry >= today()
+    error_message: "Vehicle registration has expired"
+    applies_to: [trip_assignment]
+    grace_period: 0
+
+  - id: BR-VA-005
+    name: Insurance Validity
+    description: Vehicle insurance must be valid
+    severity: critical
+    category: compliance
+    condition: |
+      vehicle.insurance_expiry >= today()
+    error_message: "Vehicle insurance has expired"
+    applies_to: [trip_assignment]
+    grace_period: 0
+
+  - id: BR-VA-006
+    name: Registration Expiry Warning
+    description: Warn if registration expires within 30 days
+    severity: warning
+    category: compliance
+    condition: |
+      vehicle.registration_expiry - today() <= 30
+    warning_message: "Vehicle registration expires within 30 days"
+    action: notify_fleet_manager
+    applies_to: [trip_assignment]
+
+  # Capability Matching Rules
+  - id: BR-VA-007
+    name: Hazmat Certification Required
+    description: Hazmat loads require ADR-certified vehicle
+    severity: critical
+    category: capability
+    condition: |
+      IF trip.is_hazmat THEN vehicle.has_adr_certification
+    error_message: "Hazmat load requires ADR-certified vehicle"
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-008
+    name: Refrigeration Required
+    description: Temperature-controlled loads require reefer vehicle
+    severity: critical
+    category: capability
+    condition: |
+      IF trip.is_refrigerated THEN
+        vehicle.has_refrigeration AND
+        vehicle.temperature_min_c <= trip.temperature_required_c AND
+        vehicle.temperature_max_c >= trip.temperature_required_c
+    error_message: "Load requires refrigerated vehicle with appropriate temperature range"
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-009
+    name: Weight Capacity Check
+    description: Load weight must not exceed vehicle capacity
+    severity: critical
+    category: capacity
+    condition: |
+      trip.total_weight_kg <= vehicle.max_weight_kg
+    error_message: "Load weight exceeds vehicle maximum capacity"
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-010
+    name: Volume Capacity Check
+    description: Load volume must not exceed vehicle cargo space
+    severity: critical
+    category: capacity
+    condition: |
+      trip.total_volume_cbm <= vehicle.cargo_volume_cbm
+    error_message: "Load volume exceeds vehicle cargo capacity"
+    applies_to: [trip_assignment]
+
+  # Maintenance Rules
+  - id: BR-VA-011
+    name: Maintenance Due Warning
+    description: Warn if maintenance is due within 500km or 7 days
+    severity: warning
+    category: maintenance
+    condition: |
+      (vehicle.next_service_odometer - vehicle.current_odometer_km <= 500) OR
+      (vehicle.next_service_date - today() <= 7)
+    warning_message: "Vehicle has maintenance due soon"
+    action: notify_fleet_manager
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-012
+    name: Overdue Maintenance Block
+    description: Block assignment if maintenance is overdue
+    severity: critical
+    category: maintenance
+    condition: |
+      NOT (vehicle.next_service_date < today() AND
+           vehicle.next_service_date IS NOT NULL)
+    error_message: "Vehicle has overdue maintenance"
+    applies_to: [trip_assignment]
+    exceptions:
+      - emergency_dispatch_approved
+
+  - id: BR-VA-013
+    name: Pre-Trip Inspection Required
+    description: Vehicle must have valid pre-trip inspection for current day
+    severity: critical
+    category: inspection
+    condition: |
+      EXISTS inspection WHERE
+        inspection.vehicle_id == vehicle.id AND
+        inspection.inspection_type == 'pre_trip' AND
+        inspection.inspection_date == today() AND
+        inspection.status == 'passed'
+    error_message: "Pre-trip inspection required before dispatch"
+    applies_to: [dispatch]
+
+  # Assignment Priority Rules
+  - id: BR-VA-014
+    name: Home Depot Preference
+    description: Prefer vehicles from origin depot
+    severity: recommendation
+    category: optimization
+    condition: |
+      vehicle.home_depot_id == trip.origin_depot_id
+    recommendation: "Use vehicle from origin depot when available"
+    priority_boost: 10
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-015
+    name: Assigned Driver Preference
+    description: Prefer vehicle assigned to selected driver
+    severity: recommendation
+    category: optimization
+    condition: |
+      vehicle.assigned_driver_id == trip.driver_id
+    recommendation: "Use driver's assigned vehicle when available"
+    priority_boost: 20
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-016
+    name: Right-Size Vehicle
+    description: Select smallest suitable vehicle for efficiency
+    severity: recommendation
+    category: optimization
+    condition: |
+      vehicle.max_weight_kg >= trip.total_weight_kg * 1.1 AND
+      vehicle.max_weight_kg <= trip.total_weight_kg * 2.0
+    recommendation: "Select appropriately sized vehicle to optimize efficiency"
+    applies_to: [trip_assignment]
+
+  # Special Requirements
+  - id: BR-VA-017
+    name: Lift Gate Required
+    description: Stops without dock require lift gate vehicle
+    severity: warning
+    category: capability
+    condition: |
+      IF EXISTS stop WHERE stop.trip_id == trip.id AND stop.special_requirements CONTAINS 'lift_gate'
+      THEN vehicle.has_lift_gate
+    warning_message: "Some stops require lift gate capability"
+    applies_to: [trip_assignment]
+
+  - id: BR-VA-018
+    name: GPS Required
+    description: All trip vehicles must have functioning GPS
+    severity: critical
+    category: capability
+    condition: |
+      vehicle.has_gps AND
+      vehicle.gps_device_id IS NOT NULL AND
+      vehicle.last_location_update >= now() - 24h
+    error_message: "Vehicle must have functioning GPS for trip assignment"
+    applies_to: [trip_assignment]
+
+validation_order:
+  - availability
+  - compliance
+  - capability
+  - capacity
+  - maintenance
+  - inspection
+  - optimization
+
+escalation:
+  critical_violation:
+    action: block_assignment
+    notify: [fleet_manager, dispatcher]
+  warning:
+    action: allow_with_acknowledgment
+    notify: [dispatcher]
+  recommendation:
+    action: suggest_alternative
+    notify: []
+
+exceptions:
+  - name: emergency_dispatch
+    description: Emergency dispatch can override certain rules
+    overridable_rules: [BR-VA-011, BR-VA-012]
+    requires_approval: fleet_manager
+    documentation_required: true
+
+audit:
+  log_all_assignments: true
+  log_rule_violations: true
+  retention_days: 365

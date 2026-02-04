@@ -1,0 +1,293 @@
+name: TripPlanningWorkflow
+display_name: Trip Planning Workflow
+description: |
+  End-to-end workflow for planning delivery trips.
+  Covers order consolidation, route optimization, and resource assignment.
+
+domain: logistics
+subdomain: fleet
+category: workflows
+version: "1.0.0"
+
+trigger:
+  events:
+    - orders.ready_for_dispatch
+    - manual.create_trip
+    - schedule.daily_planning
+  schedule:
+    cron: "0 4 * * *"  # Daily at 4 AM
+    timezone: "America/Los_Angeles"
+
+actors:
+  - name: Dispatcher
+    role: primary
+    responsibilities:
+      - Review orders for dispatch
+      - Assign vehicles and drivers
+      - Approve trip plans
+  - name: Fleet Manager
+    role: approver
+    responsibilities:
+      - Approve high-value trips
+      - Override system recommendations
+  - name: System
+    role: automated
+    responsibilities:
+      - Order consolidation
+      - Route optimization
+      - Resource matching
+
+inputs:
+  - name: orders
+    type: array
+    source: outbound_orders
+    required: true
+    filters:
+      - status == 'ready_for_dispatch'
+      - ship_date <= today() + 2
+  - name: available_vehicles
+    type: array
+    source: vehicles
+    filters:
+      - status == 'available'
+  - name: available_drivers
+    type: array
+    source: drivers
+    filters:
+      - status == 'active'
+      - is_available == true
+
+outputs:
+  - name: trips
+    type: array
+    entity: Trip
+  - name: unassigned_orders
+    type: array
+    entity: Order
+  - name: planning_report
+    type: document
+
+steps:
+  - id: gather_orders
+    name: Gather Orders for Dispatch
+    type: automated
+    description: Collect all orders ready for dispatch
+    actions:
+      - query orders WHERE status = 'ready_for_dispatch'
+      - group by ship_date, priority, customer_zone
+      - calculate total_weight, total_volume per group
+    outputs:
+      - order_groups
+    next: analyze_constraints
+
+  - id: analyze_constraints
+    name: Analyze Delivery Constraints
+    type: automated
+    description: Extract constraints from orders and customers
+    actions:
+      - extract time_windows from orders
+      - identify special_requirements (lift_gate, refrigeration, hazmat)
+      - check customer delivery_instructions
+      - flag orders with conflicts
+    outputs:
+      - constraint_matrix
+    next: match_resources
+
+  - id: match_resources
+    name: Match Available Resources
+    type: automated
+    description: Find suitable vehicles and drivers for constraints
+    actions:
+      - query available vehicles with required capabilities
+      - query available drivers with required certifications
+      - check driver HOS availability
+      - rank by suitability score
+    business_rules:
+      - BR-VA-003  # Driver-Vehicle Compatibility
+      - BR-VA-007  # Hazmat Certification
+      - BR-VA-008  # Refrigeration
+      - BR-DC-010  # HOS Driving Limit
+    outputs:
+      - resource_candidates
+    next:
+      success: optimize_routes
+      no_resources: escalate_resource_shortage
+
+  - id: optimize_routes
+    name: Optimize Routes
+    type: automated
+    description: Generate optimized routes for each trip
+    actions:
+      - cluster orders geographically
+      - sequence stops to minimize distance
+      - respect time_windows
+      - add buffer times
+      - calculate estimated_duration
+    optimization:
+      objective: minimize_distance
+      constraints:
+        - time_windows
+        - vehicle_capacity
+        - driver_hours
+    business_rules:
+      - BR-RO-001  # Time Windows
+      - BR-RO-007  # Weight Restrictions
+      - BR-RO-016  # Break Scheduling
+    outputs:
+      - optimized_routes
+    next: create_trips
+
+  - id: create_trips
+    name: Create Trip Records
+    type: automated
+    description: Create trip entities from optimized routes
+    actions:
+      - FOR EACH route IN optimized_routes:
+        - create Trip entity
+        - create Stop entities
+        - calculate estimated costs
+        - set status = 'planned'
+    outputs:
+      - draft_trips
+    next: review_trips
+
+  - id: review_trips
+    name: Review Trip Plans
+    type: manual
+    actor: Dispatcher
+    description: Dispatcher reviews and adjusts trip plans
+    ui_screen: trip_planning_review
+    actions:
+      - display trips on map
+      - show time windows and ETAs
+      - allow resequencing stops
+      - allow reassigning resources
+    validations:
+      - all stops within time windows
+      - no HOS violations
+      - vehicle capacity not exceeded
+    decision_points:
+      - approve: Submit for approval
+      - modify: Adjust and re-optimize
+      - hold: Keep for later
+    next:
+      approve: check_approval_needed
+      modify: optimize_routes
+      hold: hold_trips
+
+  - id: check_approval_needed
+    name: Check Approval Requirements
+    type: automated
+    description: Determine if manager approval needed
+    conditions:
+      - IF trip.total_value > 50000 THEN require_manager_approval
+      - IF trip.is_hazmat THEN require_manager_approval
+      - IF trip.distance_km > 1000 THEN require_manager_approval
+      - ELSE auto_approve
+    next:
+      require_manager_approval: manager_approval
+      auto_approve: finalize_trips
+
+  - id: manager_approval
+    name: Manager Approval
+    type: manual
+    actor: Fleet Manager
+    description: Manager reviews and approves high-value trips
+    ui_screen: manager_trip_approval
+    timeout: 2h
+    actions:
+      - review trip details
+      - verify resource assignments
+      - approve or reject
+    decision_points:
+      - approve: Finalize trips
+      - reject: Return to dispatcher
+      - modify: Suggest changes
+    next:
+      approve: finalize_trips
+      reject: review_trips
+      modify: review_trips
+
+  - id: finalize_trips
+    name: Finalize Trip Plans
+    type: automated
+    description: Lock in trip plans and prepare for dispatch
+    actions:
+      - set trip.status = 'planned'
+      - reserve vehicle and driver
+      - generate trip documentation
+      - notify drivers of assignments
+      - update order status
+    notifications:
+      - to: assigned_drivers
+        template: trip_assignment
+        channel: [mobile_app, sms]
+      - to: customers
+        template: delivery_scheduled
+        channel: [email]
+    outputs:
+      - finalized_trips
+    next: complete
+
+  - id: hold_trips
+    name: Hold Trips
+    type: automated
+    description: Keep trips on hold for later processing
+    actions:
+      - set trip.status = 'on_hold'
+      - set hold_reason
+      - schedule reminder
+    next: complete
+
+  - id: escalate_resource_shortage
+    name: Escalate Resource Shortage
+    type: manual
+    actor: Fleet Manager
+    description: Handle case when insufficient resources
+    ui_screen: resource_shortage
+    actions:
+      - display shortage details
+      - suggest options (overtime, contractors, reschedule)
+      - capture decision
+    next:
+      resolved: match_resources
+      partial: create_trips  # Create trips for available resources
+      postpone: complete
+
+  - id: complete
+    name: Complete Planning
+    type: automated
+    description: Finalize planning session
+    actions:
+      - generate planning_report
+      - log planning metrics
+      - archive session
+
+exception_handling:
+  - exception: optimization_timeout
+    action: use_heuristic_solution
+    fallback: manual_planning
+
+  - exception: no_feasible_solution
+    action: split_orders
+    notification: dispatcher
+
+  - exception: system_error
+    action: retry_with_backoff
+    max_retries: 3
+    notification: support
+
+metrics:
+  - name: planning_duration
+    measure: end_time - start_time
+  - name: orders_planned
+    measure: count(planned_orders)
+  - name: trips_created
+    measure: count(trips)
+  - name: optimization_savings
+    measure: (naive_distance - optimized_distance) / naive_distance
+
+sla:
+  planning_completion: "before 6 AM daily"
+  approval_response: "2 hours"
+  driver_notification: "4 hours before trip"

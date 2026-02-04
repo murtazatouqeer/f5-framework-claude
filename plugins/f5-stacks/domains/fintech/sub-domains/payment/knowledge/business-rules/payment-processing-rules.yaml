@@ -1,0 +1,350 @@
+# Payment Processing Rules
+# Domain: fintech/payment
+# Purpose: Core rules governing payment processing lifecycle
+
+name: Payment Processing Rules
+display_name: Payment Processing Rules
+description: |
+  Business rules governing the payment processing lifecycle including
+  validation, authorization, capture, and settlement.
+
+  Vietnamese: Quy tắc kinh doanh điều chỉnh quy trình xử lý thanh toán
+  bao gồm xác thực, ủy quyền, capture và quyết toán.
+
+domain: fintech
+sub_domain: payment
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # ============ VALIDATION RULES ============
+  validation:
+    - id: BR-PPR-001
+      name: Amount Validation
+      description: Payment amount must be positive and within limits
+      vietnamese: Số tiền phải dương và trong giới hạn
+      condition: |
+        amount > 0
+        AND amount >= minimum_transaction_amount
+        AND amount <= maximum_transaction_amount
+      parameters:
+        minimum_transaction_amount: 1000  # VND
+        maximum_transaction_amount: 500000000  # VND
+      error_code: INVALID_AMOUNT
+      error_message: "Amount must be between {min} and {max}"
+      severity: blocking
+
+    - id: BR-PPR-002
+      name: Currency Validation
+      description: Currency must be supported by merchant
+      vietnamese: Đơn vị tiền tệ phải được merchant hỗ trợ
+      condition: |
+        currency IN merchant.supported_currencies
+        AND currency IN platform.supported_currencies
+      error_code: UNSUPPORTED_CURRENCY
+      error_message: "Currency {currency} is not supported"
+      severity: blocking
+
+    - id: BR-PPR-003
+      name: Card Number Validation (Luhn)
+      description: Card number must pass Luhn algorithm check
+      vietnamese: Số thẻ phải qua kiểm tra thuật toán Luhn
+      condition: |
+        IF payment_method_type = 'card'
+        THEN luhn_check(card_number) = true
+      error_code: INVALID_CARD_NUMBER
+      error_message: "Invalid card number"
+      severity: blocking
+
+    - id: BR-PPR-004
+      name: Card Expiry Validation
+      description: Card must not be expired
+      vietnamese: Thẻ không được hết hạn
+      condition: |
+        IF payment_method_type = 'card'
+        THEN card_exp_year > current_year
+             OR (card_exp_year = current_year AND card_exp_month >= current_month)
+      error_code: EXPIRED_CARD
+      error_message: "Card has expired"
+      severity: blocking
+
+    - id: BR-PPR-005
+      name: CVV Validation
+      description: CVV required for first-time card use
+      vietnamese: CVV bắt buộc cho lần sử dụng thẻ đầu tiên
+      condition: |
+        IF payment_method_type = 'card'
+           AND payment_method.first_use = true
+        THEN cvv IS NOT NULL
+             AND length(cvv) IN [3, 4]
+      error_code: CVV_REQUIRED
+      error_message: "CVV is required for this transaction"
+      severity: blocking
+
+    - id: BR-PPR-006
+      name: Merchant Status Validation
+      description: Merchant must be active to process payments
+      vietnamese: Merchant phải hoạt động để xử lý thanh toán
+      condition: |
+        merchant.status = 'active'
+        AND merchant.verification_status = 'verified'
+      error_code: MERCHANT_NOT_ACTIVE
+      error_message: "Merchant is not active for payment processing"
+      severity: blocking
+
+  # ============ 3D SECURE RULES ============
+  three_d_secure:
+    - id: BR-PPR-010
+      name: 3DS Requirement - SCA Countries
+      description: 3DS required for Strong Customer Authentication regions
+      vietnamese: 3DS bắt buộc cho các vùng yêu cầu SCA
+      condition: |
+        IF card_issuer_country IN sca_required_countries
+        THEN require_3ds = true
+      parameters:
+        sca_required_countries: [AT, BE, BG, CY, CZ, DE, DK, EE, ES, FI, FR, GR, HR, HU, IE, IT, LT, LU, LV, MT, NL, PL, PT, RO, SE, SI, SK, GB]
+      action: require_3ds_authentication
+
+    - id: BR-PPR-011
+      name: 3DS Requirement - High Amount
+      description: 3DS required for transactions above threshold
+      vietnamese: 3DS bắt buộc cho giao dịch trên ngưỡng
+      condition: |
+        IF amount > three_ds_amount_threshold
+        THEN require_3ds = true
+      parameters:
+        three_ds_amount_threshold: 5000000  # VND
+      action: require_3ds_authentication
+
+    - id: BR-PPR-012
+      name: 3DS Requirement - Risk Score
+      description: 3DS required for high risk score
+      vietnamese: 3DS bắt buộc cho điểm rủi ro cao
+      condition: |
+        IF risk_score > risk_threshold_3ds
+        THEN require_3ds = true
+      parameters:
+        risk_threshold_3ds: 50
+      action: require_3ds_authentication
+
+    - id: BR-PPR-013
+      name: 3DS Exemptions
+      description: Exemptions from 3DS requirement
+      vietnamese: Miễn trừ yêu cầu 3DS
+      condition: |
+        IF amount < low_value_threshold
+           OR is_recurring_payment = true
+           OR merchant_initiated = true
+           OR trusted_beneficiary = true
+        THEN allow_3ds_exemption = true
+      parameters:
+        low_value_threshold: 500000  # VND
+
+  # ============ AUTHORIZATION RULES ============
+  authorization:
+    - id: BR-PPR-020
+      name: Authorization Hold Duration
+      description: Authorization hold expires based on payment method
+      vietnamese: Thời gian giữ ủy quyền theo phương thức thanh toán
+      condition: |
+        CASE payment_method_type
+          WHEN 'card' THEN authorization_expires_in = 7 days
+          WHEN 'e_wallet' THEN authorization_expires_in = 30 minutes
+          WHEN 'bank_transfer' THEN authorization_expires_in = 24 hours
+        END
+      action: set_authorization_expiry
+
+    - id: BR-PPR-021
+      name: Partial Capture Allowed
+      description: Capture amount must not exceed authorized amount
+      vietnamese: Số capture không được vượt quá số ủy quyền
+      condition: |
+        captured_amount <= authorized_amount
+      error_code: CAPTURE_EXCEEDS_AUTHORIZATION
+      error_message: "Capture amount exceeds authorization"
+      severity: blocking
+
+    - id: BR-PPR-022
+      name: Multiple Captures
+      description: Multiple partial captures allowed until authorization expires
+      vietnamese: Cho phép nhiều lần capture cho đến khi hết hạn ủy quyền
+      condition: |
+        IF capture_method = 'manual'
+        THEN allow_multiple_captures = true
+             UNTIL total_captured = authorized_amount
+                   OR authorization_expired = true
+
+    - id: BR-PPR-023
+      name: Authorization Reversal
+      description: Uncaptured authorizations can be voided
+      vietnamese: Ủy quyền chưa capture có thể hủy
+      condition: |
+        IF status = 'requires_capture'
+           AND captured_amount = 0
+        THEN allow_void = true
+
+  # ============ IDEMPOTENCY RULES ============
+  idempotency:
+    - id: BR-PPR-030
+      name: Idempotency Key Caching
+      description: Same idempotency key returns cached result within 24h
+      vietnamese: Cùng idempotency key trả về kết quả cached trong 24h
+      condition: |
+        IF idempotency_key EXISTS
+           AND request_age < 24 hours
+           AND request_signature_matches = true
+        THEN return_cached_response = true
+      parameters:
+        idempotency_cache_ttl: 86400  # seconds (24 hours)
+
+    - id: BR-PPR-031
+      name: Idempotency Key Collision
+      description: Different request with same key is rejected
+      vietnamese: Yêu cầu khác với cùng key bị từ chối
+      condition: |
+        IF idempotency_key EXISTS
+           AND request_signature_matches = false
+        THEN reject_request = true
+      error_code: IDEMPOTENCY_KEY_COLLISION
+      error_message: "Different request body for existing idempotency key"
+
+  # ============ RATE LIMITING RULES ============
+  rate_limiting:
+    - id: BR-PPR-040
+      name: Card Rate Limit
+      description: Limit transactions per card per hour
+      vietnamese: Giới hạn giao dịch mỗi thẻ mỗi giờ
+      condition: |
+        card_transactions_per_hour <= card_rate_limit
+      parameters:
+        card_rate_limit: 10
+      error_code: CARD_RATE_LIMIT_EXCEEDED
+      error_message: "Too many transactions on this card"
+
+    - id: BR-PPR-041
+      name: IP Rate Limit
+      description: Limit transactions per IP per hour
+      vietnamese: Giới hạn giao dịch mỗi IP mỗi giờ
+      condition: |
+        ip_transactions_per_hour <= ip_rate_limit
+      parameters:
+        ip_rate_limit: 50
+      error_code: IP_RATE_LIMIT_EXCEEDED
+      error_message: "Too many requests from this IP"
+
+    - id: BR-PPR-042
+      name: Merchant Rate Limit
+      description: Limit API calls per merchant per minute
+      vietnamese: Giới hạn API mỗi merchant mỗi phút
+      condition: |
+        merchant_api_calls_per_minute <= merchant_rate_limit
+      parameters:
+        merchant_rate_limit: 100
+      error_code: API_RATE_LIMIT_EXCEEDED
+      error_message: "API rate limit exceeded"
+
+  # ============ RETRY RULES ============
+  retry:
+    - id: BR-PPR-050
+      name: Soft Decline Retry
+      description: Retry strategy for soft declines
+      vietnamese: Chiến lược thử lại cho soft decline
+      condition: |
+        IF decline_code IN soft_decline_codes
+        THEN allow_retry = true
+             AND retry_after = exponential_backoff(attempt_number)
+      parameters:
+        soft_decline_codes: [insufficient_funds, card_velocity_exceeded, do_not_honor]
+        max_retries: 3
+        initial_delay: 60  # seconds
+
+    - id: BR-PPR-051
+      name: Hard Decline No Retry
+      description: Do not retry hard declines
+      vietnamese: Không thử lại hard decline
+      condition: |
+        IF decline_code IN hard_decline_codes
+        THEN allow_retry = false
+      parameters:
+        hard_decline_codes: [stolen_card, lost_card, expired_card, invalid_card, pickup_card]
+
+    - id: BR-PPR-052
+      name: Processor Failover
+      description: Failover to backup processor on failure
+      vietnamese: Chuyển sang processor dự phòng khi lỗi
+      condition: |
+        IF processor_error IN failover_eligible_errors
+           AND backup_processor_available = true
+        THEN route_to_backup_processor = true
+      parameters:
+        failover_eligible_errors: [timeout, connection_error, service_unavailable]
+
+  # ============ CURRENCY CONVERSION RULES ============
+  currency:
+    - id: BR-PPR-060
+      name: Dynamic Currency Conversion
+      description: Offer DCC for international cards
+      vietnamese: Đề xuất DCC cho thẻ quốc tế
+      condition: |
+        IF card_currency != merchant_currency
+           AND dcc_enabled = true
+        THEN offer_dcc = true
+             AND dcc_rate = get_dcc_rate(card_currency, merchant_currency)
+
+    - id: BR-PPR-061
+      name: Settlement Currency Conversion
+      description: Convert to merchant settlement currency
+      vietnamese: Chuyển đổi sang tiền tệ quyết toán của merchant
+      condition: |
+        IF payment_currency != merchant.payout_currency
+        THEN settlement_amount = convert(net_amount, merchant.payout_currency)
+             AND conversion_rate = daily_exchange_rate
+
+  # ============ PAYMENT METHOD SPECIFIC RULES ============
+  payment_method_specific:
+    - id: BR-PPR-070
+      name: E-Wallet Balance Check
+      description: Verify e-wallet balance before authorization
+      vietnamese: Kiểm tra số dư ví trước khi ủy quyền
+      condition: |
+        IF payment_method_type = 'e_wallet'
+        THEN verify_wallet_balance(wallet_id, amount)
+
+    - id: BR-PPR-071
+      name: Bank Transfer Timeout
+      description: Bank transfer must complete within window
+      vietnamese: Chuyển khoản ngân hàng phải hoàn thành trong thời gian quy định
+      condition: |
+        IF payment_method_type = 'bank_transfer'
+           AND status = 'pending'
+           AND created_at + timeout_window < now()
+        THEN status = 'failed'
+      parameters:
+        timeout_window: 24 hours
+
+    - id: BR-PPR-072
+      name: QR Code Expiry
+      description: QR codes expire after specified time
+      vietnamese: Mã QR hết hạn sau thời gian quy định
+      condition: |
+        IF payment_method_type = 'qr_code'
+        THEN qr_expires_in = 15 minutes
+
+implementation_notes:
+  - All rules are evaluated in order of priority
+  - Blocking rules halt processing immediately
+  - Warning rules log but allow processing
+  - Rules can be overridden per merchant via configuration
+
+audit_requirements:
+  - Log all rule evaluations
+  - Track rule version for each transaction
+  - Record override decisions with approval
+
+compliance_mapping:
+  pci_dss:
+    - BR-PPR-003  # Card number validation
+    - BR-PPR-005  # CVV handling
+  psd2_sca:
+    - BR-PPR-010  # 3DS for SCA regions
+    - BR-PPR-011  # Amount-based 3DS

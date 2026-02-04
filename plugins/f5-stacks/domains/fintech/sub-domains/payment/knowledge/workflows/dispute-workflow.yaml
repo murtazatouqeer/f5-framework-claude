@@ -1,0 +1,483 @@
+# Dispute Workflow
+# Domain: fintech/payment
+# Purpose: Handle chargebacks and payment disputes
+
+name: Dispute Processing
+display_name: Dispute Processing Workflow
+description: |
+  Complete workflow for handling payment disputes and chargebacks including
+  notification, evidence collection, submission, and resolution.
+
+  Vietnamese: Quy trình hoàn chỉnh xử lý tranh chấp thanh toán và chargeback
+  bao gồm thông báo, thu thập bằng chứng, nộp và giải quyết.
+
+domain: fintech
+sub_domain: payment
+category: workflow
+version: "1.0.0"
+
+workflow:
+  id: WF-DIS-001
+  name: dispute_processing
+  trigger: card_network_notification | early_fraud_warning
+
+  steps:
+    # ============ STEP 1: RECEIVE DISPUTE ============
+    - id: receive_dispute
+      name: Receive Dispute Notification
+      description: Receive and process dispute from card network
+      vietnamese: Nhận và xử lý thông báo tranh chấp từ mạng thẻ
+      type: action
+      trigger: webhook_from_processor
+      input:
+        - network_dispute_id
+        - payment_reference
+        - dispute_amount
+        - dispute_reason_code
+        - evidence_due_date
+        - dispute_type (inquiry | chargeback)
+      actions:
+        - lookup_payment(payment_reference)
+        - generate_dispute_id()
+        - map_reason_code_to_category()
+        - create_dispute_record()
+        - update_payment_status(disputed)
+        - debit_merchant_balance(dispute_amount + dispute_fee)
+      output:
+        - dispute_id
+        - status: needs_response
+        - evidence_due_by
+        - amount_debited
+      on_success: goto: determine_dispute_type
+
+    # ============ STEP 2: DETERMINE TYPE ============
+    - id: determine_dispute_type
+      name: Determine Dispute Type
+      description: Classify dispute and determine response strategy
+      vietnamese: Phân loại tranh chấp và xác định chiến lược phản hồi
+      type: action
+      input:
+        - dispute
+        - original_payment
+        - dispute_reason
+      classification:
+        early_fraud_warning:
+          condition: dispute_type = 'inquiry' OR is_early_warning = true
+          priority: high
+          auto_refund_eligible: true
+
+        fraudulent:
+          condition: reason IN ['fraudulent', '10.4', '4837']
+          requires_evidence:
+            - customer_identification
+            - avs_cvv_match
+            - device_fingerprint
+            - customer_communication
+
+        product_not_received:
+          condition: reason IN ['product_not_received', '13.1', '4855']
+          requires_evidence:
+            - shipping_tracking
+            - delivery_confirmation
+            - shipping_documentation
+
+        product_unacceptable:
+          condition: reason IN ['product_unacceptable', '13.3', '4853']
+          requires_evidence:
+            - product_description
+            - return_policy
+            - customer_communication
+
+        duplicate:
+          condition: reason IN ['duplicate', '12.6', '4841']
+          requires_evidence:
+            - transaction_differentiation
+            - separate_invoices
+
+        subscription_cancelled:
+          condition: reason IN ['subscription_cancelled', '13.7']
+          requires_evidence:
+            - cancellation_policy
+            - active_subscription_proof
+            - billing_history
+
+        credit_not_processed:
+          condition: reason IN ['credit_not_processed', '13.6']
+          requires_evidence:
+            - refund_documentation
+            - return_receipt
+      output:
+        - dispute_category
+        - required_evidence_types
+        - auto_refund_recommendation
+      decision:
+        - if: is_early_fraud_warning AND auto_refund_recommended
+          goto: early_resolution
+        - else: goto: notify_merchant
+
+    # ============ STEP 3: EARLY RESOLUTION (OPTIONAL) ============
+    - id: early_resolution
+      name: Early Resolution
+      description: Attempt early resolution by proactive refund
+      vietnamese: Giải quyết sớm bằng hoàn tiền chủ động
+      type: action
+      condition: is_early_warning = true AND merchant.auto_refund_early_warnings = true
+      input:
+        - dispute
+        - original_payment
+      actions:
+        - check_refund_eligibility()
+        - process_proactive_refund()
+        - notify_card_network(refund_issued)
+        - close_early_warning()
+      output:
+        - resolution_type: early_refund
+        - status: warning_closed
+      on_success: goto: finalize_dispute
+      on_failure: goto: notify_merchant
+
+    # ============ STEP 4: NOTIFY MERCHANT ============
+    - id: notify_merchant
+      name: Notify Merchant
+      description: Alert merchant about dispute
+      vietnamese: Thông báo merchant về tranh chấp
+      type: action
+      input:
+        - dispute
+        - original_payment
+        - required_evidence
+      actions:
+        - send_email_notification(merchant, dispute_details)
+        - send_webhook(dispute.created)
+        - create_dashboard_alert(urgent)
+        - calculate_response_deadline()
+      output:
+        - notification_sent_at
+        - response_deadline
+      notifications:
+        - channel: email
+          priority: high
+          subject: "Action Required: Dispute {dispute_id} - Respond by {deadline}"
+
+        - channel: webhook
+          event: dispute.created
+
+        - channel: dashboard
+          type: action_required
+
+    # ============ STEP 5: COLLECT EVIDENCE ============
+    - id: collect_evidence
+      name: Collect Evidence
+      description: Merchant collects and uploads evidence
+      vietnamese: Merchant thu thập và tải lên bằng chứng
+      type: manual_action
+      actor: merchant
+      input:
+        - dispute
+        - required_evidence_types
+      evidence_guidance:
+        fraudulent:
+          - id: customer_communication
+            description: Emails, chat logs showing customer recognized transaction
+          - id: shipping_proof
+            description: Tracking number with delivery confirmation
+          - id: service_documentation
+            description: Login logs, usage data, IP addresses
+
+        product_not_received:
+          - id: shipping_tracking
+            description: Carrier tracking with delivery status
+          - id: delivery_confirmation
+            description: Signature or photo proof of delivery
+          - id: customer_communication
+            description: Communication acknowledging receipt
+
+        product_unacceptable:
+          - id: product_description
+            description: Original listing/description shown to customer
+          - id: return_policy
+            description: Clear return/refund policy
+          - id: customer_communication
+            description: Prior communication about product
+
+        duplicate:
+          - id: transaction_details
+            description: Show transactions are for different purchases
+          - id: separate_orders
+            description: Different order IDs, dates, or items
+
+      timeout: evidence_due_by - 24 hours
+      reminders:
+        - at: 7 days before deadline
+          message: "7 days remaining to respond to dispute"
+        - at: 3 days before deadline
+          message: "3 days remaining - submit evidence now"
+        - at: 1 day before deadline
+          message: "URGENT: Evidence due tomorrow"
+
+      output:
+        - evidence_package
+        - submission_ready
+
+    # ============ STEP 6: REVIEW EVIDENCE ============
+    - id: review_evidence
+      name: Review Evidence
+      description: Review evidence before submission
+      vietnamese: Xem xét bằng chứng trước khi nộp
+      type: action
+      input:
+        - evidence_package
+        - dispute_category
+      checks:
+        - evidence_complete: all required types present
+        - evidence_quality: documents readable and relevant
+        - evidence_format: acceptable file types and sizes
+      output:
+        - evidence_review_result
+        - evidence_gaps
+        - submission_recommendation
+      decision:
+        - if: evidence_complete AND quality_acceptable
+          goto: submit_evidence
+        - if: evidence_incomplete AND time_remaining > 24h
+          goto: request_additional_evidence
+        - if: time_expired OR merchant_accepts
+          goto: accept_dispute
+
+    # ============ STEP 7: SUBMIT EVIDENCE ============
+    - id: submit_evidence
+      name: Submit Evidence
+      description: Submit evidence to card network
+      vietnamese: Nộp bằng chứng cho mạng thẻ
+      type: action
+      input:
+        - dispute
+        - evidence_package
+      actions:
+        - format_evidence_for_network()
+        - submit_to_processor()
+        - store_submission_confirmation()
+        - update_dispute_status(under_review)
+        - notify_merchant(evidence_submitted)
+      output:
+        - submission_id
+        - status: under_review
+        - expected_resolution_date
+
+    # ============ STEP 8: ACCEPT DISPUTE ============
+    - id: accept_dispute
+      name: Accept Dispute
+      description: Merchant accepts dispute without contest
+      vietnamese: Merchant chấp nhận tranh chấp không phản đối
+      type: action
+      trigger: merchant_action | deadline_expired
+      input:
+        - dispute
+      actions:
+        - mark_dispute_accepted()
+        - notify_processor(no_contest)
+        - keep_debit_permanent()
+        - update_dispute_status(lost)
+      output:
+        - status: lost
+        - outcome_reason: accepted_by_merchant
+
+    # ============ STEP 9: AWAIT DECISION ============
+    - id: await_decision
+      name: Await Network Decision
+      description: Wait for card network decision
+      vietnamese: Chờ quyết định từ mạng thẻ
+      type: wait
+      input:
+        - dispute
+        - submission_id
+      expected_timeline:
+        visa: 60-75 days
+        mastercard: 45-60 days
+        amex: 45-60 days
+      polling:
+        frequency: daily
+        endpoint: processor_dispute_status
+      output:
+        - network_decision
+        - decision_reason
+
+    # ============ STEP 10: PROCESS DECISION ============
+    - id: process_decision
+      name: Process Network Decision
+      description: Handle card network decision
+      vietnamese: Xử lý quyết định từ mạng thẻ
+      type: action
+      input:
+        - dispute
+        - network_decision
+      decision:
+        - if: decision = won
+          goto: resolve_won
+        - if: decision = lost
+          goto: resolve_lost
+
+    # ============ STEP 11A: MERCHANT WON ============
+    - id: resolve_won
+      name: Resolve - Merchant Won
+      description: Process merchant win
+      vietnamese: Xử lý merchant thắng
+      type: action
+      input:
+        - dispute
+      actions:
+        - credit_merchant_balance(dispute_amount)
+        - refund_dispute_fee()
+        - update_dispute_status(won)
+        - send_webhook(dispute.won)
+        - notify_merchant(dispute_won)
+        - update_dispute_metrics()
+      output:
+        - status: won
+        - amount_credited
+        - fee_refunded
+
+    # ============ STEP 11B: MERCHANT LOST ============
+    - id: resolve_lost
+      name: Resolve - Merchant Lost
+      description: Process merchant loss
+      vietnamese: Xử lý merchant thua
+      type: action
+      input:
+        - dispute
+        - decision_reason
+      actions:
+        - confirm_debit_permanent()
+        - update_dispute_status(lost)
+        - send_webhook(dispute.lost)
+        - notify_merchant(dispute_lost, decision_reason)
+        - update_dispute_metrics()
+        - check_dispute_rate_threshold()
+      output:
+        - status: lost
+        - amount_debited
+        - outcome_reason
+
+    # ============ STEP 12: FINALIZE ============
+    - id: finalize_dispute
+      name: Finalize Dispute
+      description: Complete dispute processing
+      vietnamese: Hoàn tất xử lý tranh chấp
+      type: action
+      input:
+        - dispute
+        - resolution
+      actions:
+        - archive_dispute_evidence()
+        - update_analytics()
+        - check_merchant_dispute_rate()
+        - schedule_review_if_high_rate()
+      output:
+        - dispute_finalized: true
+
+# ============ DISPUTE TIMELINE ============
+timeline:
+  day_0: Dispute received
+  day_1-3: Merchant notification
+  day_1-14: Evidence collection period
+  day_14-21: Evidence submission deadline (varies by network)
+  day_21-90: Network review period
+  day_90+: Final decision
+
+# ============ STATE MACHINE ============
+state_machine:
+  states:
+    - warning_needs_response
+    - warning_under_review
+    - warning_closed
+    - needs_response
+    - evidence_pending
+    - under_review
+    - won
+    - lost
+
+  transitions:
+    - from: warning_needs_response
+      to: warning_under_review
+      event: response_submitted
+
+    - from: warning_needs_response
+      to: warning_closed
+      event: refund_issued
+
+    - from: warning_under_review
+      to: warning_closed
+      event: resolved
+
+    - from: warning_under_review
+      to: needs_response
+      event: escalated_to_chargeback
+
+    - from: needs_response
+      to: evidence_pending
+      event: merchant_notified
+
+    - from: evidence_pending
+      to: under_review
+      event: evidence_submitted
+
+    - from: evidence_pending
+      to: lost
+      event: deadline_expired
+
+    - from: needs_response
+      to: lost
+      event: accepted_by_merchant
+
+    - from: under_review
+      to: won
+      event: network_ruled_merchant
+
+    - from: under_review
+      to: lost
+      event: network_ruled_customer
+
+# ============ EVIDENCE REQUIREMENTS BY REASON ============
+evidence_requirements:
+  fraudulent:
+    mandatory:
+      - customer_signature_or_ip_log
+      - avs_response
+      - cvv_response
+    recommended:
+      - 3ds_authentication_proof
+      - customer_communication
+      - device_fingerprint
+
+  product_not_received:
+    mandatory:
+      - shipping_tracking
+      - delivery_confirmation
+    recommended:
+      - shipping_carrier_statement
+      - signature_on_delivery
+
+  product_unacceptable:
+    mandatory:
+      - product_description
+      - refund_policy
+    recommended:
+      - customer_communication
+      - product_photos
+
+# ============ MONITORING ============
+monitoring:
+  metrics:
+    - dispute_rate (target: < 0.9%)
+    - win_rate
+    - response_rate
+    - average_response_time
+    - evidence_submission_rate
+
+  alerts:
+    - dispute_rate_above: 0.9%
+      action: flag_merchant_for_review
+    - dispute_rate_above: 1.0%
+      action: consider_merchant_suspension
+    - missed_deadline
+      action: alert_operations

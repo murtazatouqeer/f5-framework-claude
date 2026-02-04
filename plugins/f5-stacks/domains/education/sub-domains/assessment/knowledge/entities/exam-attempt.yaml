@@ -1,0 +1,374 @@
+# Exam Attempt Entity
+# F5 Framework v2.0 - Education/Assessment
+# Tracks candidate exam sessions
+
+entity:
+  id: exam_attempt
+  name: Exam Attempt
+  name_ja: 受験
+  description: Individual exam attempt by a candidate with timing, progress, and response tracking
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+
+  attributes:
+    id:
+      type: uuid
+      primary_key: true
+      
+    attempt_code:
+      type: string
+      max_length: 50
+      unique: true
+      pattern: "^ATT-[0-9]{8}-[A-Z0-9]{6}$"
+      
+    # References
+    exam_id:
+      type: uuid
+      references: exam
+      required: true
+      
+    candidate_id:
+      type: uuid
+      references: user
+      required: true
+      
+    # Attempt Number
+    attempt_number:
+      type: integer
+      min: 1
+      default: 1
+      
+    # Status
+    status:
+      type: enum
+      values:
+        - not_started
+        - in_progress
+        - paused
+        - submitted
+        - grading
+        - graded
+        - voided
+        - expired
+      default: not_started
+      
+    void_reason:
+      type: enum
+      values:
+        - proctor_decision
+        - technical_issue
+        - policy_violation
+        - candidate_request
+        - admin_action
+        
+    void_notes:
+      type: text
+      
+    # Timing
+    scheduled_start:
+      type: datetime
+      
+    actual_start:
+      type: datetime
+      
+    actual_end:
+      type: datetime
+      
+    submitted_at:
+      type: datetime
+      
+    duration_allowed_minutes:
+      type: integer
+      
+    duration_used_seconds:
+      type: integer
+      default: 0
+      
+    time_remaining_seconds:
+      type: integer
+      computed: true
+      
+    extra_time_minutes:
+      type: integer
+      default: 0
+      description: Accommodation extra time
+      
+    # Progress
+    total_questions:
+      type: integer
+      
+    questions_answered:
+      type: integer
+      default: 0
+      
+    questions_flagged:
+      type: integer
+      default: 0
+      
+    current_question_index:
+      type: integer
+      default: 0
+      
+    progress_percentage:
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: true
+      
+    # Question Ordering
+    question_sequence:
+      type: array
+      items: uuid
+      description: Ordered list of question IDs for this attempt
+      
+    section_progress:
+      type: json
+      description: Progress per section
+      example:
+        section_1:
+          answered: 5
+          total: 10
+          flagged: 2
+          
+    # Scoring (Post-Grading)
+    raw_score:
+      type: decimal
+      precision: 10
+      scale: 2
+      
+    scaled_score:
+      type: decimal
+      precision: 10
+      scale: 2
+      
+    percentage_score:
+      type: decimal
+      precision: 5
+      scale: 2
+      
+    passed:
+      type: boolean
+      
+    grade:
+      type: string
+      max_length: 10
+      
+    # Auto-graded vs Manual
+    auto_graded_points:
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      
+    manual_graded_points:
+      type: decimal
+      precision: 10
+      scale: 2
+      default: 0
+      
+    pending_manual_grading:
+      type: integer
+      default: 0
+      description: Count of questions awaiting manual grading
+      
+    # Proctoring
+    proctor_session_id:
+      type: uuid
+      references: proctor_session
+      
+    proctoring_flags:
+      type: array
+      items:
+        type: object
+        properties:
+          timestamp: datetime
+          type: enum[face_not_detected, multiple_faces, tab_switch, browser_unfocused, suspicious_activity]
+          severity: enum[low, medium, high]
+          details: text
+          
+    proctoring_score:
+      type: decimal
+      precision: 5
+      scale: 2
+      description: Integrity score from proctoring
+      
+    # Environment
+    ip_address:
+      type: string
+      max_length: 45
+      
+    user_agent:
+      type: string
+      max_length: 500
+      
+    device_type:
+      type: enum
+      values: [desktop, laptop, tablet, mobile, unknown]
+      
+    browser_info:
+      type: json
+      
+    screen_resolution:
+      type: string
+      max_length: 20
+      
+    # Session Events
+    events:
+      type: array
+      items:
+        type: object
+        properties:
+          timestamp: datetime
+          event_type: string
+          details: json
+      description: Chronological event log
+      
+    pause_count:
+      type: integer
+      default: 0
+      
+    total_pause_duration_seconds:
+      type: integer
+      default: 0
+      
+    # Access
+    access_code_used:
+      type: string
+      max_length: 50
+      
+    # Accommodation
+    accommodation_id:
+      type: uuid
+      references: accommodation
+      
+    # Review
+    reviewed_by:
+      type: uuid
+      references: user
+      
+    reviewed_at:
+      type: datetime
+      
+    review_notes:
+      type: text
+      
+    # Timestamps
+    created_at:
+      type: datetime
+      auto_set: create
+      
+    updated_at:
+      type: datetime
+      auto_set: update
+
+  computed_fields:
+    completion_rate:
+      formula: "questions_answered / total_questions * 100"
+      type: decimal
+      
+    is_timed_out:
+      formula: "duration_used_seconds >= duration_allowed_minutes * 60"
+      type: boolean
+      
+    needs_manual_grading:
+      formula: "pending_manual_grading > 0"
+      type: boolean
+
+  state_machine:
+    field: status
+    initial: not_started
+    transitions:
+      - from: not_started
+        to: in_progress
+        action: start
+        conditions:
+          - within_schedule_window
+          - access_verified
+          
+      - from: in_progress
+        to: paused
+        action: pause
+        conditions:
+          - pause_allowed
+          
+      - from: paused
+        to: in_progress
+        action: resume
+        
+      - from: in_progress
+        to: submitted
+        action: submit
+        
+      - from: in_progress
+        to: expired
+        action: timeout
+        trigger: time_exceeded
+        
+      - from: submitted
+        to: grading
+        action: begin_grading
+        
+      - from: grading
+        to: graded
+        action: complete_grading
+        conditions:
+          - all_questions_graded
+          
+      - from: [in_progress, paused, submitted]
+        to: voided
+        action: void
+        roles: [proctor, admin]
+
+  relationships:
+    exam:
+      type: belongs_to
+      entity: exam
+      foreign_key: exam_id
+      
+    candidate:
+      type: belongs_to
+      entity: user
+      foreign_key: candidate_id
+      
+    responses:
+      type: has_many
+      entity: response
+      foreign_key: attempt_id
+      
+    proctor_session:
+      type: belongs_to
+      entity: proctor_session
+      foreign_key: proctor_session_id
+      
+    accommodation:
+      type: belongs_to
+      entity: accommodation
+      foreign_key: accommodation_id
+      
+    result:
+      type: has_one
+      entity: exam_result
+      foreign_key: attempt_id
+
+  indexes:
+    - columns: [attempt_code]
+      unique: true
+    - columns: [exam_id, candidate_id]
+    - columns: [candidate_id, status]
+    - columns: [exam_id, status]
+    - columns: [status, actual_start]
+
+  validations:
+    - name: max_attempts_check
+      condition: "attempt_number <= exam.max_attempts"
+      message: "Maximum attempts exceeded"
+      
+    - name: end_after_start
+      condition: "actual_end IS NULL OR actual_start <= actual_end"
+      message: "End time must be after start time"
+
+  audit:
+    enabled: true
+    track_changes: true
+    sensitive_fields: [ip_address]

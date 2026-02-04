@@ -1,0 +1,305 @@
+name: Organization
+display_name: Organization / Tổ chức
+description: |
+  Represents an organizational unit within a tenant for larger enterprises.
+  Enables hierarchical structure with departments, teams, or business units.
+  Optional entity for enterprise-tier tenants.
+
+domain: saas-platform
+entity_type: core
+version: "1.0"
+
+attributes:
+  # Primary Identifiers
+  - name: id
+    type: uuid
+    primary_key: true
+    description: Internal unique identifier
+
+  - name: tenant_id
+    type: uuid
+    foreign_key: tenant.id
+    required: true
+    description: Parent tenant
+    description_vi: Khách thuê cha
+
+  - name: name
+    type: string
+    required: true
+    max_length: 255
+    description: Organization name
+    description_vi: Tên tổ chức
+
+  - name: slug
+    type: string
+    max_length: 100
+    description: URL-friendly identifier
+    description_vi: Định danh thân thiện với URL
+
+  - name: code
+    type: string
+    max_length: 50
+    description: Short code for the organization
+    description_vi: Mã ngắn cho tổ chức
+    example: "ENG-001"
+
+  # Type & Classification
+  - name: type
+    type: enum
+    values: [department, team, division, business_unit, subsidiary, project, custom]
+    default: department
+    description: Organization type
+    description_vi: Loại tổ chức
+
+  - name: status
+    type: enum
+    values: [active, inactive, archived]
+    default: active
+    description: Organization status
+    description_vi: Trạng thái tổ chức
+
+  # Hierarchy
+  - name: parent_id
+    type: uuid
+    foreign_key: organization.id
+    description: Parent organization (for hierarchy)
+    description_vi: Tổ chức cha (cho phân cấp)
+
+  - name: path
+    type: string
+    max_length: 1000
+    description: Materialized path for hierarchy (e.g., "root/parent/child")
+    description_vi: Đường dẫn cụ thể hóa cho phân cấp
+
+  - name: level
+    type: integer
+    default: 0
+    description: Hierarchy depth level
+    description_vi: Cấp độ sâu phân cấp
+
+  # Details
+  - name: description
+    type: text
+    description: Organization description
+    description_vi: Mô tả tổ chức
+
+  - name: logo_url
+    type: url
+    description: Organization logo
+    description_vi: Logo tổ chức
+
+  # Contact Information
+  - name: email
+    type: email
+    description: Organization contact email
+    description_vi: Email liên hệ tổ chức
+
+  - name: phone
+    type: string
+    max_length: 20
+    description: Contact phone
+    description_vi: Số điện thoại liên hệ
+
+  - name: address
+    type: json
+    description: Physical address
+    description_vi: Địa chỉ vật lý
+
+  # Management
+  - name: manager_id
+    type: uuid
+    foreign_key: user.id
+    description: Organization manager/head
+    description_vi: Quản lý/trưởng tổ chức
+
+  # Configuration
+  - name: settings
+    type: json
+    description: Organization-specific settings
+    description_vi: Cài đặt riêng của tổ chức
+    schema:
+      budget_limit: decimal
+      approval_workflow: boolean
+      custom_fields: object
+      allowed_integrations: array
+
+  # Limits
+  - name: user_limit
+    type: integer
+    description: Maximum users in this organization
+    description_vi: Số người dùng tối đa trong tổ chức này
+
+  # Metadata
+  - name: metadata
+    type: json
+    description: Custom metadata
+    description_vi: Metadata tùy chỉnh
+
+  - name: external_id
+    type: string
+    max_length: 255
+    description: ID in external HR/directory system
+    description_vi: ID trong hệ thống HR/thư mục bên ngoài
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    auto: true
+
+  - name: updated_at
+    type: timestamp
+    auto: true
+
+  - name: created_by
+    type: uuid
+    foreign_key: user.id
+
+relationships:
+  - name: tenant
+    type: belongs_to
+    target: Tenant
+    foreign_key: tenant_id
+    description: Parent tenant
+
+  - name: parent
+    type: belongs_to
+    target: Organization
+    foreign_key: parent_id
+    description: Parent organization
+
+  - name: children
+    type: has_many
+    target: Organization
+    foreign_key: parent_id
+    description: Child organizations
+
+  - name: users
+    type: has_many
+    target: User
+    through: organization_users
+    description: Users in this organization
+
+  - name: manager
+    type: belongs_to
+    target: User
+    foreign_key: manager_id
+    description: Organization manager
+
+indexes:
+  - name: idx_org_tenant
+    columns: [tenant_id]
+    description: All organizations in tenant
+
+  - name: idx_org_tenant_slug
+    columns: [tenant_id, slug]
+    unique: true
+    description: Unique slug per tenant
+
+  - name: idx_org_parent
+    columns: [parent_id]
+    description: Child organization lookup
+
+  - name: idx_org_path
+    columns: [tenant_id, path]
+    description: Hierarchy path queries
+
+  - name: idx_org_manager
+    columns: [manager_id]
+    description: Organizations by manager
+
+business_rules:
+  - id: BR-ORG-001
+    name: Enterprise Feature
+    description: Organizations feature requires enterprise tier
+    description_vi: Tính năng tổ chức yêu cầu gói enterprise
+    tier_required: enterprise
+
+  - id: BR-ORG-002
+    name: Max Hierarchy Depth
+    description: Maximum 5 levels of organizational hierarchy
+    description_vi: Tối đa 5 cấp phân cấp tổ chức
+    parameters:
+      max_depth: 5
+
+  - id: BR-ORG-003
+    name: No Circular References
+    description: Organization cannot be its own ancestor
+    description_vi: Tổ chức không thể là tổ tiên của chính nó
+    severity: critical
+
+  - id: BR-ORG-004
+    name: User Must Belong to One
+    description: Each user can belong to one primary organization
+    description_vi: Mỗi người dùng có thể thuộc về một tổ chức chính
+
+  - id: BR-ORG-005
+    name: Cannot Delete With Children
+    description: Cannot delete organization with child organizations
+    description_vi: Không thể xóa tổ chức có tổ chức con
+
+computed_fields:
+  - name: full_path_name
+    formula: "Concatenate ancestor names with ' > '"
+    description: Full hierarchy path as names
+
+  - name: user_count
+    formula: "COUNT(users)"
+    description: Number of users in organization
+
+  - name: descendant_count
+    formula: "COUNT(children recursively)"
+    description: Total descendant organizations
+
+  - name: is_root
+    formula: "parent_id IS NULL"
+    description: Is top-level organization
+
+  - name: is_leaf
+    formula: "NOT EXISTS (children)"
+    description: Has no child organizations
+
+events:
+  - name: organization.created
+    payload: [organization_id, tenant_id, name, type]
+
+  - name: organization.updated
+    payload: [organization_id, changes]
+
+  - name: organization.user_added
+    payload: [organization_id, user_id]
+
+  - name: organization.user_removed
+    payload: [organization_id, user_id]
+
+  - name: organization.manager_changed
+    payload: [organization_id, old_manager_id, new_manager_id]
+
+  - name: organization.archived
+    payload: [organization_id, user_count]
+
+hierarchy_operations:
+  # Move organization to new parent
+  move:
+    validations:
+      - target not self
+      - target not descendant
+      - depth <= max_depth
+    actions:
+      - update parent_id
+      - recalculate path for self and descendants
+      - recalculate level for self and descendants
+
+  # Get all ancestors
+  ancestors:
+    query: "Follow parent_id chain to root"
+    use_case: "Breadcrumb navigation, permission inheritance"
+
+  # Get all descendants
+  descendants:
+    query: "Find all organizations where path starts with self.path"
+    use_case: "Aggregate reporting, bulk operations"
+
+  # Get siblings
+  siblings:
+    query: "Find organizations with same parent_id"
+    use_case: "Peer comparison, navigation"

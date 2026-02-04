@@ -1,0 +1,418 @@
+name: purchase-workflow
+display_name: Purchase Workflow
+description: |
+  Complete workflow for in-game purchases including
+  browsing, cart, payment, and item delivery.
+
+domain: entertainment
+subdomain: gaming
+category: workflows
+version: "1.0.0"
+status: active
+
+trigger:
+  event: player.initiates_purchase
+  conditions:
+    - player.authenticated
+    - player.account_in_good_standing
+
+workflow:
+  id: WF-PU-001
+  name: In-Game Purchase
+  description: Purchase flow from browsing to item delivery
+
+  actors:
+    - id: player
+      name: Player
+      type: primary
+    - id: store_service
+      name: Store Service
+      type: system
+    - id: payment_service
+      name: Payment Service
+      type: system
+    - id: inventory_service
+      name: Inventory Service
+      type: system
+
+  steps:
+    # ============================================
+    # PHASE 1: BROWSING
+    # ============================================
+    - id: step_1
+      name: Open Store
+      description: Player accesses the in-game store
+      actor: player
+      action: |
+        - Navigate to store/shop
+        - System loads store content
+      next: step_2
+
+    - id: step_2
+      name: Display Store Content
+      description: Show available items
+      actor: store_service
+      action: |
+        - Load featured items
+        - Load categories
+        - Show personalized recommendations
+        - Display active sales
+        - Show owned items (dimmed)
+      outputs:
+        - store_catalog
+        - player_owned_items
+        - active_promotions
+      next: step_3
+
+    - id: step_3
+      name: Browse Items
+      description: Player explores store
+      actor: player
+      action: |
+        - View categories
+        - Search items
+        - Filter by type/price/rarity
+        - Preview items
+      next: step_4
+      interruptible: true
+
+    - id: step_4
+      name: Select Item
+      description: Player chooses item to purchase
+      actor: player
+      action: |
+        - Click on item
+        - View item details
+        - See price and currency options
+        - Check if already owned
+      decision_point:
+        condition: player_wants_to_buy
+        if_true: step_5
+        if_false: step_3
+
+    # ============================================
+    # PHASE 2: PRE-PURCHASE
+    # ============================================
+    - id: step_5
+      name: Check Purchase Eligibility
+      description: Validate purchase is allowed
+      actor: store_service
+      action: |
+        CHECK:
+        - Item is available
+        - Player doesn't own (if unique)
+        - Player meets requirements (level, etc.)
+        - Purchase limits not exceeded
+        - Region restrictions
+      validations:
+        - Item available for purchase
+        - Player eligible
+      on_success: step_6
+      on_failure:
+        action: show_ineligibility_reason
+        return: step_3
+
+    - id: step_6
+      name: Display Purchase Options
+      description: Show payment options
+      actor: store_service
+      action: |
+        - Show available currencies
+        - Calculate prices:
+          - Premium currency price
+          - Soft currency price (if available)
+          - Real money price (if direct purchase)
+        - Apply any discounts
+        - Show final price
+      outputs:
+        - payment_options
+        - final_price
+      next: step_7
+
+    - id: step_7
+      name: Select Payment Method
+      description: Player chooses how to pay
+      actor: player
+      action: |
+        - Review payment options
+        - Check balances
+        - Select payment method:
+          - Use existing premium currency
+          - Use soft currency
+          - Purchase with real money
+      decision_point:
+        condition: has_sufficient_balance
+        if_true: step_9
+        if_false: step_8
+
+    # ============================================
+    # PHASE 3: CURRENCY PURCHASE (IF NEEDED)
+    # ============================================
+    - id: step_8
+      name: Insufficient Balance
+      description: Handle insufficient currency
+      actor: store_service
+      action: |
+        - Show current balance
+        - Calculate shortfall
+        - Offer to purchase currency
+        - Show currency packages
+      decision_point:
+        condition: player_buys_currency
+        if_true: step_8a
+        if_false:
+          action: return_to_store
+          next: step_3
+
+    - id: step_8a
+      name: Currency Purchase
+      description: Purchase premium currency
+      actor: player
+      action: |
+        - Select currency package
+        - Choose payment method
+        - Proceed to payment
+      next: step_8b
+
+    - id: step_8b
+      name: Process Currency Purchase
+      description: Process real money transaction
+      actor: payment_service
+      action: |
+        - Initialize payment
+        - Platform payment UI (Apple/Google/Steam/etc.)
+        - Process transaction
+        - Verify receipt
+      on_success: step_8c
+      on_failure:
+        action: show_payment_error
+        next: step_8a
+
+    - id: step_8c
+      name: Credit Currency
+      description: Add purchased currency to balance
+      actor: store_service
+      action: |
+        - Add currency to player balance
+        - Create transaction record
+        - Send receipt email
+      outputs:
+        - new_balance
+        - transaction_id
+      next: step_9
+
+    # ============================================
+    # PHASE 4: PURCHASE CONFIRMATION
+    # ============================================
+    - id: step_9
+      name: Confirm Purchase
+      description: Final confirmation before purchase
+      actor: player
+      action: |
+        DISPLAY:
+        - Item(s) to purchase
+        - Final price
+        - Currency to be used
+        - Balance after purchase
+
+        REQUEST:
+        - Confirmation button press
+        - Optional: PIN/password for purchases
+      validations:
+        - Balance still sufficient
+        - Item still available
+      next: step_10
+
+    - id: step_10
+      name: Age/Parental Check
+      description: Verify age restrictions
+      actor: store_service
+      action: |
+        IF real_money_purchase:
+          CHECK:
+          - Age verification status
+          - Parental controls
+          - Spending limits
+
+        IF parental_approval_required:
+          Request approval
+      decision_point:
+        condition: approved
+        if_true: step_11
+        if_false:
+          action: block_purchase
+          next: step_3
+
+    # ============================================
+    # PHASE 5: TRANSACTION
+    # ============================================
+    - id: step_11
+      name: Process Purchase
+      description: Execute the purchase transaction
+      actor: store_service
+      action: |
+        BEGIN transaction:
+          - Lock item availability
+          - Deduct currency from balance
+          - Create purchase record
+          - Add item to inventory
+        COMMIT on success
+        ROLLBACK on failure
+      outputs:
+        - transaction_id
+        - purchase_record
+      on_success: step_12
+      on_failure:
+        action: show_error
+        rollback: true
+        next: step_3
+
+    - id: step_12
+      name: Deliver Item
+      description: Add purchased item to player
+      actor: inventory_service
+      action: |
+        - Add item to inventory
+        - Set acquisition metadata:
+          - Method: purchase
+          - Price: {amount, currency}
+          - Date: now
+          - Transaction ID
+        - Handle tradeable restrictions
+      outputs:
+        - inventory_entry
+      next: step_13
+
+    # ============================================
+    # PHASE 6: POST-PURCHASE
+    # ============================================
+    - id: step_13
+      name: Show Purchase Success
+      description: Display confirmation to player
+      actor: store_service
+      action: |
+        DISPLAY:
+        - Success animation
+        - Item acquired notification
+        - Updated balance
+        - Option to equip/use
+        - Receipt summary
+      next: step_14
+
+    - id: step_14
+      name: Send Receipt
+      description: Generate and send receipt
+      actor: store_service
+      action: |
+        - Generate receipt ID
+        - Create receipt document
+        - Send email receipt
+        - Store in purchase history
+      outputs:
+        - receipt_id
+        - receipt_document
+      next: step_15
+
+    - id: step_15
+      name: Analytics & Tracking
+      description: Record purchase analytics
+      actor: store_service
+      action: |
+        - Record purchase event
+        - Update player spending stats
+        - Track conversion metrics
+        - Update recommendations model
+      next: step_16
+
+    - id: step_16
+      name: Offer Related Items
+      description: Suggest additional purchases
+      actor: store_service
+      action: |
+        - Show related items
+        - Display bundle offers
+        - Show "complete the set" if applicable
+      optional: true
+      next: end
+
+  error_handling:
+    - error: payment_failed
+      action: |
+        - Show specific error message
+        - Suggest alternative payment
+        - No charge to player
+        - Log for investigation
+
+    - error: item_no_longer_available
+      action: |
+        - Refund if charged
+        - Show availability message
+        - Suggest alternatives
+
+    - error: inventory_full
+      action: |
+        - Prevent purchase
+        - Suggest inventory management
+        - Allow after space freed
+
+    - error: double_purchase_detected
+      action: |
+        - Block duplicate
+        - Check for existing ownership
+        - Log for fraud review
+
+    - error: transaction_timeout
+      action: |
+        - Verify transaction status
+        - If charged but no item: Auto-grant
+        - If unclear: Create support ticket
+
+  refund_flow:
+    - id: refund_request
+      name: Process Refund
+      description: Handle refund requests
+      actor: store_service
+      action: |
+        CHECK eligibility:
+        - Within refund window (7 days)
+        - Item unused/unequipped
+        - Refund tokens available OR auto-eligible
+
+        IF eligible:
+          - Remove item from inventory
+          - Refund currency used
+          - Consume refund token (if used)
+          - Record refund transaction
+
+  metrics:
+    - name: conversion_rate
+      description: Store visits to purchase
+      target: > 5%
+
+    - name: payment_success_rate
+      description: Successful payment attempts
+      target: > 98%
+
+    - name: average_transaction_value
+      description: Mean purchase value
+
+    - name: refund_rate
+      description: Purchases refunded
+      target: < 2%
+
+compliance:
+  - Loot box odds disclosure
+  - Age verification for purchases
+  - Parental controls respected
+  - Regional pricing/availability
+  - Receipt requirements
+
+integrations:
+  - service: payment_gateway
+    providers: [stripe, apple_iap, google_play, steam, paypal]
+  - service: inventory_service
+    events: [item_granted, item_removed]
+  - service: analytics
+    events: [purchase_started, purchase_completed, purchase_failed]
+  - service: email_service
+    events: [receipt_sent]

@@ -1,0 +1,233 @@
+name: DeliverySlot
+display_name: Delivery Slot
+description: |
+  Time window for scheduled deliveries within a zone.
+  Manages capacity, pricing, and availability for each slot.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: delivery_slots
+  primary_key: id
+  indexes:
+    - columns: [zone_id, date, slot_type]
+      unique: true
+    - columns: [status]
+    - columns: [date]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: zone_id
+    type: uuid
+    description: Zone this slot belongs to
+    required: true
+
+  - name: date
+    type: date
+    description: Date of this slot
+    required: true
+
+  # Slot definition
+  - name: slot_type
+    type: enum
+    description: Type of time slot
+    values:
+      - morning
+      - afternoon
+      - evening
+      - night
+      - specific_time
+      - all_day
+    required: true
+
+  - name: slot_name
+    type: string
+    description: Display name for slot
+    example: "Morning (8AM-12PM)"
+
+  - name: time_window_start
+    type: time
+    description: Slot start time
+    required: true
+
+  - name: time_window_end
+    type: time
+    description: Slot end time
+    required: true
+
+  - name: duration_minutes
+    type: integer
+    description: Slot duration in minutes
+    computed: "time_window_end - time_window_start"
+
+  # Status
+  - name: status
+    type: enum
+    description: Slot availability status
+    values:
+      - available
+      - limited
+      - full
+      - blocked
+    default: available
+
+  # Capacity
+  - name: total_capacity
+    type: integer
+    description: Maximum deliveries for this slot
+    required: true
+
+  - name: booked_count
+    type: integer
+    description: Number of booked deliveries
+    default: 0
+
+  - name: remaining_capacity
+    type: integer
+    description: Available slots remaining
+    computed: "total_capacity - booked_count"
+
+  - name: buffer_percentage
+    type: integer
+    description: Buffer for delays/overflow
+    default: 20
+
+  - name: effective_capacity
+    type: integer
+    description: Capacity after buffer
+    computed: "total_capacity * (100 - buffer_percentage) / 100"
+
+  # Pricing
+  - name: slot_fee
+    type: decimal
+    description: Additional fee for this slot
+    precision: 10
+    scale: 2
+    default: 0
+
+  - name: is_premium
+    type: boolean
+    description: Premium slot with extra fee
+    default: false
+
+  - name: discount_percentage
+    type: integer
+    description: Discount for off-peak slots
+    default: 0
+
+  # Service levels
+  - name: service_types_available
+    type: array
+    description: Delivery types available
+    items:
+      type: enum
+      values: [standard, express, same_day]
+
+  # Restrictions
+  - name: vehicle_types_allowed
+    type: array
+    description: Allowed vehicle types
+    items:
+      type: enum
+      values: [bicycle, motorcycle, car, van]
+
+  - name: parcel_types_allowed
+    type: array
+    description: Allowed parcel types
+    items:
+      type: enum
+      values: [small, medium, large, fragile, temperature_controlled]
+
+  - name: max_parcels_per_delivery
+    type: integer
+    description: Max parcels per delivery in slot
+
+  - name: cod_allowed
+    type: boolean
+    description: COD allowed in this slot
+    default: true
+
+  # Booking
+  - name: advance_booking_hours
+    type: integer
+    description: How many hours in advance slot can be booked
+    default: 2
+
+  - name: cutoff_time
+    type: time
+    description: Last time slot can be booked
+
+  - name: auto_generated
+    type: boolean
+    description: System-generated slot
+    default: true
+
+  # Performance tracking
+  - name: average_delivery_time
+    type: integer
+    description: Average delivery time for this slot
+
+  - name: on_time_rate
+    type: decimal
+    description: On-time delivery rate
+    precision: 5
+    scale: 2
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: zone
+    type: belongs_to
+    entity: DeliveryZone
+    foreign_key: zone_id
+
+  - name: deliveries
+    type: has_many
+    entity: Delivery
+    foreign_key: scheduled_slot_id
+
+business_rules:
+  - rule: BR-SLT-001
+    description: Cannot book full slot
+    validation: booked_count < total_capacity
+
+  - rule: BR-SLT-002
+    description: Slot date must be in future
+    validation: date >= CURRENT_DATE
+
+  - rule: BR-SLT-003
+    description: Status updates based on capacity
+    action: |
+      IF remaining_capacity = 0 THEN status = 'full'
+      ELSE IF remaining_capacity <= total_capacity * 0.1 THEN status = 'limited'
+      ELSE status = 'available'
+
+events:
+  - name: slot.full
+    description: Slot reached capacity
+    payload: [slot_id, zone_id, date]
+
+  - name: slot.limited
+    description: Slot nearly full
+    payload: [slot_id, remaining_capacity]
+
+  - name: slot.blocked
+    description: Slot manually blocked
+    payload: [slot_id, reason]

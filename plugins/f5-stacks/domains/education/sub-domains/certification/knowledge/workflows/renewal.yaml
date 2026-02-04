@@ -1,0 +1,563 @@
+# Renewal Workflow
+# F5 Framework v2.0 - Education/Certification
+# Workflow for certificate renewal process
+
+workflow:
+  id: renewal
+  name: Certificate Renewal Workflow
+  name_ja: 証明書更新ワークフロー
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    Complete workflow for renewing certificates, including CEU verification,
+    exam requirements, payment processing, and new certificate generation.
+
+  triggers:
+    - id: holder_initiated
+      name: Holder Initiated Renewal
+      description: Holder starts renewal process
+      event: renewal.holder.initiate
+      automatic: false
+      
+    - id: renewal_window_open
+      name: Renewal Window Opens
+      description: System notifies holder of open renewal window
+      event: renewal.window.open
+      automatic: true
+      
+    - id: expiration_reminder
+      name: Expiration Reminder
+      description: Reminder sent before expiration
+      event: renewal.reminder.sent
+      automatic: true
+
+  actors:
+    - id: holder
+      name: Credential Holder
+      description: Person renewing their certificate
+      
+    - id: system
+      name: System
+      description: Automated renewal processes
+      
+    - id: reviewer
+      name: Renewal Reviewer
+      description: Staff reviewing renewal applications
+      
+    - id: admin
+      name: Certification Admin
+      description: Administrative personnel
+
+  states:
+    - id: initiated
+      name: Initiated
+      name_ja: 開始済み
+      description: Renewal process started
+      
+    - id: window_check
+      name: Window Check
+      name_ja: 期間確認
+      description: Checking renewal window validity
+      
+    - id: ceu_verification
+      name: CEU Verification
+      name_ja: CEU確認
+      description: Verifying continuing education units
+      
+    - id: exam_required
+      name: Exam Required
+      name_ja: 試験必要
+      description: Waiting for exam completion
+      
+    - id: payment_pending
+      name: Payment Pending
+      name_ja: 支払い待ち
+      description: Awaiting payment
+      
+    - id: manual_review
+      name: Manual Review
+      name_ja: 手動レビュー
+      description: Under staff review
+      
+    - id: approved
+      name: Approved
+      name_ja: 承認済み
+      description: Renewal approved
+      
+    - id: generating
+      name: Generating
+      name_ja: 生成中
+      description: Creating new certificate
+      
+    - id: completed
+      name: Completed
+      name_ja: 完了
+      description: Renewal complete
+      
+    - id: rejected
+      name: Rejected
+      name_ja: 却下
+      description: Renewal rejected
+      
+    - id: expired
+      name: Expired
+      name_ja: 期限切れ
+      description: Renewal window expired
+
+  transitions:
+    - from: initiated
+      to: window_check
+      trigger: auto
+      action: check_renewal_window
+      
+    - from: window_check
+      to: ceu_verification
+      condition: "within_window = true OR within_grace = true"
+      action: verify_ceu_requirements
+      
+    - from: window_check
+      to: expired
+      condition: "past_grace_period = true"
+      action: notify_expiration
+      
+    - from: ceu_verification
+      to: exam_required
+      condition: "ceu_met = true AND program.renewal_exam_required = true"
+      action: require_exam
+      
+    - from: ceu_verification
+      to: payment_pending
+      condition: "ceu_met = true AND program.renewal_exam_required = false"
+      action: calculate_fees
+      
+    - from: ceu_verification
+      to: rejected
+      condition: "ceu_met = false AND ceu_shortfall_allowed = false"
+      action: reject_insufficient_ceu
+      
+    - from: exam_required
+      to: payment_pending
+      trigger: exam_passed
+      action: calculate_fees
+      
+    - from: exam_required
+      to: rejected
+      condition: "exam_attempts >= max_attempts"
+      action: reject_exam_failure
+      
+    - from: payment_pending
+      to: manual_review
+      trigger: payment_received
+      condition: "requires_manual_review = true"
+      action: request_review
+      
+    - from: payment_pending
+      to: approved
+      trigger: payment_received
+      condition: "auto_approve = true"
+      action: approve_renewal
+      
+    - from: manual_review
+      to: approved
+      trigger: review_approved
+      actor: reviewer
+      action: approve_renewal
+      
+    - from: manual_review
+      to: rejected
+      trigger: review_rejected
+      actor: reviewer
+      action: process_rejection
+      
+    - from: approved
+      to: generating
+      trigger: auto
+      action: generate_new_certificate
+      
+    - from: generating
+      to: completed
+      trigger: certificate_generated
+      action: finalize_renewal
+
+  steps:
+    - step: 1
+      name: Initiate Renewal
+      name_ja: 更新開始
+      actor: holder
+      state: initiated
+      
+      input:
+        - certificate_id: "Certificate to renew"
+        
+      actions:
+        - create_renewal_record
+        - capture_current_certificate_state
+        - log_initiation
+        
+      outputs:
+        - renewal_id
+        - current_certificate
+        - initiated_at
+        
+    - step: 2
+      name: Check Renewal Window
+      name_ja: 更新期間確認
+      actor: system
+      state: window_check
+      
+      rules_applied:
+        - BR-RNW-001  # Renewal window period
+        - BR-RNW-002  # Early renewal policy
+        - BR-RNW-003  # Late renewal in grace period
+        
+      calculations:
+        window_opens: "certificate.valid_until - program.renewal_window_months MONTHS"
+        window_closes: "certificate.valid_until"
+        grace_deadline: "certificate.valid_until + program.grace_period_days DAYS"
+        
+      checks:
+        - too_early:
+            condition: "CURRENT_DATE < window_opens"
+            action: reject_with_open_date
+            
+        - within_window:
+            condition: "CURRENT_DATE BETWEEN window_opens AND window_closes"
+            result: standard_renewal
+            
+        - in_grace_period:
+            condition: "CURRENT_DATE BETWEEN window_closes AND grace_deadline"
+            result: late_renewal_with_fee
+            
+        - past_grace:
+            condition: "CURRENT_DATE > grace_deadline"
+            result: must_reinstate_or_recertify
+            
+      outputs:
+        - window_status
+        - is_late: boolean
+        - late_fee_applicable: boolean
+        
+    - step: 3
+      name: Verify CEU Requirements
+      name_ja: CEU要件確認
+      actor: system
+      state: ceu_verification
+      
+      rules_applied:
+        - BR-RNW-010  # CEU minimum requirement
+        - BR-RNW-011  # CEU source limits
+        - BR-RNW-012  # CEU carryover
+        
+      calculations:
+        ceu_required: "program.ceu_required_per_period"
+        ceu_earned: "SUM(ceu_records WHERE status='approved' AND within_period)"
+        ceu_remaining: "ceu_required - ceu_earned"
+        
+      source_limit_checks:
+        - self_study:
+            max_percent: 50
+            actual: "SUM(self_study_ceu) / total_ceu * 100"
+            
+        - work_experience:
+            max_percent: 25
+            actual: "SUM(work_experience_ceu) / total_ceu * 100"
+            
+      carryover_calculation:
+        condition: "excess_ceu > 0 AND program.allow_carryover"
+        max_carryover: "MIN(excess_ceu, ceu_required * 0.1)"
+        
+      outputs:
+        - ceu_status: met/not_met
+        - ceu_summary:
+            required: number
+            earned: number
+            remaining: number
+        - carryover_available: number
+        
+    - step: 4
+      name: Require Renewal Exam
+      name_ja: 更新試験必要
+      actor: holder
+      state: exam_required
+      condition: "program.renewal_exam_required = true"
+      
+      rules_applied:
+        - BR-RNW-020  # Renewal exam requirement
+        - BR-RNW-021  # Waived exam conditions
+        
+      waiver_check:
+        conditions:
+          - ceu_exceeded_200_percent: "ceu_earned >= ceu_required * 2"
+          - instructor_for_program: "holder.is_instructor_for(program_id)"
+          - continuous_employment: "verified_employment_in_field"
+          
+        if_waiver_eligible:
+          action: skip_exam
+          requires: admin_approval
+          
+      exam_requirements:
+        passing_score: "program.renewal_min_score"
+        max_attempts: 3
+        wait_between_attempts_days: 7
+        
+      outputs:
+        - exam_required: boolean
+        - waiver_eligible: boolean
+        - exam_attempts_remaining: number
+        
+    - step: 5
+      name: Process Payment
+      name_ja: 支払い処理
+      actor: holder
+      state: payment_pending
+      
+      rules_applied:
+        - BR-RNW-030  # Standard renewal fee
+        - BR-RNW-031  # Late renewal fee
+        - BR-RNW-032  # Payment requirements
+        
+      fee_calculation:
+        base_fee: "program.renewal_fee"
+        late_fee:
+          condition: "is_late = true"
+          amount: "program.late_renewal_fee OR base_fee * 0.25"
+        total_fee: "base_fee + late_fee"
+        
+      payment_methods:
+        - credit_card
+        - bank_transfer
+        - invoice
+        
+      on_payment_received:
+        - update_renewal_status
+        - generate_receipt
+        - check_if_review_required
+        
+      outputs:
+        - fee_calculated
+        - payment_status
+        - receipt_id
+        
+    - step: 6
+      name: Manual Review
+      name_ja: 手動レビュー
+      actor: reviewer
+      state: manual_review
+      condition: "requires_manual_review = true"
+      
+      rules_applied:
+        - BR-RNW-041  # Manual review required
+        
+      triggers_for_review:
+        - ceu_from_non_approved_provider
+        - waiver_requested
+        - previous_denial_on_record
+        - disciplinary_flag_active
+        
+      reviewer_actions:
+        - review_ceu_documentation
+        - verify_exam_results
+        - check_disciplinary_status
+        - make_decision
+        
+      decision_options:
+        - approve: proceed_to_generation
+        - reject: provide_reason
+        - request_more_info: return_to_holder
+        
+      timeout:
+        duration_days: 5
+        action: escalate_to_admin
+        
+      outputs:
+        - review_decision
+        - reviewer_notes
+        - decision_timestamp
+        
+    - step: 7
+      name: Approve Renewal
+      name_ja: 更新承認
+      actor: system
+      state: approved
+      
+      rules_applied:
+        - BR-RNW-040  # Auto-approval conditions
+        
+      auto_approval_conditions:
+        all_of:
+          - ceu_requirement_met: true
+          - exam_passed_if_required: true
+          - fee_paid: true
+          - no_holds_on_account: true
+          - no_disciplinary_actions: true
+          
+      actions:
+        - set_renewal_status_approved
+        - calculate_new_validity_dates
+        - log_approval
+        
+      new_dates_calculation:
+        if_early_renewal:
+          new_valid_from: "original_valid_until"
+          new_valid_until: "original_valid_until + validity_period"
+          
+        if_standard_or_late:
+          new_valid_from: "approval_date"
+          new_valid_until: "approval_date + validity_period"
+          
+      outputs:
+        - approval_status
+        - new_valid_from
+        - new_valid_until
+        
+    - step: 8
+      name: Generate New Certificate
+      name_ja: 新証明書生成
+      actor: system
+      state: generating
+      
+      rules_applied:
+        - BR-RNW-042  # New certificate generation
+        
+      sub_steps:
+        - create_new_certificate:
+            holder_id: "original.holder_id"
+            program_id: "original.program_id"
+            previous_certificate_id: "original.id"
+            valid_from: "calculated"
+            valid_until: "calculated"
+            renewal_count: "original.renewal_count + 1"
+            
+        - generate_new_number:
+            format: "{prefix}-{year}-{sequence}"
+            
+        - generate_verification_code:
+            new_code: true
+            
+        - generate_pdf:
+            template: "program.certificate_template_id"
+            
+        - update_old_certificate:
+            status: renewed
+            renewed_to: "new_certificate.id"
+            
+      outputs:
+        - new_certificate_id
+        - new_certificate_number
+        - new_verification_code
+        
+    - step: 9
+      name: Complete Renewal
+      name_ja: 更新完了
+      actor: system
+      state: completed
+      
+      actions:
+        - update_renewal_record:
+            status: approved
+            new_certificate_id: generated
+            completed_at: NOW()
+            
+        - process_ceu_carryover:
+            carryover_to: "new_certificate_period"
+            
+        - update_holder_profile:
+            active_credential: "new_certificate"
+            renewal_history: "append"
+            
+        - archive_old_certificate:
+            status: renewed
+            historical: true
+            
+      notifications:
+        - to: holder
+          template: renewal_completed
+          include:
+            - new_certificate_number
+            - new_verification_code
+            - new_expiration_date
+            - pdf_download_link
+            - carryover_ceu_amount
+            
+      outputs:
+        - final_renewal_status
+        - new_certificate
+        - notification_sent
+
+  error_handling:
+    - error: ceu_insufficient
+      action: notify_with_options
+      notification:
+        to: holder
+        template: ceu_shortfall
+        include:
+          - ceu_required
+          - ceu_earned
+          - ceu_remaining
+          - approved_activities_link
+          
+    - error: exam_failed_max_attempts
+      action: notify_and_close
+      notification:
+        to: holder
+        template: exam_attempts_exhausted
+        include:
+          - retake_waiting_period
+          - alternative_options
+          
+    - error: payment_failed
+      action: retry_payment
+      max_retries: 3
+      
+    - error: review_timeout
+      action: escalate_to_admin
+      notification:
+        to: admin
+        template: review_timeout
+
+  reminders:
+    - type: renewal_window_opening
+      days_before_expiration: 90
+      template: renewal_window_open
+      
+    - type: expiration_approaching
+      days_before_expiration: 60
+      template: expiration_reminder
+      
+    - type: urgent_reminder
+      days_before_expiration: 30
+      template: urgent_renewal
+      channels: [email, sms]
+      
+    - type: final_reminder
+      days_before_expiration: 7
+      template: final_renewal_warning
+      channels: [email, sms, app]
+      
+    - type: grace_period_reminder
+      days_after_expiration: 15
+      template: grace_period_warning
+      
+    - type: pending_action
+      trigger: payment_pending_7_days
+      template: payment_reminder
+
+  metrics:
+    - name: renewal_rate
+      description: Percentage of expired certificates renewed
+      target: "> 80%"
+      
+    - name: processing_time
+      description: Time from initiation to completion
+      target: "< 3 days for auto, < 7 days for manual"
+      
+    - name: ceu_compliance_rate
+      description: Percentage meeting CEU at renewal
+      target: "> 95%"
+
+  audit:
+    enabled: true
+    track_all_steps: true
+    retention_years: 10

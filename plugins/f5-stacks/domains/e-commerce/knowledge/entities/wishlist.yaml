@@ -1,0 +1,359 @@
+name: Wishlist
+display_name: Wishlist / Danh sách yêu thích
+description: |
+  Customer's wishlist/favorites collection.
+  Customers can have multiple named wishlists.
+  Supports sharing, price drop alerts, and move-to-cart functionality.
+
+domain: e-commerce
+category: supporting
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the wishlist
+
+  - name: customer_id
+    type: uuid
+    required: true
+    description: Reference to owner customer
+
+  - name: name
+    type: string
+    required: true
+    description: Wishlist name
+    validation:
+      min_length: 1
+      max_length: 100
+    default: "My Wishlist"
+
+  - name: description
+    type: string
+    required: false
+    description: Wishlist description
+    validation:
+      max_length: 500
+
+  - name: type
+    type: enum
+    required: true
+    description: Wishlist type
+    validation:
+      values: [default, gift_registry, save_for_later, collection]
+    default: default
+
+  - name: visibility
+    type: enum
+    required: true
+    description: Who can view this wishlist
+    validation:
+      values: [private, shared, public]
+    default: private
+
+  - name: share_token
+    type: string
+    required: false
+    description: Token for shared wishlist URL
+    validation:
+      pattern: "^[a-zA-Z0-9]{32}$"
+
+  - name: share_url
+    type: string
+    required: false
+    description: Public share URL
+    validation:
+      format: url
+
+  - name: item_count
+    type: integer
+    required: true
+    description: Number of items in wishlist
+    validation:
+      min: 0
+    default: 0
+
+  - name: is_default
+    type: boolean
+    required: true
+    description: Default wishlist for customer
+    default: false
+
+  - name: event_date
+    type: date
+    required: false
+    description: Event date (for gift registry)
+
+  - name: event_type
+    type: string
+    required: false
+    description: Event type (wedding, birthday, etc.)
+    validation:
+      max_length: 50
+
+  - name: price_alert_enabled
+    type: boolean
+    required: true
+    description: Enable price drop notifications
+    default: true
+
+  - name: last_activity_at
+    type: timestamp
+    required: false
+    description: Last activity timestamp
+
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Record creation timestamp
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: true
+    description: Wishlist owner
+
+  - name: items
+    type: has_many
+    entity: WishlistItem
+    required: false
+    description: Items in wishlist
+
+indexes:
+  - [customer_id]
+  - [customer_id, is_default]
+  - [share_token]
+  - [visibility]
+  - [type]
+  - [event_date]
+
+business_rules:
+  - BR-WIS-001: One default wishlist per customer
+  - BR-WIS-002: Maximum 10 wishlists per customer
+  - BR-WIS-003: Maximum 100 items per wishlist
+  - BR-WIS-004: share_token auto-generated when visibility = shared
+  - BR-WIS-005: Cannot delete default wishlist (can rename)
+  - BR-WIS-006: First wishlist created becomes default
+  - BR-WIS-007: Item count updated on add/remove
+  - BR-WIS-008: Price alerts sent when item price drops >10%
+  - BR-WIS-009: Gift registry requires event_date
+  - BR-WIS-010: Public wishlists visible in search
+
+computed_fields:
+  - name: total_value
+    formula: SUM(items.current_price)
+    description: Total value of wishlist items
+
+  - name: is_empty
+    formula: item_count = 0
+    description: Whether wishlist is empty
+
+  - name: days_until_event
+    formula: DATEDIFF(event_date, NOW())
+    description: Days until event (gift registry)
+
+events:
+  - name: wishlist.created
+    payload: [id, customer_id, name, type]
+    description: Fired when wishlist is created
+
+  - name: wishlist.shared
+    payload: [id, customer_id, share_url, visibility]
+    description: Fired when wishlist is shared
+
+  - name: wishlist.item_added
+    payload: [id, customer_id, product_id, variant_id]
+    description: Fired when item is added
+
+  - name: wishlist.item_removed
+    payload: [id, customer_id, product_id]
+    description: Fired when item is removed
+
+  - name: wishlist.price_alert
+    payload: [id, customer_id, product_id, old_price, new_price]
+    description: Fired when price drops
+
+---
+# WishlistItem entity (embedded in same domain)
+name: WishlistItem
+display_name: Wishlist Item / Mục yêu thích
+description: |
+  Individual item in a wishlist.
+  Tracks the product, variant, and price at time of adding.
+
+domain: e-commerce
+category: supporting
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the wishlist item
+
+  - name: wishlist_id
+    type: uuid
+    required: true
+    description: Reference to parent wishlist
+
+  - name: product_id
+    type: uuid
+    required: true
+    description: Reference to product
+
+  - name: variant_id
+    type: uuid
+    required: false
+    description: Reference to specific variant
+
+  - name: added_price
+    type: decimal
+    required: true
+    description: Price when added to wishlist
+    validation:
+      min: 0
+
+  - name: current_price
+    type: decimal
+    required: false
+    description: Current product price
+    validation:
+      min: 0
+
+  - name: priority
+    type: enum
+    required: true
+    description: Item priority (for gift registry)
+    validation:
+      values: [low, medium, high, must_have]
+    default: medium
+
+  - name: quantity_desired
+    type: integer
+    required: true
+    description: Desired quantity (for gift registry)
+    validation:
+      min: 1
+    default: 1
+
+  - name: quantity_received
+    type: integer
+    required: true
+    description: Quantity received (for gift registry)
+    validation:
+      min: 0
+    default: 0
+
+  - name: notes
+    type: string
+    required: false
+    description: Personal notes about item
+    validation:
+      max_length: 500
+
+  - name: is_purchased
+    type: boolean
+    required: true
+    description: Whether item was purchased
+    default: false
+
+  - name: purchased_at
+    type: timestamp
+    required: false
+    description: When item was purchased
+
+  - name: price_alert_threshold
+    type: decimal
+    required: false
+    description: Alert when price drops below this
+    validation:
+      min: 0
+
+  - name: last_price_check
+    type: timestamp
+    required: false
+    description: Last price check timestamp
+
+  - name: added_at
+    type: timestamp
+    required: true
+    description: When item was added
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: wishlist
+    type: belongs_to
+    entity: Wishlist
+    required: true
+    description: Parent wishlist
+
+  - name: product
+    type: belongs_to
+    entity: Product
+    required: true
+    description: Associated product
+
+  - name: variant
+    type: belongs_to
+    entity: ProductVariant
+    required: false
+    description: Associated variant
+
+indexes:
+  - [wishlist_id]
+  - [product_id]
+  - [wishlist_id, product_id, variant_id]
+  - [is_purchased]
+  - [added_at]
+
+business_rules:
+  - BR-WIT-001: Unique constraint on (wishlist_id, product_id, variant_id)
+  - BR-WIT-002: current_price updated daily via job
+  - BR-WIT-003: Alert when current_price < price_alert_threshold
+  - BR-WIT-004: Cannot add out-of-stock items (configurable)
+  - BR-WIT-005: Mark is_purchased when moved to order
+  - BR-WIT-006: quantity_received cannot exceed quantity_desired
+  - BR-WIT-007: Remove from wishlist when product is deleted
+
+computed_fields:
+  - name: price_change
+    formula: current_price - added_price
+    description: Price change since adding
+
+  - name: price_change_percentage
+    formula: ((current_price - added_price) / added_price) * 100
+    description: Percentage price change
+
+  - name: is_price_dropped
+    formula: current_price < added_price
+    description: Whether price has dropped
+
+  - name: remaining_desired
+    formula: quantity_desired - quantity_received
+    description: Remaining quantity needed (gift registry)
+
+events:
+  - name: wishlist_item.added
+    payload: [id, wishlist_id, product_id, variant_id, added_price]
+    description: Fired when item is added
+
+  - name: wishlist_item.removed
+    payload: [id, wishlist_id, product_id]
+    description: Fired when item is removed
+
+  - name: wishlist_item.purchased
+    payload: [id, wishlist_id, product_id, order_id]
+    description: Fired when item is purchased
+
+  - name: wishlist_item.price_dropped
+    payload: [id, wishlist_id, product_id, old_price, new_price]
+    description: Fired when price drops

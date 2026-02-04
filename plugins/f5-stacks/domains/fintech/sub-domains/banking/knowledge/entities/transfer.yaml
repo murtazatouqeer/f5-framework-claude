@@ -1,0 +1,642 @@
+name: Transfer
+display_name: Transfer / Chuyển khoản
+description: |
+  Fund transfer entity supporting internal, domestic (interbank), and
+  international transfers. Tracks transfer lifecycle from initiation
+  through completion with fee calculation and compliance checks.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # ---------------------------------------------------------------------------
+  # Identity
+  # ---------------------------------------------------------------------------
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique transfer identifier
+
+  transfer_reference:
+    type: string
+    format: "^TRF-[0-9]{8}-[A-Z0-9]{6}$"
+    unique: true
+    indexed: true
+    description: Human-readable transfer reference
+    description_vi: Mã tham chiếu chuyển khoản
+    example: "TRF-20241215-A1B2C3"
+
+  # ---------------------------------------------------------------------------
+  # Source Account
+  # ---------------------------------------------------------------------------
+  from_account_id:
+    type: uuid
+    required: true
+    indexed: true
+    references: BankAccount
+    description: Source account
+
+  from_account_number:
+    type: string
+    description: Source account number (denormalized)
+
+  sender_name:
+    type: string
+    max_length: 100
+    required: true
+    description: Sender's name
+    description_vi: Tên người gửi
+
+  # ---------------------------------------------------------------------------
+  # Destination
+  # ---------------------------------------------------------------------------
+  to_account_id:
+    type: uuid
+    nullable: true
+    indexed: true
+    references: BankAccount
+    description: Destination account (internal transfers)
+
+  beneficiary_id:
+    type: uuid
+    nullable: true
+    indexed: true
+    references: Beneficiary
+    description: Saved beneficiary (external transfers)
+
+  recipient_name:
+    type: string
+    max_length: 100
+    required: true
+    description: Recipient's name
+    description_vi: Tên người nhận
+
+  recipient_account_number:
+    type: string
+    max_length: 34
+    required: true
+    description: Recipient's account number
+
+  recipient_bank_code:
+    type: string
+    max_length: 11
+    nullable: true
+    description: Recipient's bank code (BIC/SWIFT or local)
+    description_vi: Mã ngân hàng người nhận
+
+  recipient_bank_name:
+    type: string
+    max_length: 100
+    nullable: true
+    description: Recipient's bank name
+    description_vi: Tên ngân hàng người nhận
+
+  recipient_branch_code:
+    type: string
+    max_length: 10
+    nullable: true
+    description: Branch code if required
+
+  # ---------------------------------------------------------------------------
+  # Transfer Type
+  # ---------------------------------------------------------------------------
+  transfer_type:
+    type: enum
+    values: [internal, domestic, international]
+    required: true
+    indexed: true
+    description: Type of transfer
+    description_vi: Loại chuyển khoản
+    value_descriptions:
+      internal: "Same bank transfer / Chuyển nội bộ"
+      domestic: "Domestic interbank / Chuyển liên ngân hàng"
+      international: "International wire / Chuyển quốc tế"
+
+  transfer_channel:
+    type: enum
+    values: [napas, swift, sepa, rtgs, internal]
+    nullable: true
+    description: Transfer network/channel
+    description_vi: Kênh chuyển khoản
+
+  transfer_speed:
+    type: enum
+    values: [instant, standard, next_day]
+    default: standard
+    description: Transfer speed option
+    description_vi: Tốc độ chuyển khoản
+
+  # ---------------------------------------------------------------------------
+  # Amount
+  # ---------------------------------------------------------------------------
+  amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    required: true
+    description: Transfer amount in source currency
+    description_vi: Số tiền chuyển
+
+  currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    required: true
+    description: Transfer currency (ISO 4217)
+
+  destination_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Amount received in destination currency
+
+  destination_currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    nullable: true
+    description: Destination currency if different
+
+  exchange_rate:
+    type: decimal
+    precision: 12
+    scale: 6
+    nullable: true
+    description: Applied exchange rate
+
+  exchange_rate_source:
+    type: string
+    nullable: true
+    description: Source of exchange rate
+
+  # ---------------------------------------------------------------------------
+  # Fees
+  # ---------------------------------------------------------------------------
+  fee_amount:
+    type: decimal
+    precision: 18
+    scale: 2
+    default: 0
+    description: Transfer fee
+    description_vi: Phí chuyển khoản
+
+  fee_currency:
+    type: string
+    format: "^[A-Z]{3}$"
+    default: "VND"
+
+  fee_type:
+    type: enum
+    values: [our, ben, sha]
+    default: our
+    description: Who pays fees (SWIFT)
+    description_vi: Hình thức trả phí
+    value_descriptions:
+      our: "Sender pays all fees / Người gửi trả phí"
+      ben: "Beneficiary pays / Người nhận trả phí"
+      sha: "Shared fees / Chia sẻ phí"
+
+  correspondent_fee:
+    type: decimal
+    precision: 18
+    scale: 2
+    nullable: true
+    description: Correspondent bank fee (international)
+
+  # ---------------------------------------------------------------------------
+  # Status
+  # ---------------------------------------------------------------------------
+  status:
+    type: enum
+    values: [pending, processing, awaiting_approval, completed, failed, cancelled, reversed, on_hold]
+    default: pending
+    indexed: true
+    description: Transfer status
+    description_vi: Trạng thái chuyển khoản
+    value_descriptions:
+      pending: "Initiated, not yet processed / Đang chờ"
+      processing: "Being processed / Đang xử lý"
+      awaiting_approval: "Needs approval / Chờ duyệt"
+      completed: "Successfully completed / Hoàn thành"
+      failed: "Transfer failed / Thất bại"
+      cancelled: "Cancelled by user / Đã hủy"
+      reversed: "Reversed/refunded / Đã hoàn lại"
+      on_hold: "Held for review / Tạm giữ xem xét"
+
+  failure_reason:
+    type: string
+    max_length: 500
+    nullable: true
+    description: Reason for failure if applicable
+    description_vi: Lý do thất bại
+
+  failure_code:
+    type: string
+    max_length: 20
+    nullable: true
+    description: Error code
+
+  # ---------------------------------------------------------------------------
+  # Purpose & Description
+  # ---------------------------------------------------------------------------
+  purpose:
+    type: string
+    max_length: 200
+    nullable: true
+    description: Transfer purpose/description
+    description_vi: Nội dung chuyển khoản
+
+  reference_message:
+    type: string
+    max_length: 140
+    nullable: true
+    description: Reference message for recipient
+
+  purpose_code:
+    type: string
+    max_length: 10
+    nullable: true
+    description: Purpose code for international transfers
+
+  # ---------------------------------------------------------------------------
+  # Scheduling
+  # ---------------------------------------------------------------------------
+  scheduled_date:
+    type: date
+    nullable: true
+    description: Scheduled execution date
+    description_vi: Ngày hẹn chuyển
+
+  is_scheduled:
+    type: boolean
+    default: false
+    description: Whether this is a scheduled transfer
+
+  recurring_id:
+    type: uuid
+    nullable: true
+    references: StandingOrder
+    description: Standing order that created this transfer
+
+  # ---------------------------------------------------------------------------
+  # Authentication
+  # ---------------------------------------------------------------------------
+  auth_method:
+    type: enum
+    values: [pin, otp_sms, otp_email, biometric, smart_otp, hardware_token]
+    nullable: true
+    description: Authentication method used
+    description_vi: Phương thức xác thực
+
+  auth_verified:
+    type: boolean
+    default: false
+    description: Whether authentication was verified
+
+  # ---------------------------------------------------------------------------
+  # Compliance
+  # ---------------------------------------------------------------------------
+  aml_checked:
+    type: boolean
+    default: false
+    description: AML screening performed
+
+  aml_status:
+    type: enum
+    values: [not_checked, passed, flagged, cleared]
+    default: not_checked
+    description: AML screening status
+
+  aml_reference:
+    type: string
+    nullable: true
+    description: AML case reference if flagged
+
+  sanctions_checked:
+    type: boolean
+    default: false
+    description: Sanctions screening performed
+
+  # ---------------------------------------------------------------------------
+  # Network References
+  # ---------------------------------------------------------------------------
+  network_reference:
+    type: string
+    max_length: 35
+    nullable: true
+    description: Network/clearing reference
+
+  confirmation_number:
+    type: string
+    max_length: 20
+    nullable: true
+    description: Confirmation from receiving bank
+
+  # ---------------------------------------------------------------------------
+  # Timestamps
+  # ---------------------------------------------------------------------------
+  initiated_at:
+    type: timestamp
+    required: true
+    description: When transfer was initiated
+    description_vi: Thời gian khởi tạo
+
+  processing_at:
+    type: timestamp
+    nullable: true
+    description: When processing started
+
+  completed_at:
+    type: timestamp
+    nullable: true
+    description: When transfer completed
+
+  value_date:
+    type: date
+    nullable: true
+    description: Value date for settlement
+
+  created_at:
+    type: timestamp
+    auto: true
+
+  updated_at:
+    type: timestamp
+    auto: true
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  from_account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: from_account_id
+
+  to_account:
+    type: belongs_to
+    entity: BankAccount
+    foreign_key: to_account_id
+    description: For internal transfers
+
+  beneficiary:
+    type: belongs_to
+    entity: Beneficiary
+    foreign_key: beneficiary_id
+    description: For external transfers
+
+  standing_order:
+    type: belongs_to
+    entity: StandingOrder
+    foreign_key: recurring_id
+    description: If from standing order
+
+  reversals:
+    type: has_many
+    entity: Transfer
+    foreign_key: original_transfer_id
+
+# =============================================================================
+# STATE MACHINE
+# =============================================================================
+state_machine:
+  field: status
+  initial: pending
+
+  states:
+    pending:
+      description: "Transfer initiated, validation pending"
+      timeout: 5_minutes
+
+    processing:
+      description: "Being processed by bank systems"
+      timeout:
+        internal: 1_minute
+        domestic: 15_minutes
+        international: 24_hours
+
+    awaiting_approval:
+      description: "Requires manual approval"
+      timeout: 48_hours
+
+    completed:
+      description: "Successfully completed"
+      final: true
+
+    failed:
+      description: "Transfer failed"
+      final: true
+
+    cancelled:
+      description: "Cancelled by user"
+      final: true
+
+    reversed:
+      description: "Reversed after completion"
+      final: true
+
+    on_hold:
+      description: "Held for compliance review"
+      timeout: 72_hours
+
+  transitions:
+    - from: pending
+      to: processing
+      event: process
+      conditions:
+        - "Balance sufficient"
+        - "Within limits"
+        - "Authentication verified"
+      actions:
+        - "Debit source account"
+        - "Place hold if needed"
+
+    - from: pending
+      to: awaiting_approval
+      event: require_approval
+      conditions:
+        - "Amount > approval threshold"
+        - "New beneficiary with cooling period"
+
+    - from: pending
+      to: on_hold
+      event: hold
+      conditions:
+        - "AML flagged"
+        - "Compliance review needed"
+
+    - from: awaiting_approval
+      to: processing
+      event: approve
+      actions:
+        - "Log approver"
+        - "Continue processing"
+
+    - from: processing
+      to: completed
+      event: complete
+      actions:
+        - "Credit destination (internal)"
+        - "Update limits used"
+        - "Send notifications"
+
+    - from: processing
+      to: failed
+      event: fail
+      actions:
+        - "Reverse debit"
+        - "Send failure notification"
+        - "Log failure reason"
+
+    - from: [pending, awaiting_approval]
+      to: cancelled
+      event: cancel
+      actions:
+        - "Reverse any holds"
+        - "Send cancellation notification"
+
+    - from: completed
+      to: reversed
+      event: reverse
+      conditions:
+        - "Within reversal window"
+        - "Authorized reversal"
+      actions:
+        - "Reverse credit/debit"
+        - "Create reversal record"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-TRF-001
+    name: Daily Limit Check
+    description: Validate against daily transfer limit
+    description_vi: Kiểm tra hạn mức chuyển khoản ngày
+    rule: |
+      account.daily_transfer_used + amount <= account.daily_transfer_limit
+
+  - id: BR-TRF-002
+    name: Per-Transaction Limit
+    description: Maximum amount per transfer
+    description_vi: Hạn mức tối đa mỗi giao dịch
+    rule: |
+      amount <= per_transaction_limit
+      defaults:
+        internal: 500_000_000 VND
+        domestic: 200_000_000 VND
+        international: 100_000_000 VND
+
+  - id: BR-TRF-003
+    name: New Beneficiary Cooling Period
+    description: 24h cooling-off for new beneficiaries with large amounts
+    description_vi: Thời gian chờ 24h cho người nhận mới với số tiền lớn
+    rule: |
+      IF beneficiary.created_at > NOW() - 24 hours AND amount > 50_000_000
+      THEN require_approval = true
+
+  - id: BR-TRF-004
+    name: Transfer Fee Calculation
+    description: Calculate transfer fees by type
+    description_vi: Tính phí chuyển khoản theo loại
+    rule: |
+      internal: 0 VND
+      domestic:
+        <= 10_000_000: 5_500 VND
+        <= 50_000_000: 8_800 VND
+        > 50_000_000: 11_000 VND
+      international: 0.1% (min 200_000, max 1_000_000 VND)
+
+  - id: BR-TRF-005
+    name: Cutoff Times
+    description: Cutoff times for different transfer types
+    description_vi: Thời gian cắt lệnh
+    rule: |
+      domestic_napas:
+        realtime: 06:00 - 23:00
+        next_day: 23:00 - 06:00
+      international:
+        same_day: before 15:00
+        next_day: after 15:00
+
+  - id: BR-TRF-006
+    name: OTP Requirement
+    description: OTP required for transfers
+    description_vi: Yêu cầu OTP cho chuyển khoản
+    rule: |
+      IF transfer_type = 'external' OR amount > otp_threshold
+      THEN require_otp = true
+
+# =============================================================================
+# FEE SCHEDULE
+# =============================================================================
+fee_schedule:
+  internal:
+    description: Same bank transfers
+    fee: 0
+
+  domestic:
+    description: Domestic interbank (NAPAS)
+    tiers:
+      - max_amount: 10000000
+        fee: 5500
+      - max_amount: 50000000
+        fee: 8800
+      - max_amount: null
+        fee: 11000
+
+  international:
+    description: International wire (SWIFT)
+    percentage: 0.001
+    min_fee: 200000
+    max_fee: 1000000
+    additional:
+      correspondent_fee: variable
+      cable_charge: 150000
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_transfer_from_account
+    fields: [from_account_id]
+
+  - name: idx_transfer_to_account
+    fields: [to_account_id]
+
+  - name: idx_transfer_reference
+    fields: [transfer_reference]
+    unique: true
+
+  - name: idx_transfer_status
+    fields: [status]
+
+  - name: idx_transfer_date
+    fields: [initiated_at]
+
+  - name: idx_transfer_scheduled
+    fields: [scheduled_date]
+    where: "is_scheduled = true"
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  retention_years: 10
+  events:
+    - transfer_initiated
+    - transfer_authorized
+    - transfer_processing
+    - transfer_completed
+    - transfer_failed
+    - transfer_cancelled
+    - transfer_reversed
+    - aml_flagged
+    - approval_requested
+    - approval_granted
+    - approval_rejected

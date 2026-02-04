@@ -1,0 +1,552 @@
+name: billing-rules
+display_name: Billing & Folio Business Rules
+display_name_vi: Quy tắc nghiệp vụ hóa đơn
+version: "1.0"
+domain: travel-hospitality
+subdomain: hotel
+
+description: |
+  Business rules governing guest billing, folio management, charge posting,
+  payment processing, and account settlement.
+
+description_vi: |
+  Quy tắc nghiệp vụ quản lý thanh toán khách, quản lý hóa đơn, ghi phí,
+  xử lý thanh toán và quyết toán tài khoản.
+
+rule_categories:
+  - folio_management
+  - charge_posting
+  - payment_processing
+  - settlement
+  - city_ledger
+
+rules:
+  # ===== FOLIO MANAGEMENT RULES =====
+  - id: BR-BL-F001
+    name: Folio Creation
+    name_vi: Tạo hóa đơn
+    category: folio_management
+    priority: critical
+    description: |
+      Create folio automatically at check-in.
+    condition: |
+      guest.check_in = TRUE
+    action: |
+      CREATE primary_folio with:
+        - Guest information
+        - Rate plan details
+        - Billing instructions
+        - Credit limit
+        - Payment method
+
+      SET folio.status = 'open'
+      LINK to reservation
+      APPLY routing_instructions if any
+    applies_to: [folio, reservation]
+    enforcement: automatic
+
+  - id: BR-BL-F002
+    name: Multiple Folio Handling
+    name_vi: Xử lý nhiều hóa đơn
+    category: folio_management
+    priority: high
+    description: |
+      Manage multiple folios for complex billing.
+    condition: |
+      billing_split_required OR company_billing
+    action: |
+      CREATE additional_folios:
+        - Guest folio: personal_charges
+        - Master folio: room + tax (company pays)
+        - Incidentals folio: separate_tracking
+
+      SET up charge_routing:
+        - Room charges → master
+        - F&B charges → guest OR master (per policy)
+        - Minibar, phone → guest
+
+      MAINTAIN folio_relationship in system
+    applies_to: [folio]
+    enforcement: manual_setup
+
+  - id: BR-BL-F003
+    name: Credit Limit Monitoring
+    name_vi: Giám sát hạn mức tín dụng
+    category: folio_management
+    priority: critical
+    description: |
+      Monitor folio balance against credit limit.
+    condition: |
+      folio.current_balance approaches credit_limit
+    action: |
+      AT 75% of limit:
+        ALERT front_desk
+        NOTIFY management
+
+      AT 90% of limit:
+        REQUEST interim_payment
+        CONSIDER restricting_charges
+
+      AT 100% of limit:
+        REQUIRE payment before more charges
+        ALERT management
+        CONSIDER direct_bill_suspension
+    applies_to: [folio]
+    enforcement: automatic
+
+  # ===== CHARGE POSTING RULES =====
+  - id: BR-BL-C001
+    name: Room Charge Posting
+    name_vi: Ghi phí phòng
+    category: charge_posting
+    priority: critical
+    description: |
+      Post room charges during night audit.
+    condition: |
+      night_audit in_progress AND
+      folio.status = 'open' AND
+      room.occupied = TRUE
+    action: |
+      CALCULATE daily_charges:
+        room_rate = reservation.daily_rate[date]
+        extra_person = per_policy
+        package_elements = per_rate_plan
+
+      CALCULATE taxes:
+        room_tax = room_rate × tax_rate
+        occupancy_tax = per_jurisdiction
+        service_charge = per_policy
+
+      POST to folio:
+        - Room charge (revenue)
+        - Tax charges (liability)
+        - Package elements (separate posting)
+
+      UPDATE folio.balance
+    applies_to: [charge, folio]
+    enforcement: automatic
+
+  - id: BR-BL-C002
+    name: POS Charge Interface
+    name_vi: Giao diện phí POS
+    category: charge_posting
+    priority: high
+    description: |
+      Process charges from point-of-sale systems.
+    condition: |
+      pos_charge received with room_number
+    action: |
+      VALIDATE:
+        - Room is occupied
+        - Guest has posting_privileges
+        - Charge within_credit_limit
+
+      VERIFY guest_identity:
+        - Last name match
+        - Room number match
+        - Signature if required
+
+      POST charge to folio:
+        - Amount with tax
+        - Outlet source
+        - Check number
+        - Server name
+
+      IF validation_fails:
+        - Require alternative_payment
+        - Alert front_desk
+    applies_to: [charge, folio]
+    enforcement: automatic
+
+  - id: BR-BL-C003
+    name: Charge Reversal Rules
+    name_vi: Quy tắc hoàn phí
+    category: charge_posting
+    priority: high
+    description: |
+      Process charge adjustments and reversals.
+    condition: |
+      reversal_requested
+    action: |
+      FOR same_day_void:
+        - Void original charge
+        - No revenue impact
+        - Log reason
+
+      FOR post_audit_reversal:
+        - Create credit adjustment
+        - Require manager_approval if > threshold
+        - Document reason
+
+      THRESHOLDS:
+        - < $25: agent_authority
+        - $25-100: supervisor_approval
+        - > $100: manager_approval
+
+      TRACK all_reversals by agent
+    applies_to: [charge]
+    enforcement: approval_based
+
+  - id: BR-BL-C004
+    name: Allowance Posting
+    name_vi: Ghi khoản miễn giảm
+    category: charge_posting
+    priority: high
+    description: |
+      Process service recovery and allowances.
+    condition: |
+      allowance_authorized
+    action: |
+      REQUIRE:
+        - Valid reason_code
+        - Manager approval (if > limit)
+        - Documentation
+
+      POST as credit_adjustment:
+        - Reason code
+        - Original charge reference
+        - Approver name
+
+      LIMITS per employee_level:
+        - Front desk: $50
+        - Supervisor: $100
+        - FOM: $250
+        - GM: unlimited
+
+      TRACK for analysis:
+        - Service recovery patterns
+        - Cost by department
+        - Agent performance
+    applies_to: [charge, folio]
+    enforcement: approval_required
+
+  # ===== PAYMENT PROCESSING RULES =====
+  - id: BR-BL-P001
+    name: Payment Application
+    name_vi: Áp dụng thanh toán
+    category: payment_processing
+    priority: critical
+    description: |
+      Apply payments to folio correctly.
+    condition: |
+      payment received
+    action: |
+      VALIDATE payment_method:
+        - Credit card: authorization check
+        - Cash: proper denomination
+        - Check: per acceptance_policy
+
+      POST payment:
+        - Record amount
+        - Payment type
+        - Reference number
+        - Cashier ID
+
+      UPDATE folio.balance
+      PRINT receipt
+
+      FOR overpayment:
+        - Confirm intentional
+        - Create refund if error
+        - Apply to deposit if advance
+    applies_to: [payment, folio]
+    enforcement: automatic
+
+  - id: BR-BL-P002
+    name: Credit Card Processing
+    name_vi: Xử lý thẻ tín dụng
+    category: payment_processing
+    priority: critical
+    description: |
+      PCI-compliant credit card handling.
+    condition: |
+      payment_method = 'credit_card'
+    action: |
+      NEVER store:
+        - Full card number
+        - CVV
+        - PIN
+        - Magnetic stripe data
+
+      TOKENIZE card_data:
+        - Use payment_gateway tokenization
+        - Store only token + last_four
+
+      PROCESS payment:
+        - Sale transaction
+        - Obtain authorization
+        - Store reference_number
+
+      FOR pre-authorization:
+        - Auth only (no charge)
+        - Set expiration reminder
+        - Capture at checkout
+    applies_to: [payment]
+    enforcement: mandatory_pci
+
+  - id: BR-BL-P003
+    name: Advance Deposit Handling
+    name_vi: Xử lý đặt cọc trước
+    category: payment_processing
+    priority: high
+    description: |
+      Track and apply advance deposits.
+    condition: |
+      deposit received before_arrival
+    action: |
+      RECORD deposit:
+        - Post to deposit_ledger
+        - Link to reservation
+        - Track separately from folio
+
+      AT check_in:
+        - Transfer to guest_folio
+        - Apply as payment
+
+      IF no_show OR cancellation:
+        - Apply per cancellation_policy
+        - Forfeit OR refund as appropriate
+        - Document decision
+    applies_to: [payment, reservation]
+    enforcement: automatic
+
+  - id: BR-BL-P004
+    name: Refund Processing
+    name_vi: Xử lý hoàn tiền
+    category: payment_processing
+    priority: high
+    description: |
+      Process refunds securely and correctly.
+    condition: |
+      refund_authorized
+    action: |
+      REFUND to original_payment_method:
+        - Credit card: refund to same card
+        - Cash: cash refund (witness required)
+        - Bank transfer: to provided account
+
+      REQUIRE:
+        - Manager approval if > $100
+        - Valid reason documented
+        - Original payment reference
+
+      PROCESS:
+        - Create refund transaction
+        - Update folio
+        - Notify guest of timeline
+
+      TIMELINE:
+        - Credit card: 5-10 business days
+        - Bank transfer: 10-15 business days
+    applies_to: [payment]
+    enforcement: approval_required
+
+  # ===== SETTLEMENT RULES =====
+  - id: BR-BL-S001
+    name: Checkout Settlement
+    name_vi: Quyết toán khi trả phòng
+    category: settlement
+    priority: critical
+    description: |
+      Settle folio at guest checkout.
+    condition: |
+      checkout_initiated AND folio.balance > 0
+    action: |
+      PRESENT folio_summary:
+        - All charges itemized
+        - All payments applied
+        - Current balance
+
+      COLLECT payment for balance:
+        - Use guaranteed_card if authorized
+        - Accept alternative_payment
+
+      IF disputed_charges:
+        - Review with guest
+        - Adjust if warranted
+        - Document resolution
+
+      WHEN balance = 0:
+        - Close folio
+        - Generate invoice
+        - Email copy to guest
+        - Release room
+    applies_to: [folio, checkout]
+    enforcement: mandatory
+
+  - id: BR-BL-S002
+    name: Express Checkout
+    name_vi: Trả phòng nhanh
+    category: settlement
+    priority: high
+    description: |
+      Process express checkout for eligible guests.
+    condition: |
+      guest.express_checkout_enrolled = TRUE AND
+      valid_card_on_file
+    action: |
+      AT checkout_time:
+        - Charge card_on_file for balance
+        - Close folio
+        - Email final_statement
+
+      ELIGIBILITY:
+        - Credit card on file
+        - No disputed_charges
+        - Balance within authorization
+
+      IF charge_fails:
+        - Contact guest
+        - Convert to regular_checkout
+    applies_to: [folio, checkout]
+    enforcement: automatic
+
+  - id: BR-BL-S003
+    name: Zero Balance Checkout
+    name_vi: Trả phòng số dư bằng không
+    category: settlement
+    priority: high
+    description: |
+      Handle already-paid or direct-bill checkouts.
+    condition: |
+      folio.balance = 0 OR
+      billing_type = 'direct_bill'
+    action: |
+      FOR prepaid:
+        - Verify all charges covered
+        - Close folio
+        - Provide receipt
+
+      FOR direct_bill:
+        - Verify company authorization
+        - Transfer to city_ledger
+        - Generate invoice
+        - Maintain folio_copy
+
+      ALWAYS:
+        - Guest signature if required
+        - Release room
+    applies_to: [folio, checkout]
+    enforcement: automatic
+
+  # ===== CITY LEDGER RULES =====
+  - id: BR-BL-L001
+    name: City Ledger Transfer
+    name_vi: Chuyển công nợ
+    category: city_ledger
+    priority: high
+    description: |
+      Transfer folios to city ledger for billing.
+    condition: |
+      billing_type = 'direct_bill' AND
+      checkout_complete
+    action: |
+      VALIDATE:
+        - Company account active
+        - Credit approved
+        - Within credit_limit
+
+      TRANSFER folio:
+        - Create AR invoice
+        - Assign to company_account
+        - Set payment_terms
+        - Track aging
+
+      GENERATE invoice:
+        - Detailed folio copy
+        - PO number if provided
+        - Payment instructions
+
+      SEND to:
+        - Company billing_contact
+        - Copy to travel_arranger
+    applies_to: [folio, city_ledger]
+    enforcement: automatic
+
+  - id: BR-BL-L002
+    name: AR Aging Management
+    name_vi: Quản lý công nợ quá hạn
+    category: city_ledger
+    priority: high
+    description: |
+      Manage accounts receivable aging.
+    condition: |
+      invoice.age > payment_terms
+    action: |
+      AGING buckets:
+        - Current (0-30 days)
+        - 30-60 days: reminder
+        - 60-90 days: follow-up call
+        - 90+ days: collection_action
+
+      AT 30 days overdue:
+        - Send payment_reminder
+        - Copy account_manager
+
+      AT 60 days overdue:
+        - Personal follow-up call
+        - Review credit_terms
+        - Consider holds
+
+      AT 90+ days:
+        - Suspend direct_billing
+        - Escalate to management
+        - Consider collection
+    applies_to: [city_ledger]
+    enforcement: scheduled
+
+  - id: BR-BL-L003
+    name: Bad Debt Write-off
+    name_vi: Xóa nợ xấu
+    category: city_ledger
+    priority: medium
+    description: |
+      Process uncollectable receivables.
+    condition: |
+      collection_efforts_exhausted AND
+      management_approval
+    action: |
+      REQUIRE:
+        - Documentation of collection_efforts
+        - Controller approval
+        - GM approval if > $500
+
+      PROCESS:
+        - Write off to bad_debt expense
+        - Maintain records (7 years)
+        - Flag account for future_reference
+
+      CONSIDER:
+        - Third-party collection
+        - Legal action if warranted
+        - Credit bureau reporting
+    applies_to: [city_ledger]
+    enforcement: approval_required
+
+audit_requirements:
+  daily:
+    - Trial balance check
+    - Cash drawer reconciliation
+    - Credit card batch settlement
+    - High balance review
+
+  monthly:
+    - AR aging review
+    - Adjustment analysis
+    - Revenue reconciliation
+    - Commission calculations
+
+pci_compliance:
+  requirements:
+    - No full card storage
+    - Tokenization required
+    - Access control
+    - Encryption in transit
+    - Regular security audits
+    - Staff training
+
+  prohibited:
+    - Storing CVV
+    - Storing PIN
+    - Unencrypted transmission
+    - Paper with full card numbers

@@ -1,0 +1,460 @@
+name: transaction-rules
+display_name: Financial Transaction Rules
+description: |
+  Collection of business rules related to financial transactions.
+  Includes validation, limits, risk control, and AML/CFT compliance.
+
+domain: fintech
+version: "1.0"
+effective_date: "2024-01-01"
+last_updated: "2024-12-01"
+
+references:
+  - Circular 23/2019/TT-NHNN on anti-money laundering
+  - Circular 37/2016/TT-NHNN on non-cash payments
+  - Anti-Money Laundering Law 2022
+
+rules:
+  # ===== BALANCE VALIDATION =====
+  - id: BR-TXN-001
+    name: Check available balance
+    description: |
+      Available balance must be greater than or equal to total transaction amount
+      (including fees if any) before executing debit transaction.
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.direction == 'debit' THEN
+        account.available_balance >= (transaction.amount + transaction.fee_amount)
+      END IF
+    message: "Account balance insufficient to complete transaction"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-002
+    name: Minimum balance
+    description: |
+      After debit transaction, account balance must be greater than or equal to
+      the minimum balance required for account type.
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.direction == 'debit' THEN
+        (account.balance - transaction.total_amount) >= account.minimum_balance
+      END IF
+    message: "Transaction cannot be completed due to minimum balance violation"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-003
+    name: Valid transaction amount
+    description: |
+      Transaction amount must be positive and not exceed maximum limit
+      of the system (999 billion VND per transaction).
+    category: validation
+    severity: error
+    condition: |
+      transaction.amount > 0
+      AND transaction.amount <= 999000000000
+    parameters:
+      min_amount: 0.01
+      max_amount: 999000000000
+    message: "Invalid transaction amount"
+    applies_to: [Transaction]
+
+  # ===== DAILY/MONTHLY LIMITS =====
+  - id: BR-TXN-010
+    name: Daily transfer limit
+    description: |
+      Total transfer amount per day must not exceed
+      account daily limit.
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.type IN ('internal_transfer', 'interbank_transfer') THEN
+        (account.daily_transfer_used + transaction.amount) <= account.daily_transfer_limit
+      END IF
+    message: "Transaction exceeds daily transfer limit. Remaining limit: {remaining}"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-011
+    name: Monthly transfer limit
+    description: |
+      Total transfer amount per month must not exceed
+      account monthly limit (if applicable).
+    category: validation
+    severity: error
+    condition: |
+      IF account.monthly_transfer_limit IS NOT NULL THEN
+        (account.monthly_transfer_used + transaction.amount) <= account.monthly_transfer_limit
+      END IF
+    message: "Transaction exceeds monthly transfer limit"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-012
+    name: Limits by KYC Level
+    description: |
+      Transaction limits depend on customer KYC level:
+      - Level 1: Max 10 million/transaction, 20 million/day
+      - Level 2: Max 100 million/transaction, 500 million/day
+      - Level 3: As per approved limit
+    category: validation
+    severity: error
+    condition: |
+      CASE customer.kyc_level
+        WHEN 'level_1' THEN
+          transaction.amount <= 10000000
+          AND daily_total <= 20000000
+        WHEN 'level_2' THEN
+          transaction.amount <= 100000000
+          AND daily_total <= 500000000
+        WHEN 'level_3' THEN
+          transaction.amount <= customer.approved_limit
+      END
+    parameters:
+      level_1_per_txn: 10000000
+      level_1_daily: 20000000
+      level_2_per_txn: 100000000
+      level_2_daily: 500000000
+    message: "Transaction exceeds your KYC Level allowance"
+    applies_to: [Transaction, Customer]
+
+  # ===== ACCOUNT STATUS CHECKS =====
+  - id: BR-TXN-020
+    name: Source account must be active
+    description: |
+      Only transactions from accounts in active status are allowed.
+      Accounts with pending, dormant, frozen, closed status cannot transact.
+    category: validation
+    severity: error
+    condition: |
+      source_account.status == 'active'
+    message: "Source account is not in active status"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-021
+    name: Destination account must be able to receive funds
+    description: |
+      Destination account must allow receiving funds (allow_credit = true)
+      and not be in closed status.
+    category: validation
+    severity: error
+    condition: |
+      destination_account.allow_credit == TRUE
+      AND destination_account.status != 'closed'
+    message: "Destination account cannot receive funds"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-022
+    name: Cannot transfer to self
+    description: |
+      Transfer from account to itself is not allowed.
+    category: validation
+    severity: error
+    condition: |
+      transaction.source_account_id != transaction.destination_account_id
+    message: "Cannot transfer funds to your own account"
+    applies_to: [Transaction]
+
+  # ===== TIME-BASED RULES =====
+  - id: BR-TXN-030
+    name: Business hours for large transactions
+    description: |
+      Interbank transfers > 500 million can only be executed
+      during business hours (8:00 - 17:00, Mon-Fri).
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.type == 'interbank_transfer'
+         AND transaction.amount > 500000000 THEN
+        HOUR(CURRENT_TIME) BETWEEN 8 AND 17
+        AND DAYOFWEEK(CURRENT_DATE) BETWEEN 2 AND 6
+      END IF
+    parameters:
+      threshold_amount: 500000000
+      start_hour: 8
+      end_hour: 17
+    message: "Large transactions only allowed during business hours (8am-5pm, Mon-Fri)"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-031
+    name: Fast transfer 24/7
+    description: |
+      Fast transfer (NAPAS 247) available 24/7 but
+      has maximum limit of 500 million/transaction.
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.channel == 'napas_247' THEN
+        transaction.amount <= 500000000
+      END IF
+    parameters:
+      napas_247_limit: 500000000
+    message: "Fast transfer 24/7 maximum 500 million/transaction"
+    applies_to: [Transaction]
+
+  # ===== VELOCITY CHECKS =====
+  - id: BR-TXN-040
+    name: Transaction count limit per hour
+    description: |
+      Maximum 10 transfer transactions in 1 hour from same account.
+      Prevents transaction structuring.
+    category: validation
+    severity: warning
+    condition: |
+      COUNT(transactions
+        WHERE source_account_id = :account_id
+        AND type IN ('internal_transfer', 'interbank_transfer')
+        AND initiated_at >= NOW() - INTERVAL '1 hour'
+      ) <= 10
+    parameters:
+      max_per_hour: 10
+    message: "You have made too many transactions. Please try again later"
+    applies_to: [Transaction, Account]
+
+  - id: BR-TXN-041
+    name: New recipients limit per day
+    description: |
+      Maximum 5 new recipients (never transacted before) in 1 day.
+      Reduces fraud risk.
+    category: validation
+    severity: warning
+    condition: |
+      COUNT(DISTINCT destination_account_number
+        WHERE source_account_id = :account_id
+        AND DATE(initiated_at) = CURRENT_DATE
+        AND destination_account_number NOT IN (previous_beneficiaries)
+      ) <= 5
+    parameters:
+      max_new_beneficiaries_per_day: 5
+    message: "You have transferred to too many new recipients today"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-042
+    name: Detect transaction structuring
+    description: |
+      Alert when multiple small consecutive transactions exceed threshold
+      for CTR reporting (300 million).
+    category: compliance
+    severity: warning
+    condition: |
+      SUM(amount
+        WHERE source_account_id = :account_id
+        AND initiated_at >= NOW() - INTERVAL '24 hours'
+        AND amount < 300000000
+      ) < 300000000
+    parameters:
+      ctr_threshold: 300000000
+    message: "Signs of transaction structuring detected"
+    applies_to: [Transaction]
+
+  # ===== AML/COMPLIANCE RULES =====
+  - id: BR-TXN-050
+    name: Mandatory AML check
+    description: |
+      Transactions > 500 million must pass automatic AML check before processing.
+    category: compliance
+    severity: error
+    condition: |
+      IF transaction.amount > 500000000 THEN
+        transaction.aml_checked == TRUE
+      END IF
+    parameters:
+      aml_threshold: 500000000
+    message: "Large transactions must pass AML check"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-051
+    name: Cash Transaction Report (CTR)
+    description: |
+      Cash transactions >= 300 million must be reported to authorities.
+    category: compliance
+    severity: info
+    condition: |
+      IF transaction.type IN ('deposit', 'withdrawal')
+         AND transaction.channel IN ('branch', 'atm')
+         AND transaction.amount >= 300000000 THEN
+        ctr_report.created == TRUE
+      END IF
+    parameters:
+      ctr_threshold: 300000000
+    message: "Cash transactions >= 300 million must report CTR"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-052
+    name: Transactions to high-risk countries
+    description: |
+      International transactions to countries on high-risk list
+      (FATF grey/black list) must be manually approved.
+    category: compliance
+    severity: error
+    condition: |
+      IF destination_country IN (high_risk_countries) THEN
+        transaction.requires_approval == TRUE
+        AND transaction.approved_by IS NOT NULL
+      END IF
+    parameters:
+      high_risk_countries: [KP, IR, AF, YE, SY]
+    message: "Transaction to high-risk country requires approval"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-053
+    name: Sanctions list check
+    description: |
+      Recipient must be checked against
+      international sanctions lists (OFAC, UN, EU sanctions).
+    category: compliance
+    severity: error
+    condition: |
+      sanctions_check(destination_account_name, destination_account_number) == 'clear'
+    message: "Recipient is on sanctions list. Transaction rejected"
+    applies_to: [Transaction]
+
+  # ===== FRAUD PREVENTION =====
+  - id: BR-TXN-060
+    name: Detect unusual transaction
+    description: |
+      Alert when transaction amount is unusually high compared to
+      customer transaction history (> 3x average).
+    category: validation
+    severity: warning
+    condition: |
+      transaction.amount <= (customer.avg_transaction_amount * 3)
+    parameters:
+      multiplier: 3
+    message: "Transaction amount unusually high compared to your history"
+    applies_to: [Transaction, Customer]
+
+  - id: BR-TXN-061
+    name: 2FA verification for large transactions
+    description: |
+      Transactions > 50 million must verify with OTP or biometric
+      in addition to password/PIN.
+    category: authorization
+    severity: error
+    condition: |
+      IF transaction.amount > 50000000 THEN
+        transaction.second_factor_verified == TRUE
+      END IF
+    parameters:
+      threshold_2fa: 50000000
+    message: "Please verify OTP to complete transaction"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-062
+    name: Transaction from new device
+    description: |
+      Transactions from new (unregistered) device are limited
+      to maximum 5 million/transaction in first 24 hours.
+    category: validation
+    severity: error
+    condition: |
+      IF device.first_seen >= NOW() - INTERVAL '24 hours' THEN
+        transaction.amount <= 5000000
+      END IF
+    parameters:
+      new_device_limit: 5000000
+      new_device_period_hours: 24
+    message: "New device limited for first 24 hours"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-063
+    name: Detect unusual location
+    description: |
+      Alert when transaction is performed from geographic location
+      unusual (> 500km from usual location).
+    category: validation
+    severity: warning
+    condition: |
+      DISTANCE(transaction.location, customer.usual_location) <= 500
+    parameters:
+      distance_km: 500
+    message: "Transaction from unusual location. Please confirm"
+    applies_to: [Transaction]
+
+  # ===== REVERSAL & REFUND RULES =====
+  - id: BR-TXN-070
+    name: Transaction reversal time limit
+    description: |
+      Transactions can only be reversed within 24 hours of completion.
+      After that a separate refund transaction must be performed.
+    category: validation
+    severity: error
+    condition: |
+      IF transaction.status == 'completed' THEN
+        (NOW() - transaction.completed_at) <= INTERVAL '24 hours'
+      END IF
+    parameters:
+      reversal_window_hours: 24
+    message: "Cannot reverse transaction after 24 hours"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-071
+    name: Cannot reverse already reversed transaction
+    description: |
+      Transaction already in reversed status cannot be reversed again.
+    category: validation
+    severity: error
+    condition: |
+      transaction.status != 'reversed'
+    message: "Transaction was already reversed"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-072
+    name: Auto refund on failure
+    description: |
+      When transfer transaction fails, debited amount must be
+      refunded to source account within 5 minutes.
+    category: calculation
+    severity: error
+    condition: |
+      IF transaction.status == 'failed'
+         AND transaction.direction == 'debit' THEN
+        refund_transaction.created_at <= (transaction.failed_at + INTERVAL '5 minutes')
+      END IF
+    parameters:
+      auto_refund_minutes: 5
+    message: "Funds must be refunded within 5 minutes when transaction fails"
+    applies_to: [Transaction]
+
+  # ===== INTERBANK SPECIFIC =====
+  - id: BR-TXN-080
+    name: Valid bank code
+    description: |
+      Destination bank code must be in the list of banks
+      supported by NAPAS.
+    category: validation
+    severity: error
+    condition: |
+      destination_bank_code IN (napas_supported_banks)
+    message: "Invalid or unsupported bank code"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-081
+    name: Verify destination account number
+    description: |
+      Destination account number must be verified via destination bank API
+      before executing transfer.
+    category: validation
+    severity: error
+    condition: |
+      account_verification.status == 'verified'
+      AND account_verification.account_name IS NOT NULL
+    message: "Cannot verify destination account number"
+    applies_to: [Transaction]
+
+  - id: BR-TXN-082
+    name: Retry logic for interbank transfer
+    description: |
+      When interbank transfer fails due to network error,
+      system automatically retries maximum 3 times, 30 seconds apart.
+    category: calculation
+    severity: info
+    condition: |
+      IF transaction.failure_reason IN ('network_error', 'timeout') THEN
+        transaction.retry_count <= 3
+        AND transaction.next_retry_at >= transaction.last_attempt_at + INTERVAL '30 seconds'
+      END IF
+    parameters:
+      max_retries: 3
+      retry_interval_seconds: 30
+    message: "Retrying transaction..."
+    applies_to: [Transaction]

@@ -1,0 +1,507 @@
+# Security Business Rules
+# F5 Framework v2.0 - Education/Assessment
+# Rules governing exam security
+
+business_rules:
+  domain: education
+  subdomain: assessment
+  category: security
+  version: "1.0.0"
+
+  rules:
+    # ==========================================
+    # Browser Security Rules
+    # ==========================================
+    
+    - id: SEC-001
+      name: Browser Lockdown
+      name_ja: ブラウザロックダウン
+      description: Enforce browser lockdown when configured
+      category: browser
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: "exam.browser_lockdown = true"
+        
+      action:
+        type: enforce_lockdown
+        features:
+          - disable_right_click
+          - disable_copy_paste
+          - disable_print
+          - disable_developer_tools
+          - fullscreen_required
+          - disable_new_tabs
+          
+    - id: SEC-002
+      name: Copy Paste Prevention
+      name_ja: コピーペースト防止
+      description: Prevent copy/paste operations during exam
+      category: browser
+      severity: warning
+      
+      condition:
+        entity: exam_attempt
+        trigger: [browser_event]
+        expression: |
+          exam.copy_paste_disabled = true
+          AND event_type IN ['copy', 'paste', 'cut']
+          
+      action:
+        type: block_action
+        log: true
+        create_flag:
+          type: copy_paste_attempt
+          severity: low
+          
+    - id: SEC-003
+      name: Screen Capture Prevention
+      name_ja: 画面キャプチャ防止
+      description: Block screen capture attempts
+      category: browser
+      severity: critical
+      
+      condition:
+        entity: exam_attempt
+        trigger: [browser_event]
+        expression: |
+          exam.screen_capture_blocked = true
+          AND event_type = 'screenshot_attempt'
+          
+      action:
+        type: block_action
+        create_flag:
+          type: screenshot_attempt
+          severity: high
+        warning_to_candidate: "Screenshot attempts are not allowed during this exam"
+        
+    - id: SEC-004
+      name: Developer Tools Detection
+      name_ja: 開発者ツール検出
+      description: Detect and block developer tools
+      category: browser
+      severity: critical
+      
+      condition:
+        entity: exam_attempt
+        trigger: [browser_event]
+        expression: "event_type = 'devtools_opened'"
+        
+      action:
+        type: create_flag
+        flag:
+          type: devtools_attempt
+          severity: high
+        warning_to_candidate: "Developer tools are not allowed during exams"
+        notify_proctor: true
+
+    # ==========================================
+    # Question Security Rules
+    # ==========================================
+    
+    - id: SEC-010
+      name: Question Randomization
+      name_ja: 問題順序ランダム化
+      description: Enforce question order randomization when configured
+      category: question_security
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [create]
+        expression: "exam.question_order = 'random'"
+        
+      action:
+        type: randomize
+        target: question_sequence
+        algorithm: fisher_yates
+        respect_fixed_positions: true
+        
+    - id: SEC-011
+      name: Answer Option Randomization
+      name_ja: 選択肢順序ランダム化
+      description: Randomize answer options when configured
+      category: question_security
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [create]
+        expression: "exam.answer_order = 'random'"
+        
+      action:
+        type: randomize
+        target: option_order
+        per_question: true
+        respect_fixed_positions: true
+        
+    - id: SEC-012
+      name: Question Pool Selection
+      name_ja: 問題プール選択
+      description: Select questions from pool for each attempt
+      category: question_security
+      severity: info
+      
+      condition:
+        entity: exam_attempt
+        trigger: [create]
+        expression: "exam.question_source = 'pool_random'"
+        
+      action:
+        type: select_from_pool
+        pool_id: exam.question_pool_id
+        rules: exam.pool_selection_rules
+        unique_per_attempt: true
+        
+    - id: SEC-013
+      name: Question Exposure Control
+      name_ja: 問題露出制御
+      description: Limit question exposure rate
+      category: question_security
+      severity: warning
+      
+      condition:
+        entity: exam_pool
+        trigger: [select_questions]
+        expression: "exposure_control = true"
+        
+      action:
+        type: apply_exposure_limits
+        max_rate: max_exposure_rate
+        algorithm: strata_sampling
+        update_tracking: true
+
+    # ==========================================
+    # Access Security Rules
+    # ==========================================
+    
+    - id: SEC-020
+      name: Session Token Security
+      name_ja: セッショントークンセキュリティ
+      description: Secure session token management
+      category: access
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: "true"
+        
+      action:
+        type: generate_token
+        algorithm: secure_random
+        expiry_minutes: exam.duration_minutes + 30
+        bind_to: [ip_address, user_agent]
+        single_use: false
+        
+    - id: SEC-021
+      name: Session Hijacking Prevention
+      name_ja: セッションハイジャック防止
+      description: Detect potential session hijacking
+      category: access
+      severity: critical
+      
+      condition:
+        entity: exam_attempt
+        trigger: [request]
+        expression: |
+          request.ip_address != session.ip_address
+          OR request.user_agent != session.user_agent
+          
+      action:
+        type: block
+        message: "Session security violation detected"
+        terminate_session: true
+        create_incident: true
+        
+    - id: SEC-022
+      name: Concurrent Session Prevention
+      name_ja: 同時セッション防止
+      description: Prevent multiple concurrent sessions
+      category: access
+      severity: error
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: |
+          NOT EXISTS (
+            SELECT 1 FROM active_sessions 
+            WHERE candidate_id = :candidate_id 
+            AND exam_id = :exam_id
+            AND session_id != :session_id
+          )
+          
+      action:
+        type: block
+        message: "Another session is already active"
+        option: terminate_other_sessions
+        
+    - id: SEC-023
+      name: IP Reputation Check
+      name_ja: IPレピュテーションチェック
+      description: Check IP reputation for high-stakes exams
+      category: access
+      severity: warning
+      
+      condition:
+        entity: exam_attempt
+        trigger: [start]
+        expression: "exam.exam_type IN ['certification', 'final']"
+        
+      action:
+        type: check_ip_reputation
+        services: [ip_quality_score, fraud_guard]
+        block_threshold: 0.8
+        flag_threshold: 0.5
+
+    # ==========================================
+    # Data Security Rules
+    # ==========================================
+    
+    - id: SEC-030
+      name: Response Encryption
+      name_ja: 回答暗号化
+      description: Encrypt sensitive response data
+      category: data
+      severity: info
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "exam.exam_type IN ['certification', 'final']"
+        
+      action:
+        type: encrypt
+        fields: [text_response, uploaded_files]
+        algorithm: AES-256-GCM
+        
+    - id: SEC-031
+      name: Audit Trail
+      name_ja: 監査証跡
+      description: Maintain comprehensive audit trail
+      category: data
+      severity: info
+      
+      condition:
+        entity: [exam_attempt, response, proctor_session]
+        trigger: [create, update, delete]
+        expression: "true"
+        
+      action:
+        type: audit_log
+        include: [user_id, action, timestamp, ip_address, changes, reason]
+        retention_days: 365
+        immutable: true
+        
+    - id: SEC-032
+      name: PII Protection
+      name_ja: 個人情報保護
+      description: Protect personally identifiable information
+      category: data
+      severity: error
+      
+      condition:
+        entity: [exam_result, accommodation]
+        trigger: [read, export]
+        expression: "true"
+        
+      action:
+        type: apply_access_control
+        require_role: [admin, examiner, proctor]
+        mask_fields: [candidate_name, email]
+        log_access: true
+
+    # ==========================================
+    # Anti-Cheating Rules
+    # ==========================================
+    
+    - id: SEC-040
+      name: Answer Pattern Detection
+      name_ja: 回答パターン検出
+      description: Detect suspicious answer patterns
+      category: anti_cheat
+      severity: warning
+      
+      condition:
+        entity: exam_attempt
+        trigger: [submit, analyze]
+        expression: "true"
+        
+      action:
+        type: analyze_patterns
+        checks:
+          - identical_answer_sequences
+          - improbable_time_patterns
+          - statistical_anomalies
+        flag_threshold: 0.7
+        
+    - id: SEC-041
+      name: Response Time Analysis
+      name_ja: 回答時間分析
+      description: Flag unusually fast responses
+      category: anti_cheat
+      severity: warning
+      
+      condition:
+        entity: response
+        trigger: [create]
+        expression: |
+          time_spent_seconds < question.min_expected_time_seconds * 0.25
+          AND question.question_type NOT IN ['true_false']
+          
+      action:
+        type: create_flag
+        flag:
+          type: suspicious_speed
+          severity: low
+          details: "Response submitted in {time} seconds (expected minimum: {expected})"
+          
+    - id: SEC-042
+      name: Collusion Detection
+      name_ja: 共謀検出
+      description: Detect potential answer sharing between candidates
+      category: anti_cheat
+      severity: critical
+      
+      condition:
+        entity: exam
+        trigger: [post_exam_analysis]
+        expression: "exam.exam_type IN ['certification', 'final']"
+        
+      action:
+        type: run_collusion_analysis
+        algorithm: response_similarity
+        threshold: 0.85
+        consider_timing: true
+        flag_pairs: true
+        
+    - id: SEC-043
+      name: AI Content Detection
+      name_ja: AI生成コンテンツ検出
+      description: Detect AI-generated responses in essays
+      category: anti_cheat
+      severity: warning
+      
+      condition:
+        entity: response
+        trigger: [create, update]
+        expression: "question.question_type IN ['essay', 'short_answer']"
+        
+      action:
+        type: analyze_content
+        checks:
+          - ai_detection_score
+          - writing_style_consistency
+          - plagiarism_check
+        flag_threshold: 0.7
+
+    # ==========================================
+    # Incident Response Rules
+    # ==========================================
+    
+    - id: SEC-050
+      name: Security Incident Creation
+      name_ja: セキュリティインシデント作成
+      description: Create incident for security violations
+      category: incident
+      severity: critical
+      
+      condition:
+        entity: [exam_attempt, proctor_session]
+        trigger: [security_violation]
+        expression: "violation_severity IN ['high', 'critical']"
+        
+      action:
+        type: create_incident
+        include:
+          - violation_details
+          - evidence_urls
+          - session_data
+          - candidate_info
+        notify: [security_team, exam_admin]
+        
+    - id: SEC-051
+      name: Evidence Preservation
+      name_ja: 証拠保全
+      description: Preserve evidence for security incidents
+      category: incident
+      severity: critical
+      
+      condition:
+        entity: proctor_session
+        trigger: [flag_critical, terminate]
+        expression: "true"
+        
+      action:
+        type: preserve_evidence
+        capture:
+          - video_clip(last_5_minutes)
+          - screenshots
+          - browser_events
+          - response_data
+        retention: indefinite
+        lock: true
+
+  rule_groups:
+    browser_security:
+      rules: [SEC-001, SEC-002, SEC-003, SEC-004]
+      description: Browser-based security controls
+      
+    question_security:
+      rules: [SEC-010, SEC-011, SEC-012, SEC-013]
+      description: Question exposure and randomization
+      
+    access_security:
+      rules: [SEC-020, SEC-021, SEC-022, SEC-023]
+      description: Session and access security
+      
+    data_security:
+      rules: [SEC-030, SEC-031, SEC-032]
+      description: Data protection and privacy
+      
+    anti_cheat:
+      rules: [SEC-040, SEC-041, SEC-042, SEC-043]
+      description: Cheating detection and prevention
+      
+    incident_response:
+      rules: [SEC-050, SEC-051]
+      description: Security incident handling
+
+  compliance:
+    standards:
+      - name: WCAG 2.1
+        description: Security controls must not impede accessibility
+        considerations:
+          - screen_reader_compatibility
+          - keyboard_navigation
+          - sufficient_time
+          
+      - name: GDPR
+        description: Personal data processing compliance
+        requirements:
+          - data_minimization
+          - purpose_limitation
+          - storage_limitation
+          - right_to_erasure
+          
+      - name: SOC 2
+        description: Security and availability controls
+        requirements:
+          - access_control
+          - audit_logging
+          - encryption
+          - incident_response
+
+  exceptions:
+    - role: admin
+      bypasses: [SEC-001, SEC-021]
+      requires_justification: true
+      audit_required: true
+      time_limited: true
+      
+    - accommodation: assistive_technology
+      bypasses: [SEC-001, SEC-002]
+      requires_documentation: true

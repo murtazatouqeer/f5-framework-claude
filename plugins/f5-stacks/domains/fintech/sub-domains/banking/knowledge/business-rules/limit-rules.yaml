@@ -1,0 +1,562 @@
+name: Limit Rules
+display_name: Limit Business Rules / Quy tắc nghiệp vụ hạn mức
+description: |
+  Business rules governing transaction limits based on KYC level,
+  customer segment, temporary increases, and custom spending limits.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# KYC-BASED LIMITS
+# =============================================================================
+kyc_based_limits:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-001: KYC Tier Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-001
+    name: KYC Tier-Based Limits
+    name_vi: Hạn mức theo cấp độ KYC
+    priority: critical
+    category: kyc_limits
+
+    description: |
+      Transaction limits based on customer's KYC verification level.
+
+    tiers:
+      basic:
+        name: "Basic KYC / eKYC"
+        name_vi: "KYC Cơ bản"
+        requirements:
+          - "Government ID"
+          - "Phone verification"
+        limits:
+          daily_transfer: 20000000
+          monthly_transfer: 100000000
+          per_transaction: 10000000
+          daily_atm: 10000000
+          daily_card: 20000000
+
+      standard:
+        name: "Standard KYC"
+        name_vi: "KYC Tiêu chuẩn"
+        requirements:
+          - "Government ID"
+          - "Phone verification"
+          - "Address verification"
+          - "Selfie verification"
+        limits:
+          daily_transfer: 500000000
+          monthly_transfer: 2000000000
+          per_transaction: 200000000
+          daily_atm: 30000000
+          daily_card: 100000000
+
+      enhanced:
+        name: "Enhanced KYC"
+        name_vi: "KYC Nâng cao"
+        requirements:
+          - "All standard requirements"
+          - "Source of funds documentation"
+          - "In-person verification"
+        limits:
+          daily_transfer: 2000000000
+          monthly_transfer: 10000000000
+          per_transaction: 1000000000
+          daily_atm: 50000000
+          daily_card: 500000000
+
+    rule: |
+      FOR each transaction:
+        customer_tier = get_kyc_level(customer)
+        tier_limits = kyc_tiers[customer_tier].limits
+
+        IF transaction_amount > tier_limits.applicable_limit
+        THEN decline('KYC_LIMIT_EXCEEDED')
+
+    upgrade_path:
+      basic_to_standard:
+        requirements: ["Address proof", "Selfie with ID"]
+        processing_time: "1-2 business days"
+
+      standard_to_enhanced:
+        requirements: ["Source of funds", "Branch visit"]
+        processing_time: "3-5 business days"
+        approval: manual_review
+
+# =============================================================================
+# SEGMENT-BASED LIMITS
+# =============================================================================
+segment_based_limits:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-002: Customer Segment Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-002
+    name: Customer Segment Limits
+    name_vi: Hạn mức theo phân khúc khách hàng
+    priority: high
+    category: segment_limits
+
+    description: |
+      Enhanced limits for premium customer segments.
+
+    segments:
+      mass:
+        multiplier: 1.0
+        description: "Standard limits based on KYC"
+
+      mass_affluent:
+        multiplier: 1.5
+        additional_limits:
+          international_daily: 100000000
+        perks:
+          - "Priority processing"
+
+      affluent:
+        multiplier: 2.0
+        additional_limits:
+          international_daily: 500000000
+        perks:
+          - "Dedicated relationship manager"
+          - "Expedited limit increases"
+
+      high_net_worth:
+        multiplier: 5.0
+        additional_limits:
+          international_daily: 2000000000
+        perks:
+          - "Custom limit setting"
+          - "Same-day approval"
+
+      ultra_high_net_worth:
+        multiplier: custom
+        description: "Fully customized limits"
+        perks:
+          - "No standard limits"
+          - "Pre-approved increases"
+
+    rule: |
+      base_limit = kyc_tier_limits[customer.kyc_level]
+      segment_multiplier = segments[customer.segment].multiplier
+
+      effective_limit = base_limit * segment_multiplier
+
+      # Capped at regulatory maximum
+      IF effective_limit > regulatory_maximum
+        effective_limit = regulatory_maximum
+
+# =============================================================================
+# TEMPORARY LIMIT RULES
+# =============================================================================
+temporary_limit_rules:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-010: Temporary Limit Increase
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-010
+    name: Temporary Limit Increase
+    name_vi: Tăng hạn mức tạm thời
+    priority: high
+    category: temporary_limits
+
+    description: |
+      Customers can request temporary limit increases.
+
+    parameters:
+      max_duration: 7_days
+      max_multiplier: 2.0
+      cooling_period: 30_days
+
+    rule: |
+      ON temporary_increase_request:
+        IF requested_increase <= current_limit * max_multiplier
+        AND no_increase_in_cooling_period
+        THEN
+          verify_otp()
+          IF verified
+            apply_temporary_increase(duration)
+            schedule_auto_revert()
+            notify_customer()
+
+    approval_matrix:
+      within_2x:
+        approval: automatic
+        authentication: otp
+        processing: immediate
+
+      above_2x:
+        approval: manual_review
+        documentation: purpose_statement
+        processing: 1_business_day
+
+    auto_revert:
+      trigger: duration_expires
+      action: revert_to_original
+      notification: "Your temporary limit increase has expired"
+
+  # ---------------------------------------------------------------------------
+  # BR-LMT-011: Travel Mode
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-011
+    name: Travel Mode Limits
+    name_vi: Chế độ du lịch
+    priority: medium
+    category: temporary_limits
+
+    description: |
+      Special limit configurations for travel.
+
+    travel_mode:
+      activation:
+        required: customer_request
+        information: [destination, dates]
+        authentication: otp
+
+      changes:
+        - international_enabled: true
+        - international_limit_multiplier: 2.0
+        - atm_limit_multiplier: 1.5
+        - fraud_rules: travel_adjusted
+
+      duration:
+        max_days: 90
+        auto_disable: true
+
+    rule: |
+      ON activate_travel_mode:
+        verify_otp()
+        record_travel_details()
+        apply_travel_limits()
+        adjust_fraud_rules(destination)
+        schedule_auto_disable()
+
+# =============================================================================
+# SPENDING LIMIT RULES
+# =============================================================================
+spending_limit_rules:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-020: Custom Spending Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-020
+    name: Custom Spending Limits
+    name_vi: Hạn mức chi tiêu tùy chỉnh
+    priority: medium
+    category: spending_limits
+
+    description: |
+      Customers can set custom spending limits by category.
+
+    limit_types:
+      category_limit:
+        description: "Limit by merchant category"
+        examples: ["Restaurants", "Entertainment", "Shopping"]
+        period: [daily, weekly, monthly]
+
+      merchant_limit:
+        description: "Limit for specific merchant"
+        examples: ["Netflix", "Grab", "specific store"]
+        period: [daily, monthly]
+
+      channel_limit:
+        description: "Limit by transaction channel"
+        examples: ["Online", "ATM", "International"]
+        period: [daily, monthly]
+
+      overall_limit:
+        description: "Total spending limit"
+        period: [daily, weekly, monthly]
+
+    enforcement:
+      block:
+        action: decline_transaction
+        notification: immediate
+
+      alert_only:
+        action: allow_transaction
+        notification: immediate
+
+      soft_block:
+        action: require_confirmation
+        authentication: pin_or_otp
+
+    rule: |
+      FOR each transaction:
+        applicable_limits = get_customer_spending_limits(customer)
+
+        FOR each limit IN applicable_limits:
+          IF would_exceed(limit)
+            SWITCH limit.enforcement:
+              CASE 'block':
+                decline('SPENDING_LIMIT_EXCEEDED')
+              CASE 'alert_only':
+                send_alert()
+                proceed()
+              CASE 'soft_block':
+                request_override_auth()
+
+  # ---------------------------------------------------------------------------
+  # BR-LMT-021: Spending Limit Tracking
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-021
+    name: Spending Limit Tracking
+    name_vi: Theo dõi hạn mức chi tiêu
+    priority: medium
+    category: spending_limits
+
+    description: |
+      Track and report spending against limits.
+
+    tracking:
+      real_time: true
+      storage: per_limit_period
+
+    alerts:
+      thresholds: [50, 80, 100]
+      channels: [push, sms]
+
+    rule: |
+      ON transaction_complete:
+        update_spending_totals()
+
+        FOR each threshold:
+          IF usage_percentage >= threshold
+          AND NOT alert_sent[threshold]
+          THEN
+            send_limit_alert(threshold)
+            mark_alert_sent(threshold)
+
+    reset_schedule:
+      daily: "00:00"
+      weekly: "00:00 Monday"
+      monthly: "00:00 1st"
+      timezone: "Asia/Ho_Chi_Minh"
+
+# =============================================================================
+# ACCOUNT TYPE LIMITS
+# =============================================================================
+account_type_limits:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-030: Account Type Specific Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-030
+    name: Account Type Limits
+    name_vi: Hạn mức theo loại tài khoản
+    priority: high
+    category: account_limits
+
+    description: |
+      Different limits based on account type.
+
+    checking:
+      standard:
+        daily_transfer: 500000000
+        monthly_transfer: 2000000000
+      premium:
+        daily_transfer: 1000000000
+        monthly_transfer: 5000000000
+
+    savings:
+      demand:
+        withdrawal_limit: 3_per_day
+        withdrawal_fee_after: 3rd
+      term:
+        early_withdrawal: not_allowed
+        exception: principal_only_with_penalty
+
+    rule: |
+      FOR transfer_from_savings:
+        IF savings.type = 'term'
+        AND current_date < maturity_date
+        THEN
+          IF allow_early_withdrawal
+            apply_penalty()
+          ELSE
+            decline('TERM_NOT_MATURE')
+
+# =============================================================================
+# REGULATORY LIMITS
+# =============================================================================
+regulatory_limits:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-040: Regulatory Maximum Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-040
+    name: Regulatory Limits
+    name_vi: Hạn mức theo quy định
+    priority: critical
+    category: regulatory
+
+    description: |
+      Hard limits mandated by regulations.
+
+    vietnam_regulations:
+      individual:
+        daily_domestic: 2000000000
+        daily_international: 500000000
+        annual_international: 5000000000
+
+      corporate:
+        daily_domestic: unlimited
+        daily_international: varies_by_license
+
+    reporting_thresholds:
+      ctr_threshold: 200000000
+      suspicious_activity: any_amount
+
+    rule: |
+      FOR each transaction:
+        IF amount > regulatory_maximum
+          decline('REGULATORY_LIMIT')
+
+        IF amount >= ctr_threshold
+          flag_for_reporting()
+
+  # ---------------------------------------------------------------------------
+  # BR-LMT-041: Cross-Border Limits
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-041
+    name: Cross-Border Limits
+    name_vi: Hạn mức chuyển tiền quốc tế
+    priority: critical
+    category: regulatory
+
+    description: |
+      Limits for international transfers per regulations.
+
+    individual_limits:
+      personal_purpose:
+        per_transaction: 50000_usd
+        annual: unlimited
+        documentation: for_amounts_above_25000_usd
+
+      property_purchase:
+        per_transaction: varies
+        documentation: required
+        approval: forex_control
+
+      education:
+        annual: 100000_usd
+        documentation: enrollment_proof
+
+      medical:
+        per_transaction: varies
+        documentation: medical_documents
+
+    rule: |
+      FOR international_transfer:
+        validate_purpose_code()
+        check_annual_accumulation()
+        IF amount > documentation_threshold
+          require_supporting_documents()
+
+# =============================================================================
+# LIMIT MANAGEMENT
+# =============================================================================
+limit_management:
+  # ---------------------------------------------------------------------------
+  # BR-LMT-050: Limit Adjustment Authority
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-050
+    name: Limit Adjustment Authority
+    name_vi: Thẩm quyền điều chỉnh hạn mức
+    priority: high
+    category: management
+
+    description: |
+      Who can adjust limits and by how much.
+
+    authority_matrix:
+      customer_self_service:
+        decrease: unlimited
+        increase_within_kyc: otp_only
+        temporary_increase: up_to_2x
+
+      branch_staff:
+        increase: up_to_kyc_maximum
+        override: not_allowed
+
+      branch_manager:
+        increase: up_to_2x_kyc_maximum
+        override: exceptional_cases
+
+      head_office:
+        increase: up_to_regulatory_maximum
+        override: with_documentation
+
+    audit_requirements:
+      all_changes: logged
+      above_threshold: justification_required
+      override: dual_approval
+
+  # ---------------------------------------------------------------------------
+  # BR-LMT-051: Limit Reset Rules
+  # ---------------------------------------------------------------------------
+  - id: BR-LMT-051
+    name: Limit Reset Rules
+    name_vi: Quy tắc reset hạn mức
+    priority: high
+    category: management
+
+    description: |
+      When and how limits reset.
+
+    reset_schedule:
+      daily_limits:
+        time: "00:00"
+        timezone: "Asia/Ho_Chi_Minh"
+        scope: [daily_transfer, daily_atm, daily_card]
+
+      weekly_limits:
+        time: "00:00"
+        day: "Monday"
+        scope: [weekly_spending]
+
+      monthly_limits:
+        time: "00:00"
+        day: 1
+        scope: [monthly_transfer, monthly_card]
+
+      annual_limits:
+        time: "00:00"
+        date: "January 1"
+        scope: [annual_international]
+
+    rule: |
+      AT reset_time:
+        FOR each limit_type IN reset_scope:
+          limit.used_amount = 0
+          limit.alerts_sent = []
+          log_reset_event()
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  database:
+    - "Customer limit tables"
+    - "Spending tracking tables"
+    - "Limit usage history"
+    - "Temporary increase records"
+
+  real_time_engine:
+    - "Limit check in authorization"
+    - "Real-time accumulation update"
+    - "Alert triggering logic"
+
+  batch_processes:
+    - "Daily limit reset"
+    - "Weekly limit reset"
+    - "Monthly limit reset"
+    - "Temporary increase reversion"
+
+  customer_channels:
+    - "Limit viewing in app"
+    - "Limit adjustment in app"
+    - "Spending analytics dashboard"
+    - "Alert preferences"
+
+  reporting:
+    - "Limit utilization reports"
+    - "Temporary increase audit"
+    - "Regulatory limit compliance"

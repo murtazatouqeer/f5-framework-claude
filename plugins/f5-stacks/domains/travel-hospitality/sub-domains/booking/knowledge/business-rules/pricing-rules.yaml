@@ -1,0 +1,409 @@
+name: pricing-rules
+display_name: Pricing & Display Rules
+display_name_vi: Quy tắc định giá & Hiển thị
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Business rules governing price display, dynamic pricing,
+  currency handling, markup, and commission calculations.
+
+categories:
+  - name: price_display
+    display_name: Price Display Rules
+    rules:
+      - id: BR-PRC-D001
+        name: Total Price Display
+        description: |
+          Always display total price including all mandatory charges.
+          Consumer protection compliance required.
+        requirements:
+          - headline_price = total_price (not base fare)
+          - include: [base_fare, taxes, mandatory_fees]
+          - exclude_from_headline: [optional_services, baggage_fees]
+        display_format:
+          primary: "VND {total_price}"
+          secondary: "From {base_fare} + taxes"
+          breakdown_available: true
+        priority: critical
+        compliance: [DOT_Price_Advertising, EU_Consumer_Rights]
+
+      - id: BR-PRC-D002
+        name: Price Breakdown Transparency
+        description: |
+          Provide detailed price breakdown on request.
+        components:
+          - base_fare: "Net fare"
+          - taxes: "Government taxes itemized"
+          - fees: "Carrier-imposed fees"
+          - surcharges: "Fuel, security surcharges"
+          - service_fee: "OTA service fee"
+        display:
+          - expandable_section
+          - tooltip_explanations
+          - tax_code_descriptions
+        priority: high
+
+      - id: BR-PRC-D003
+        name: Per Person vs Total
+        description: |
+          Display pricing consistently per person or total.
+        rules:
+          - flight_default: per_person
+          - hotel_default: per_night_total
+          - package_default: per_person
+          - always_show_total_before_checkout: true
+        actions:
+          - calculate_total_on_selection
+          - show_per_person_breakdown
+        priority: high
+
+  - name: currency_handling
+    display_name: Currency Handling Rules
+    rules:
+      - id: BR-PRC-C001
+        name: Display Currency
+        description: |
+          Display prices in user's preferred currency.
+        rules:
+          - detect_from: [user_preference, browser_locale, ip_location]
+          - fallback: USD
+          - supported_currencies: [VND, USD, EUR, GBP, JPY, AUD, SGD, THB]
+        display:
+          - format_per_locale: true
+          - decimal_places: currency_specific
+          - thousand_separator: locale_specific
+        priority: high
+
+      - id: BR-PRC-C002
+        name: Currency Conversion
+        description: |
+          Rules for converting between currencies.
+        sources:
+          - primary: ECB_rates
+          - secondary: XE_rates
+          - refresh: every_4_hours
+        markup:
+          - conversion_spread: 2%
+          - round_up: true
+        display:
+          - show_original_currency_option: true
+          - show_conversion_rate: on_request
+          - disclaimer: "Approximate conversion. Final charge in {booking_currency}"
+        priority: high
+
+      - id: BR-PRC-C003
+        name: Booking Currency
+        description: |
+          Currency used for actual transaction.
+        rules:
+          - supplier_currency: used_for_settlement
+          - booking_currency: customer_selected_or_supplier
+          - card_conversion: customer_choice
+        actions:
+          - lock_exchange_rate_at_booking
+          - refund_at_original_rate
+        priority: critical
+
+  - name: dynamic_pricing
+    display_name: Dynamic Pricing Rules
+    rules:
+      - id: BR-PRC-DYN001
+        name: Demand-Based Pricing
+        description: |
+          Adjust prices based on demand signals.
+        factors:
+          - search_volume:
+              high: markup +5-10%
+              low: discount 0-5%
+          - booking_velocity:
+              high: markup +5%
+              normal: no_adjustment
+          - inventory_level:
+              low: markup +10-15%
+              high: discount 5-10%
+          - time_to_departure:
+              < 7_days: markup +15-20%
+              7-14_days: markup +5-10%
+              14-30_days: standard
+              > 30_days: early_bird_discount
+        constraints:
+          - max_markup: 25%
+          - max_discount: 15%
+          - no_price_increase_after_cart: true
+        priority: high
+
+      - id: BR-PRC-DYN002
+        name: Seasonal Pricing
+        description: |
+          Price adjustments for peak/off-peak seasons.
+        periods:
+          peak:
+            - tet_holiday: +30-50%
+            - summer_vacation: +20-30%
+            - christmas_new_year: +25-40%
+          shoulder:
+            - spring_fall: +10-15%
+          off_peak:
+            - low_season: -10-20%
+        hotel_specific:
+          - weekend_premium: +10-20%
+          - weekday_discount: -5-10%
+        priority: high
+
+      - id: BR-PRC-DYN003
+        name: Competitive Pricing
+        description: |
+          Price matching and competitive positioning.
+        monitoring:
+          - check_competitors: [Traveloka, Agoda, Booking.com, Expedia]
+          - frequency: every_6_hours
+        actions:
+          - match_lower_price: within 5%
+          - alert_on_significant_diff: > 15%
+          - best_price_guarantee: enabled
+        constraints:
+          - minimum_margin: 3%
+          - no_below_cost_selling
+        priority: medium
+
+  - name: markup_commission
+    display_name: Markup & Commission Rules
+    rules:
+      - id: BR-PRC-M001
+        name: Flight Markup Structure
+        description: |
+          Markup rules for flight products.
+        structure:
+          domestic:
+            economy: 3-5%
+            business: 5-7%
+          international:
+            economy: 4-6%
+            premium_economy: 5-7%
+            business: 6-8%
+            first: 7-10%
+        service_fee:
+          per_ticket: VND 100,000 - 300,000
+          waived_for: [premium_members, corporate]
+        commission_from_airline:
+          base: 1-3%
+          incentive_override: additional 1-2%
+        priority: high
+
+      - id: BR-PRC-M002
+        name: Hotel Markup Structure
+        description: |
+          Markup rules for hotel products.
+        structure:
+          direct_contracts:
+            net_rate_markup: 15-25%
+          wholesale:
+            markup: 10-18%
+          retail:
+            commission_back: 15-25%
+        adjustments:
+          - star_rating_premium: 5-star +5%
+          - resort_premium: +5-10%
+          - peak_period_additional: +5%
+        priority: high
+
+      - id: BR-PRC-M003
+        name: Package Markup Structure
+        description: |
+          Markup rules for package products.
+        structure:
+          dynamic_package:
+            combined_margin: 12-18%
+            display_savings: 10-20%
+          pre_built_package:
+            fixed_margin: 15-25%
+          promotion_packages:
+            reduced_margin: 8-12%
+        bundling_discount:
+          flight_hotel: 5-10%
+          flight_hotel_activity: 10-15%
+        priority: high
+
+  - name: discounts_promotions
+    display_name: Discount & Promotion Rules
+    rules:
+      - id: BR-PRC-DP001
+        name: Promo Code Rules
+        description: |
+          Rules for promotional code application.
+        validation:
+          - code_format: alphanumeric, 6-12 chars
+          - case_insensitive: true
+          - single_use_check: required
+          - expiry_check: required
+        stacking:
+          - one_promo_per_booking: true (default)
+          - stackable_types: [general, partner, loyalty_points]
+          - non_stackable: corporate_codes
+        constraints:
+          - minimum_booking_value: code_specific
+          - maximum_discount: 50%
+          - product_restrictions: as_configured
+        priority: high
+
+      - id: BR-PRC-DP002
+        name: Member Discounts
+        description: |
+          Loyalty program pricing benefits.
+        tiers:
+          silver:
+            discount: 2%
+            exclusive_rates: limited
+          gold:
+            discount: 5%
+            exclusive_rates: yes
+            waived_service_fee: yes
+          platinum:
+            discount: 8%
+            exclusive_rates: priority
+            complimentary_upgrades: subject_to_availability
+        priority: high
+
+      - id: BR-PRC-DP003
+        name: Flash Sale Rules
+        description: |
+          Rules for time-limited promotional pricing.
+        constraints:
+          - advance_notice: minimum 24 hours
+          - duration: 24-72 hours typical
+          - inventory_cap: limited allocation
+          - no_modification_during_sale: pricing locked
+        display:
+          - countdown_timer: required
+          - original_price_strikethrough: required
+          - inventory_urgency: "Only X left at this price"
+        priority: medium
+
+  - name: price_guarantee
+    display_name: Price Guarantee Rules
+    rules:
+      - id: BR-PRC-G001
+        name: Price Lock
+        description: |
+          How long a quoted price is guaranteed.
+        validity:
+          flight_price:
+            display: 15-30 minutes
+            in_cart: 20 minutes
+            selected: until_payment_or_30_min
+          hotel_price:
+            display: 60 minutes
+            in_cart: 30 minutes
+            selected: until_payment_or_60_min
+        actions:
+          - warn_before_expiry: 5 minutes
+          - auto_refresh_on_expiry
+          - notify_price_change
+        priority: critical
+
+      - id: BR-PRC-G002
+        name: Price Match Guarantee
+        description: |
+          Post-booking price match policy.
+        eligibility:
+          - same_itinerary_exactly
+          - found_within_24_hours
+          - verifiable_competitor_price
+          - non_opaque_booking
+        resolution:
+          - refund_difference: yes
+          - additional_credit: 10% of difference
+          - maximum_refund: VND 2,000,000
+        exclusions:
+          - member_exclusive_rates
+          - package_deals
+          - error_fares
+        priority: medium
+
+  - name: ancillary_pricing
+    display_name: Ancillary Pricing Rules
+    rules:
+      - id: BR-PRC-A001
+        name: Baggage Pricing
+        description: |
+          Rules for baggage add-on pricing.
+        display:
+          - show_at_search: included_baggage_info
+          - show_at_extras: purchasable_options
+          - show_at_checkout: summary
+        pricing:
+          - airline_direct_price: pass_through
+          - markup_on_baggage: 0-5%
+          - bundle_discount: 10% for 2+ bags
+        priority: high
+
+      - id: BR-PRC-A002
+        name: Seat Selection Pricing
+        description: |
+          Rules for paid seat selection.
+        tiers:
+          standard: VND 50,000 - 150,000
+          extra_legroom: VND 200,000 - 500,000
+          exit_row: VND 300,000 - 600,000
+          front_cabin: VND 150,000 - 300,000
+        display:
+          - seat_map_visual: required
+          - price_per_seat: clear display
+        priority: medium
+
+      - id: BR-PRC-A003
+        name: Travel Insurance Pricing
+        description: |
+          Rules for insurance add-on pricing.
+        products:
+          basic_coverage:
+            price_percentage: 3-5% of booking
+            minimum: VND 50,000
+          comprehensive:
+            price_percentage: 5-8% of booking
+            minimum: VND 150,000
+          cancel_for_any_reason:
+            price_percentage: 8-12% of booking
+        display:
+          - opt_in_required: true
+          - no_pre_selection: compliance
+          - clear_coverage_explanation: required
+        priority: high
+
+validation_rules:
+  - id: VAL-PRC-001
+    name: Price Consistency
+    description: Ensure prices are consistent across channels
+    checks:
+      - web_price = mobile_price
+      - api_price = display_price
+      - no_bait_and_switch
+
+  - id: VAL-PRC-002
+    name: Margin Validation
+    description: Ensure minimum margins are maintained
+    checks:
+      - margin >= minimum_threshold
+      - no_negative_margin
+      - commission_calculated_correctly
+
+error_handling:
+  - error: price_expired
+    action: refresh_and_notify
+    message: "Price has changed. New price: {new_price}"
+
+  - error: promo_code_invalid
+    action: reject_with_reason
+    message: "Promo code is invalid or expired."
+
+  - error: currency_conversion_failed
+    action: fallback_to_usd
+    message: "Unable to convert. Showing price in USD."
+
+audit_requirements:
+  - log_all_price_changes
+  - retain_pricing_history_3_years
+  - track_dynamic_pricing_decisions
+  - monitor_margin_trends

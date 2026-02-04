@@ -1,0 +1,702 @@
+# Proctoring Workflow
+# F5 Framework v2.0 - Education/Assessment
+# Complete workflow for exam proctoring
+
+workflow:
+  id: proctoring
+  name: Proctoring Workflow
+  name_ja: 監視ワークフロー
+  description: End-to-end workflow for proctoring exam sessions
+  domain: education
+  subdomain: assessment
+  version: "1.0.0"
+  
+  trigger:
+    type: event
+    event: proctored_exam_started
+    
+  actors:
+    - id: system
+      name: AI Proctor System
+      name_ja: AI監視システム
+      responsibilities:
+        - Continuous monitoring
+        - Anomaly detection
+        - Automated flagging
+        
+    - id: proctor
+      name: Human Proctor
+      name_ja: 人間監督者
+      responsibilities:
+        - Live monitoring
+        - Incident response
+        - Candidate communication
+        
+    - id: supervisor
+      name: Proctoring Supervisor
+      name_ja: 監視監督者
+      responsibilities:
+        - Review flagged sessions
+        - Final decisions
+        - Quality assurance
+        
+    - id: candidate
+      name: Candidate
+      name_ja: 受験者
+      responsibilities:
+        - Complete verification
+        - Follow guidelines
+        - Respond to instructions
+
+  stages:
+    # ==========================================
+    # Stage 1: Session Initialization
+    # ==========================================
+    - id: initialization
+      name: Session Initialization
+      name_ja: セッション初期化
+      description: Initialize proctoring session
+      
+      steps:
+        - id: create_session
+          name: Create Proctor Session
+          name_ja: 監視セッション作成
+          actor: system
+          action:
+            type: create
+            entity: proctor_session
+            fields:
+              - exam_attempt_id
+              - proctoring_type: exam.proctoring_type
+              - status: pending
+              
+        - id: load_configuration
+          name: Load Proctoring Configuration
+          name_ja: 監視設定読み込み
+          actor: system
+          action:
+            type: load
+            config:
+              - face_detection_settings
+              - audio_monitoring_settings
+              - browser_monitoring_settings
+              - flag_thresholds
+              - recording_settings
+              
+        - id: apply_accommodations
+          name: Apply Accommodations
+          name_ja: 配慮措置適用
+          actor: system
+          condition: attempt.accommodation_id IS NOT NULL
+          action:
+            type: modify_config
+            based_on: accommodation.proctoring_modifications
+            validation:
+              rules: [PRC-060]
+              
+      transition:
+        on_complete: identity_verification
+        
+    # ==========================================
+    # Stage 2: Identity Verification
+    # ==========================================
+    - id: identity_verification
+      name: Identity Verification
+      name_ja: 本人確認
+      description: Verify candidate identity
+      
+      steps:
+        - id: request_id_document
+          name: Request ID Document
+          name_ja: 身分証明書要求
+          actor: system
+          action:
+            type: prompt
+            message: "Please show your government-issued photo ID"
+            message_ja: "公的な写真付き身分証明書を提示してください"
+            capture: true
+            
+        - id: capture_id
+          name: Capture ID
+          name_ja: 身分証明書撮影
+          actor: candidate
+          action:
+            type: upload
+            file_type: image
+            validation:
+              - readable
+              - photo_visible
+              - not_expired
+            outputs:
+              - id_document_url
+              - id_document_type
+            validation:
+              rules: [PRC-002]
+              
+        - id: capture_face
+          name: Capture Face Photo
+          name_ja: 顔写真撮影
+          actor: system
+          action:
+            type: capture
+            source: webcam
+            requirements:
+              - face_detected
+              - single_face
+              - good_lighting
+              - clear_image
+              
+        - id: verify_match
+          name: Verify Face Match
+          name_ja: 顔認証
+          actor: system
+          action:
+            type: ai_verify
+            compare: [id_photo, live_face]
+            threshold: 0.85
+            outputs:
+              - verification_score
+              - identity_verified
+            validation:
+              rules: [PRC-003]
+              
+        - id: handle_verification_result
+          name: Handle Verification Result
+          name_ja: 認証結果処理
+          actor: system
+          action:
+            type: decision
+            condition: verification_score >= threshold
+            on_true: environment_check
+            on_false: manual_verification
+            
+        - id: manual_verification
+          name: Manual Verification
+          name_ja: 手動確認
+          actor: proctor
+          condition: ai_verification_failed
+          action:
+            type: manual_review
+            display:
+              - id_document
+              - live_face_capture
+            decision:
+              - approve
+              - reject
+              - request_retry
+              
+      transition:
+        on_complete: environment_check
+        on_reject: session_denied
+        
+    # ==========================================
+    # Stage 3: Environment Check
+    # ==========================================
+    - id: environment_check
+      name: Environment Check
+      name_ja: 環境チェック
+      description: Verify testing environment
+      
+      steps:
+        - id: check_hardware
+          name: Check Hardware
+          name_ja: ハードウェア確認
+          actor: system
+          action:
+            type: verify
+            devices:
+              - webcam:
+                  working: required
+                  resolution: 720p_minimum
+              - microphone:
+                  working: required
+                  quality: acceptable
+              - speakers:
+                  working: optional
+            validation:
+              rules: [PRC-011]
+              
+        - id: check_browser
+          name: Check Browser
+          name_ja: ブラウザ確認
+          actor: system
+          action:
+            type: verify
+            requirements:
+              - supported_browser
+              - javascript_enabled
+              - cookies_enabled
+              - screen_share_capable
+              
+        - id: room_scan
+          name: Room Scan
+          name_ja: 部屋スキャン
+          actor: candidate
+          condition: exam.exam_type IN ['certification', 'final']
+          action:
+            type: guided_capture
+            instructions:
+              - "Show your entire workspace"
+              - "Pan camera 360 degrees slowly"
+              - "Show under desk area"
+              - "Show walls and surroundings"
+            duration_seconds: 60
+            capture: video
+            outputs:
+              - room_scan_url
+            validation:
+              rules: [PRC-012]
+              
+        - id: verify_environment
+          name: Verify Environment
+          name_ja: 環境確認
+          actor: system
+          action:
+            type: ai_analyze
+            video: room_scan_url
+            check_for:
+              - prohibited_items
+              - additional_monitors
+              - other_devices
+              - other_people
+            flag_threshold: 0.7
+            
+        - id: environment_approval
+          name: Environment Approval
+          name_ja: 環境承認
+          actor: proctor
+          condition: proctoring_type = 'live' OR environment_flags_exist
+          action:
+            type: approve
+            checklist:
+              - workspace_clear
+              - no_prohibited_items
+              - adequate_lighting
+              - no_other_people
+              
+      transition:
+        on_complete: active_monitoring
+        on_reject: request_environment_fix
+        
+    # ==========================================
+    # Stage 4: Active Monitoring
+    # ==========================================
+    - id: active_monitoring
+      name: Active Monitoring
+      name_ja: アクティブ監視
+      description: Continuous monitoring during exam
+      
+      steps:
+        - id: start_recording
+          name: Start Recording
+          name_ja: 録画開始
+          actor: system
+          action:
+            type: start
+            streams:
+              - video:
+                  source: webcam
+                  quality: 720p
+              - audio:
+                  source: microphone
+              - screen:
+                  enabled: if_required
+            storage: secure_cloud
+            validation:
+              rules: [PRC-040]
+              
+        - id: initialize_monitors
+          name: Initialize Monitors
+          name_ja: モニター初期化
+          actor: system
+          action:
+            type: start
+            monitors:
+              - face_detection:
+                  interval_ms: 1000
+                  threshold: 0.5
+              - gaze_tracking:
+                  enabled: if_supported
+              - audio_analysis:
+                  interval_ms: 5000
+              - browser_events:
+                  track: [tab_switch, focus_loss, copy_paste]
+                  
+        - id: continuous_face_check
+          name: Continuous Face Check
+          name_ja: 継続的顔確認
+          actor: system
+          action:
+            type: continuous
+            check: face_detection
+            alerts:
+              - no_face_30s: warning
+              - no_face_60s: flag_medium
+              - multiple_faces: flag_high
+            validation:
+              rules: [PRC-020, PRC-021]
+              
+        - id: browser_monitoring
+          name: Browser Monitoring
+          name_ja: ブラウザ監視
+          actor: system
+          action:
+            type: continuous
+            track:
+              - tab_switches
+              - browser_focus
+              - copy_paste_attempts
+              - screenshot_attempts
+              - devtools_access
+            validation:
+              rules: [PRC-022, PRC-023, PRC-024, SEC-002, SEC-003, SEC-004]
+              
+        - id: audio_monitoring
+          name: Audio Monitoring
+          name_ja: 音声監視
+          actor: system
+          action:
+            type: continuous
+            analyze:
+              - voice_detection
+              - multiple_voices
+              - suspicious_sounds
+            validation:
+              rules: [PRC-025]
+              
+        - id: flag_management
+          name: Flag Management
+          name_ja: フラグ管理
+          actor: system
+          action:
+            type: process_flags
+            on_flag:
+              - log_details
+              - capture_evidence
+              - update_counters
+              - evaluate_thresholds
+            escalation:
+              - 3_flags: warning_1
+              - 5_flags: warning_2
+              - 8_flags: consider_termination
+            validation:
+              rules: [PRC-030, PRC-031]
+              
+      transition:
+        on_exam_complete: session_completion
+        on_termination: session_termination
+        continuous: true
+        
+    # ==========================================
+    # Stage 5: Incident Response
+    # ==========================================
+    - id: incident_response
+      name: Incident Response
+      name_ja: インシデント対応
+      description: Handle proctoring incidents
+      trigger: critical_flag OR proctor_intervention
+      
+      steps:
+        - id: assess_incident
+          name: Assess Incident
+          name_ja: インシデント評価
+          actor: proctor
+          action:
+            type: review
+            display:
+              - incident_details
+              - video_clip
+              - flag_history
+              - session_context
+              
+        - id: candidate_communication
+          name: Communicate with Candidate
+          name_ja: 受験者連絡
+          actor: proctor
+          optional: true
+          action:
+            type: communicate
+            methods:
+              - chat_message
+              - audio_call
+            templates:
+              - warning
+              - clarification_request
+              - instruction
+              
+        - id: take_action
+          name: Take Action
+          name_ja: アクション実行
+          actor: proctor
+          action:
+            type: decision
+            options:
+              - dismiss_flag:
+                  reason_required: true
+              - issue_warning:
+                  level: [1, 2, final]
+              - pause_session:
+                  duration_minutes: configurable
+              - extend_time:
+                  minutes: configurable
+                  reason_required: true
+              - terminate_session:
+                  reason_required: true
+                  confirmation_required: true
+            validation:
+              rules: [PRC-033]
+              
+        - id: log_action
+          name: Log Action
+          name_ja: アクションログ
+          actor: system
+          action:
+            type: audit
+            record:
+              - timestamp
+              - proctor_id
+              - action_taken
+              - reason
+              - evidence_references
+              
+      transition:
+        on_dismiss: active_monitoring
+        on_warning: active_monitoring
+        on_terminate: session_termination
+        
+    # ==========================================
+    # Stage 6: Session Completion
+    # ==========================================
+    - id: session_completion
+      name: Session Completion
+      name_ja: セッション完了
+      description: Complete proctoring session normally
+      
+      steps:
+        - id: stop_monitoring
+          name: Stop Monitoring
+          name_ja: 監視停止
+          actor: system
+          action:
+            type: stop
+            components:
+              - face_detection
+              - audio_analysis
+              - browser_monitoring
+              
+        - id: stop_recording
+          name: Stop Recording
+          name_ja: 録画停止
+          actor: system
+          action:
+            type: stop
+            finalize:
+              - video_recording
+              - audio_recording
+              - screen_recording
+            generate:
+              - recording_urls
+              - recording_duration
+              
+        - id: calculate_integrity_score
+          name: Calculate Integrity Score
+          name_ja: 整合性スコア計算
+          actor: system
+          action:
+            type: calculate
+            inputs:
+              - flag_count
+              - flag_severity
+              - warning_count
+              - verification_score
+            algorithm: weighted_score
+            outputs:
+              - integrity_score
+              - recommendation
+              
+        - id: determine_review_need
+          name: Determine Review Need
+          name_ja: レビュー必要性判定
+          actor: system
+          action:
+            type: evaluate
+            conditions:
+              - integrity_score < 70: review_required
+              - critical_flags > 0: review_required
+              - warnings_issued > 1: review_recommended
+            outputs:
+              - review_priority
+              
+        - id: finalize_session
+          name: Finalize Session
+          name_ja: セッション完了
+          actor: system
+          action:
+            type: update
+            entity: proctor_session
+            set_fields:
+              - status: completed
+              - session_end: now()
+              - integrity_score
+              - recommendation
+              - review_priority
+              
+      transition:
+        on_complete: post_session_review
+        skip_if: no_review_required
+        skip_to: workflow_complete
+        
+    # ==========================================
+    # Stage 7: Session Termination
+    # ==========================================
+    - id: session_termination
+      name: Session Termination
+      name_ja: セッション終了
+      description: Handle premature session termination
+      
+      steps:
+        - id: notify_candidate
+          name: Notify Candidate
+          name_ja: 受験者通知
+          actor: system
+          action:
+            type: notify
+            message: "Your exam session has been terminated due to policy violations."
+            message_ja: "規則違反のため、試験セッションが終了しました。"
+            
+        - id: preserve_evidence
+          name: Preserve Evidence
+          name_ja: 証拠保全
+          actor: system
+          action:
+            type: preserve
+            capture:
+              - final_screenshot
+              - video_last_5_minutes
+              - all_flags
+              - session_log
+            lock: true
+            retention: indefinite
+            validation:
+              rules: [SEC-051]
+              
+        - id: void_attempt
+          name: Void Attempt
+          name_ja: 受験無効化
+          actor: system
+          action:
+            type: update
+            entity: exam_attempt
+            set_fields:
+              - status: voided
+              - void_reason: proctor_decision
+              - void_notes: termination_reason
+              
+        - id: create_incident
+          name: Create Incident Report
+          name_ja: インシデントレポート作成
+          actor: system
+          action:
+            type: create
+            entity: incident_report
+            fields:
+              - session_id
+              - termination_reason
+              - evidence_urls
+              - proctor_notes
+            notify: [supervisor, admin]
+            validation:
+              rules: [SEC-050]
+              
+      transition:
+        on_complete: post_session_review
+        
+    # ==========================================
+    # Stage 8: Post-Session Review
+    # ==========================================
+    - id: post_session_review
+      name: Post-Session Review
+      name_ja: セッション後レビュー
+      description: Review flagged sessions
+      condition: review_required OR review_recommended
+      
+      steps:
+        - id: queue_for_review
+          name: Queue for Review
+          name_ja: レビューキュー追加
+          actor: system
+          action:
+            type: queue
+            priority: review_priority
+            assign_to: supervisor
+            
+        - id: review_session
+          name: Review Session
+          name_ja: セッションレビュー
+          actor: supervisor
+          action:
+            type: review
+            display:
+              - session_summary
+              - all_flags
+              - recording_clips
+              - proctor_actions
+              - integrity_score
+              
+        - id: make_decision
+          name: Make Final Decision
+          name_ja: 最終決定
+          actor: supervisor
+          action:
+            type: decide
+            options:
+              - valid:
+                  result: exam_valid
+              - flagged:
+                  result: mark_for_follow_up
+                  require_notes: true
+              - void:
+                  result: void_attempt
+                  require_justification: true
+                  notification: candidate
+                  
+        - id: update_session
+          name: Update Session
+          name_ja: セッション更新
+          actor: system
+          action:
+            type: update
+            entity: proctor_session
+            set_fields:
+              - status: reviewed
+              - reviewed_by
+              - reviewed_at: now()
+              - final_decision
+              - review_notes
+              
+  completion:
+    status: completed
+    outputs:
+      - session_id
+      - integrity_score
+      - final_decision
+      - recording_urls
+      
+  error_handling:
+    - type: recording_failure
+      action: alert_proctor
+      backup: continue_without_recording
+      flag: technical_issue
+      
+    - type: connection_loss
+      action: pause_monitoring
+      grace_period_minutes: 2
+      on_reconnect: resume
+      on_timeout: flag_and_continue
+      
+  quality_metrics:
+    tracked:
+      - false_positive_rate
+      - detection_accuracy
+      - proctor_response_time
+      - candidate_satisfaction

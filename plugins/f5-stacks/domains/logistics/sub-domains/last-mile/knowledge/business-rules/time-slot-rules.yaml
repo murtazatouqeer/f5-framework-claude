@@ -1,0 +1,366 @@
+name: TimeSlotRules
+display_name: Time Slot Rules
+description: |
+  Business rules for delivery time slot management.
+  Covers slot availability, booking cutoffs, dynamic pricing, and capacity.
+
+domain: logistics
+subdomain: last-mile
+category: business-rules
+version: "1.0.0"
+status: active
+
+rule_categories:
+  - slot_availability
+  - booking_rules
+  - pricing_rules
+  - capacity_rules
+  - modification_rules
+
+rules:
+  # Slot Availability Rules
+  - id: TSR-001
+    name: Slot Operating Hours
+    category: slot_availability
+    description: Slots must be within zone operating hours
+    priority: critical
+    validation: |
+      slot.start_time >= zone.operating_hours.open AND
+      slot.end_time <= zone.operating_hours.close
+    error_message: Slot time outside zone operating hours
+
+  - id: TSR-002
+    name: Holiday Slot Availability
+    category: slot_availability
+    description: Check holiday schedule for slot availability
+    priority: high
+    condition: |
+      date IN holiday_calendar
+    action: |
+      IF holiday.type = 'closed' THEN
+        DISABLE all_slots
+      ELSE IF holiday.type = 'reduced' THEN
+        APPLY holiday.slot_restrictions
+      END IF
+
+  - id: TSR-003
+    name: Weather-Based Availability
+    category: slot_availability
+    description: Disable slots during severe weather
+    priority: high
+    condition: |
+      weather.severity >= 'severe'
+    action: |
+      IF weather.type IN ('typhoon', 'flood', 'storm') THEN
+        DISABLE outdoor_slots
+        REDUCE capacity BY 50%
+      END IF
+
+  - id: TSR-004
+    name: Real-Time Capacity Check
+    category: slot_availability
+    description: Slot availability based on real-time capacity
+    priority: critical
+    validation: |
+      slot.booked_count < slot.max_capacity
+    computed_status: |
+      IF slot.booked_count >= slot.max_capacity THEN 'full'
+      ELSE IF slot.booked_count >= slot.max_capacity * 0.8 THEN 'limited'
+      ELSE 'available'
+
+  # Booking Rules
+  - id: TSR-010
+    name: Minimum Booking Lead Time
+    category: booking_rules
+    description: Minimum time before slot can be booked
+    priority: critical
+    validation: |
+      slot.start_time - NOW() >= service_level.min_lead_time
+    lead_times:
+      standard: 24 hours
+      express: 4 hours
+      same_day: 2 hours
+      instant: 30 minutes
+
+  - id: TSR-011
+    name: Maximum Advance Booking
+    category: booking_rules
+    description: How far in advance slots can be booked
+    priority: medium
+    validation: |
+      slot.date <= TODAY + max_advance_days
+    max_advance_days:
+      standard: 14
+      premium: 30
+      enterprise: 60
+
+  - id: TSR-012
+    name: Booking Cutoff Time
+    category: booking_rules
+    description: Cutoff time for next-day slot booking
+    priority: high
+    condition: |
+      slot.date = TOMORROW
+    validation: |
+      NOW() < cutoff_time
+    cutoff_times:
+      morning_slots: "18:00 previous day"
+      afternoon_slots: "12:00 same day"
+      evening_slots: "15:00 same day"
+
+  - id: TSR-013
+    name: Service Level Slot Restrictions
+    category: booking_rules
+    description: Certain slots only for specific service levels
+    priority: medium
+    restrictions:
+      - slot_type: morning_express
+        service_levels: [express, premium]
+      - slot_type: evening_priority
+        service_levels: [premium, enterprise]
+
+  - id: TSR-014
+    name: Recipient Slot History
+    category: booking_rules
+    description: Consider recipient's preferred time slots
+    priority: low
+    preference: |
+      IF recipient.preferred_slots IS NOT NULL THEN
+        HIGHLIGHT preferred_slots
+        SHOW availability_first FOR preferred_slots
+      END IF
+
+  # Pricing Rules
+  - id: TSR-020
+    name: Base Slot Pricing
+    category: pricing_rules
+    description: Base price by slot type
+    priority: medium
+    pricing:
+      standard:
+        morning: 30000    # VND
+        afternoon: 25000
+        evening: 35000
+      express:
+        morning: 50000
+        afternoon: 45000
+        evening: 55000
+
+  - id: TSR-021
+    name: Dynamic Demand Pricing
+    category: pricing_rules
+    description: Adjust price based on demand
+    priority: medium
+    algorithm: |
+      demand_ratio = slot.booked_count / slot.max_capacity
+      IF demand_ratio > 0.8 THEN
+        price_multiplier = 1.3
+      ELSE IF demand_ratio > 0.6 THEN
+        price_multiplier = 1.15
+      ELSE
+        price_multiplier = 1.0
+      final_price = base_price * price_multiplier
+
+  - id: TSR-022
+    name: Weekend/Holiday Premium
+    category: pricing_rules
+    description: Premium pricing for weekends and holidays
+    priority: medium
+    premiums:
+      saturday: 1.2      # 20% premium
+      sunday: 1.3        # 30% premium
+      public_holiday: 1.5 # 50% premium
+
+  - id: TSR-023
+    name: Peak Hour Pricing
+    category: pricing_rules
+    description: Higher prices during peak delivery hours
+    priority: medium
+    peak_hours:
+      - time: "11:00-13:00"
+        multiplier: 1.2
+      - time: "17:00-20:00"
+        multiplier: 1.25
+    off_peak_discount: 0.9
+
+  - id: TSR-024
+    name: Last-Minute Booking Premium
+    category: pricing_rules
+    description: Premium for very short lead time bookings
+    priority: medium
+    condition: |
+      slot.start_time - NOW() < 2 hours
+    premium: 1.4
+
+  - id: TSR-025
+    name: Loyalty Discount
+    category: pricing_rules
+    description: Discounts for loyal customers
+    priority: low
+    discounts:
+      silver: 0.95   # 5% off
+      gold: 0.90     # 10% off
+      platinum: 0.85 # 15% off
+
+  # Capacity Rules
+  - id: TSR-030
+    name: Zone Capacity Allocation
+    category: capacity_rules
+    description: Allocate slot capacity by zone
+    priority: high
+    algorithm: |
+      zone_capacity = base_capacity * zone.capacity_multiplier
+      slot.max_capacity = zone_capacity / slots_per_day
+
+  - id: TSR-031
+    name: Agent-Based Capacity
+    category: capacity_rules
+    description: Calculate capacity based on available agents
+    priority: high
+    calculation: |
+      available_agents = COUNT(agents WHERE scheduled_for(slot.date))
+      slot.max_capacity = available_agents * deliveries_per_agent_per_slot
+
+  - id: TSR-032
+    name: Vehicle Type Capacity
+    category: capacity_rules
+    description: Capacity varies by vehicle type availability
+    priority: medium
+    capacity_per_slot:
+      bike: 3
+      motorcycle: 5
+      car: 8
+      van: 12
+
+  - id: TSR-033
+    name: Reserved Capacity
+    category: capacity_rules
+    description: Reserve capacity for premium customers
+    priority: medium
+    reservations:
+      premium_customers: 10%
+      enterprise_accounts: 15%
+      express_buffer: 5%
+
+  - id: TSR-034
+    name: Overflow Handling
+    category: capacity_rules
+    description: Handle capacity overflow gracefully
+    priority: medium
+    action: |
+      IF slot.at_capacity THEN
+        SUGGEST adjacent_slots
+        OFFER waitlist WITH notification
+        SHOW next_available_date
+      END IF
+
+  # Modification Rules
+  - id: TSR-040
+    name: Free Modification Window
+    category: modification_rules
+    description: Allow free slot changes within window
+    priority: medium
+    validation: |
+      original_slot.start_time - NOW() >= free_modification_hours
+    free_modification_hours: 12
+
+  - id: TSR-041
+    name: Modification Fee
+    category: modification_rules
+    description: Charge fee for late modifications
+    priority: medium
+    condition: |
+      original_slot.start_time - NOW() < free_modification_hours AND
+      original_slot.start_time - NOW() >= min_modification_hours
+    fee: 15000  # VND
+
+  - id: TSR-042
+    name: Modification Cutoff
+    category: modification_rules
+    description: No modifications after cutoff
+    priority: critical
+    validation: |
+      original_slot.start_time - NOW() >= min_modification_hours
+    min_modification_hours: 2
+    error_message: Slot cannot be modified less than 2 hours before delivery
+
+  - id: TSR-043
+    name: Same-Day Rescheduling
+    category: modification_rules
+    description: Allow same-day rescheduling with conditions
+    priority: medium
+    condition: |
+      new_slot.date = original_slot.date
+    validation: |
+      new_slot.available = true AND
+      new_slot.start_time > NOW() + 1 hour
+    fee: 10000  # VND
+
+  - id: TSR-044
+    name: Agent-Initiated Reschedule
+    category: modification_rules
+    description: Allow agents to request slot change
+    priority: medium
+    conditions:
+      - valid_reason_required: true
+      - customer_consent_required: true
+      - ops_approval_required: false
+    valid_reasons:
+      - traffic_delay
+      - vehicle_breakdown
+      - emergency
+      - customer_request
+
+slot_types:
+  - id: morning
+    name: Morning
+    time_range: "08:00-12:00"
+    duration_hours: 4
+
+  - id: afternoon
+    name: Afternoon
+    time_range: "12:00-17:00"
+    duration_hours: 5
+
+  - id: evening
+    name: Evening
+    time_range: "17:00-21:00"
+    duration_hours: 4
+
+  - id: express_2h
+    name: Express 2-Hour
+    duration_hours: 2
+    dynamic_start: true
+
+  - id: precise_1h
+    name: Precise 1-Hour
+    duration_hours: 1
+    premium: true
+
+  - id: anytime
+    name: Anytime
+    time_range: "08:00-21:00"
+    duration_hours: 13
+    lowest_price: true
+
+events:
+  - name: slot.booked
+    description: Time slot was booked
+    payload: [slot_id, delivery_id, booked_at]
+
+  - name: slot.capacity_warning
+    description: Slot reaching capacity
+    payload: [slot_id, utilization_percent]
+    condition: utilization >= 80%
+
+  - name: slot.full
+    description: Slot reached full capacity
+    payload: [slot_id, waitlist_count]
+
+  - name: slot.modified
+    description: Slot booking modified
+    payload: [delivery_id, old_slot_id, new_slot_id, fee]
+
+  - name: slot.cancelled
+    description: Slot booking cancelled
+    payload: [slot_id, delivery_id, refund_amount]

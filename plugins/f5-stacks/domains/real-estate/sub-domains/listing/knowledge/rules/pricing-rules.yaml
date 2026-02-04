@@ -1,0 +1,279 @@
+# Pricing Rules
+# F5 Framework v2.0 - Real Estate/Listing
+# Business rules for property pricing and valuations
+
+rules:
+  domain: real-estate
+  subdomain: listing
+  category: pricing
+  version: "1.0.0"
+
+  description: |
+    Business rules for property pricing, valuations, commission
+    calculations, and market-based pricing recommendations.
+
+  # Valuation Rules
+  valuation:
+    - id: PRC-VAL-001
+      name: Automated Valuation Model
+      name_vi: Mô hình định giá tự động
+      description: Calculate estimated property value
+      formula: |
+        base_price = market_average_price_per_sqm(district, property_type) * total_area_sqm
+        adjustments:
+          + (floor_adjustment * base_price)        # Higher floors premium
+          + (direction_adjustment * base_price)    # Direction premium (SE, E best)
+          + (view_adjustment * base_price)         # View premium
+          + (amenities_score * base_price * 0.05)  # Amenities up to 5%
+          + (age_adjustment * base_price)          # Newer = premium
+          - (renovation_need * base_price)         # Deduct if needs work
+        estimated_value = base_price + SUM(adjustments)
+        confidence = calculate_confidence(comparable_count, data_freshness)
+      output:
+        estimated_value: decimal
+        confidence_score: decimal
+        price_range_low: decimal
+        price_range_high: decimal
+
+    - id: PRC-VAL-002
+      name: Floor Premium Calculation
+      name_vi: Tính phí tầng
+      description: Calculate price adjustment based on floor
+      formula: |
+        CASE property.property_subtype
+          WHEN 'apartment' THEN
+            CASE
+              WHEN floor_number <= 3 THEN -0.05
+              WHEN floor_number BETWEEN 4 AND 10 THEN 0
+              WHEN floor_number BETWEEN 11 AND 20 THEN 0.03
+              WHEN floor_number > 20 THEN 0.05
+            END
+          ELSE 0
+        END
+      output: floor_adjustment_percent
+
+    - id: PRC-VAL-003
+      name: Direction Premium
+      name_vi: Phí hướng nhà
+      description: Price adjustment based on property direction
+      formula: |
+        CASE property.direction
+          WHEN 'east' THEN 0.05
+          WHEN 'southeast' THEN 0.07
+          WHEN 'south' THEN 0.03
+          WHEN 'southwest' THEN 0.02
+          WHEN 'west' THEN -0.03
+          WHEN 'northwest' THEN -0.02
+          WHEN 'north' THEN -0.05
+          WHEN 'northeast' THEN 0.03
+        END
+      output: direction_adjustment_percent
+      note: Vietnam market specific - east/southeast most preferred
+
+  # Commission Rules
+  commission:
+    - id: PRC-COM-001
+      name: Sales Commission Structure
+      name_vi: Cơ cấu hoa hồng bán
+      description: Standard commission rates for sales
+      formula: |
+        base_commission =
+          CASE
+            WHEN transaction_value < 5000000000 THEN 0.02  # 2% under 5B VND
+            WHEN transaction_value < 20000000000 THEN 0.015  # 1.5% 5-20B
+            ELSE 0.01  # 1% above 20B
+          END
+        agent_share = base_commission * agency.commission_structure.split_with_agent
+        agency_share = base_commission - agent_share
+      output:
+        total_commission: decimal
+        agent_commission: decimal
+        agency_commission: decimal
+
+    - id: PRC-COM-002
+      name: Rental Commission Structure
+      name_vi: Cơ cấu hoa hồng cho thuê
+      description: Commission calculation for rentals
+      formula: |
+        CASE
+          WHEN lease_months >= 12 THEN monthly_rent * 1.0  # 1 month rent
+          WHEN lease_months >= 6 THEN monthly_rent * 0.5   # 0.5 month
+          ELSE monthly_rent * 0.25  # Short term
+        END
+      output: rental_commission
+
+    - id: PRC-COM-003
+      name: Referral Commission
+      name_vi: Hoa hồng giới thiệu
+      description: Commission for referrals between agents
+      formula: |
+        referral_commission = total_commission * 0.25  # 25% referral fee
+      output: referral_commission
+      condition: "inquiry.source = 'referral'"
+
+  # Price Validation Rules
+  validation:
+    - id: PRC-VLD-001
+      name: Price Floor
+      name_vi: Giá sàn
+      description: Minimum price threshold
+      condition: |
+        listing.asking_price >=
+        CASE listing.listing_type
+          WHEN 'sale' THEN 100000000  # 100M VND minimum
+          WHEN 'rent' THEN 1000000    # 1M VND/month minimum
+        END
+      action: reject
+      message: "Price below minimum threshold"
+      severity: error
+
+    - id: PRC-VLD-002
+      name: Price Ceiling Sanity
+      name_vi: Kiểm tra giá trần
+      description: Flag unusually high prices
+      condition: |
+        listing.asking_price <=
+        market_max_price(property.district, property.property_type) * 5
+      action: require_review
+      message: "Price significantly above market maximum"
+      severity: warning
+
+    - id: PRC-VLD-003
+      name: Price Per SQM Validation
+      name_vi: Xác thực giá/m2
+      description: Validate price per square meter is reasonable
+      condition: |
+        listing.price_per_sqm BETWEEN
+          market_percentile_price(district, type, 5) AND
+          market_percentile_price(district, type, 95)
+      action: flag_review
+      message: "Price per sqm outside normal range"
+      severity: warning
+
+  # Rental Pricing Rules
+  rental:
+    - id: PRC-RNT-001
+      name: Deposit Calculation
+      name_vi: Tính tiền cọc
+      description: Standard deposit requirements
+      formula: |
+        recommended_deposit = monthly_rent *
+        CASE
+          WHEN property.interior_status = 'fully_furnished' THEN 2
+          WHEN property.interior_status = 'partially_furnished' THEN 1.5
+          ELSE 1
+        END
+      output: recommended_deposit
+
+    - id: PRC-RNT-002
+      name: Rental Yield Calculation
+      name_vi: Tính tỷ suất cho thuê
+      description: Calculate rental yield for investment analysis
+      formula: |
+        annual_rent = monthly_rent * 12
+        gross_yield = (annual_rent / property_value) * 100
+        net_yield = ((annual_rent - annual_expenses) / property_value) * 100
+      output:
+        gross_yield_percent: decimal
+        net_yield_percent: decimal
+
+    - id: PRC-RNT-003
+      name: Market Rent Estimate
+      name_vi: Ước tính giá thuê thị trường
+      description: Estimate market rent based on comparables
+      formula: |
+        comparable_rents = get_comparable_rentals(
+          district, property_type, bedrooms, area_range
+        )
+        estimated_rent = MEDIAN(comparable_rents.monthly_rent)
+        confidence = comparables.count >= 5 ? 'high' : 'medium'
+      output:
+        estimated_monthly_rent: decimal
+        confidence: string
+        comparables_count: integer
+
+  # Market Adjustment Rules
+  market_adjustment:
+    - id: PRC-MKT-001
+      name: Days on Market Adjustment
+      name_vi: Điều chỉnh theo thời gian rao
+      description: Suggest price adjustment based on DOM
+      formula: |
+        CASE
+          WHEN days_on_market > 90 AND inquiries_count < 5 THEN
+            suggested_reduction = 0.10  # 10% reduction
+          WHEN days_on_market > 60 AND inquiries_count < 10 THEN
+            suggested_reduction = 0.05  # 5% reduction
+          WHEN days_on_market > 30 AND inquiries_count < 15 THEN
+            suggested_reduction = 0.03  # 3% reduction
+          ELSE
+            suggested_reduction = 0
+        END
+      output: suggested_price_reduction_percent
+      trigger: scheduled_weekly
+
+    - id: PRC-MKT-002
+      name: Seasonal Adjustment
+      name_vi: Điều chỉnh theo mùa
+      description: Adjust pricing recommendations by season
+      formula: |
+        seasonal_factor =
+        CASE EXTRACT(MONTH FROM CURRENT_DATE)
+          WHEN 1 THEN 0.95   # Tet period - slower
+          WHEN 2 THEN 0.95   # Tet period
+          WHEN 3 THEN 1.00   # Normal
+          WHEN 4 THEN 1.02   # Spring pickup
+          WHEN 5 THEN 1.03   # Good season
+          WHEN 6 THEN 1.00   # Normal
+          WHEN 7 THEN 0.98   # Summer slow
+          WHEN 8 THEN 0.98   # Summer slow
+          WHEN 9 THEN 1.02   # Back to school
+          WHEN 10 THEN 1.03  # Good season
+          WHEN 11 THEN 1.02  # Good season
+          WHEN 12 THEN 0.98  # Year end slow
+        END
+      output: seasonal_adjustment_factor
+
+  # Display Rules
+  display:
+    - id: PRC-DSP-001
+      name: Price Rounding
+      name_vi: Làm tròn giá
+      description: Round prices for display
+      formula: |
+        CASE
+          WHEN price >= 1000000000 THEN  # >= 1 billion
+            ROUND(price / 100000000) * 100000000  # Round to 100M
+          WHEN price >= 100000000 THEN   # >= 100 million
+            ROUND(price / 10000000) * 10000000    # Round to 10M
+          ELSE
+            ROUND(price / 1000000) * 1000000      # Round to 1M
+        END
+      output: display_price
+
+    - id: PRC-DSP-002
+      name: Price Format
+      name_vi: Định dạng giá
+      description: Format price for display
+      formula: |
+        CASE currency
+          WHEN 'VND' THEN
+            CASE
+              WHEN price >= 1000000000 THEN
+                FORMAT(price / 1000000000, 1) || ' tỷ'
+              WHEN price >= 1000000 THEN
+                FORMAT(price / 1000000, 0) || ' triệu'
+              ELSE FORMAT(price, 0) || ' đ'
+            END
+          WHEN 'USD' THEN '$' || FORMAT(price, 0)
+        END
+      output: formatted_price
+
+  notifications:
+    price_change:
+      - trigger: price_reduced
+        recipients: [saved_search_users, favorited_users]
+        template: price_drop_alert
+      - trigger: price_increased
+        recipients: [watching_users]
+        template: price_increase_notice

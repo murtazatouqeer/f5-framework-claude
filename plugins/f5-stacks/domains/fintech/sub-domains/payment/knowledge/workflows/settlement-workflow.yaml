@@ -1,0 +1,427 @@
+# Settlement Workflow
+# Domain: fintech/payment
+# Purpose: Daily settlement batch processing
+
+name: Settlement Processing
+display_name: Settlement Processing Workflow
+description: |
+  Daily workflow for aggregating transactions, calculating fees,
+  managing reserves, and creating settlement batches for payout.
+
+  Vietnamese: Quy trình hàng ngày tổng hợp giao dịch, tính phí,
+  quản lý dự phòng và tạo đợt quyết toán để thanh toán.
+
+domain: fintech
+sub_domain: payment
+category: workflow
+version: "1.0.0"
+
+workflow:
+  id: WF-SET-001
+  name: settlement_processing
+  trigger: scheduled_daily | manual_trigger
+
+  schedule:
+    time: "23:00"
+    timezone: "Asia/Ho_Chi_Minh"
+    days: [mon, tue, wed, thu, fri, sat, sun]
+
+  steps:
+    # ============ STEP 1: INITIALIZE SETTLEMENT RUN ============
+    - id: initialize_settlement
+      name: Initialize Settlement Run
+      description: Start daily settlement batch processing
+      vietnamese: Bắt đầu xử lý đợt quyết toán hàng ngày
+      type: action
+      input:
+        - settlement_date
+        - run_type (daily | weekly | monthly | manual)
+      actions:
+        - create_settlement_run_record()
+        - lock_settlement_window()
+        - identify_eligible_merchants()
+        - log_settlement_start()
+      output:
+        - settlement_run_id
+        - merchant_count
+        - period_start
+        - period_end
+
+    # ============ STEP 2: AGGREGATE TRANSACTIONS ============
+    - id: aggregate_transactions
+      name: Aggregate Transactions
+      description: Group transactions by merchant for settlement
+      vietnamese: Nhóm giao dịch theo merchant để quyết toán
+      type: batch_action
+      batch_config:
+        batch_size: 10000
+        parallel_workers: 10
+        retry_failed_batches: true
+      input:
+        - settlement_date
+        - merchant_list
+      process:
+        for_each_merchant:
+          - query_eligible_payments:
+              criteria: |
+                payment.status = 'succeeded'
+                AND payment.settled = false
+                AND payment.captured_at <= settlement_cutoff
+                AND payment.merchant_id = merchant.id
+
+          - query_eligible_refunds:
+              criteria: |
+                refund.status = 'succeeded'
+                AND refund.settlement_id IS NULL
+                AND refund.completed_at <= settlement_cutoff
+                AND refund.merchant_id = merchant.id
+
+          - query_eligible_disputes:
+              criteria: |
+                dispute.status = 'lost'
+                AND dispute.settlement_id IS NULL
+                AND dispute.resolved_at <= settlement_cutoff
+                AND dispute.merchant_id = merchant.id
+
+          - calculate_totals:
+              gross_amount: SUM(payments.captured_amount)
+              refund_amount: SUM(refunds.amount)
+              dispute_amount: SUM(disputes.amount)
+              transaction_count: COUNT(payments)
+              refund_count: COUNT(refunds)
+              dispute_count: COUNT(disputes)
+
+      output:
+        - merchant_aggregations[]
+        - total_merchants_processed
+        - total_gross_amount
+      on_batch_failure: retry_or_skip_batch
+
+    # ============ STEP 3: CALCULATE FEES ============
+    - id: calculate_fees
+      name: Calculate Fees
+      description: Calculate processing fees for each merchant
+      vietnamese: Tính phí xử lý cho mỗi merchant
+      type: batch_action
+      input:
+        - merchant_aggregations
+      process:
+        for_each_merchant:
+          - get_merchant_fee_plan:
+              - base_rate: merchant.processing_fee_rate
+              - fixed_fee: merchant.processing_fee_fixed
+              - volume_tier: get_volume_tier(merchant)
+
+          - calculate_processing_fees:
+              for_each_payment:
+                - determine_payment_type(domestic, international, premium)
+                - apply_fee_formula(amount, rate, fixed)
+                - sum_total_processing_fee
+
+          - calculate_refund_fees:
+              - processing_fee_loss (original fee not returned)
+
+          - calculate_dispute_fees:
+              - dispute_fee: COUNT(disputes) * merchant.dispute_fee
+
+          - calculate_other_fees:
+              - monthly_fee (if applicable)
+              - currency_conversion_fee (if applicable)
+              - instant_payout_fee (if applicable)
+
+          - sum_total_fees:
+              total_fees = processing_fee + refund_fee + dispute_fee + other_fees
+
+      output:
+        - merchant_fee_calculations[]
+        - total_fees_collected
+
+    # ============ STEP 4: MANAGE RESERVES ============
+    - id: manage_reserves
+      name: Manage Reserves
+      description: Calculate and update reserve balances
+      vietnamese: Tính toán và cập nhật số dư dự phòng
+      type: batch_action
+      input:
+        - merchant_aggregations
+        - merchant_fee_calculations
+      process:
+        for_each_merchant:
+          - calculate_new_reserve:
+              condition: merchant.reserve_rate > 0
+              formula: gross_amount * reserve_rate / 100
+
+          - calculate_reserve_release:
+              query: |
+                SELECT SUM(reserve_amount)
+                FROM reserves
+                WHERE merchant_id = merchant.id
+                  AND held_date + reserve_period < today
+                  AND released = false
+
+          - update_reserve_balance:
+              new_hold: add_to_reserve(new_reserve)
+              release: release_from_reserve(eligible_releases)
+              net_reserve_change: new_reserve - released_amount
+
+      output:
+        - reserve_calculations[]
+        - total_new_reserves
+        - total_released_reserves
+
+    # ============ STEP 5: CALCULATE NET AMOUNT ============
+    - id: calculate_net_amount
+      name: Calculate Net Amount
+      description: Calculate final net payout amount
+      vietnamese: Tính số tiền thanh toán ròng cuối cùng
+      type: batch_action
+      input:
+        - merchant_aggregations
+        - merchant_fee_calculations
+        - reserve_calculations
+      process:
+        for_each_merchant:
+          - calculate_net:
+              formula: |
+                net_amount = gross_amount
+                           - refund_amount
+                           - dispute_amount
+                           - total_fees
+                           - reserve_hold
+                           + reserve_release
+                           + adjustments
+
+          - check_minimum_payout:
+              condition: net_amount >= merchant.minimum_payout_amount
+              action_if_below: defer_to_next_settlement
+
+          - check_negative_balance:
+              condition: net_amount < 0
+              action: carry_forward_negative_balance
+
+      output:
+        - settlement_calculations[]
+        - merchants_eligible_for_payout
+        - merchants_deferred
+
+    # ============ STEP 6: CREATE SETTLEMENT RECORDS ============
+    - id: create_settlements
+      name: Create Settlement Records
+      description: Create settlement records for each merchant
+      vietnamese: Tạo bản ghi quyết toán cho mỗi merchant
+      type: batch_action
+      input:
+        - settlement_calculations
+      process:
+        for_each_eligible_merchant:
+          - create_settlement_record:
+              settlement_id: generate_settlement_id()
+              merchant_id: merchant.id
+              merchant_account_id: merchant.default_payout_account
+              period_start: settlement_period_start
+              period_end: settlement_period_end
+              settlement_date: payout_date
+              status: pending
+
+              gross_amount: calculated_gross
+              refund_amount: calculated_refunds
+              dispute_amount: calculated_disputes
+              total_fees: calculated_fees
+              reserve_amount: reserve_hold
+              reserve_release_amount: reserve_release
+              net_amount: calculated_net
+
+              transaction_count: tx_count
+              refund_count: ref_count
+              dispute_count: disp_count
+
+          - link_transactions:
+              - UPDATE payments SET settlement_id = X, settled = true
+              - UPDATE refunds SET settlement_id = X
+              - UPDATE disputes SET settlement_id = X
+
+          - create_fee_records:
+              - INSERT fee records with settlement_id
+
+      output:
+        - settlement_records[]
+        - total_settlements_created
+        - total_net_payout_amount
+
+    # ============ STEP 7: VERIFY SETTLEMENTS ============
+    - id: verify_settlements
+      name: Verify Settlements
+      description: Reconcile and verify settlement calculations
+      vietnamese: Đối chiếu và xác minh tính toán quyết toán
+      type: action
+      input:
+        - settlement_records
+        - source_transactions
+      verifications:
+        - gross_amount_check:
+            rule: SUM(linked_payments) = settlement.gross_amount
+            tolerance: 0  # exact match required
+
+        - fee_calculation_check:
+            rule: recalculate_fees() = settlement.total_fees
+            tolerance: 1  # VND rounding tolerance
+
+        - net_amount_check:
+            rule: gross - refunds - disputes - fees - reserve + release = net
+            tolerance: 1
+
+        - balance_check:
+            rule: total_debits = total_credits
+            tolerance: 0
+
+      output:
+        - verification_result
+        - discrepancies[]
+      decision:
+        - if: all_verified
+          goto: finalize_settlements
+        - if: discrepancies_found
+          goto: resolve_discrepancies
+
+    # ============ STEP 8: RESOLVE DISCREPANCIES ============
+    - id: resolve_discrepancies
+      name: Resolve Discrepancies
+      description: Handle settlement discrepancies
+      vietnamese: Xử lý chênh lệch quyết toán
+      type: action
+      input:
+        - discrepancies
+      process:
+        - if: discrepancy_amount <= auto_resolve_threshold
+          then: create_adjustment_record(discrepancy_amount)
+                mark_as_auto_resolved()
+
+        - if: discrepancy_amount > auto_resolve_threshold
+          then: flag_for_manual_review()
+                notify_finance_team()
+                pause_settlement_for_merchant()
+      parameters:
+        auto_resolve_threshold: 100  # VND
+      output:
+        - resolution_actions[]
+        - pending_manual_reviews[]
+
+    # ============ STEP 9: FINALIZE SETTLEMENTS ============
+    - id: finalize_settlements
+      name: Finalize Settlements
+      description: Mark settlements as ready for payout
+      vietnamese: Đánh dấu quyết toán sẵn sàng thanh toán
+      type: batch_action
+      input:
+        - verified_settlements
+      process:
+        for_each_settlement:
+          - update_status(processing)
+          - create_payout_record(settlement)
+          - queue_for_payout_processing()
+      output:
+        - finalized_settlements[]
+        - payouts_queued[]
+
+    # ============ STEP 10: GENERATE REPORTS ============
+    - id: generate_reports
+      name: Generate Settlement Reports
+      description: Generate reports and merchant statements
+      vietnamese: Tạo báo cáo và sao kê merchant
+      type: async_action
+      parallel_actions:
+        - generate_summary_report:
+            contents:
+              - total_settlements
+              - total_gross_amount
+              - total_fees_collected
+              - total_net_payouts
+              - settlement_by_payment_type
+
+        - generate_merchant_statements:
+            for_each_merchant:
+              - create_pdf_statement()
+              - send_to_merchant(email, dashboard)
+
+        - generate_internal_report:
+            contents:
+              - reconciliation_summary
+              - discrepancy_report
+              - reserve_movement_report
+
+      output:
+        - report_urls[]
+        - statements_sent
+
+    # ============ STEP 11: COMPLETE SETTLEMENT RUN ============
+    - id: complete_settlement_run
+      name: Complete Settlement Run
+      description: Finalize the settlement run
+      vietnamese: Hoàn tất lần chạy quyết toán
+      type: action
+      input:
+        - settlement_run_id
+      actions:
+        - update_settlement_run_status(completed)
+        - record_metrics()
+        - send_completion_notification()
+        - unlock_settlement_window()
+      output:
+        - settlement_run_status: completed
+        - completion_time
+        - summary_metrics
+
+# ============ SETTLEMENT TIMING ============
+timing:
+  daily_schedule:
+    aggregation_cutoff: "22:00"
+    processing_start: "23:00"
+    processing_end: "02:00 (next day)"
+    payout_initiation: "14:00 (next day)"
+
+  payout_arrival:
+    standard: "T+2 business days"
+    instant: "Within 30 minutes"
+
+# ============ ERROR HANDLING ============
+error_handling:
+  aggregation_failure:
+    action: retry_failed_merchants
+    max_retries: 3
+    fallback: skip_and_defer
+
+  calculation_error:
+    action: flag_for_manual_review
+    notification: finance_team
+
+  verification_failure:
+    action: pause_settlement
+    notification: operations_team
+
+# ============ MONITORING ============
+monitoring:
+  metrics:
+    - settlements_processed
+    - total_gross_amount
+    - total_fees_collected
+    - total_net_payout
+    - processing_time
+    - discrepancy_rate
+
+  alerts:
+    - processing_time_above: 4 hours
+    - discrepancy_rate_above: 0.1%
+    - settlement_failure: immediate
+    - reserve_anomaly: immediate
+
+# ============ RECONCILIATION ============
+reconciliation:
+  daily:
+    - transaction_to_settlement_match
+    - fee_calculation_verification
+    - reserve_balance_check
+
+  monthly:
+    - comprehensive_audit
+    - processor_reconciliation
+    - bank_statement_match

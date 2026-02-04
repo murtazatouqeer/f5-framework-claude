@@ -1,0 +1,411 @@
+# B2C Retail Checkout Flow Workflow
+
+name: checkout-flow
+display_name: Checkout Process Flow
+version: 1.0.0
+domain: e-commerce
+sub_domain: b2c-retail
+
+description: |
+  Complete checkout process from cart review to order placement,
+  including address collection, shipping selection, and payment processing.
+
+# Checkout Steps
+steps:
+  - name: cart_review
+    order: 1
+    description: Review cart items before checkout
+    required: true
+    validation:
+      - cart_not_empty
+      - all_items_available
+      - prices_verified
+
+  - name: customer_info
+    order: 2
+    description: Customer identification (login/guest)
+    required: true
+    options:
+      - login
+      - register
+      - guest_checkout
+    validation:
+      - valid_email
+      - terms_accepted
+
+  - name: shipping_address
+    order: 3
+    description: Shipping address collection
+    required: true
+    fields:
+      - first_name
+      - last_name
+      - address_line_1
+      - address_line_2 (optional)
+      - city
+      - state
+      - postal_code
+      - country
+      - phone
+    validation:
+      - address_valid
+      - deliverable_location
+
+  - name: billing_address
+    order: 4
+    description: Billing address collection
+    required: true
+    default_behavior: same_as_shipping
+    fields:
+      - same as shipping_address
+    validation:
+      - address_valid
+
+  - name: shipping_method
+    order: 5
+    description: Shipping method selection
+    required: true
+    options_source: calculate_shipping_rates
+    display:
+      - carrier_name
+      - delivery_estimate
+      - price
+    validation:
+      - method_available
+      - price_acceptable
+
+  - name: payment_method
+    order: 6
+    description: Payment method selection
+    required: true
+    options:
+      - credit_card
+      - paypal
+      - apple_pay
+      - google_pay
+      - bank_transfer
+      - cod (if available)
+    validation:
+      - payment_method_valid
+      - payment_info_complete
+
+  - name: order_review
+    order: 7
+    description: Final order review before placement
+    required: true
+    display:
+      - cart_items
+      - shipping_address
+      - billing_address
+      - shipping_method
+      - payment_method
+      - subtotal
+      - shipping_cost
+      - tax
+      - discounts
+      - grand_total
+    validation:
+      - all_info_complete
+      - prices_current
+      - inventory_still_available
+
+  - name: order_confirmation
+    order: 8
+    description: Order placement and confirmation
+    required: true
+    actions:
+      - process_payment
+      - create_order
+      - send_confirmation
+
+# Checkout States
+states:
+  - name: checkout_started
+    type: initial
+    step: cart_review
+
+  - name: customer_identified
+    step: customer_info
+
+  - name: shipping_entered
+    step: shipping_address
+
+  - name: billing_entered
+    step: billing_address
+
+  - name: shipping_selected
+    step: shipping_method
+
+  - name: payment_entered
+    step: payment_method
+
+  - name: order_reviewed
+    step: order_review
+
+  - name: checkout_completed
+    type: terminal
+    step: order_confirmation
+
+  - name: checkout_abandoned
+    type: terminal
+
+# Transitions
+transitions:
+  - from: checkout_started
+    to: customer_identified
+    condition: cart_validated
+    actions:
+      - lock_cart_prices
+      - start_checkout_session
+
+  - from: customer_identified
+    to: shipping_entered
+    condition: customer_info_valid
+    actions:
+      - save_customer_info
+      - load_saved_addresses
+
+  - from: shipping_entered
+    to: billing_entered
+    condition: shipping_address_valid
+    actions:
+      - validate_shipping_zone
+      - calculate_tax_estimate
+
+  - from: billing_entered
+    to: shipping_selected
+    condition: billing_address_valid
+    actions:
+      - fetch_shipping_rates
+
+  - from: shipping_selected
+    to: payment_entered
+    condition: shipping_method_selected
+    actions:
+      - apply_shipping_cost
+      - recalculate_totals
+
+  - from: payment_entered
+    to: order_reviewed
+    condition: payment_method_valid
+    actions:
+      - validate_payment_method
+      - final_price_calculation
+
+  - from: order_reviewed
+    to: checkout_completed
+    condition: order_confirmed
+    actions:
+      - process_payment
+      - create_order
+      - reserve_inventory
+      - send_confirmation
+      - clear_cart
+
+  # Back navigation
+  - from: any
+    to: previous_step
+    trigger: back_button
+    condition: not_processing_payment
+
+  # Abandonment
+  - from: any
+    to: checkout_abandoned
+    trigger: session_timeout
+    timeout: 30 minutes
+    actions:
+      - save_checkout_state
+      - trigger_abandonment_flow
+
+# Guest Checkout Flow
+guest_checkout:
+  enabled: true
+  required_fields:
+    - email
+    - shipping_address
+    - billing_address
+  optional_features:
+    - create_account_option
+    - save_info_for_next_time
+
+# Express Checkout
+express_checkout:
+  enabled: true
+  providers:
+    - name: apple_pay
+      button_placement: [cart, product_page, checkout]
+      skip_steps: [customer_info, shipping_address, billing_address, payment_method]
+
+    - name: google_pay
+      button_placement: [cart, product_page, checkout]
+      skip_steps: [customer_info, shipping_address, billing_address, payment_method]
+
+    - name: paypal_express
+      button_placement: [cart, checkout]
+      skip_steps: [shipping_address, billing_address, payment_method]
+
+    - name: shop_pay
+      button_placement: [cart, product_page, checkout]
+      skip_steps: [customer_info, shipping_address, billing_address]
+
+# Coupon/Discount Application
+discount_rules:
+  application_point: cart_review
+  multiple_coupons: false
+  stackable_with_promotions: true
+  validation:
+    - coupon_valid
+    - minimum_order_met
+    - usage_limit_not_exceeded
+    - customer_eligible
+
+# Address Validation
+address_validation:
+  enabled: true
+  provider: "google_address_validation"
+  behavior:
+    suggestion_mode: true
+    force_validation: false
+    allow_override: true
+
+# Shipping Rate Calculation
+shipping_calculation:
+  triggers:
+    - shipping_address_entered
+    - cart_items_changed
+    - coupon_applied
+
+  providers:
+    - shippo
+    - easypost
+    - carrier_direct
+
+  display_options:
+    show_delivery_estimate: true
+    show_carrier_logo: true
+    sort_by: price
+    free_shipping_threshold: 50
+
+# Tax Calculation
+tax_calculation:
+  method: address_based
+  provider: taxjar
+  triggers:
+    - shipping_address_entered
+    - billing_address_entered
+    - cart_changed
+
+  display:
+    show_tax_breakdown: false
+    show_estimated_before_address: true
+
+# Payment Processing
+payment_processing:
+  primary_provider: stripe
+  fallback_provider: paypal
+
+  methods:
+    credit_card:
+      enabled: true
+      providers: [stripe]
+      supported_cards: [visa, mastercard, amex, discover]
+      save_card: true
+      3ds_enabled: true
+
+    paypal:
+      enabled: true
+      express_checkout: true
+
+    apple_pay:
+      enabled: true
+      countries: [US, CA, UK, AU]
+
+    google_pay:
+      enabled: true
+      countries: [US, CA, UK, AU]
+
+    bank_transfer:
+      enabled: false
+
+    cod:
+      enabled: true
+      max_order_value: 200
+      additional_fee: 5
+      countries: [VN]
+
+  security:
+    fraud_detection: enabled
+    velocity_checks: enabled
+    address_verification: enabled
+
+# Order Limits
+order_limits:
+  minimum_order_value: 10
+  maximum_order_value: 10000
+  maximum_items: 50
+  maximum_quantity_per_item: 10
+
+# Error Handling
+error_handling:
+  payment_declined:
+    message: "Payment was declined. Please try a different payment method."
+    actions:
+      - log_error
+      - allow_retry
+      - suggest_alternative_methods
+
+  inventory_unavailable:
+    message: "Some items in your cart are no longer available."
+    actions:
+      - remove_unavailable_items
+      - recalculate_totals
+      - notify_customer
+
+  address_invalid:
+    message: "We couldn't validate your address. Please check and try again."
+    actions:
+      - highlight_invalid_fields
+      - suggest_corrections
+
+  session_expired:
+    message: "Your session has expired. Your cart has been saved."
+    actions:
+      - save_cart
+      - redirect_to_cart
+
+# Analytics Events
+analytics_events:
+  - event: checkout_started
+    data: [cart_value, item_count, customer_type]
+
+  - event: checkout_step_completed
+    data: [step_name, time_on_step]
+
+  - event: shipping_method_selected
+    data: [method, carrier, cost]
+
+  - event: payment_method_selected
+    data: [method, saved_card]
+
+  - event: coupon_applied
+    data: [coupon_code, discount_amount]
+
+  - event: checkout_completed
+    data: [order_id, order_value, payment_method]
+
+  - event: checkout_abandoned
+    data: [step_abandoned, cart_value, time_in_checkout]
+
+# A/B Testing Points
+ab_test_points:
+  - name: express_checkout_position
+    variants: [above_fold, below_fold]
+
+  - name: shipping_display
+    variants: [all_options, recommended_first]
+
+  - name: payment_display
+    variants: [accordion, tabs]
+
+  - name: order_review_layout
+    variants: [summary_sidebar, full_page]

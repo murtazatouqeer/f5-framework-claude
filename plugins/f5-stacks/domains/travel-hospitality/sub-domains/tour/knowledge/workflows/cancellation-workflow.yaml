@@ -1,0 +1,471 @@
+name: Tour Cancellation Workflow
+display_name: Tour Cancellation Workflow / Quy trình hủy tour
+description: |
+  End-to-end workflow for handling tour cancellation requests,
+  including refund calculations, notifications, and resource release.
+
+domain: travel-hospitality
+subdomain: tour
+version: "1.0"
+
+triggers:
+  - event: cancellation.requested
+    source: BookingService
+  - event: operator.initiated_cancellation
+    source: OperatorDashboard
+  - event: weather.force_majeure
+    source: WeatherService
+
+actors:
+  - name: Customer
+    role: initiator
+    description: Person requesting cancellation
+  - name: System
+    role: processor
+    description: Automated cancellation handler
+  - name: Operator
+    role: approver
+    description: Tour operator reviewing cancellation
+  - name: Finance
+    role: processor
+    description: Handles refund processing
+  - name: Guide
+    role: notified
+    description: Assigned guide to be notified
+
+cancellation_types:
+  - type: customer_initiated
+    description: Customer requests cancellation
+    refund_policy: applies
+
+  - type: operator_initiated
+    description: Operator cancels due to low numbers/issues
+    refund_policy: full_refund
+
+  - type: weather_cancellation
+    description: Weather conditions prevent safe operation
+    refund_policy: full_refund_or_reschedule
+
+  - type: force_majeure
+    description: Natural disasters, pandemics, government restrictions
+    refund_policy: full_refund_or_credit
+
+  - type: no_show
+    description: Customer did not appear
+    refund_policy: no_refund
+
+steps:
+  - id: RECEIVE_REQUEST
+    name: Receive Cancellation Request
+    actor: System
+    type: automated
+    actions:
+      - Validate booking exists
+      - Check booking status is cancellable
+      - Identify cancellation type
+      - Record cancellation request timestamp
+    inputs:
+      - booking_id
+      - cancellation_reason
+      - cancellation_type
+    validations:
+      - rule: BR-CAN-001
+      - rule: BR-CAN-002
+    outputs:
+      - cancellation_request_id
+    on_success: CHECK_POLICY
+    on_failure: REQUEST_REJECTED
+
+  - id: REQUEST_REJECTED
+    name: Request Rejected
+    actor: System
+    type: automated
+    actions:
+      - Notify customer booking cannot be cancelled
+      - Provide reason (already completed, already cancelled, etc.)
+      - Suggest contact support if dispute
+    events:
+      - cancellation.rejected
+    on_success: END_REJECTED
+
+  - id: CHECK_POLICY
+    name: Check Cancellation Policy
+    actor: System
+    type: automated
+    actions:
+      - Calculate hours until tour start
+      - Determine applicable refund tier
+      - Check for special conditions (weather, operator)
+      - Calculate refund amount
+    validations:
+      - rule: BR-CAN-010
+      - rule: BR-CAN-011
+      - rule: BR-CAN-012
+      - rule: BR-CAN-013
+    outputs:
+      - hours_before_tour
+      - refund_percentage
+      - refund_amount
+      - fees_retained
+    branches:
+      - condition: is_operator_or_weather_cancellation
+        next: FULL_REFUND_PATH
+      - condition: customer_cancellation
+        next: APPLY_REFUND_POLICY
+
+  - id: FULL_REFUND_PATH
+    name: Process Full Refund
+    actor: System
+    type: automated
+    actions:
+      - Set refund percentage to 100%
+      - Skip policy deductions
+      - Record reason for full refund
+    outputs:
+      - refund_amount: full
+      - refund_reason
+    on_success: CONFIRM_CANCELLATION
+
+  - id: APPLY_REFUND_POLICY
+    name: Apply Refund Policy
+    actor: System
+    type: automated
+    description: |
+      Applies tiered refund policy based on cancellation timing:
+      - 72+ hours: 100% refund
+      - 48-72 hours: 75% refund
+      - 24-48 hours: 50% refund
+      - Less than 24 hours: No refund
+    actions:
+      - Apply refund tier based on timing
+      - Calculate admin fees (if applicable)
+      - Calculate final refund amount
+    validations:
+      - rule: BR-CAN-020
+      - rule: BR-CAN-021
+      - rule: BR-CAN-022
+    outputs:
+      - final_refund_amount
+      - cancellation_fee
+      - refund_breakdown
+    branches:
+      - condition: refund_amount > 0
+        next: CONFIRM_CANCELLATION
+      - condition: refund_amount = 0
+        next: NO_REFUND_PATH
+
+  - id: NO_REFUND_PATH
+    name: No Refund Applicable
+    actor: System
+    type: automated
+    actions:
+      - Notify customer no refund due to late cancellation
+      - Offer alternatives (date change, transfer to another person)
+      - Provide policy details
+    outputs:
+      - no_refund_reason
+      - alternative_options[]
+    branches:
+      - condition: customer_accepts_no_refund
+        next: CONFIRM_CANCELLATION
+      - condition: customer_requests_date_change
+        next: OFFER_DATE_CHANGE
+      - condition: customer_requests_transfer
+        next: OFFER_TRANSFER
+
+  - id: OFFER_DATE_CHANGE
+    name: Offer Date Change
+    actor: Customer
+    type: interactive
+    actions:
+      - Display available dates
+      - Check availability for new date
+      - Calculate any price difference
+    outputs:
+      - new_date_selected
+      - price_difference
+    on_success: PROCESS_DATE_CHANGE
+    on_decline: CONFIRM_CANCELLATION
+
+  - id: PROCESS_DATE_CHANGE
+    name: Process Date Change
+    actor: System
+    type: automated
+    actions:
+      - Update booking with new date
+      - Adjust payment if price different
+      - Release old schedule spot
+      - Reserve new schedule spot
+    events:
+      - booking.rescheduled
+    on_success: END_RESCHEDULED
+
+  - id: OFFER_TRANSFER
+    name: Offer Booking Transfer
+    actor: Customer
+    type: interactive
+    actions:
+      - Request new participant details
+      - Validate new participant meets requirements
+      - Apply transfer fee (if applicable)
+    inputs:
+      - new_participant_name
+      - new_participant_email
+      - new_participant_phone
+    validations:
+      - rule: BR-CAN-030
+    outputs:
+      - transfer_approved
+    on_success: PROCESS_TRANSFER
+    on_failure: CONFIRM_CANCELLATION
+
+  - id: PROCESS_TRANSFER
+    name: Process Booking Transfer
+    actor: System
+    type: automated
+    actions:
+      - Update participant details
+      - Notify new participant
+      - Issue new voucher
+      - Charge transfer fee (if applicable)
+    events:
+      - booking.transferred
+    on_success: END_TRANSFERRED
+
+  - id: CONFIRM_CANCELLATION
+    name: Confirm Cancellation
+    actor: Customer
+    type: interactive
+    actions:
+      - Display cancellation summary
+      - Show refund amount and timeline
+      - Request final confirmation
+      - Accept cancellation terms
+    inputs:
+      - confirmation_accepted: boolean
+    on_success: PROCESS_CANCELLATION
+    on_decline: CANCEL_PROCESS
+
+  - id: CANCEL_PROCESS
+    name: Cancel Cancellation Process
+    actor: System
+    type: automated
+    actions:
+      - Retain booking as is
+      - Clear cancellation request
+    on_success: END_RETAINED
+
+  - id: PROCESS_CANCELLATION
+    name: Process Cancellation
+    actor: System
+    type: automated
+    actions:
+      - Update booking status to cancelled
+      - Release reserved spots
+      - Update tour availability
+      - Record cancellation in history
+    validations:
+      - rule: BR-CAP-031
+    events:
+      - booking.cancelled
+    outputs:
+      - cancellation_id
+      - cancelled_at
+    on_success: RELEASE_RESOURCES
+
+  - id: RELEASE_RESOURCES
+    name: Release Resources
+    actor: System
+    type: automated
+    actions:
+      - Update tour schedule availability
+      - Unassign guide (if only booking)
+      - Release vehicle allocation
+      - Update waitlist (if exists)
+    events:
+      - availability.updated
+    on_success: PROCESS_REFUND
+
+  - id: PROCESS_REFUND
+    name: Process Refund
+    actor: Finance
+    type: automated
+    actions:
+      - Initiate refund to original payment method
+      - Record refund transaction
+      - Generate refund receipt
+    inputs:
+      - refund_amount
+      - original_payment_method
+      - original_transaction_id
+    validations:
+      - rule: BR-CAN-040
+      - rule: BR-CAN-041
+    outputs:
+      - refund_transaction_id
+      - estimated_refund_date
+    branches:
+      - condition: refund_amount > 0
+        next: SEND_NOTIFICATIONS
+      - condition: refund_amount = 0
+        next: SEND_NOTIFICATIONS
+
+  - id: SEND_NOTIFICATIONS
+    name: Send Notifications
+    actor: System
+    type: automated
+    actions:
+      - Send cancellation confirmation to customer
+      - Send refund notification (if applicable)
+      - Notify operator
+      - Notify assigned guide
+      - Update booking in customer account
+    events:
+      - notification.cancellation_confirmed
+    on_success: UPDATE_ANALYTICS
+
+  - id: UPDATE_ANALYTICS
+    name: Update Analytics
+    actor: System
+    type: automated
+    actions:
+      - Record cancellation reason for analytics
+      - Update cancellation rate metrics
+      - Flag patterns (repeat cancellations, specific tours)
+    outputs:
+      - analytics_updated
+    on_success: CANCELLATION_COMPLETE
+
+  - id: CANCELLATION_COMPLETE
+    name: Cancellation Complete
+    actor: System
+    type: terminal
+    description: Cancellation process completed successfully
+
+  - id: END_REJECTED
+    name: Cancellation Rejected
+    actor: System
+    type: terminal
+    description: Cancellation request was rejected
+
+  - id: END_RESCHEDULED
+    name: Booking Rescheduled
+    actor: System
+    type: terminal
+    description: Booking was rescheduled instead of cancelled
+
+  - id: END_TRANSFERRED
+    name: Booking Transferred
+    actor: System
+    type: terminal
+    description: Booking was transferred to another person
+
+  - id: END_RETAINED
+    name: Booking Retained
+    actor: System
+    type: terminal
+    description: Customer decided not to cancel
+
+refund_tiers:
+  - tier: 1
+    hours_before: 72
+    refund_percentage: 100
+    description: Full refund for cancellations 72+ hours before
+
+  - tier: 2
+    hours_before: 48
+    refund_percentage: 75
+    description: 75% refund for cancellations 48-72 hours before
+
+  - tier: 3
+    hours_before: 24
+    refund_percentage: 50
+    description: 50% refund for cancellations 24-48 hours before
+
+  - tier: 4
+    hours_before: 0
+    refund_percentage: 0
+    description: No refund for cancellations less than 24 hours before
+
+special_cases:
+  - case: medical_emergency
+    documentation_required: true
+    refund_override: full_refund
+    required_docs: [medical_certificate]
+
+  - case: bereavement
+    documentation_required: true
+    refund_override: full_refund
+    required_docs: [death_certificate]
+
+  - case: flight_cancellation
+    documentation_required: true
+    refund_override: reschedule_free
+    required_docs: [airline_notification]
+
+  - case: visa_rejection
+    documentation_required: true
+    refund_override: full_refund_minus_admin
+    required_docs: [visa_rejection_letter]
+
+timeouts:
+  confirmation_timeout: 30 minutes
+  refund_processing: 5-10 business days
+  credit_card_refund: 5-10 business days
+  e_wallet_refund: 1-3 business days
+  bank_transfer_refund: 3-5 business days
+
+notifications:
+  - event: cancellation.requested
+    recipients: [customer]
+    channels: [email]
+    template: cancellation_request_received
+
+  - event: booking.cancelled
+    recipients: [customer, operator]
+    channels: [email, sms]
+    template: cancellation_confirmed
+
+  - event: refund.initiated
+    recipients: [customer]
+    channels: [email]
+    template: refund_processing
+
+  - event: refund.completed
+    recipients: [customer]
+    channels: [email, sms]
+    template: refund_completed
+
+  - event: booking.rescheduled
+    recipients: [customer, operator, guide]
+    channels: [email, push]
+    template: booking_rescheduled
+
+  - event: booking.transferred
+    recipients: [original_customer, new_customer, operator]
+    channels: [email]
+    template: booking_transferred
+
+error_handling:
+  refund_failure:
+    max_retries: 3
+    retry_interval: 1 hour
+    escalation: finance_team
+
+  notification_failure:
+    max_retries: 5
+    action: log_and_continue
+
+  system_error:
+    action: preserve_state_and_alert
+    escalation: support_team
+
+compliance:
+  - standard: EU_Consumer_Rights_Directive
+    requirement: 14-day withdrawal right (where applicable)
+
+  - standard: Vietnam_Tourism_Law
+    requirement: Cancellation terms must be clearly communicated
+
+  - standard: ATOL_ABTA
+    requirement: Package holiday protection (UK bookings)

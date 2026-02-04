@@ -1,0 +1,421 @@
+# VideoSession Entity
+# F5 Framework v2.0 - Healthcare/Telemedicine
+# Video call session management with quality metrics
+
+entity:
+  id: video-session
+  name: VideoSession
+  name_ja: ビデオセッション
+  description: Video conferencing session with participant tracking and quality metrics
+  domain: healthcare
+  subdomain: telemedicine
+
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+      description: Unique identifier
+
+    - name: session_id
+      type: string
+      format: "VS-{YYYYMMDD}-{XXXX}"
+      unique: true
+      indexed: true
+      description: Human-readable session ID
+
+    - name: tele_visit_id
+      type: uuid
+      required: true
+      indexed: true
+      foreign_key: tele_visit.id
+      description: Associated telehealth visit
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - initializing
+        - ready
+        - waiting_for_host
+        - waiting_for_participants
+        - active
+        - paused
+        - reconnecting
+        - ended
+        - failed
+      required: true
+      default: initializing
+      indexed: true
+      description: Current session status
+
+    # Host & Participants
+    - name: host_user_id
+      type: uuid
+      required: true
+      foreign_key: user.id
+      description: Session host (typically provider)
+
+    - name: participants
+      type: jsonb
+      default: "[]"
+      description: |
+        Array of participant objects:
+        [{
+          user_id: uuid,
+          role: "provider|patient|interpreter|caregiver|observer",
+          display_name: string,
+          invited_at: datetime,
+          joined_at: datetime,
+          left_at: datetime,
+          connection_status: "connected|disconnected|reconnecting",
+          audio_enabled: bool,
+          video_enabled: bool,
+          is_host: bool
+        }]
+
+    - name: max_participants
+      type: integer
+      default: 4
+      validation:
+        min: 2
+        max: 10
+      description: Maximum allowed participants
+
+    # Video Platform Configuration
+    - name: video_provider
+      type: enum
+      values:
+        - twilio
+        - vonage
+        - zoom
+        - daily
+        - custom_webrtc
+      required: true
+      description: Video platform provider
+
+    - name: room_name
+      type: string
+      required: true
+      description: Video room identifier
+
+    - name: room_url
+      type: string
+      required: true
+      description: URL to join the room
+
+    - name: room_token
+      type: string
+      encrypted: true
+      description: Access token for room (rotated)
+
+    - name: room_sid
+      type: string
+      nullable: true
+      description: Provider-specific room SID
+
+    # Recording
+    - name: recording_enabled
+      type: boolean
+      default: false
+      description: Whether recording is enabled
+
+    - name: recording_consent_obtained
+      type: boolean
+      default: false
+      description: Recording consent status
+
+    - name: recording_status
+      type: enum
+      values:
+        - not_started
+        - recording
+        - paused
+        - stopped
+        - processing
+        - available
+        - failed
+      default: not_started
+      description: Recording status
+
+    - name: recording_url
+      type: string
+      nullable: true
+      encrypted: true
+      description: URL to recorded session
+
+    - name: recording_duration_seconds
+      type: integer
+      nullable: true
+      description: Recording duration
+
+    - name: recording_size_bytes
+      type: bigint
+      nullable: true
+      description: Recording file size
+
+    # Features
+    - name: screen_share_enabled
+      type: boolean
+      default: true
+      description: Screen sharing allowed
+
+    - name: chat_enabled
+      type: boolean
+      default: true
+      description: In-session chat allowed
+
+    - name: waiting_room_enabled
+      type: boolean
+      default: true
+      description: Virtual waiting room enabled
+
+    - name: virtual_background_enabled
+      type: boolean
+      default: true
+      description: Virtual backgrounds allowed
+
+    # Quality Metrics
+    - name: audio_quality_score
+      type: decimal
+      precision: 3
+      scale: 2
+      nullable: true
+      validation:
+        min: 0
+        max: 5
+      description: Audio quality MOS score
+
+    - name: video_quality_score
+      type: decimal
+      precision: 3
+      scale: 2
+      nullable: true
+      validation:
+        min: 0
+        max: 5
+      description: Video quality MOS score
+
+    - name: average_latency_ms
+      type: integer
+      nullable: true
+      description: Average round-trip latency
+
+    - name: max_latency_ms
+      type: integer
+      nullable: true
+      description: Maximum latency observed
+
+    - name: packet_loss_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+      description: Packet loss percentage
+
+    - name: jitter_ms
+      type: integer
+      nullable: true
+      description: Network jitter
+
+    - name: bandwidth_kbps
+      type: jsonb
+      nullable: true
+      description: |
+        Bandwidth metrics:
+        {upload_kbps: int, download_kbps: int, peak_kbps: int}
+
+    - name: video_resolution
+      type: string
+      nullable: true
+      description: Active video resolution (e.g., "1280x720")
+
+    - name: frame_rate
+      type: integer
+      nullable: true
+      description: Video frame rate
+
+    # Security
+    - name: encryption_enabled
+      type: boolean
+      required: true
+      default: true
+      description: End-to-end encryption status
+
+    - name: encryption_type
+      type: enum
+      values:
+        - SRTP
+        - DTLS
+        - SRTP_DTLS
+        - E2EE
+      default: SRTP_DTLS
+      description: Encryption protocol
+
+    - name: password_protected
+      type: boolean
+      default: false
+      description: Room password protection
+
+    - name: room_password_hash
+      type: string
+      nullable: true
+      encrypted: true
+      description: Hashed room password
+
+    # Timing
+    - name: created_at
+      type: datetime
+      required: true
+      default: now()
+      description: Session creation time
+
+    - name: ready_at
+      type: datetime
+      nullable: true
+      description: When session became ready
+
+    - name: started_at
+      type: datetime
+      nullable: true
+      description: When first participant joined
+
+    - name: ended_at
+      type: datetime
+      nullable: true
+      description: Session end time
+
+    - name: duration_seconds
+      type: integer
+      nullable: true
+      computed: true
+      description: Total session duration
+
+    # Events Log
+    - name: events
+      type: jsonb
+      default: "[]"
+      description: |
+        Session event log:
+        [{
+          timestamp: datetime,
+          event_type: "participant_joined|left|muted|screen_share_started|etc",
+          user_id: uuid,
+          details: {}
+        }]
+
+    # Failure Tracking
+    - name: failure_reason
+      type: string
+      nullable: true
+      description: Reason for session failure
+
+    - name: reconnection_attempts
+      type: integer
+      default: 0
+      description: Number of reconnection attempts
+
+  relationships:
+    - name: tele_visit
+      type: belongs_to
+      entity: tele_visit
+      foreign_key: tele_visit_id
+      description: Associated telehealth visit
+
+    - name: host
+      type: belongs_to
+      entity: user
+      foreign_key: host_user_id
+      description: Session host
+
+    - name: chat_messages
+      type: has_many
+      entity: chat_message
+      foreign_key: session_id
+      description: Chat messages during session
+
+    - name: screen_shares
+      type: has_many
+      entity: screen_share
+      foreign_key: session_id
+      description: Screen sharing instances
+
+  state_machine:
+    field: status
+    initial: initializing
+    transitions:
+      - from: initializing
+        to: ready
+        trigger: room_created
+        
+      - from: ready
+        to: waiting_for_host
+        trigger: participant_waiting
+        guard: host not joined
+        
+      - from: ready
+        to: waiting_for_participants
+        trigger: host_joined
+        
+      - from: [waiting_for_host, waiting_for_participants]
+        to: active
+        trigger: all_required_joined
+        action: set_started_at
+        
+      - from: active
+        to: paused
+        trigger: pause_session
+        
+      - from: paused
+        to: active
+        trigger: resume_session
+        
+      - from: active
+        to: reconnecting
+        trigger: connection_lost
+        
+      - from: reconnecting
+        to: active
+        trigger: connection_restored
+        
+      - from: reconnecting
+        to: failed
+        trigger: reconnection_timeout
+        guard: reconnection_attempts > 3
+        
+      - from: [active, paused]
+        to: ended
+        trigger: end_session
+        action: set_ended_at
+        
+      - from: [initializing, ready, waiting_for_host, waiting_for_participants]
+        to: failed
+        trigger: initialization_failed
+
+  indexes:
+    - name: idx_videosession_visit
+      columns: [tele_visit_id]
+      
+    - name: idx_videosession_status
+      columns: [status, created_at]
+      
+    - name: idx_videosession_host
+      columns: [host_user_id]
+
+  validations:
+    - name: encryption_required
+      rule: encryption_enabled == true
+      message: Encryption must be enabled for HIPAA compliance
+
+    - name: recording_consent
+      rule: recording_enabled == false OR recording_consent_obtained == true
+      message: Recording consent must be obtained before recording
+
+  audit:
+    enabled: true
+    fields:
+      - status
+      - participants
+      - recording_enabled
+      - recording_url
+    retention_days: 2555

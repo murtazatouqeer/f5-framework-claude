@@ -1,0 +1,480 @@
+# Commission Split Entity
+# F5 Framework v2.0 - Real Estate/Transaction
+# Commission distribution management
+
+entity:
+  name: CommissionSplit
+  name_vi: Phân chia hoa hồng
+  name_ja: 手数料分配
+  domain: real-estate
+  subdomain: transaction
+  version: "1.0.0"
+
+  description: |
+    Manages commission distribution between agents, agencies, and
+    other parties involved in a real estate transaction.
+
+  # Database Configuration
+  database:
+    table_name: commission_splits
+    primary_key: id
+    indexes:
+      - columns: [transaction_id]
+      - columns: [agent_id]
+      - columns: [agency_id]
+      - columns: [status]
+
+  # Attributes
+  attributes:
+    # Identification
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: transaction_id
+      type: uuid
+      required: true
+      foreign_key: transactions.id
+      description: Associated transaction
+
+    # Transaction Details
+    - name: sale_price
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Final sale price
+
+    - name: currency
+      type: string
+      length: 3
+      default: "VND"
+
+    # Total Commission
+    - name: total_commission_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      required: true
+      description: Total commission rate (%)
+
+    - name: total_commission_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      required: true
+      description: Total commission amount
+
+    # Commission Source
+    - name: commission_paid_by
+      type: enum
+      values:
+        - seller
+        - buyer
+        - split
+      default: seller
+      description: Who pays commission
+
+    - name: seller_commission_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+
+    - name: buyer_commission_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+
+    # Split Details
+    - name: splits
+      type: jsonb
+      required: true
+      description: Commission split breakdown
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            split_id:
+              type: string
+            recipient_type:
+              type: string
+              enum: [listing_agent, buyer_agent, listing_agency, buyer_agency, referral, other]
+            recipient_id:
+              type: string
+            recipient_name:
+              type: string
+            role:
+              type: string
+            split_type:
+              type: string
+              enum: [percentage, fixed]
+            percentage:
+              type: number
+              description: Percentage of total commission
+            fixed_amount:
+              type: number
+            amount:
+              type: number
+              description: Calculated amount
+            status:
+              type: string
+              enum: [pending, approved, invoiced, paid, disputed]
+            payment_date:
+              type: string
+              format: date
+            payment_reference:
+              type: string
+            notes:
+              type: string
+
+    # Listing Side
+    - name: listing_side_total
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Total listing side commission
+
+    - name: listing_agency_id
+      type: uuid
+      nullable: true
+      foreign_key: agencies.id
+
+    - name: listing_agency_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: listing_agent_id
+      type: uuid
+      nullable: true
+      foreign_key: agents.id
+
+    - name: listing_agent_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: listing_agent_split_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+      description: Agent's share of agency commission
+
+    # Buyer Side
+    - name: buyer_side_total
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Total buyer side commission
+
+    - name: buyer_agency_id
+      type: uuid
+      nullable: true
+      foreign_key: agencies.id
+
+    - name: buyer_agency_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: buyer_agent_id
+      type: uuid
+      nullable: true
+      foreign_key: agents.id
+
+    - name: buyer_agent_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: buyer_agent_split_percent
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+
+    # Referral
+    - name: has_referral
+      type: boolean
+      default: false
+
+    - name: referral_details
+      type: jsonb
+      nullable: true
+      schema:
+        type: object
+        properties:
+          referrer_type: { type: string, enum: [agent, agency, other] }
+          referrer_id: { type: string }
+          referrer_name: { type: string }
+          referral_fee_type: { type: string, enum: [percentage, fixed] }
+          referral_percentage: { type: number }
+          referral_amount: { type: number }
+          from_which_side: { type: string, enum: [listing, buyer, both] }
+
+    # Adjustments
+    - name: adjustments
+      type: jsonb
+      description: Commission adjustments
+      schema:
+        type: array
+        items:
+          type: object
+          properties:
+            adjustment_type: { type: string }
+            description: { type: string }
+            amount: { type: number }
+            applied_to: { type: string }
+            reason: { type: string }
+
+    - name: total_adjustments
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    # Net Commission
+    - name: net_commission
+      type: decimal
+      precision: 15
+      scale: 2
+      description: Commission after adjustments
+
+    # Status
+    - name: status
+      type: enum
+      values:
+        - draft
+        - pending_approval
+        - approved
+        - partially_paid
+        - fully_paid
+        - disputed
+      default: draft
+
+    # Approval
+    - name: approved_by
+      type: uuid
+      nullable: true
+
+    - name: approved_at
+      type: timestamp
+      nullable: true
+
+    # Payment Summary
+    - name: total_paid
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: total_pending
+      type: decimal
+      precision: 15
+      scale: 2
+      default: 0
+
+    - name: payment_due_date
+      type: date
+      nullable: true
+      description: When commission should be paid
+
+    # Tax
+    - name: tax_applicable
+      type: boolean
+      default: true
+
+    - name: tax_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      nullable: true
+
+    - name: tax_amount
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    - name: withholding_tax
+      type: decimal
+      precision: 15
+      scale: 2
+      nullable: true
+
+    # Documents
+    - name: commission_agreement_url
+      type: string
+      nullable: true
+
+    - name: invoice_urls
+      type: array
+      items: string
+      nullable: true
+
+    # Notes
+    - name: notes
+      type: text
+      nullable: true
+
+    # Audit
+    - name: created_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+
+    - name: updated_at
+      type: timestamp
+      default: CURRENT_TIMESTAMP
+      on_update: CURRENT_TIMESTAMP
+
+    - name: created_by
+      type: uuid
+      foreign_key: users.id
+
+  # Relationships
+  relationships:
+    - name: transaction
+      type: belongs_to
+      entity: Transaction
+      foreign_key: transaction_id
+
+    - name: listing_agency
+      type: belongs_to
+      entity: Agency
+      foreign_key: listing_agency_id
+
+    - name: listing_agent
+      type: belongs_to
+      entity: Agent
+      foreign_key: listing_agent_id
+
+    - name: buyer_agency
+      type: belongs_to
+      entity: Agency
+      foreign_key: buyer_agency_id
+
+    - name: buyer_agent
+      type: belongs_to
+      entity: Agent
+      foreign_key: buyer_agent_id
+
+  # Computed Fields
+  computed_fields:
+    - name: listing_buyer_split
+      formula: "(listing_side_total / total_commission_amount * 100) || '/' || (buyer_side_total / total_commission_amount * 100)"
+      description: Split ratio (e.g., "50/50")
+
+    - name: remaining_to_pay
+      formula: "net_commission - total_paid"
+
+  # Standard Split Templates
+  templates:
+    - name: standard_50_50
+      description: Equal split between listing and buyer side
+      total_rate: 2.0
+      splits:
+        - recipient_type: listing_agency
+          percentage: 50
+        - recipient_type: buyer_agency
+          percentage: 50
+
+    - name: listing_heavy
+      description: More to listing side
+      total_rate: 2.0
+      splits:
+        - recipient_type: listing_agency
+          percentage: 60
+        - recipient_type: buyer_agency
+          percentage: 40
+
+    - name: buyer_heavy
+      description: More to buyer side
+      total_rate: 2.0
+      splits:
+        - recipient_type: listing_agency
+          percentage: 40
+        - recipient_type: buyer_agency
+          percentage: 60
+
+  # Business Rules
+  business_rules:
+    - rule: BR-COM-001
+      name: Split total validation
+      description: All splits must total 100%
+
+    - rule: BR-COM-002
+      name: Payment timing
+      description: Commission paid after successful closing
+
+    - rule: BR-COM-003
+      name: Agent-agency split
+      description: Agent split based on agency agreement
+
+    - rule: BR-COM-004
+      name: Referral fee cap
+      description: Referral fees typically capped at 25%
+
+  # Validations
+  validations:
+    - field: total_commission_rate
+      rule: range
+      min: 0.1
+      max: 10
+      message: "Commission rate must be between 0.1% and 10%"
+
+    - field: splits
+      rule: sum_equals_100
+      field: percentage
+      message: "Split percentages must total 100%"
+
+  # Events
+  events:
+    - name: commission.approved
+      trigger: on_transition_to_approved
+      payload: [id, transaction_id, total_commission_amount]
+
+    - name: commission.paid
+      trigger: on_split_paid
+      payload: [id, recipient_id, amount]
+      notifications:
+        - recipient: recipient
+          template: commission_payment
+
+    - name: commission.fully_paid
+      trigger: on_transition_to_fully_paid
+      payload: [id, transaction_id, total_paid]
+
+  # API Endpoints
+  api:
+    endpoints:
+      - method: GET
+        path: /api/commission-splits
+        description: List commission records
+
+      - method: GET
+        path: /api/commission-splits/{id}
+        description: Get commission details
+
+      - method: POST
+        path: /api/transactions/{transaction_id}/commission
+        description: Create commission record
+
+      - method: PUT
+        path: /api/commission-splits/{id}
+        description: Update commission
+
+      - method: POST
+        path: /api/commission-splits/{id}/approve
+        description: Approve commission
+
+      - method: POST
+        path: /api/commission-splits/{id}/pay
+        description: Record payment

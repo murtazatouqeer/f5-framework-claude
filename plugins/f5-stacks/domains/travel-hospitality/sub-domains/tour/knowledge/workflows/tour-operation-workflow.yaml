@@ -1,0 +1,348 @@
+name: Tour Operation Workflow
+display_name: Tour Operation Workflow / Quy trình vận hành tour
+description: |
+  Workflow for operating a tour on the day of departure,
+  from preparation to completion and feedback collection.
+
+domain: travel-hospitality
+subdomain: tour
+version: "1.0"
+
+triggers:
+  - event: schedule.tour_date_approaching
+    source: ScheduleService
+    condition: tour_date - NOW() <= 24 hours
+
+actors:
+  - name: Operator
+    role: coordinator
+    description: Tour operator staff
+  - name: Guide
+    role: executor
+    description: Assigned tour guide
+  - name: Driver
+    role: support
+    description: Vehicle driver (if applicable)
+  - name: Customers
+    role: participants
+    description: Booked participants
+  - name: System
+    role: automated
+    description: Platform automation
+
+steps:
+  - id: PREPARATION_CHECK
+    name: Preparation Check (24h before)
+    actor: System
+    type: automated
+    trigger: tour_date - NOW() = 24 hours
+    actions:
+      - Verify guide assigned
+      - Verify vehicle assigned (if needed)
+      - Check weather forecast
+      - Verify all bookings confirmed
+      - Compile participant list
+      - Send reminders to customers
+    outputs:
+      - manifest
+      - preparation_status
+    branches:
+      - condition: preparation_status = 'ready'
+        next: SEND_REMINDERS
+      - condition: guide_not_assigned = true
+        next: ESCALATE_GUIDE_ISSUE
+      - condition: weather_severe = true
+        next: WEATHER_ASSESSMENT
+
+  - id: ESCALATE_GUIDE_ISSUE
+    name: Escalate Guide Issue
+    actor: System
+    type: automated
+    actions:
+      - Alert operator urgently
+      - Auto-assign available guide if possible
+      - Notify operations team
+    on_success: PREPARATION_CHECK
+    on_failure: CONSIDER_CANCELLATION
+
+  - id: WEATHER_ASSESSMENT
+    name: Weather Assessment
+    actor: Operator
+    type: interactive
+    actions:
+      - Review weather conditions
+      - Assess safety risks
+      - Decide to proceed, modify, or cancel
+    inputs:
+      - decision: proceed | modify | cancel
+    branches:
+      - condition: decision = 'proceed'
+        next: SEND_REMINDERS
+      - condition: decision = 'modify'
+        next: MODIFY_ITINERARY
+      - condition: decision = 'cancel'
+        next: CANCEL_DUE_TO_WEATHER
+
+  - id: MODIFY_ITINERARY
+    name: Modify Itinerary
+    actor: Operator
+    type: interactive
+    actions:
+      - Adjust itinerary for weather
+      - Notify customers of changes
+      - Update guide briefing
+    on_success: SEND_REMINDERS
+
+  - id: CANCEL_DUE_TO_WEATHER
+    name: Cancel Due to Weather
+    actor: System
+    type: automated
+    actions:
+      - Cancel schedule
+      - Process full refunds
+      - Offer free rescheduling
+      - Notify all participants
+    events:
+      - schedule.cancelled
+    on_success: END_CANCELLED
+
+  - id: CONSIDER_CANCELLATION
+    name: Consider Cancellation
+    actor: Operator
+    type: interactive
+    actions:
+      - Review situation
+      - Decide whether to cancel
+    on_success: CANCEL_DUE_TO_WEATHER
+
+  - id: SEND_REMINDERS
+    name: Send Reminders
+    actor: System
+    type: automated
+    actions:
+      - Send email reminder
+      - Send SMS reminder
+      - Send push notification
+      - Include meeting point details
+      - Include weather advisory
+    events:
+      - booking.reminder_sent
+    on_success: BRIEF_GUIDE
+
+  - id: BRIEF_GUIDE
+    name: Brief Guide
+    actor: Operator
+    type: interactive
+    actions:
+      - Share participant manifest
+      - Review special requirements
+      - Confirm meeting point
+      - Review itinerary
+      - Provide emergency contacts
+    outputs:
+      - guide_briefing_completed
+    on_success: DAY_OF_TOUR
+
+  - id: DAY_OF_TOUR
+    name: Day of Tour
+    actor: Guide
+    type: milestone
+    description: Tour day has arrived
+    on_success: ARRIVE_AT_MEETING_POINT
+
+  - id: ARRIVE_AT_MEETING_POINT
+    name: Arrive at Meeting Point
+    actor: Guide
+    type: interactive
+    actions:
+      - Guide arrives 15-30 min early
+      - Set up meeting point signage
+      - Prepare equipment
+      - Check-in with operator
+    on_success: CUSTOMER_CHECK_IN
+
+  - id: CUSTOMER_CHECK_IN
+    name: Customer Check-In
+    actor: Guide
+    type: interactive
+    actions:
+      - Verify voucher/QR code
+      - Mark participant as checked in
+      - Verify participant count
+      - Collect signed waivers (if needed)
+      - Distribute equipment
+    inputs:
+      - participant_ids[]
+      - checked_in_status
+    validations:
+      - rule: BR-SAF-020
+    loop_until: all_checked_in OR cutoff_time
+    on_success: START_TOUR
+    on_partial: HANDLE_NO_SHOWS
+
+  - id: HANDLE_NO_SHOWS
+    name: Handle No-Shows
+    actor: System
+    type: automated
+    actions:
+      - Mark non-arrived as no-show
+      - Update booking status
+      - No refund per policy
+    validations:
+      - rule: BR-CAN-005
+    events:
+      - booking.no_show
+    on_success: START_TOUR
+
+  - id: START_TOUR
+    name: Start Tour
+    actor: Guide
+    type: interactive
+    actions:
+      - Conduct safety briefing
+      - Explain itinerary
+      - Answer questions
+      - Begin tour
+      - Record actual start time
+    validations:
+      - rule: BR-SAF-060
+    events:
+      - schedule.started
+    outputs:
+      - actual_start_time
+      - actual_participants
+    on_success: CONDUCT_TOUR
+
+  - id: CONDUCT_TOUR
+    name: Conduct Tour
+    actor: Guide
+    type: interactive
+    actions:
+      - Follow itinerary
+      - Provide commentary
+      - Manage group
+      - Handle any issues
+      - Take photos (if service included)
+    duration: tour.duration
+    on_success: END_TOUR
+    on_issue: HANDLE_INCIDENT
+
+  - id: HANDLE_INCIDENT
+    name: Handle Incident
+    actor: Guide
+    type: interactive
+    actions:
+      - Assess situation
+      - Apply first aid if needed
+      - Contact emergency services if required
+      - Notify operator
+      - Document incident
+    inputs:
+      - incident_type
+      - severity
+      - actions_taken
+    on_success: CONTINUE_OR_ABORT
+
+  - id: CONTINUE_OR_ABORT
+    name: Continue or Abort
+    actor: Guide
+    type: interactive
+    branches:
+      - condition: can_continue = true
+        next: CONDUCT_TOUR
+      - condition: must_abort = true
+        next: ABORT_TOUR
+
+  - id: ABORT_TOUR
+    name: Abort Tour
+    actor: Guide
+    type: interactive
+    actions:
+      - Ensure all participants safe
+      - Arrange return transportation
+      - Document situation
+      - Notify operator
+    on_success: POST_TOUR_FOLLOWUP
+
+  - id: END_TOUR
+    name: End Tour
+    actor: Guide
+    type: interactive
+    actions:
+      - Arrive at end point
+      - Collect equipment
+      - Thank participants
+      - Distribute feedback cards/link
+      - Record actual end time
+    events:
+      - schedule.completed
+    outputs:
+      - actual_end_time
+    on_success: POST_TOUR_CHECKLIST
+
+  - id: POST_TOUR_CHECKLIST
+    name: Post-Tour Checklist
+    actor: Guide
+    type: interactive
+    actions:
+      - Return equipment
+      - Report any issues
+      - Submit tour completion report
+      - Confirm participant count
+    inputs:
+      - completion_report
+    on_success: POST_TOUR_FOLLOWUP
+
+  - id: POST_TOUR_FOLLOWUP
+    name: Post-Tour Follow-up
+    actor: System
+    type: automated
+    actions:
+      - Mark all bookings as completed
+      - Send thank you email
+      - Request review (24h later)
+      - Update tour statistics
+      - Process guide payment
+    events:
+      - booking.completed
+    on_success: END_COMPLETE
+
+  - id: END_COMPLETE
+    name: Tour Complete
+    actor: System
+    type: terminal
+    description: Tour successfully completed
+
+  - id: END_CANCELLED
+    name: Tour Cancelled
+    actor: System
+    type: terminal
+    description: Tour was cancelled
+
+timeouts:
+  guide_arrival: tour.start_time - 30 minutes
+  customer_check_in_deadline: tour.start_time + 15 minutes
+
+notifications:
+  - event: schedule.started
+    recipients: [operator]
+    channels: [push]
+    template: tour_started
+
+  - event: schedule.completed
+    recipients: [operator]
+    channels: [push, email]
+    template: tour_completed
+
+  - event: incident.reported
+    recipients: [operator, admin]
+    channels: [push, sms, email]
+    template: incident_alert
+
+error_handling:
+  guide_not_arrived:
+    escalation_time: 30 minutes before start
+    action: alert_operator_and_backup
+
+  weather_emergency:
+    action: immediate_safety_protocol

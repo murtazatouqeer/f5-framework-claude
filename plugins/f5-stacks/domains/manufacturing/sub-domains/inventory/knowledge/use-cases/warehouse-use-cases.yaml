@@ -1,0 +1,644 @@
+name: warehouse-use-cases
+display_name: Warehouse Operations Use Cases
+display_name_vi: Các ca sử dụng vận hành kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Use cases for warehouse operations including receiving, storage,
+  picking, shipping, and inventory management activities.
+
+actors:
+  - id: receiver
+    name: Receiving Clerk
+    name_vi: Nhân viên nhận hàng
+    description: Handles incoming materials and goods receipts
+
+  - id: picker
+    name: Picker/Packer
+    name_vi: Nhân viên lấy/đóng gói hàng
+    description: Picks materials for orders and packs for shipment
+
+  - id: forklift_operator
+    name: Forklift Operator
+    name_vi: Nhân viên xe nâng
+    description: Moves materials within warehouse
+
+  - id: counter
+    name: Inventory Counter
+    name_vi: Nhân viên kiểm đếm
+    description: Performs physical inventory counts
+
+  - id: supervisor
+    name: Warehouse Supervisor
+    name_vi: Giám sát kho
+    description: Oversees warehouse operations
+
+use_cases:
+  # ============================================
+  # RECEIVING USE CASES
+  # ============================================
+  - id: UC-WH-001
+    name: Receive Scheduled Delivery
+    name_vi: Nhận hàng theo lịch
+    actor: receiver
+    priority: high
+
+    description: |
+      Process incoming delivery that has an associated purchase order
+      or transfer order in the system.
+
+    preconditions:
+      - Delivery vehicle arrived at dock
+      - PO or transfer order exists in system
+      - Dock door available
+
+    main_flow:
+      - step: 1
+        action: Check in vehicle at dock
+        system_action: Record arrival time, assign dock door
+      - step: 2
+        action: Retrieve expected delivery info
+        system_action: Display PO/transfer details
+      - step: 3
+        action: Verify delivery documentation
+        system_action: Match delivery note to order
+      - step: 4
+        action: Unload and count materials
+        system_action: Capture actual quantities
+      - step: 5
+        action: Check material condition
+        system_action: Flag damaged items
+      - step: 6
+        action: Capture batch/serial numbers
+        system_action: Validate batch format, check expiry
+      - step: 7
+        action: Confirm receipt in system
+        system_action: Post goods receipt, update inventory
+      - step: 8
+        action: Generate putaway tasks
+        system_action: Create WMS putaway work orders
+
+    postconditions:
+      - Inventory updated with received quantities
+      - PO/transfer status updated
+      - Putaway tasks created
+      - Receipt documentation archived
+
+    alternative_flows:
+      - id: AF1
+        name: Quantity Variance
+        trigger: Received quantity differs from expected
+        steps:
+          - Document variance
+          - Notify buyer/supervisor
+          - Decide accept/reject/partial
+          - Process approved quantity
+
+      - id: AF2
+        name: Damaged Goods
+        trigger: Materials damaged during transport
+        steps:
+          - Photograph damage
+          - Create discrepancy report
+          - Notify buyer and carrier
+          - Segregate damaged items
+
+    exceptions:
+      - id: EX1
+        name: No PO Found
+        trigger: Delivery has no matching order
+        handling: Hold delivery, contact buyer for verification
+
+      - id: EX2
+        name: Failed Inspection
+        trigger: QC inspection fails
+        handling: Quarantine stock, create NCR
+
+    business_rules:
+      - BRR-001
+      - BRR-003
+      - BRR-005
+
+    metrics:
+      - name: Dock to Stock Time
+        target: "< 4 hours"
+      - name: Receipt Accuracy
+        target: "> 99%"
+
+  - id: UC-WH-002
+    name: Receive Unscheduled Delivery
+    name_vi: Nhận hàng không theo lịch
+    actor: receiver
+    priority: medium
+
+    description: |
+      Handle unexpected delivery without prior notification
+      or without existing order in system.
+
+    preconditions:
+      - Delivery vehicle arrived unexpectedly
+      - No matching PO or advance notice
+
+    main_flow:
+      - step: 1
+        action: Hold delivery at gate
+        system_action: Log unexpected arrival
+      - step: 2
+        action: Contact procurement/supervisor
+        system_action: Generate alert notification
+      - step: 3
+        action: Verify legitimacy
+        system_action: Search for any related orders
+      - step: 4
+        action: Receive approval to accept
+        system_action: Record approval with justification
+      - step: 5
+        action: Process as emergency receipt
+        system_action: Create exception receipt document
+      - step: 6
+        action: Follow standard receiving
+        system_action: Complete receiving process
+
+    postconditions:
+      - Exception documented
+      - Supervisor approval recorded
+      - Inventory updated
+      - Follow-up action created for buyer
+
+  # ============================================
+  # PUTAWAY USE CASES
+  # ============================================
+  - id: UC-WH-003
+    name: Execute Directed Putaway
+    name_vi: Thực hiện xếp kho có chỉ dẫn
+    actor: forklift_operator
+    priority: high
+
+    description: |
+      Move received materials to system-assigned storage locations
+      following WMS-directed putaway instructions.
+
+    preconditions:
+      - Putaway task exists
+      - Material in staging area
+      - Destination location confirmed available
+
+    main_flow:
+      - step: 1
+        action: View assigned putaway task
+        system_action: Display source, destination, material details
+      - step: 2
+        action: Navigate to staging area
+        system_action: Show pickup location
+      - step: 3
+        action: Scan material/pallet
+        system_action: Verify correct material
+      - step: 4
+        action: Navigate to destination
+        system_action: Guide to bin location
+      - step: 5
+        action: Place material in location
+        system_action: None
+      - step: 6
+        action: Scan destination location
+        system_action: Confirm and complete task
+
+    alternative_flows:
+      - id: AF1
+        name: Location Full
+        trigger: Destination location has no capacity
+        steps:
+          - Report location full
+          - Request alternate location
+          - System assigns new location
+          - Continue with new location
+
+    postconditions:
+      - Material in final storage location
+      - Inventory location updated
+      - Putaway task completed
+
+  - id: UC-WH-004
+    name: Consolidate Inventory
+    name_vi: Hợp nhất tồn kho
+    actor: forklift_operator
+    priority: low
+
+    description: |
+      Move inventory from multiple partial bins to consolidate
+      into fewer locations for better space utilization.
+
+    preconditions:
+      - Multiple partial bins identified
+      - Same material/batch
+      - Space optimization needed
+
+    main_flow:
+      - step: 1
+        action: Identify consolidation candidates
+        system_action: List partial bins for same material
+      - step: 2
+        action: Select source and target locations
+        system_action: Validate compatibility
+      - step: 3
+        action: Pick from source location
+        system_action: Create transfer task
+      - step: 4
+        action: Move to target location
+        system_action: Track movement
+      - step: 5
+        action: Confirm consolidation
+        system_action: Update both locations
+
+  # ============================================
+  # PICKING USE CASES
+  # ============================================
+  - id: UC-WH-005
+    name: Pick for Production Order
+    name_vi: Lấy hàng cho lệnh sản xuất
+    actor: picker
+    priority: high
+
+    description: |
+      Pick materials from inventory for production order based
+      on component requirements from BOM explosion.
+
+    preconditions:
+      - Production order released
+      - Materials reserved
+      - Pick list generated
+
+    main_flow:
+      - step: 1
+        action: Receive pick assignment
+        system_action: Display pick list details
+      - step: 2
+        action: Navigate to first location
+        system_action: Optimize pick path
+      - step: 3
+        action: Scan location
+        system_action: Verify correct bin
+      - step: 4
+        action: Pick required quantity
+        system_action: Decrement allocation
+      - step: 5
+        action: Scan material/batch
+        system_action: Validate FIFO/FEFO compliance
+      - step: 6
+        action: Confirm pick
+        system_action: Update picked quantity
+      - step: 7
+        action: Repeat for remaining items
+        system_action: Update progress
+      - step: 8
+        action: Deliver to production
+        system_action: Complete goods issue
+
+    alternative_flows:
+      - id: AF1
+        name: Short Pick
+        trigger: Insufficient quantity at location
+        steps:
+          - Report shortage
+          - Request alternate location
+          - Pick from alternate or partial
+          - Create shortage alert
+
+    postconditions:
+      - Materials issued to production order
+      - Inventory reduced
+      - Production order updated
+
+  - id: UC-WH-006
+    name: Pick for Sales Order
+    name_vi: Lấy hàng cho đơn bán
+    actor: picker
+    priority: high
+
+    description: |
+      Pick finished goods from inventory for customer order shipment.
+
+    preconditions:
+      - Sales order confirmed
+      - Goods available and allocated
+      - Shipping labels ready
+
+    main_flow:
+      - step: 1
+        action: Receive pick assignment
+        system_action: Display order and delivery details
+      - step: 2
+        action: Pick items following wave
+        system_action: Guide through pick path
+      - step: 3
+        action: Scan each item
+        system_action: Verify serial/batch if required
+      - step: 4
+        action: Place in shipping container
+        system_action: Track packing progress
+      - step: 5
+        action: Complete picking
+        system_action: Generate packing slip
+
+  # ============================================
+  # TRANSFER USE CASES
+  # ============================================
+  - id: UC-WH-007
+    name: Execute Intra-Warehouse Transfer
+    name_vi: Thực hiện chuyển nội bộ kho
+    actor: forklift_operator
+    priority: medium
+
+    description: |
+      Move inventory between locations within the same warehouse
+      for replenishment or optimization purposes.
+
+    preconditions:
+      - Transfer order created
+      - Source location has stock
+      - Destination location has capacity
+
+    main_flow:
+      - step: 1
+        action: View transfer task
+        system_action: Display source, destination, quantity
+      - step: 2
+        action: Navigate to source
+        system_action: Show pick location
+      - step: 3
+        action: Scan and pick material
+        system_action: Validate quantity
+      - step: 4
+        action: Move to destination
+        system_action: Track movement
+      - step: 5
+        action: Scan destination and confirm
+        system_action: Complete transfer, update both locations
+
+    postconditions:
+      - Inventory moved
+      - Both locations updated
+      - Transfer completed
+
+  - id: UC-WH-008
+    name: Ship Inter-Plant Transfer
+    name_vi: Xuất chuyển liên nhà máy
+    actor: receiver
+    priority: medium
+
+    description: |
+      Process outbound shipment for transfer to another plant
+      including goods issue and transit documentation.
+
+    preconditions:
+      - Transfer order approved
+      - Materials picked and staged
+      - Carrier arranged
+
+    main_flow:
+      - step: 1
+        action: Verify staged materials
+        system_action: Check against transfer order
+      - step: 2
+        action: Pack and label
+        system_action: Generate shipping labels
+      - step: 3
+        action: Create shipping documentation
+        system_action: Generate packing list, BOL
+      - step: 4
+        action: Post goods issue
+        system_action: Create in-transit inventory
+      - step: 5
+        action: Load carrier vehicle
+        system_action: Record departure
+      - step: 6
+        action: Provide tracking info
+        system_action: Update transfer with tracking
+
+    postconditions:
+      - Goods issued to transit
+      - Documentation complete
+      - Tracking available
+
+  # ============================================
+  # INVENTORY COUNT USE CASES
+  # ============================================
+  - id: UC-WH-009
+    name: Perform Cycle Count
+    name_vi: Thực hiện kiểm đếm tuần hoàn
+    actor: counter
+    priority: high
+
+    description: |
+      Execute scheduled cycle count for assigned locations
+      as part of ongoing inventory accuracy program.
+
+    preconditions:
+      - Cycle count scheduled
+      - Counter assigned
+      - Count sheet generated
+
+    main_flow:
+      - step: 1
+        action: Receive count assignment
+        system_action: Display locations to count
+      - step: 2
+        action: Navigate to location
+        system_action: Show expected material (blind count optional)
+      - step: 3
+        action: Count physical inventory
+        system_action: None (manual count)
+      - step: 4
+        action: Enter counted quantity
+        system_action: Record count, compare to system
+      - step: 5
+        action: Capture batch/serial details
+        system_action: Verify tracking info
+      - step: 6
+        action: Submit count
+        system_action: Calculate variance
+      - step: 7
+        action: Recount if variance exceeds threshold
+        system_action: Flag for recount or investigation
+
+    alternative_flows:
+      - id: AF1
+        name: Variance Found
+        trigger: Count differs from system by > threshold
+        steps:
+          - Trigger recount
+          - Different counter performs recount
+          - Compare results
+          - Escalate if still variance
+
+    postconditions:
+      - Count recorded
+      - Variances identified
+      - Adjustments pending approval
+
+  - id: UC-WH-010
+    name: Record Inventory Adjustment
+    name_vi: Ghi nhận điều chỉnh tồn kho
+    actor: supervisor
+    priority: medium
+
+    description: |
+      Process approved inventory adjustment based on count variance
+      or other discrepancy resolution.
+
+    preconditions:
+      - Variance identified and investigated
+      - Adjustment approved per authority matrix
+      - Root cause documented
+
+    main_flow:
+      - step: 1
+        action: Review adjustment request
+        system_action: Display variance details and investigation
+      - step: 2
+        action: Verify approval authorization
+        system_action: Check against approval matrix
+      - step: 3
+        action: Enter adjustment
+        system_action: Create adjustment transaction
+      - step: 4
+        action: Select reason code
+        system_action: Validate reason required
+      - step: 5
+        action: Post adjustment
+        system_action: Update inventory, create GL entry
+
+    postconditions:
+      - Inventory corrected
+      - Adjustment documented
+      - GL posting created
+
+  # ============================================
+  # SCRAP/DISPOSAL USE CASES
+  # ============================================
+  - id: UC-WH-011
+    name: Process Scrap Material
+    name_vi: Xử lý vật tư phế phẩm
+    actor: supervisor
+    priority: medium
+
+    description: |
+      Remove damaged, expired, or obsolete material from
+      inventory with proper documentation and disposal.
+
+    preconditions:
+      - Material identified for scrap
+      - QC inspection completed (if required)
+      - Scrap approval obtained
+
+    main_flow:
+      - step: 1
+        action: Initiate scrap request
+        system_action: Create scrap record
+      - step: 2
+        action: Document reason and condition
+        system_action: Capture reason code, photos
+      - step: 3
+        action: Route for approval
+        system_action: Send to approver based on value
+      - step: 4
+        action: Receive approval
+        system_action: Record approval details
+      - step: 5
+        action: Move to scrap area
+        system_action: Create transfer to scrap location
+      - step: 6
+        action: Post scrap transaction
+        system_action: Write off inventory, create GL entry
+      - step: 7
+        action: Arrange disposal
+        system_action: Track disposal per environmental rules
+
+    postconditions:
+      - Inventory removed
+      - Scrap documented
+      - Disposal tracked
+
+  # ============================================
+  # REPLENISHMENT USE CASES
+  # ============================================
+  - id: UC-WH-012
+    name: Execute Pick Face Replenishment
+    name_vi: Bổ sung vị trí lấy hàng
+    actor: forklift_operator
+    priority: high
+
+    description: |
+      Replenish forward pick locations from bulk storage
+      when quantity falls below minimum.
+
+    preconditions:
+      - Pick face below minimum
+      - Bulk stock available
+      - Replenishment triggered
+
+    main_flow:
+      - step: 1
+        action: Receive replenishment task
+        system_action: Display bulk source and pick face destination
+      - step: 2
+        action: Navigate to bulk location
+        system_action: Show pick quantity
+      - step: 3
+        action: Pick replenishment quantity
+        system_action: Validate FIFO
+      - step: 4
+        action: Move to pick face
+        system_action: Track movement
+      - step: 5
+        action: Place in pick location
+        system_action: Update both locations
+      - step: 6
+        action: Confirm replenishment
+        system_action: Complete task
+
+    postconditions:
+      - Pick face restocked
+      - Bulk reduced
+      - Task completed
+
+compliance_mapping:
+  - standard: ISO 9001
+    use_cases:
+      - UC-WH-001
+      - UC-WH-009
+      - UC-WH-010
+    requirements:
+      - Documented receiving procedures
+      - Physical inventory accuracy
+      - Adjustment authorization
+
+  - standard: GMP
+    use_cases:
+      - UC-WH-001
+      - UC-WH-003
+      - UC-WH-005
+    requirements:
+      - FIFO/FEFO compliance
+      - Batch traceability
+      - Controlled storage conditions
+
+integration_points:
+  - system: WMS
+    use_cases: all
+    features:
+      - Task management
+      - RF scanning
+      - Location management
+
+  - system: ERP
+    use_cases:
+      - UC-WH-001
+      - UC-WH-005
+      - UC-WH-010
+    features:
+      - Inventory posting
+      - GL integration
+      - Order updates

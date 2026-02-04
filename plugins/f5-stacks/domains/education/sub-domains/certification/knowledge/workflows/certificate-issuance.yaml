@@ -1,0 +1,407 @@
+# Certificate Issuance Workflow
+# F5 Framework v2.0 - Education/Certification
+# Workflow for issuing certificates
+
+workflow:
+  id: certificate-issuance
+  name: Certificate Issuance Workflow
+  name_ja: 証明書発行ワークフロー
+  domain: education
+  subdomain: certification
+  version: "1.0.0"
+  
+  description: |
+    Complete workflow for issuing certificates upon program completion,
+    including eligibility verification, certificate generation, and delivery.
+
+  triggers:
+    - id: requirements_completed
+      name: Requirements Completed
+      description: All program requirements have been met
+      event: program.requirements.completed
+      automatic: true
+      
+    - id: manual_issuance
+      name: Manual Issuance Request
+      description: Admin initiates manual issuance
+      event: admin.certificate.issue_request
+      automatic: false
+      
+    - id: renewal_approved
+      name: Renewal Approved
+      description: Renewal has been approved
+      event: renewal.approved
+      automatic: true
+
+  actors:
+    - id: system
+      name: System
+      description: Automated processes
+      
+    - id: holder
+      name: Credential Holder
+      description: Person receiving the certificate
+      
+    - id: admin
+      name: Certification Admin
+      description: Administrative personnel
+      
+    - id: approver
+      name: Approval Authority
+      description: Person with approval rights
+
+  states:
+    - id: initiated
+      name: Initiated
+      name_ja: 開始済み
+      description: Issuance process has started
+      
+    - id: eligibility_check
+      name: Eligibility Check
+      name_ja: 適格性確認
+      description: Verifying eligibility requirements
+      
+    - id: pending_approval
+      name: Pending Approval
+      name_ja: 承認待ち
+      description: Awaiting manual approval
+      
+    - id: generating
+      name: Generating
+      name_ja: 生成中
+      description: Creating certificate assets
+      
+    - id: blockchain_anchoring
+      name: Blockchain Anchoring
+      name_ja: ブロックチェーン記録中
+      description: Recording on blockchain
+      
+    - id: completed
+      name: Completed
+      name_ja: 完了
+      description: Certificate issued successfully
+      
+    - id: failed
+      name: Failed
+      name_ja: 失敗
+      description: Issuance failed
+      
+    - id: rejected
+      name: Rejected
+      name_ja: 却下
+      description: Issuance request rejected
+
+  transitions:
+    - from: initiated
+      to: eligibility_check
+      trigger: auto
+      action: verify_eligibility
+      
+    - from: eligibility_check
+      to: pending_approval
+      condition: "requires_manual_approval = true"
+      action: request_approval
+      
+    - from: eligibility_check
+      to: generating
+      condition: "auto_issue = true AND eligibility_passed = true"
+      action: start_generation
+      
+    - from: eligibility_check
+      to: failed
+      condition: "eligibility_passed = false"
+      action: notify_failure
+      
+    - from: pending_approval
+      to: generating
+      trigger: approval_granted
+      actor: approver
+      action: start_generation
+      
+    - from: pending_approval
+      to: rejected
+      trigger: approval_denied
+      actor: approver
+      action: notify_rejection
+      
+    - from: generating
+      to: blockchain_anchoring
+      condition: "program.blockchain_enabled = true"
+      action: anchor_to_blockchain
+      
+    - from: generating
+      to: completed
+      condition: "program.blockchain_enabled = false"
+      action: finalize_issuance
+      
+    - from: blockchain_anchoring
+      to: completed
+      trigger: anchoring_complete
+      action: finalize_issuance
+      
+    - from: blockchain_anchoring
+      to: completed
+      trigger: anchoring_timeout
+      action: finalize_without_blockchain
+
+  steps:
+    - step: 1
+      name: Initiate Issuance
+      name_ja: 発行開始
+      actor: system
+      state: initiated
+      
+      actions:
+        - create_issuance_record
+        - capture_trigger_context
+        - log_initiation
+        
+      outputs:
+        - issuance_id
+        - initiated_at
+        
+    - step: 2
+      name: Verify Eligibility
+      name_ja: 適格性確認
+      actor: system
+      state: eligibility_check
+      
+      rules_applied:
+        - BR-ISS-001  # Completion requirements
+        - BR-ISS-002  # Prerequisite certifications
+        - BR-ISS-003  # Experience requirement
+        - BR-ISS-004  # Identity verification
+        - BR-ISS-020  # Duplicate prevention
+        
+      checks:
+        - required_courses_completed:
+            query: "SELECT COUNT(*) = 0 FROM incomplete_requirements"
+            error: "Not all required courses completed"
+            
+        - required_assessments_passed:
+            query: "SELECT COUNT(*) = 0 FROM failed_assessments"
+            error: "Required assessments not passed"
+            
+        - prerequisites_active:
+            query: "SELECT COUNT(*) = 0 FROM missing_prerequisites"
+            error: "Prerequisite certifications not active"
+            
+        - no_duplicate:
+            query: "SELECT COUNT(*) = 0 FROM active_certificates WHERE holder_id = ? AND program_id = ?"
+            error: "Active certificate already exists"
+            
+        - no_account_holds:
+            query: "SELECT COUNT(*) = 0 FROM account_holds WHERE holder_id = ?"
+            error: "Account has active holds"
+            
+      outputs:
+        - eligibility_result: pass/fail
+        - failed_checks: list
+        - requires_approval: boolean
+        
+    - step: 3
+      name: Request Approval
+      name_ja: 承認依頼
+      actor: system
+      state: pending_approval
+      condition: "requires_manual_approval = true"
+      
+      rules_applied:
+        - BR-ISS-011  # Manual issuance approval
+        
+      actions:
+        - identify_approver
+        - create_approval_request
+        - send_approval_notification
+        
+      notification:
+        to: approver
+        template: approval_request
+        include:
+          - holder_name
+          - program_name
+          - eligibility_summary
+          - special_circumstances
+          
+      timeout:
+        duration_hours: 72
+        action: escalate_or_reject
+        
+    - step: 4
+      name: Generate Certificate
+      name_ja: 証明書生成
+      actor: system
+      state: generating
+      
+      rules_applied:
+        - BR-ISS-012  # Certificate number generation
+        - BR-ISS-030  # Verification code generation
+        - BR-ISS-040  # PDF generation
+        
+      sub_steps:
+        - generate_certificate_number:
+            format: "{prefix}-{year}-{sequence}"
+            ensure_unique: true
+            
+        - generate_verification_code:
+            length: 12
+            charset: alphanumeric_no_ambiguous
+            format: "XXXX-XXXX-XXXX"
+            
+        - create_certificate_record:
+            status: active
+            valid_from: NOW()
+            valid_until: "NOW() + validity_period"
+            
+        - generate_pdf:
+            template_id: "program.certificate_template_id"
+            sign_digitally: true
+            embed_metadata: true
+            
+        - generate_qr_code:
+            content: verification_url
+            error_correction: high
+            
+      outputs:
+        - certificate_id
+        - certificate_number
+        - verification_code
+        - pdf_url
+        - qr_code_url
+        
+    - step: 5
+      name: Blockchain Anchoring
+      name_ja: ブロックチェーン記録
+      actor: system
+      state: blockchain_anchoring
+      condition: "program.blockchain_enabled = true"
+      
+      rules_applied:
+        - BR-ISS-041  # Blockchain anchoring
+        
+      sub_steps:
+        - compute_certificate_hash:
+            algorithm: SHA-256
+            data:
+              - certificate_id
+              - holder_id
+              - program_id
+              - issued_at
+              - certificate_number
+              
+        - submit_to_blockchain:
+            network: "program.blockchain_network"
+            retry_attempts: 3
+            retry_delay_seconds: 60
+            
+        - store_transaction_proof:
+            transaction_hash: true
+            block_number: true
+            timestamp: true
+            
+      timeout:
+        duration_minutes: 30
+        action: proceed_without_blockchain
+        
+      outputs:
+        - blockchain_tx_hash
+        - blockchain_block_number
+        - anchored_at
+        
+    - step: 6
+      name: Finalize Issuance
+      name_ja: 発行完了
+      actor: system
+      state: completed
+      
+      actions:
+        - update_certificate_status:
+            status: active
+            
+        - update_holder_profile:
+            add_to_credentials: true
+            update_skills: true
+            
+        - update_program_statistics:
+            increment: certificates_issued
+            
+        - create_verification_record:
+            status: issued
+            verifiable: true
+            
+      notifications:
+        - to: holder
+          template: certificate_issued
+          include:
+            - certificate_number
+            - verification_code
+            - pdf_download_link
+            - verification_url
+            - expiration_date
+            
+        - to: admin
+          template: issuance_completed
+          condition: "issuance_type = manual"
+          
+      outputs:
+        - issued_certificate
+        - notification_sent
+        - completion_timestamp
+
+  error_handling:
+    - error: eligibility_check_failed
+      action: notify_and_terminate
+      notification:
+        to: holder
+        template: eligibility_failed
+        include:
+          - failed_requirements
+          - remediation_steps
+          
+    - error: generation_failed
+      action: retry_then_escalate
+      max_retries: 3
+      escalate_to: admin
+      
+    - error: blockchain_timeout
+      action: proceed_without_blockchain
+      notification:
+        to: admin
+        template: blockchain_timeout
+        
+    - error: approval_timeout
+      action: escalate_to_manager
+      notification:
+        to: admin_manager
+        template: approval_timeout
+
+  metrics:
+    - name: issuance_time
+      description: Time from initiation to completion
+      target: "< 5 minutes for auto-issue"
+      
+    - name: approval_time
+      description: Time in pending_approval state
+      target: "< 24 hours"
+      
+    - name: success_rate
+      description: Percentage of successful issuances
+      target: "> 95%"
+
+  integrations:
+    - system: email_service
+      purpose: Send notifications
+      
+    - system: pdf_generator
+      purpose: Create certificate PDFs
+      
+    - system: blockchain_service
+      purpose: Anchor certificates
+      
+    - system: storage_service
+      purpose: Store certificate assets
+
+  audit:
+    enabled: true
+    track_all_steps: true
+    retention_years: 10

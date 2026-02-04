@@ -1,0 +1,435 @@
+# Listing Publication Workflow
+# F5 Framework v2.0 - Real Estate/Listing
+# Workflow for publishing and managing listing visibility
+
+workflow:
+  id: listing_publication
+  name: Listing Publication Workflow
+  name_ja: 物件掲載公開ワークフロー
+  name_vi: Quy trình đăng tin
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Workflow for publishing listings including approval process,
+    syndication to external platforms, and lifecycle management.
+
+  actors:
+    - id: agent
+      name: Real Estate Agent
+      permissions: [publish_own_listings, request_feature]
+    - id: agency_admin
+      name: Agency Administrator
+      permissions: [approve_agency_listings, publish_agency_listings]
+    - id: moderator
+      name: Content Moderator
+      permissions: [approve_listings, reject_listings, feature_listings]
+    - id: system
+      name: Automated System
+      permissions: [auto_approve, syndicate, expire]
+
+  triggers:
+    - type: workflow_transition
+      from_workflow: listing_creation
+      state: completed
+      action: publish_now
+    - type: user_action
+      action: publish_listing
+    - type: scheduled
+      condition: scheduled_publish_time_reached
+
+  # Workflow States
+  states:
+    - id: draft
+      name: Draft
+      type: start
+
+    - id: pending_agency_approval
+      name: Pending Agency Approval
+      description: Awaiting agency admin approval
+
+    - id: pending_moderation
+      name: Pending Moderation
+      description: Awaiting platform moderator approval
+
+    - id: auto_review
+      name: Auto Review
+      description: System automated review
+
+    - id: approved
+      name: Approved
+      description: Ready to go live
+
+    - id: publishing
+      name: Publishing
+      description: Publishing in progress
+
+    - id: active
+      name: Active
+      description: Live and visible
+
+    - id: syndication_in_progress
+      name: Syndication In Progress
+      description: Syndicating to external platforms
+
+    - id: paused
+      name: Paused
+      description: Temporarily hidden
+
+    - id: expired
+      name: Expired
+      description: Listing duration ended
+
+    - id: rejected
+      name: Rejected
+      description: Did not pass review
+
+  # Workflow Steps
+  steps:
+    - id: step_1
+      name: Publication Request
+      state: draft
+      actor: [agent, owner]
+      preconditions:
+        - listing.status = 'draft'
+        - listing_passes_basic_validation
+      actions:
+        - action: request_publication
+        - action: determine_approval_path
+          system: true
+          logic: |
+            IF agent.agency_id IS NOT NULL AND agency.listing_approval_required THEN
+              approval_path = 'agency_first'
+            ELSIF listing.featured OR listing.premium THEN
+              approval_path = 'moderation_required'
+            ELSIF agent.is_trusted AND agent.approval_rate > 0.95 THEN
+              approval_path = 'auto_approve'
+            ELSE
+              approval_path = 'standard_moderation'
+            END
+      transitions:
+        - to: pending_agency_approval
+          condition: approval_path = 'agency_first'
+        - to: pending_moderation
+          condition: approval_path IN ('moderation_required', 'standard_moderation')
+        - to: auto_review
+          condition: approval_path = 'auto_approve'
+
+    - id: step_2a
+      name: Agency Approval
+      state: pending_agency_approval
+      actor: agency_admin
+      sla:
+        target_hours: 24
+        escalation_hours: 48
+      actions:
+        - action: review_listing
+        - action: approve_listing
+          next: pending_moderation
+        - action: reject_listing
+          next: rejected
+          requires: rejection_reason
+        - action: request_changes
+          next: draft
+          requires: change_requests
+      ui:
+        screen: agency_approval_queue
+        components:
+          - listing_preview
+          - agent_info
+          - approval_buttons
+          - rejection_form
+      notifications:
+        on_enter:
+          - recipient: agency_admin
+            template: listing_pending_approval
+        on_sla_warning:
+          - recipient: agency_admin
+            template: approval_sla_warning
+      transitions:
+        - to: pending_moderation
+          condition: agency_approved
+        - to: rejected
+          condition: agency_rejected
+        - to: draft
+          condition: changes_requested
+
+    - id: step_2b
+      name: Auto Review
+      state: auto_review
+      actor: system
+      actions:
+        - action: run_automated_checks
+          checks:
+            - content_moderation_ai
+            - duplicate_detection
+            - price_anomaly_detection
+            - fair_housing_compliance
+            - photo_quality_check
+        - action: calculate_risk_score
+      auto_transition: true
+      transitions:
+        - to: approved
+          condition: risk_score < 0.3 AND all_checks_passed
+        - to: pending_moderation
+          condition: risk_score >= 0.3 OR any_check_flagged
+
+    - id: step_2c
+      name: Platform Moderation
+      state: pending_moderation
+      actor: moderator
+      sla:
+        target_hours: 4
+        escalation_hours: 12
+      queue_priority: |
+        CASE
+          WHEN listing.featured THEN 1
+          WHEN listing.premium THEN 2
+          WHEN agent.subscription_tier = 'enterprise' THEN 3
+          ELSE 4
+        END
+      actions:
+        - action: review_content
+          checklist:
+            - photos_appropriate
+            - description_accurate
+            - price_reasonable
+            - no_policy_violations
+            - fair_housing_compliant
+        - action: approve
+          next: approved
+        - action: reject
+          next: rejected
+          requires: rejection_reason
+        - action: request_revision
+          next: draft
+      ui:
+        screen: moderation_queue
+        components:
+          - listing_full_preview
+          - moderation_checklist
+          - auto_review_results
+          - approval_buttons
+          - rejection_reason_selector
+      transitions:
+        - to: approved
+          condition: moderator_approved
+        - to: rejected
+          condition: moderator_rejected
+        - to: draft
+          condition: revision_requested
+
+    - id: step_3
+      name: Prepare Publication
+      state: approved
+      actor: system
+      actions:
+        - action: generate_listing_url
+        - action: prepare_search_index
+        - action: prepare_syndication_data
+        - action: schedule_or_publish
+          logic: |
+            IF listing.scheduled_publish_at IS NOT NULL THEN
+              schedule_job(listing.scheduled_publish_at, 'publish_listing')
+            ELSE
+              proceed_to_publish
+            END
+      auto_transition: true
+      transitions:
+        - to: publishing
+          condition: immediate_publish
+        - to: approved
+          condition: scheduled_publish
+          action: wait_for_schedule
+
+    - id: step_4
+      name: Publishing
+      state: publishing
+      actor: system
+      actions:
+        - action: update_listing_status
+          new_status: active
+        - action: set_published_at
+        - action: set_expires_at
+        - action: update_search_index
+        - action: update_property_counts
+        - action: update_agent_metrics
+      auto_transition: true
+      transitions:
+        - to: active
+          condition: publish_successful
+        - to: approved
+          condition: publish_failed
+          action: retry_or_alert
+
+    - id: step_5
+      name: Active & Syndication
+      state: active
+      actor: system
+      parallel_actions:
+        - action: notify_stakeholders
+          recipients: [agent, owner, saved_search_matches]
+        - action: start_syndication
+          condition: listing.syndicated_to IS NOT NULL
+          next: syndication_in_progress
+      ongoing_monitoring:
+        - check_expiry
+        - track_engagement
+        - update_metrics
+      transitions:
+        - to: syndication_in_progress
+          condition: syndication_enabled
+        - to: paused
+          condition: user_pauses
+        - to: expired
+          condition: expires_at_reached
+
+    - id: step_6
+      name: Syndication
+      state: syndication_in_progress
+      actor: system
+      actions:
+        - action: syndicate_to_platforms
+          platforms:
+            - name: mls_feed
+              format: RESO_standard
+              frequency: real_time
+            - name: partner_portals
+              format: custom_api
+              frequency: hourly
+            - name: social_media
+              format: open_graph
+              condition: listing.featured
+      per_platform:
+        - action: transform_data
+        - action: submit_to_platform
+        - action: track_status
+        - action: handle_errors
+      auto_transition: true
+      transitions:
+        - to: active
+          condition: syndication_complete
+          action: update_syndication_status
+
+  # Lifecycle Management
+  lifecycle:
+    expiry:
+      trigger: scheduled
+      schedule: "0 * * * *"  # Hourly
+      action: |
+        expired_listings = SELECT * FROM listing
+          WHERE status = 'active'
+          AND expires_at < NOW()
+        FOR listing IN expired_listings:
+          IF listing.auto_renew AND can_renew(listing) THEN
+            renew_listing(listing)
+          ELSE
+            expire_listing(listing)
+          END
+
+    renewal:
+      max_renewals: 5
+      renewal_action: |
+        UPDATE listing SET
+          expires_at = NOW() + INTERVAL '{listing_duration_days} days',
+          renewed_count = renewed_count + 1
+        notify_agent('listing_renewed')
+
+    pause:
+      actor: [agent, owner]
+      action: |
+        UPDATE listing SET status = 'paused', paused_at = NOW()
+        pause_syndication(listing)
+        notify_agent('listing_paused')
+
+    resume:
+      actor: [agent, owner]
+      condition: listing.status = 'paused'
+      action: |
+        UPDATE listing SET status = 'active', paused_at = NULL
+        resume_syndication(listing)
+        notify_agent('listing_resumed')
+
+  # Rejection Handling
+  rejection:
+    reasons:
+      - code: CONTENT_INAPPROPRIATE
+        description: Inappropriate or offensive content
+        severity: high
+      - code: PHOTOS_QUALITY
+        description: Photo quality below standard
+        severity: medium
+      - code: PRICE_UNREALISTIC
+        description: Price appears unrealistic
+        severity: medium
+      - code: DUPLICATE_LISTING
+        description: Duplicate of existing listing
+        severity: high
+      - code: FAIR_HOUSING
+        description: Fair housing violation
+        severity: critical
+      - code: MISSING_INFO
+        description: Required information missing
+        severity: low
+      - code: MISLEADING
+        description: Misleading information
+        severity: high
+
+    appeal_process:
+      enabled: true
+      appeal_window_days: 7
+      review_by: senior_moderator
+
+  # Notifications
+  notifications:
+    - event: pending_approval
+      recipients: [moderator, agency_admin]
+      channel: [dashboard, email]
+      template: listing_pending_review
+
+    - event: approved
+      recipients: [agent]
+      channel: [push, email]
+      template: listing_approved
+
+    - event: published
+      recipients: [agent, owner]
+      channel: [push, email]
+      template: listing_now_live
+
+    - event: rejected
+      recipients: [agent]
+      channel: [push, email]
+      template: listing_rejected
+      include: rejection_reason
+
+    - event: expiring_soon
+      recipients: [agent]
+      channel: [push, email]
+      template: listing_expiring_soon
+      trigger: 3_days_before_expiry
+
+    - event: expired
+      recipients: [agent]
+      channel: [push, email]
+      template: listing_expired
+
+  # Metrics
+  metrics:
+    track:
+      - approval_rate
+      - average_approval_time
+      - rejection_reasons_distribution
+      - syndication_success_rate
+      - time_to_first_inquiry
+
+  # SLA Definitions
+  sla:
+    agency_approval:
+      target: 24 hours
+      max: 48 hours
+    platform_moderation:
+      standard: 4 hours
+      premium: 2 hours
+      enterprise: 1 hour

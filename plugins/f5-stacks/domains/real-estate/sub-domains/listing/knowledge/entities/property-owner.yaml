@@ -1,0 +1,303 @@
+# Property Owner Entity
+# F5 Framework v2.0 - Real Estate/Listing
+# Property owners and landlords
+
+entity:
+  id: property_owner
+  name: Property Owner
+  name_ja: 物件オーナー
+  name_vi: Chủ sở hữu bất động sản
+  domain: real-estate
+  subdomain: listing
+  version: "1.0.0"
+
+  description: |
+    Property owners who list properties for sale or rent. Can be
+    individuals or companies. Includes verification status and
+    ownership documentation.
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: owner_id
+      type: string
+      format: "OWN-{XXXXXXXX}"
+      unique: true
+      indexed: true
+
+    - name: user_id
+      type: uuid
+      foreign_key: user.id
+      unique: true
+      description: Link to platform user account (if registered)
+
+    # Type
+    - name: owner_type
+      type: enum
+      values: [individual, company, developer, government, trust]
+      required: true
+      indexed: true
+
+    # Individual Info (when owner_type = individual)
+    - name: full_name
+      type: string
+      max_length: 200
+
+    - name: id_type
+      type: enum
+      values: [national_id, passport, drivers_license]
+
+    - name: id_number
+      type: string
+      max_length: 50
+      encrypted: true
+
+    - name: date_of_birth
+      type: date
+
+    - name: nationality
+      type: string
+      max_length: 100
+
+    # Company Info (when owner_type = company/developer)
+    - name: company_name
+      type: string
+      max_length: 300
+
+    - name: business_registration_number
+      type: string
+      max_length: 100
+
+    - name: tax_id
+      type: string
+      max_length: 50
+
+    - name: representative_name
+      type: string
+      max_length: 200
+      description: Legal representative
+
+    - name: representative_position
+      type: string
+      max_length: 100
+
+    # Contact
+    - name: phone
+      type: string
+      max_length: 20
+      required: true
+
+    - name: phone_secondary
+      type: string
+      max_length: 20
+
+    - name: email
+      type: string
+      max_length: 255
+      required: true
+
+    - name: preferred_contact_method
+      type: enum
+      values: [phone, email, both]
+      default: phone
+
+    # Address
+    - name: address
+      type: jsonb
+      schema:
+        street: string
+        ward: string
+        district: string
+        city: string
+        province: string
+        country: string
+        postal_code: string
+
+    - name: full_address
+      type: string
+      max_length: 500
+
+    # Status
+    - name: status
+      type: enum
+      values: [pending_verification, active, suspended, inactive]
+      default: pending_verification
+      indexed: true
+
+    - name: verification_status
+      type: enum
+      values: [unverified, pending, verified, rejected]
+      default: unverified
+      indexed: true
+
+    # Verification Documents
+    - name: verification_documents
+      type: jsonb
+      description: Identity and ownership proof documents
+      schema:
+        - document_type: string  # id_card, business_license, ownership_proof
+          file_url: string
+          uploaded_at: timestamp
+          verified: boolean
+          verified_by: uuid
+          verified_at: timestamp
+          notes: string
+
+    # Banking (for payments)
+    - name: bank_account
+      type: jsonb
+      encrypted: true
+      schema:
+        bank_name: string
+        account_number: string
+        account_holder: string
+        branch: string
+        swift_code: string
+
+    # Statistics
+    - name: properties_count
+      type: integer
+      default: 0
+
+    - name: active_listings_count
+      type: integer
+      default: 0
+
+    - name: total_transactions
+      type: integer
+      default: 0
+
+    # Agent Preference
+    - name: preferred_agent_id
+      type: uuid
+      foreign_key: agent.id
+      description: Preferred agent for listings
+
+    - name: agency_exclusivity
+      type: uuid
+      foreign_key: agency.id
+      description: Exclusive agency agreement
+
+    # Communication Preferences
+    - name: notification_preferences
+      type: jsonb
+      schema:
+        inquiry_alerts: boolean
+        viewing_alerts: boolean
+        offer_alerts: boolean
+        market_updates: boolean
+        email_frequency: string  # immediate, daily, weekly
+
+    # Notes
+    - name: internal_notes
+      type: text
+      description: Internal notes (not visible to owner)
+
+    # Timestamps
+    - name: verified_at
+      type: timestamp
+
+    - name: last_active_at
+      type: timestamp
+
+    - name: created_at
+      type: timestamp
+      auto: true
+
+    - name: updated_at
+      type: timestamp
+      auto: true
+
+  computed_fields:
+    - name: display_name
+      formula: "COALESCE(company_name, full_name)"
+
+    - name: is_verified
+      formula: "verification_status = 'verified'"
+
+    - name: is_company
+      formula: "owner_type IN ('company', 'developer')"
+
+  relationships:
+    - name: user
+      type: belongs_to
+      entity: user
+      foreign_key: user_id
+
+    - name: properties
+      type: has_many
+      entity: property
+      foreign_key: owner_id
+
+    - name: preferred_agent
+      type: belongs_to
+      entity: agent
+      foreign_key: preferred_agent_id
+
+    - name: exclusive_agency
+      type: belongs_to
+      entity: agency
+      foreign_key: agency_exclusivity
+
+  indexes:
+    - fields: [owner_type, status]
+      name: idx_owner_type_status
+
+    - fields: [verification_status]
+      name: idx_verification
+
+    - fields: [email]
+      name: idx_owner_email
+
+  validations:
+    - field: email
+      rule: email_format
+      message: Invalid email format
+
+    - field: phone
+      rule: phone_format
+      message: Invalid phone number format
+
+  state_machine:
+    initial: pending_verification
+
+    transitions:
+      - from: pending_verification
+        to: active
+        trigger: verify
+        conditions:
+          - has_valid_documents
+        actions:
+          - set_verified_at
+          - notify_owner
+
+      - from: pending_verification
+        to: inactive
+        trigger: reject
+        actions:
+          - notify_rejection
+
+      - from: active
+        to: suspended
+        trigger: suspend
+        actions:
+          - pause_all_listings
+          - notify_owner
+
+      - from: suspended
+        to: active
+        trigger: reinstate
+
+      - from: [active, suspended]
+        to: inactive
+        trigger: deactivate
+        actions:
+          - close_all_listings
+
+  audit:
+    enabled: true
+    track_changes: true
+    sensitive_fields: [id_number, bank_account]

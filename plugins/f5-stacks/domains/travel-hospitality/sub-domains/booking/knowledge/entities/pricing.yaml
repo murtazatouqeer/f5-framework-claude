@@ -1,0 +1,398 @@
+name: pricing
+display_name: Pricing
+display_name_vi: Định giá
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Detailed pricing breakdown for a booking including
+  all components, taxes, fees, and markups.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: booking_id
+    type: uuid
+    foreign_key: booking.id
+    required: true
+
+  - name: pricing_type
+    type: enum
+    values: [flight, hotel, package, car, activity, transfer, addon, full_booking]
+    required: true
+
+  # Currency
+  - name: display_currency
+    type: string
+    length: 3
+    required: true
+    description: Currency shown to customer
+
+  - name: supplier_currency
+    type: string
+    length: 3
+    description: Original supplier currency
+
+  - name: exchange_rate
+    type: decimal
+    precision: 12
+    scale: 6
+    default: 1
+
+  - name: exchange_rate_date
+    type: datetime
+    nullable: true
+
+  # Base Pricing
+  - name: base_price
+    type: decimal
+    precision: 12
+    scale: 2
+    description: Price before taxes/fees
+
+  - name: base_price_breakdown
+    type: array
+    items:
+      type: object
+      properties:
+        description:
+          type: string
+        passenger_type:
+          type: string
+        quantity:
+          type: integer
+        unit_price:
+          type: decimal
+        total:
+          type: decimal
+
+  # Taxes
+  - name: taxes
+    type: array
+    items:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        amount:
+          type: decimal
+        percentage:
+          type: decimal
+        included_in_base:
+          type: boolean
+
+  - name: total_taxes
+    type: decimal
+    precision: 10
+    scale: 2
+
+  # Fees
+  - name: fees
+    type: array
+    items:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        amount:
+          type: decimal
+        mandatory:
+          type: boolean
+        refundable:
+          type: boolean
+
+  - name: total_fees
+    type: decimal
+    precision: 10
+    scale: 2
+
+  # Surcharges
+  - name: surcharges
+    type: array
+    items:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        amount:
+          type: decimal
+        reason:
+          type: string
+
+  - name: total_surcharges
+    type: decimal
+    precision: 10
+    scale: 2
+
+  # Discounts
+  - name: discounts
+    type: array
+    items:
+      type: object
+      properties:
+        code:
+          type: string
+        name:
+          type: string
+        type:
+          type: enum
+          values: [percentage, fixed, promo_code, loyalty, package]
+        value:
+          type: decimal
+        amount:
+          type: decimal
+        promo_code:
+          type: string
+
+  - name: total_discounts
+    type: decimal
+    precision: 10
+    scale: 2
+
+  # Subtotals
+  - name: subtotal
+    type: decimal
+    precision: 12
+    scale: 2
+    description: Base + taxes + fees - discounts
+
+  # Service & Markup
+  - name: service_fee
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+    description: OTA service fee
+
+  - name: markup_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    default: 0
+    description: Margin added to supplier cost
+
+  - name: markup_percentage
+    type: decimal
+    precision: 5
+    scale: 2
+    nullable: true
+
+  # Commission (internal)
+  - name: supplier_cost
+    type: decimal
+    precision: 12
+    scale: 2
+    nullable: true
+    description: Net cost from supplier
+
+  - name: commission_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    nullable: true
+
+  - name: commission_percentage
+    type: decimal
+    precision: 5
+    scale: 2
+    nullable: true
+
+  # Grand Total
+  - name: grand_total
+    type: decimal
+    precision: 12
+    scale: 2
+    required: true
+
+  - name: amount_per_person
+    type: decimal
+    precision: 10
+    scale: 2
+    nullable: true
+
+  # Payment Breakdown
+  - name: deposit_amount
+    type: decimal
+    precision: 10
+    scale: 2
+    nullable: true
+
+  - name: balance_amount
+    type: decimal
+    precision: 12
+    scale: 2
+    nullable: true
+
+  # Price Validity
+  - name: price_valid_until
+    type: datetime
+    description: Price guarantee expiry
+
+  - name: price_locked
+    type: boolean
+    default: false
+    description: Price confirmed/locked
+
+  - name: price_changed
+    type: boolean
+    default: false
+
+  - name: original_price
+    type: decimal
+    precision: 12
+    scale: 2
+    nullable: true
+    description: Original price if changed
+
+  # Fare Rules Reference
+  - name: fare_rules
+    type: object
+    nullable: true
+    properties:
+      refundable:
+        type: boolean
+      changeable:
+        type: boolean
+      change_fee:
+        type: decimal
+      cancellation_fee:
+        type: decimal
+
+  # Timestamps
+  - name: quoted_at
+    type: timestamp
+    description: When price was quoted
+
+  - name: confirmed_at
+    type: timestamp
+    nullable: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: grand_total > 0
+    message: Grand total must be positive
+
+  - rule: grand_total >= supplier_cost
+    message: Selling price cannot be below cost
+
+  - rule: total_discounts <= subtotal
+    message: Discounts cannot exceed subtotal
+
+relationships:
+  - name: booking
+    type: belongs_to
+    entity: booking
+    foreign_key: booking_id
+
+indexes:
+  - name: idx_pricing_booking
+    columns: [booking_id]
+
+  - name: idx_pricing_type
+    columns: [pricing_type]
+
+  - name: idx_pricing_validity
+    columns: [price_valid_until]
+
+computed_fields:
+  - name: subtotal
+    formula: base_price + total_taxes + total_fees + total_surcharges - total_discounts
+
+  - name: grand_total
+    formula: subtotal + service_fee + markup_amount
+
+  - name: profit_margin
+    formula: |
+      CASE
+        WHEN supplier_cost > 0 THEN
+          ROUND(((grand_total - supplier_cost) / grand_total) * 100, 2)
+        ELSE NULL
+      END
+
+  - name: is_price_valid
+    formula: price_valid_until > NOW()
+
+  - name: time_to_expiry_minutes
+    formula: TIMESTAMPDIFF(MINUTE, NOW(), price_valid_until)
+
+  - name: effective_discount_rate
+    formula: |
+      ROUND((total_discounts / (base_price + total_taxes + total_fees)) * 100, 2)
+
+business_rules:
+  - id: BR-PRC-001
+    name: Price Transparency
+    rule: |
+      Display pricing must show:
+      - Total price including all mandatory charges
+      - Breakdown available on request
+      - No hidden fees at checkout
+
+  - id: BR-PRC-002
+    name: Price Validity
+    rule: |
+      Flight prices: Valid until ticketing (may change)
+      Hotel prices: Valid until confirmation
+      Cache TTL: 15-30 minutes
+
+  - id: BR-PRC-003
+    name: Currency Conversion
+    rule: |
+      - Display in user's preferred currency
+      - Book in supplier currency
+      - Show conversion rate if different
+      - Final charge in booking currency
+
+  - id: BR-PRC-004
+    name: Markup Limits
+    rule: |
+      Maximum markup per product type:
+      - Flights: 3-5%
+      - Hotels: 15-25%
+      - Packages: 10-20%
+
+  - id: BR-PRC-005
+    name: Discount Stacking
+    rule: |
+      - Only one promo code per booking
+      - Loyalty discounts apply after promo
+      - Package discounts are separate
+
+events:
+  - name: pricing.calculated
+    payload:
+      - id
+      - booking_id
+      - grand_total
+      - currency
+
+  - name: pricing.expired
+    payload:
+      - id
+      - booking_id
+      - original_total
+
+  - name: pricing.changed
+    payload:
+      - id
+      - booking_id
+      - old_total
+      - new_total
+      - reason

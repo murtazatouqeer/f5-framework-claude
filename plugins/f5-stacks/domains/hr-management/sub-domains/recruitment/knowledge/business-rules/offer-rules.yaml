@@ -1,0 +1,541 @@
+name: offer-rules
+display_name: Offer Management Business Rules
+description: |
+  Business rules governing job offer creation, approval workflows,
+  compensation validation, contingencies, and offer acceptance process.
+
+domain: hr-management
+subdomain: recruitment
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Offer Approval Rules
+  - id: OFR-BR-001
+    name: offer_approval_chain
+    description: Approval requirements based on compensation level
+    category: approval
+    priority: critical
+
+    approval_matrix:
+      - compensation_range: "0-100000"
+        approvers:
+          - hiring_manager
+          - hr_business_partner
+
+      - compensation_range: "100001-200000"
+        approvers:
+          - hiring_manager
+          - department_head
+          - hr_business_partner
+          - compensation_team
+
+      - compensation_range: "200001-500000"
+        approvers:
+          - hiring_manager
+          - department_head
+          - hr_director
+          - cfo_delegate
+
+      - compensation_range: "500001+"
+        approvers:
+          - hiring_manager
+          - department_head
+          - chro
+          - cfo
+          - ceo  # for executive level
+
+    special_approvals:
+      sign_on_bonus:
+        threshold: 25000
+        requires: hr_director
+
+      relocation:
+        threshold: 50000
+        requires: hr_director
+
+      equity_grant:
+        any_amount: requires_compensation_committee
+
+      off_cycle_start:
+        any: requires_hr_approval
+
+  - id: OFR-BR-002
+    name: approval_timeline
+    description: SLA for offer approvals
+    category: approval
+    priority: high
+
+    sla:
+      standard:
+        target: 24 hours
+        maximum: 48 hours
+
+      executive:
+        target: 48 hours
+        maximum: 72 hours
+
+    escalation:
+      - at: 75% of maximum
+        action: remind_approver
+
+      - at: 100% of maximum
+        action: escalate_to_skip_level
+        notify: hr_director
+
+      - at: 150% of maximum
+        action: offer_at_risk_alert
+        notify: chro
+
+  - id: OFR-BR-003
+    name: parallel_vs_sequential_approval
+    description: When approvals can run in parallel
+    category: approval
+    priority: medium
+
+    rules:
+      parallel_allowed:
+        - hiring_manager AND hr_partner
+        - department_head AND compensation_team
+
+      sequential_required:
+        - hr_validation BEFORE executive_approval
+        - compensation_review BEFORE final_approval
+        - legal_review BEFORE equity_grant_approval
+
+  # Compensation Validation Rules
+  - id: OFR-BR-010
+    name: salary_band_compliance
+    description: Offer must fall within approved ranges
+    category: compensation
+    priority: critical
+
+    validation:
+      base_salary:
+        minimum: job_grade.band_minimum
+        maximum: job_grade.band_maximum
+        compa_ratio_target: 0.80 to 1.20
+
+      total_compensation:
+        maximum: approved_budget
+
+    exceptions:
+      above_band:
+        allowed_when:
+          - hot_skills_premium: documented
+          - retention_critical: business_justification
+          - market_adjustment: compensation_study
+        requires: compensation_committee_approval
+        maximum_exception: 15%
+
+      below_band:
+        warning: may_indicate_underpay
+        check: equity_across_similar_roles
+
+  - id: OFR-BR-011
+    name: internal_equity_check
+    description: Ensure pay equity with existing employees
+    category: compensation
+    priority: critical
+
+    checks:
+      - compare_to: similar_role_same_level
+        maximum_variance: 10%
+
+      - compare_to: same_team_members
+        flag_if: new_hire_exceeds_by: 15%
+
+      - compare_to: direct_reports  # for managers
+        ensure: manager_paid_higher
+
+    on_equity_issue:
+      action: flag_for_review
+      require: business_justification
+      document: rationale_for_difference
+      trigger: potential_compression_adjustment
+
+  - id: OFR-BR-012
+    name: market_rate_validation
+    description: Validate offer against market data
+    category: compensation
+    priority: high
+
+    benchmark:
+      source: approved_compensation_survey
+      percentile_target: 50th to 75th
+
+    alerts:
+      below_market:
+        threshold: below_25th_percentile
+        action: warning
+        message: "Offer may not be competitive"
+
+      above_market:
+        threshold: above_90th_percentile
+        action: require_justification
+        approval: compensation_committee
+
+  # Offer Components Rules
+  - id: OFR-BR-020
+    name: sign_on_bonus_rules
+    description: Rules governing sign-on bonuses
+    category: components
+    priority: high
+
+    eligibility:
+      - level: senior_and_above
+      - hard_to_fill: documented
+      - relocation_required: true
+      - competing_offers: documented
+
+    limits:
+      maximum_percent_of_base: 25%
+      maximum_absolute: 100000
+
+    clawback:
+      required: true
+      period: 12 months
+      proration: monthly
+
+    approval:
+      any_sign_on: hr_business_partner
+      above_25000: hr_director
+      above_50000: chro
+
+  - id: OFR-BR-021
+    name: relocation_package_rules
+    description: Rules for relocation assistance
+    category: components
+    priority: medium
+
+    eligibility:
+      minimum_distance: 50 miles
+      or: international_move
+
+    tiers:
+      tier_1_individual:
+        moving_allowance: 10000
+        temporary_housing: 30 days
+
+      tier_2_family:
+        moving_allowance: 25000
+        temporary_housing: 60 days
+        house_hunting_trips: 2
+
+      tier_3_executive:
+        full_service_relocation: true
+        home_sale_assistance: available
+        temporary_housing: 90 days
+
+    clawback:
+      required: true
+      period: 24 months
+      proration: monthly
+
+  - id: OFR-BR-022
+    name: equity_grant_rules
+    description: Rules for equity compensation
+    category: components
+    priority: critical
+
+    eligibility:
+      - company_type: [startup, public_company]
+      - level: typically_senior_and_above
+      - specific_roles: may_vary
+
+    guidelines:
+      new_hire_grant:
+        based_on: level_and_role
+        reference: equity_band_guidelines
+
+      refresh_grants:
+        eligible_after: 12 months
+        based_on: performance
+
+    vesting:
+      standard: 4 year with 1 year cliff
+      variations: require_board_approval
+
+    approval:
+      any_equity: compensation_committee
+      board_approval: above_threshold
+
+  # Offer Validity Rules
+  - id: OFR-BR-030
+    name: offer_expiration
+    description: Offer validity period
+    category: validity
+    priority: high
+
+    standard_validity:
+      non_executive: 5 business_days
+      executive: 10 business_days
+
+    extensions:
+      allowed: 1 time
+      maximum_additional: 5 business_days
+      requires: recruiter_approval
+
+    expired_offer:
+      action: mark_expired
+      reactivation: new_approval_required
+
+  - id: OFR-BR-031
+    name: offer_revision_rules
+    description: Rules for revising offers
+    category: validity
+    priority: high
+
+    allowed_changes:
+      without_reapproval:
+        - start_date: within_30_days
+        - work_location: same_cost_center
+
+      requires_reapproval:
+        - any_compensation_change
+        - title_change
+        - reporting_structure
+
+    negotiation:
+      maximum_rounds: 2
+      escalation: hiring_manager_decision
+
+    counter_offer:
+      policy: case_by_case
+      requires: business_justification
+      maximum_increase: 10%  # from original
+
+  # Contingency Rules
+  - id: OFR-BR-040
+    name: standard_contingencies
+    description: Required contingencies for all offers
+    category: contingencies
+    priority: critical
+
+    mandatory:
+      - background_check: all_roles
+      - reference_check: all_roles
+      - right_to_work: all_roles
+      - drug_screening: where_required_by_role
+
+    role_specific:
+      - security_clearance: defense_roles
+      - driving_record: driving_roles
+      - credit_check: financial_roles
+      - education_verification: as_required
+
+    timing:
+      initiate: upon_offer_acceptance
+      complete_before: start_date
+
+  - id: OFR-BR-041
+    name: contingency_failure_handling
+    description: Process when contingencies fail
+    category: contingencies
+    priority: critical
+
+    process:
+      - action: pause_onboarding
+      - action: notify_hr
+      - action: review_findings
+      - action: make_determination
+
+    outcomes:
+      clear: proceed_with_onboarding
+
+      adverse_action:
+        process: fcra_compliant
+        steps:
+          - send_pre_adverse_notice
+          - wait: 5 business_days
+          - allow_dispute
+          - make_final_decision
+          - send_adverse_action_notice
+
+      rescind_offer:
+        requires: [hr_review, legal_review]
+        document: reason_and_process
+
+  # Communication Rules
+  - id: OFR-BR-050
+    name: offer_communication
+    description: How offers are communicated
+    category: communication
+    priority: high
+
+    verbal_offer:
+      required_before: written_offer
+      made_by: recruiter_or_hiring_manager
+      include:
+        - compensation_overview
+        - start_date
+        - contingencies
+        - next_steps
+
+    written_offer:
+      timing: within_24_hours_of_verbal
+      format: official_letter
+      delivery: email_and_portal
+
+    required_documents:
+      - offer_letter
+      - benefits_summary
+      - equity_agreement  # if applicable
+      - relocation_agreement  # if applicable
+      - contingency_authorizations
+
+  - id: OFR-BR-051
+    name: confidentiality_of_offers
+    description: Offer confidentiality requirements
+    category: communication
+    priority: high
+
+    internal_visibility:
+      offer_details:
+        visible_to: [recruiter, hiring_manager, hr_partner, approvers]
+        not_visible_to: team_members
+
+      compensation:
+        visible_to: [recruiter, hr_partner, compensation_team]
+        restricted_from: hiring_manager  # if company policy
+
+    candidate_confidentiality:
+      request: keep_confidential_until_start
+      share_with: references_and_background_check_only
+
+  # Acceptance and Decline Rules
+  - id: OFR-BR-060
+    name: offer_acceptance_process
+    description: Process for accepting offers
+    category: acceptance
+    priority: critical
+
+    acceptance_method:
+      - electronic_signature: preferred
+      - wet_signature: accepted
+      - verbal: not_sufficient
+
+    post_acceptance:
+      immediate:
+        - send_confirmation
+        - initiate_background_check
+        - notify_hiring_manager
+        - create_onboarding_checklist
+
+      within_24_hours:
+        - notify_other_candidates
+        - close_requisition_if_filled
+        - trigger_equipment_order
+
+  - id: OFR-BR-061
+    name: offer_decline_handling
+    description: Process when offers are declined
+    category: acceptance
+    priority: medium
+
+    process:
+      - request_reason: for_analytics
+      - document: in_ats
+      - notify: hiring_manager
+
+    counter_offer_response:
+      if_reason: compensation
+      options:
+        - revise_offer  # requires approval
+        - maintain_offer
+        - withdraw_offer
+
+    analytics:
+      track:
+        - decline_reasons
+        - decline_by_role
+        - decline_by_competitor
+        - decline_by_compensation_gap
+
+  - id: OFR-BR-062
+    name: offer_rescission
+    description: Rules for rescinding accepted offers
+    category: acceptance
+    priority: critical
+
+    allowed_reasons:
+      - failed_contingency: documented
+      - misrepresentation: by_candidate
+      - business_change: rare_and_documented
+
+    process:
+      - review: hr_and_legal
+      - documentation: thorough
+      - communication: phone_then_written
+      - timing: as_soon_as_decision_made
+
+    not_allowed:
+      - budget_changes_after_acceptance
+      - hiring_manager_change_of_mind
+      - better_candidate_found
+
+  # Reporting Rules
+  - id: OFR-BR-070
+    name: offer_metrics_tracking
+    description: Metrics to track for offers
+    category: reporting
+    priority: medium
+
+    metrics:
+      offer_acceptance_rate:
+        target: 85%
+        alert_below: 70%
+
+      time_to_offer:
+        target: 3 days from decision
+        alert_above: 5 days
+
+      offer_to_start:
+        target: 14 days average
+
+      offer_decline_rate:
+        track_by: role, department, recruiter
+
+      compensation_deviation:
+        from_original_budget: track
+
+automation:
+  triggers:
+    - event: offer_created
+      action: initiate_approval_workflow
+
+    - event: all_approvals_received
+      action: generate_offer_letter
+
+    - event: offer_accepted
+      action: initiate_contingencies
+
+    - event: contingencies_cleared
+      action: finalize_onboarding
+
+integration:
+  - system: compensation_system
+    function: band_validation
+
+  - system: background_check_vendor
+    function: initiate_checks
+
+  - system: docusign
+    function: electronic_signature
+
+  - system: hris
+    function: employee_creation
+
+compliance:
+  - standard: FCRA
+    requirement: Adverse action process
+
+  - standard: Pay_Transparency
+    requirement: Salary range disclosure
+
+  - standard: EEOC
+    requirement: Non-discriminatory offers
+
+  - standard: SOX
+    requirement: Approval documentation

@@ -1,0 +1,402 @@
+name: Diagnosis
+display_name: Diagnosis / Chẩn đoán
+description: |
+  Clinical diagnosis entity representing medical conditions identified
+  for a patient. Supports ICD-10, SNOMED CT coding and tracks
+  diagnosis lifecycle from working to confirmed.
+
+domain: healthcare
+sub_domain: ehr
+entity_type: clinical
+version: "1.0"
+status: active
+
+# =============================================================================
+# IDENTIFIERS
+# =============================================================================
+identifiers:
+  primary:
+    name: id
+    type: uuid
+
+  business:
+    - name: diagnosis_id
+      display_name: Diagnosis ID
+      type: string
+      pattern: "^DX-[0-9]{10}$"
+      auto_generated: true
+
+# =============================================================================
+# STATUS
+# =============================================================================
+status_field:
+  name: status
+  type: enum
+  values:
+    - value: active
+      description: Current active diagnosis
+
+    - value: resolved
+      description: Condition has resolved
+
+    - value: inactive
+      description: No longer clinically relevant
+
+    - value: recurrence
+      description: Previously resolved condition has recurred
+
+    - value: entered_in_error
+      description: Diagnosis entered in error
+
+  default: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  classification:
+    - name: diagnosis_type
+      type: enum
+      required: true
+      values:
+        - value: admitting
+          description: Initial diagnosis at admission
+
+        - value: principal
+          description: Primary reason for encounter/admission
+
+        - value: secondary
+          description: Additional diagnoses
+
+        - value: working
+          description: Preliminary diagnosis being evaluated
+
+        - value: final
+          description: Confirmed final diagnosis
+
+        - value: differential
+          description: Possible diagnosis under consideration
+
+        - value: rule_out
+          description: Diagnosis being ruled out
+
+    - name: diagnosis_category
+      type: enum
+      values:
+        - encounter_diagnosis
+        - problem_list_item
+        - health_concern
+        - chief_complaint
+
+  context:
+    - name: patient_id
+      type: uuid
+      required: true
+      references: Patient
+
+    - name: encounter_id
+      type: uuid
+      references: Encounter
+
+    - name: diagnosing_provider_id
+      type: uuid
+      required: true
+      references: Provider
+
+    - name: confirmed_by_id
+      type: uuid
+      references: Provider
+
+    - name: confirmed_at
+      type: timestamp
+
+  coding:
+    - name: icd10_code
+      type: string
+      pattern: "^[A-Z][0-9]{2}(\\.[0-9]{1,4})?$"
+      description: ICD-10-CM/WHO code
+      example: "E11.65"
+
+    - name: icd10_description
+      type: string
+
+    - name: icd10_description_vi
+      type: string
+      description: Vietnamese translation
+
+    - name: icd9_code
+      type: string
+      description: Legacy ICD-9 code
+
+    - name: snomed_code
+      type: string
+      description: SNOMED CT code
+
+    - name: snomed_description
+      type: string
+
+    - name: snomed_description_vi
+      type: string
+
+  clinical:
+    - name: clinical_description
+      type: string
+      max_length: 1000
+      description: Free-text clinical description
+
+    - name: laterality
+      type: enum
+      values: [left, right, bilateral, not_applicable]
+
+    - name: body_site
+      type: string
+      description: Anatomical location
+
+    - name: severity
+      type: enum
+      values:
+        - mild
+        - moderate
+        - severe
+        - life_threatening
+
+    - name: clinical_status
+      type: enum
+      values:
+        - active
+        - relapse
+        - remission
+        - resolved
+
+    - name: verification_status
+      type: enum
+      values:
+        - unconfirmed
+        - provisional
+        - differential
+        - confirmed
+        - refuted
+      default: provisional
+
+  timing:
+    - name: onset_date
+      type: date
+      description: When condition started
+
+    - name: onset_age
+      type: integer
+      description: Age at onset if date unknown
+
+    - name: onset_period
+      type: enum
+      values: [childhood, adolescence, adulthood, unknown]
+
+    - name: recorded_date
+      type: timestamp
+      auto_set: on_create
+
+    - name: resolution_date
+      type: date
+
+    - name: abatement_age
+      type: integer
+      description: Age at resolution
+
+  characteristics:
+    - name: is_chronic
+      type: boolean
+      default: false
+
+    - name: is_principal
+      type: boolean
+      default: false
+      description: Principal diagnosis for encounter
+
+    - name: is_present_on_admission
+      type: boolean
+      description: POA indicator for inpatient
+
+    - name: poa_indicator
+      type: enum
+      values:
+        - Y  # Yes
+        - N  # No
+        - U  # Unknown
+        - W  # Clinically undetermined
+        - E  # Exempt
+
+    - name: sequence_number
+      type: integer
+      description: Order in diagnosis list
+
+  documentation:
+    - name: evidence
+      type: array
+      items:
+        type: object
+        properties:
+          type:
+            type: enum
+            values: [clinical_finding, lab_result, imaging, procedure, history]
+          reference_id:
+            type: uuid
+          description:
+            type: string
+
+    - name: notes
+      type: text
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  - name: patient
+    type: many_to_one
+    target: Patient
+    foreign_key: patient_id
+
+  - name: encounter
+    type: many_to_one
+    target: Encounter
+    foreign_key: encounter_id
+
+  - name: diagnosing_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: diagnosing_provider_id
+
+  - name: confirming_provider
+    type: many_to_one
+    target: Provider
+    foreign_key: confirmed_by_id
+
+  - name: related_diagnoses
+    type: many_to_many
+    target: Diagnosis
+    through: DiagnosisRelationship
+    relationship_type: [parent, complication, manifestation]
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-DX-001
+    name: ICD-10 Code Required
+    description: Diagnoses must have valid ICD-10 code for billing
+    rule: |
+      diagnosis_type IN ('principal', 'secondary', 'final')
+      REQUIRES icd10_code IS NOT NULL
+
+  - id: BR-DX-002
+    name: Principal Diagnosis
+    description: Inpatient encounters require exactly one principal diagnosis
+    rule: |
+      encounter.encounter_type = 'inpatient' AND
+      encounter.status = 'completed'
+      REQUIRES COUNT(is_principal = TRUE) = 1
+
+  - id: BR-DX-003
+    name: Provider Required
+    description: Diagnosis must be entered by a provider
+    rule: diagnosing_provider_id IS NOT NULL
+
+  - id: BR-DX-004
+    name: Onset Before Recording
+    description: Onset date cannot be after recorded date
+    rule: onset_date <= recorded_date
+
+  - id: BR-DX-005
+    name: Resolution Requires Active
+    description: Only active diagnoses can be resolved
+    rule: |
+      ON_RESOLVE:
+        status MUST BE 'active'
+        SET resolution_date = CURRENT_DATE
+
+  - id: BR-DX-006
+    name: Severity for Urgent
+    description: Severe/life-threatening requires documentation
+    rule: |
+      severity IN ('severe', 'life_threatening')
+      REQUIRES evidence IS NOT EMPTY OR notes IS NOT NULL
+
+  - id: BR-DX-007
+    name: POA Required for Inpatient
+    description: Present on admission indicator required for inpatient
+    rule: |
+      encounter.encounter_type = 'inpatient'
+      REQUIRES poa_indicator IS NOT NULL
+
+  - id: BR-DX-008
+    name: Chronic Condition Flag
+    description: Certain conditions auto-flag as chronic
+    rule: |
+      icd10_code IN CHRONIC_CONDITIONS_LIST
+      THEN is_chronic = TRUE
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_diagnosis_patient
+    columns: [patient_id]
+
+  - name: idx_diagnosis_encounter
+    columns: [encounter_id]
+
+  - name: idx_diagnosis_icd10
+    columns: [icd10_code]
+
+  - name: idx_diagnosis_snomed
+    columns: [snomed_code]
+
+  - name: idx_diagnosis_status
+    columns: [status]
+
+  - name: idx_diagnosis_type
+    columns: [diagnosis_type]
+
+  - name: idx_diagnosis_chronic
+    columns: [patient_id, is_chronic]
+    condition: "is_chronic = TRUE AND status = 'active'"
+
+# =============================================================================
+# SEED DATA - COMMON DIAGNOSES
+# =============================================================================
+seed_data:
+  common_diagnoses:
+    - icd10: E11.9
+      description: Type 2 diabetes mellitus without complications
+      description_vi: Đái tháo đường type 2 không biến chứng
+      is_chronic: true
+
+    - icd10: I10
+      description: Essential (primary) hypertension
+      description_vi: Tăng huyết áp nguyên phát
+      is_chronic: true
+
+    - icd10: J06.9
+      description: Acute upper respiratory infection, unspecified
+      description_vi: Nhiễm trùng đường hô hấp trên cấp tính
+
+    - icd10: K21.0
+      description: Gastro-esophageal reflux disease with esophagitis
+      description_vi: Trào ngược dạ dày thực quản có viêm thực quản
+
+    - icd10: M54.5
+      description: Low back pain
+      description_vi: Đau thắt lưng
+
+    - icd10: F32.9
+      description: Major depressive disorder, single episode, unspecified
+      description_vi: Rối loạn trầm cảm chính, giai đoạn đơn
+
+    - icd10: J45.909
+      description: Unspecified asthma, uncomplicated
+      description_vi: Hen suyễn không đặc hiệu, không biến chứng
+      is_chronic: true
+
+    - icd10: E78.5
+      description: Hyperlipidemia, unspecified
+      description_vi: Tăng lipid máu
+      is_chronic: true

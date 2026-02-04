@@ -1,0 +1,207 @@
+name: CartItem
+display_name: Cart Item / Mục giỏ hàng
+description: |
+  Individual line item in a shopping cart.
+  Captures product, variant, quantity, and price at the time of adding.
+  Price may be recalculated during checkout for accuracy.
+
+domain: e-commerce
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier of the cart item
+
+  - name: cart_id
+    type: uuid
+    required: true
+    description: Reference to parent cart
+
+  - name: product_id
+    type: uuid
+    required: true
+    description: Reference to product
+
+  - name: variant_id
+    type: uuid
+    required: false
+    description: Reference to product variant (if applicable)
+
+  - name: sku
+    type: string
+    required: true
+    description: SKU at time of adding
+    validation:
+      max_length: 50
+
+  - name: name
+    type: string
+    required: true
+    description: Product name at time of adding
+    validation:
+      max_length: 255
+
+  - name: variant_name
+    type: string
+    required: false
+    description: Variant name (e.g., "Blue - Medium")
+    validation:
+      max_length: 255
+
+  - name: image_url
+    type: string
+    required: false
+    description: Product image URL
+    validation:
+      format: url
+
+  - name: quantity
+    type: integer
+    required: true
+    description: Quantity in cart
+    validation:
+      min: 1
+    default: 1
+
+  - name: unit_price
+    type: decimal
+    required: true
+    description: Price per unit at time of adding
+    validation:
+      min: 0
+
+  - name: original_price
+    type: decimal
+    required: false
+    description: Original price before any discount
+    validation:
+      min: 0
+
+  - name: discount_amount
+    type: decimal
+    required: true
+    description: Item-level discount amount
+    validation:
+      min: 0
+    default: 0
+
+  - name: line_total
+    type: decimal
+    required: true
+    description: Total for this line (quantity * unit_price - discount)
+    validation:
+      min: 0
+
+  - name: weight
+    type: decimal
+    required: false
+    description: Item weight in grams (for shipping)
+    validation:
+      min: 0
+
+  - name: is_gift
+    type: boolean
+    required: true
+    description: Mark as gift (hide price, gift wrap)
+    default: false
+
+  - name: gift_message
+    type: string
+    required: false
+    description: Gift message
+    validation:
+      max_length: 500
+
+  - name: notes
+    type: string
+    required: false
+    description: Item-specific notes
+    validation:
+      max_length: 500
+
+  - name: custom_attributes
+    type: json
+    required: false
+    description: Custom attributes (personalization, etc.)
+
+  - name: reserved_until
+    type: timestamp
+    required: false
+    description: Inventory reservation expiry
+
+  - name: added_at
+    type: timestamp
+    required: true
+    description: When item was added to cart
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update timestamp
+
+relationships:
+  - name: cart
+    type: belongs_to
+    entity: Cart
+    required: true
+    description: Parent cart
+
+  - name: product
+    type: belongs_to
+    entity: Product
+    required: true
+    description: Associated product
+
+  - name: variant
+    type: belongs_to
+    entity: ProductVariant
+    required: false
+    description: Associated variant
+
+indexes:
+  - [cart_id]
+  - [product_id]
+  - [cart_id, product_id, variant_id]
+  - [reserved_until]
+
+business_rules:
+  - BR-CTI-001: Unique constraint on (cart_id, product_id, variant_id)
+  - BR-CTI-002: Adding same item increments quantity instead of new line
+  - BR-CTI-003: line_total = (quantity * unit_price) - discount_amount
+  - BR-CTI-004: quantity must be between product.min_order_quantity and product.max_order_quantity
+  - BR-CTI-005: Cannot add inactive or discontinued products
+  - BR-CTI-006: Price refreshed at checkout to ensure accuracy
+  - BR-CTI-007: Inventory check on add (optional reservation)
+  - BR-CTI-008: Reserved inventory released after reserved_until expires
+
+computed_fields:
+  - name: line_total
+    formula: (quantity * unit_price) - discount_amount
+    description: Total price for this line item
+
+  - name: savings
+    formula: (original_price - unit_price) * quantity
+    description: Total savings from sale price
+
+  - name: total_weight
+    formula: weight * quantity
+    description: Total weight for shipping calculation
+
+events:
+  - name: cart_item.added
+    payload: [id, cart_id, product_id, variant_id, quantity]
+    description: Fired when item added to cart
+
+  - name: cart_item.quantity_changed
+    payload: [id, cart_id, old_quantity, new_quantity]
+    description: Fired when quantity is updated
+
+  - name: cart_item.removed
+    payload: [id, cart_id, product_id, variant_id]
+    description: Fired when item removed from cart
+
+  - name: cart_item.reservation_expired
+    payload: [id, cart_id, product_id, quantity]
+    description: Fired when inventory reservation expires

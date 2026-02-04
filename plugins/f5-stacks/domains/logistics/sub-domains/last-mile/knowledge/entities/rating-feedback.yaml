@@ -1,0 +1,297 @@
+name: RatingFeedback
+display_name: Rating and Feedback
+description: |
+  Customer ratings and feedback for deliveries.
+  Tracks ratings for agents and overall delivery experience.
+
+domain: logistics
+subdomain: last-mile
+category: entities
+version: "1.0.0"
+status: active
+
+database:
+  table_name: ratings_feedback
+  primary_key: id
+  indexes:
+    - columns: [delivery_id]
+      unique: true
+    - columns: [delivery_agent_id]
+    - columns: [recipient_id]
+    - columns: [rating]
+    - columns: [created_at]
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    generated: true
+
+  - name: delivery_id
+    type: uuid
+    description: Delivery being rated
+    required: true
+    unique: true
+
+  - name: delivery_agent_id
+    type: uuid
+    description: Agent who delivered
+
+  - name: recipient_id
+    type: uuid
+    description: Recipient giving rating
+
+  # Overall rating
+  - name: rating
+    type: integer
+    description: Overall rating (1-5)
+    minimum: 1
+    maximum: 5
+    required: true
+
+  - name: rating_category
+    type: enum
+    description: Rating category
+    values:
+      - excellent     # 5
+      - good          # 4
+      - average       # 3
+      - poor          # 2
+      - terrible      # 1
+    computed_from: rating
+
+  # Detailed ratings
+  - name: delivery_speed_rating
+    type: integer
+    description: Rating for delivery speed
+    minimum: 1
+    maximum: 5
+
+  - name: agent_behavior_rating
+    type: integer
+    description: Rating for agent behavior
+    minimum: 1
+    maximum: 5
+
+  - name: package_condition_rating
+    type: integer
+    description: Rating for package condition
+    minimum: 1
+    maximum: 5
+
+  - name: communication_rating
+    type: integer
+    description: Rating for communication
+    minimum: 1
+    maximum: 5
+
+  # Feedback
+  - name: feedback_text
+    type: text
+    description: Written feedback
+    max_length: 1000
+
+  - name: feedback_tags
+    type: array
+    description: Selected feedback tags
+    items:
+      type: enum
+      values:
+        # Positive
+        - fast_delivery
+        - friendly_agent
+        - package_well_handled
+        - good_communication
+        - punctual
+        - professional
+        - helpful
+        # Negative
+        - late_delivery
+        - rude_agent
+        - package_damaged
+        - no_communication
+        - unprofessional
+        - hard_to_find
+        - left_wrong_place
+
+  # Positive highlights
+  - name: positive_feedback
+    type: array
+    description: What went well
+    items:
+      type: string
+
+  # Issues
+  - name: issues_reported
+    type: array
+    description: Problems reported
+    items:
+      type: string
+
+  - name: has_complaint
+    type: boolean
+    description: Includes a complaint
+    default: false
+
+  - name: complaint_category
+    type: enum
+    description: Complaint category if any
+    values:
+      - late_delivery
+      - damaged_package
+      - wrong_delivery
+      - agent_behavior
+      - missing_items
+      - poor_communication
+      - left_unsecured
+      - other
+
+  # Response
+  - name: requires_response
+    type: boolean
+    description: Needs follow-up
+    computed: "rating <= 2 OR has_complaint = true"
+
+  - name: response_status
+    type: enum
+    description: Response status
+    values:
+      - pending
+      - in_progress
+      - resolved
+      - closed
+
+  - name: response_text
+    type: text
+    description: Company response
+    max_length: 500
+
+  - name: responded_at
+    type: timestamp
+    description: When response was sent
+
+  - name: responded_by
+    type: uuid
+    description: Who responded
+
+  # Agent action
+  - name: agent_warned
+    type: boolean
+    description: Agent received warning
+    default: false
+
+  - name: agent_action_taken
+    type: text
+    description: Action taken with agent
+    max_length: 200
+
+  # Visibility
+  - name: is_public
+    type: boolean
+    description: Visible to others
+    default: true
+
+  - name: hidden_reason
+    type: string
+    description: Why hidden if not public
+    max_length: 100
+
+  # Authenticity
+  - name: is_verified_purchase
+    type: boolean
+    description: Verified delivery recipient
+    default: true
+
+  - name: flagged_as_fake
+    type: boolean
+    description: Flagged for review
+    default: false
+
+  # Tip
+  - name: tip_given
+    type: boolean
+    description: Tip was given
+    default: false
+
+  - name: tip_amount
+    type: decimal
+    description: Tip amount
+    precision: 10
+    scale: 2
+
+  # Timing
+  - name: requested_at
+    type: timestamp
+    description: When rating was requested
+
+  - name: submitted_at
+    type: timestamp
+    description: When rating was submitted
+
+  - name: time_to_rate_hours
+    type: decimal
+    description: Hours between delivery and rating
+    precision: 6
+    scale: 2
+
+  # Source
+  - name: source
+    type: enum
+    description: How rating was submitted
+    values:
+      - app
+      - sms_link
+      - email_link
+      - web
+      - call_center
+
+  # Audit
+  - name: created_at
+    type: timestamp
+    required: true
+    auto_generate: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+relationships:
+  - name: delivery
+    type: belongs_to
+    entity: Delivery
+    foreign_key: delivery_id
+
+  - name: agent
+    type: belongs_to
+    entity: DeliveryAgent
+    foreign_key: delivery_agent_id
+
+  - name: recipient
+    type: belongs_to
+    entity: Recipient
+    foreign_key: recipient_id
+
+business_rules:
+  - rule: BR-RAT-001
+    description: Rating must be within 7 days of delivery
+    validation: submitted_at <= delivery.completed_at + INTERVAL '7 days'
+
+  - rule: BR-RAT-002
+    description: Low ratings require follow-up
+    action: IF rating <= 2 THEN requires_response = true
+
+events:
+  - name: rating.submitted
+    description: Rating was submitted
+    payload: [rating_id, delivery_id, rating]
+
+  - name: rating.low_rating_alert
+    description: Low rating received
+    payload: [rating_id, delivery_agent_id, rating]
+    conditions:
+      rating: "<= 2"
+
+  - name: rating.responded
+    description: Response sent to rating
+    payload: [rating_id, responded_by]

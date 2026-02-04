@@ -1,0 +1,402 @@
+name: valuation-rules
+display_name: Inventory Valuation Rules
+display_name_vi: Quy tắc định giá tồn kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Business rules for inventory valuation, costing methods,
+  variance handling, and financial reporting. Ensures accurate
+  inventory value for financial statements.
+
+rule_categories:
+  - costing_method_rules
+  - standard_cost_rules
+  - moving_average_rules
+  - variance_rules
+  - period_end_rules
+
+rules:
+  # ============================================
+  # COSTING METHOD RULES
+  # ============================================
+  - id: VAL-001
+    name: Costing Method Assignment
+    category: costing_method_rules
+    priority: critical
+    description: |
+      Assign costing method based on material characteristics.
+    assignments:
+      standard_cost:
+        applies_to:
+          - Finished goods
+          - Semi-finished goods
+          - Components with stable prices
+        benefits:
+          - Consistent product costing
+          - Variance analysis
+          - Simplified inventory valuation
+      moving_average:
+        applies_to:
+          - Raw materials
+          - Purchased components
+          - Trading goods
+        benefits:
+          - Reflects current market prices
+          - Smooths price fluctuations
+      actual_cost:
+        applies_to:
+          - High-value unique items
+          - Project-specific materials
+          - Serialized equipment
+        benefits:
+          - Exact cost tracking
+          - Full traceability
+      fifo:
+        applies_to:
+          - Shelf-life materials
+          - Commodities
+        benefits:
+          - Matches physical flow
+          - GAAP compliant
+
+  - id: VAL-002
+    name: Cost Element Structure
+    category: costing_method_rules
+    priority: high
+    description: |
+      Components included in inventory cost.
+    cost_elements:
+      material_cost:
+        description: Purchase price of materials
+        includes:
+          - Base purchase price
+          - Less: Discounts, rebates
+      freight_in:
+        description: Inbound transportation
+        includes:
+          - Freight charges
+          - Customs duties
+          - Insurance
+      handling:
+        description: Receiving and inspection
+        includes:
+          - Unloading costs
+          - Inspection costs
+      conversion:
+        description: Manufacturing costs (for WIP/FG)
+        includes:
+          - Direct labor
+          - Machine costs
+          - Manufacturing overhead
+    excludes:
+      - Selling costs
+      - Administrative overhead
+      - Abnormal waste
+      - Storage beyond production needs
+
+  - id: VAL-003
+    name: Lower of Cost or NRV
+    category: costing_method_rules
+    priority: critical
+    description: |
+      Value inventory at lower of cost or net realizable value.
+    rule: |
+      Inventory_Value = MIN(Cost, Net_Realizable_Value)
+
+      Where:
+      Net_Realizable_Value = Selling_Price - Costs_to_Complete - Selling_Costs
+    triggers_for_review:
+      - Market price decline
+      - Slow-moving inventory
+      - Damaged goods
+      - Obsolete items
+      - Excess inventory
+    write_down_process:
+      - Identify items for review
+      - Calculate NRV
+      - Record write-down to expense
+      - Adjust inventory value
+
+  # ============================================
+  # STANDARD COST RULES
+  # ============================================
+  - id: STD-001
+    name: Standard Cost Setting
+    category: standard_cost_rules
+    priority: high
+    description: |
+      Process for setting standard costs.
+    frequency: Annually (with mid-year review if needed)
+    components:
+      material_standards:
+        - Bill of material quantities
+        - Standard purchase prices
+        - Scrap allowances
+      labor_standards:
+        - Standard hours per operation
+        - Standard labor rates
+      overhead_standards:
+        - Machine hour rates
+        - Overhead absorption rates
+    approval_required:
+      - Finance Manager
+      - Operations Manager
+      - Cost Accountant
+
+  - id: STD-002
+    name: Standard Cost Maintenance
+    category: standard_cost_rules
+    priority: medium
+    description: |
+      Rules for maintaining standard costs.
+    triggers_for_update:
+      - Annual budget cycle
+      - Material price change > 10%
+      - Process/routing change
+      - Significant volume change
+      - Engineering change
+    update_process:
+      - Calculate new standard
+      - Revalue existing inventory
+      - Book revaluation variance
+      - Effective date control
+
+  - id: STD-003
+    name: Price Variance Handling
+    category: standard_cost_rules
+    priority: high
+    description: |
+      Handle purchase price variance (PPV).
+    calculation: |
+      PPV = (Actual_Price - Standard_Price) × Quantity_Received
+    posting:
+      - Book PPV at time of receipt
+      - Credit/debit PPV account
+      - Include in material variance reports
+    analysis:
+      - By supplier
+      - By material group
+      - By buyer
+
+  # ============================================
+  # MOVING AVERAGE RULES
+  # ============================================
+  - id: MAP-001
+    name: Moving Average Calculation
+    category: moving_average_rules
+    priority: critical
+    description: |
+      Calculate moving average price at receipt.
+    formula: |
+      New_MAP = (Old_Qty × Old_MAP + New_Qty × New_Price) / (Old_Qty + New_Qty)
+    example: |
+      Existing: 100 units @ $10.00 = $1,000
+      Receipt:   50 units @ $12.00 =   $600
+      New MAP:  150 units @ $10.67 = $1,600
+    precision: 4 decimal places
+
+  - id: MAP-002
+    name: Zero Stock MAP Handling
+    category: moving_average_rules
+    priority: high
+    description: |
+      Handle MAP when stock goes to zero.
+    rule: |
+      IF stock goes to zero THEN
+        Retain last MAP for reference
+        On next receipt, use receipt price as new MAP
+    exception:
+      IF subsequent receipt within 30 days THEN
+        Consider averaging with retained MAP
+
+  - id: MAP-003
+    name: MAP Adjustment Rules
+    category: moving_average_rules
+    priority: medium
+    description: |
+      Rules for adjusting MAP outside receipts.
+    allowed_adjustments:
+      - Invoice price variance settlement
+      - Landed cost allocation
+      - Periodic revaluation
+    process:
+      - Calculate adjustment amount
+      - Book to inventory and variance account
+      - Document reason
+
+  # ============================================
+  # VARIANCE RULES
+  # ============================================
+  - id: VAR-001
+    name: Material Variance Categories
+    category: variance_rules
+    priority: high
+    description: |
+      Categories of material variances.
+    variance_types:
+      purchase_price_variance:
+        formula: (Actual_Price - Standard_Price) × Actual_Qty
+        timing: At receipt
+        account: PPV Account
+      material_usage_variance:
+        formula: (Actual_Usage - Standard_Usage) × Standard_Price
+        timing: At production consumption
+        account: MUV Account
+      material_mix_variance:
+        formula: Based on component substitution
+        timing: At production
+      inventory_adjustment_variance:
+        formula: Adjustment_Qty × Cost
+        timing: At adjustment posting
+
+  - id: VAR-002
+    name: Variance Investigation Thresholds
+    category: variance_rules
+    priority: medium
+    description: |
+      Thresholds triggering variance investigation.
+    thresholds:
+      purchase_price:
+        percentage: "> 5%"
+        absolute: "> $1,000"
+      material_usage:
+        percentage: "> 3%"
+        absolute: "> $500"
+      inventory_adjustment:
+        any_adjustment: "> $100"
+    investigation_required:
+      - Root cause analysis
+      - Corrective action
+      - Documentation
+
+  - id: VAR-003
+    name: Variance Disposition
+    category: variance_rules
+    priority: medium
+    description: |
+      How variances are disposed at period end.
+    methods:
+      write_off:
+        condition: Immaterial variance
+        action: Expense to P&L
+      prorate:
+        condition: Material variance AND inventory exists
+        action: Allocate to inventory, WIP, COGS
+      capitalize:
+        condition: Relates to specific inventory
+        action: Adjust inventory value
+    materiality_threshold: $10,000 or 1% of inventory
+
+  # ============================================
+  # PERIOD END RULES
+  # ============================================
+  - id: PER-001
+    name: Period End Cutoff
+    category: period_end_rules
+    priority: critical
+    description: |
+      Inventory cutoff procedures at period end.
+    requirements:
+      goods_receipt:
+        - All physical receipts recorded
+        - Goods in transit identified
+        - Receipt/ship date matches period
+      shipments:
+        - All shipments recorded
+        - In-transit inventory accounted
+        - COGS properly recorded
+      transfers:
+        - All transfers completed
+        - In-transit transfers identified
+    cutoff_date: Last business day of period
+    documentation: Cutoff reconciliation report
+
+  - id: PER-002
+    name: Inventory Reconciliation
+    category: period_end_rules
+    priority: critical
+    description: |
+      Monthly inventory reconciliation process.
+    reconciliations:
+      subledger_to_gl:
+        - Inventory value in system
+        - GL inventory accounts
+        - Identify and resolve differences
+      physical_to_system:
+        - Cycle count results
+        - Annual count results
+        - Book adjustments
+    tolerance: $500 or 0.1% of inventory value
+    approval: Controller sign-off
+
+  - id: PER-003
+    name: Slow-Moving Inventory Review
+    category: period_end_rules
+    priority: high
+    description: |
+      Quarterly review of slow-moving and obsolete inventory.
+    classification:
+      slow_moving:
+        definition: No movement > 90 days
+        review: Quarterly
+      excess:
+        definition: "> 12 months supply"
+        review: Quarterly
+      obsolete:
+        definition: No future use planned
+        review: Quarterly
+    reserve_policy:
+      slow_moving: 25% reserve after 6 months
+      excess: 50% reserve
+      obsolete: 100% reserve
+    disposal_process:
+      - Management approval
+      - Write-off to P&L
+      - Physical disposal
+
+  - id: PER-004
+    name: Cost Roll-Up
+    category: period_end_rules
+    priority: high
+    description: |
+      Roll up costs through BOM levels.
+    process:
+      - Calculate material costs at lowest level
+      - Add conversion costs
+      - Roll up to next BOM level
+      - Continue to finished goods
+    frequency: After each standard cost update
+    validation:
+      - Compare to prior period
+      - Investigate significant changes
+      - Management review
+
+compliance:
+  standards:
+    - GAAP (US Generally Accepted Accounting Principles)
+    - IFRS (International Financial Reporting Standards)
+    - SOX (Sarbanes-Oxley for internal controls)
+    - IAS 2 (Inventories)
+
+metrics:
+  - name: Inventory Accuracy
+    formula: (System_Value - Actual_Value) / Actual_Value
+    target: "< 1%"
+
+  - name: Purchase Price Variance
+    formula: Total_PPV / Total_Purchases
+    target: "< 3%"
+
+  - name: Slow-Moving Inventory Ratio
+    formula: Slow_Moving_Value / Total_Inventory_Value
+    target: "< 5%"
+
+  - name: Inventory Turns
+    formula: Annual_COGS / Average_Inventory_Value
+    target: Industry specific
+
+  - name: Days of Inventory
+    formula: (Average_Inventory / COGS) × 365
+    target: Industry specific

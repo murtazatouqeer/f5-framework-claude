@@ -1,0 +1,548 @@
+# Controlled Substance Workflow
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Workflow for handling controlled substance prescriptions
+
+workflow:
+  id: controlled-substance-workflow
+  name: Controlled Substance Processing
+  name_ja: 規制薬物処理ワークフロー
+  description: Specialized workflow for controlled substance prescriptions with DEA compliance
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  trigger:
+    events:
+      - controlled_prescription_received
+      - controlled_refill_request
+      - controlled_transfer_request
+      - pdmp_alert_triggered
+
+  actors:
+    - id: pharmacy_tech
+      role: Pharmacy Technician
+      description: Performs initial processing, cannot override controls
+      
+    - id: pharmacist
+      role: Pharmacist (PIC)
+      description: Reviews all controlled, makes clinical decisions, PDMP checks
+      
+    - id: system
+      role: Pharmacy System
+      description: Automated validation and logging
+      
+    - id: prescriber
+      role: DEA-Registered Prescriber
+      description: Authorized to prescribe controlled substances
+
+  preconditions:
+    - Pharmacist on duty
+    - PDMP system accessible
+    - DEA registration current
+    - Controlled substance inventory accurate
+
+  overview:
+    description: |
+      Controlled substance workflow handles all aspects of processing
+      prescriptions for DEA scheduled substances (C-II through C-V).
+      Includes enhanced verification, PDMP checking, patient ID verification,
+      and comprehensive documentation for DEA compliance.
+
+  dea_schedules:
+    schedule_II:
+      description: "High potential for abuse, severe dependence"
+      examples: ["Oxycodone", "Hydromorphone", "Fentanyl", "Amphetamine", "Methylphenidate"]
+      refills_allowed: false
+      electronic_rx: "EPCS required"
+      transfer: "Not allowed"
+      
+    schedule_III:
+      description: "Moderate to low potential for dependence"
+      examples: ["Buprenorphine", "Testosterone", "Ketamine"]
+      refills_allowed: "Up to 5 refills in 6 months"
+      electronic_rx: "EPCS or paper"
+      transfer: "One-time transfer allowed"
+      
+    schedule_IV:
+      description: "Low potential for abuse"
+      examples: ["Alprazolam", "Diazepam", "Zolpidem", "Tramadol"]
+      refills_allowed: "Up to 5 refills in 6 months"
+      electronic_rx: "EPCS or paper"
+      transfer: "One-time transfer allowed"
+      
+    schedule_V:
+      description: "Lower potential than Schedule IV"
+      examples: ["Pregabalin", "Lacosamide", "Some cough preparations"]
+      refills_allowed: "Up to 5 refills in 6 months"
+      electronic_rx: "EPCS or paper"
+      transfer: "One-time transfer allowed"
+
+  steps:
+    # Receive Controlled Prescription
+    - step: 1
+      id: receive_controlled
+      name: Receive Controlled Substance Prescription
+      actor: system
+      description: Receive and perform initial validation
+      
+      reception_methods:
+        electronic_epcs:
+          requirements:
+            - EPCS-certified prescriber
+            - Two-factor authentication
+            - Digital signature
+          validation:
+            - Verify digital signature
+            - Confirm prescriber DEA
+            - Check certificate validity
+        written:
+          requirements:
+            - Original prescription (C-II)
+            - Prescriber signature
+            - DEA number on prescription
+          validation:
+            - Verify ink signature
+            - Check security features
+            - Confirm not a copy
+        phone:
+          requirements:
+            - Emergency only for C-II
+            - C-III through C-V allowed
+            - Prescriber callback verification
+          validation:
+            - Verify caller identity
+            - Document callback number
+            - Confirm prescriber authorization
+            
+      initial_validation:
+        - DEA number valid and checksum correct
+        - Prescriber authorized for schedule
+        - Prescription date within valid period
+        - All required elements present
+        
+      database_operations:
+        - CREATE prescription with controlled_flag = true
+        - SET dea_schedule
+        - LOG receipt_method, receipt_datetime
+        - STORE prescription_image (if paper)
+        
+      next_step: 2
+
+    # DEA Validation
+    - step: 2
+      id: dea_validation
+      name: Validate DEA Credentials
+      actor: system
+      description: Verify prescriber DEA authorization
+      
+      dea_number_validation:
+        format_check:
+          - First letter: A, B, F, G, M (practitioner types)
+          - Second letter: First letter of last name
+          - Seven numeric digits
+          - Checksum validation
+        status_check:
+          - Registration active
+          - Not on revoked list
+          - Schedule privileges match Rx
+          
+      prescriber_verification:
+        - State license active
+        - DEA registration address matches
+        - Authorized for prescribed schedule
+        - Mid-level has collaborative agreement (if applicable)
+        
+      red_flags:
+        - DEA expired or suspended
+        - Wrong schedule for prescriber type
+        - Out-of-state prescriber concerns
+        - Known problem prescriber
+        
+      database_operations:
+        - LOG dea_validation_result
+        - STORE prescriber_verification_status
+        
+      next_step: 3
+
+    # PDMP Check
+    - step: 3
+      id: pdmp_check
+      name: PDMP Query
+      actor: pharmacist
+      description: Query prescription drug monitoring program
+      
+      pdmp_query:
+        required_for:
+          - All C-II prescriptions
+          - C-III through C-V (state-dependent)
+          - New patients
+          - Red flag scenarios
+        query_data:
+          - Patient name and DOB
+          - Date range (typically 12 months)
+          - All controlled substances
+          
+      pdmp_review:
+        check_for:
+          - Multiple prescribers (doctor shopping)
+          - Multiple pharmacies
+          - High MME (morphine milligram equivalent)
+          - Early refill patterns
+          - Concerning drug combinations
+          
+      pdmp_outcomes:
+        clear:
+          action: "Document review, continue processing"
+        concerning:
+          action: "Pharmacist clinical review required"
+          indicators:
+            - "> 90 MME/day opioid"
+            - "Opioid + benzodiazepine"
+            - "> 3 prescribers in 3 months"
+            - "> 3 pharmacies in 3 months"
+        red_flag:
+          action: "Hold prescription, possible refusal"
+          documentation: "Full documentation required"
+          
+      database_operations:
+        - LOG pdmp_query_datetime
+        - STORE pdmp_results (encrypted)
+        - DOCUMENT pharmacist_review
+        
+      next_step: 4
+
+    # Pharmacist Clinical Review
+    - step: 4
+      id: clinical_review
+      name: Pharmacist Clinical Review
+      actor: pharmacist
+      description: Clinical evaluation of controlled prescription
+      
+      review_criteria:
+        legitimacy:
+          - Medical purpose evident
+          - Appropriate for condition (if known)
+          - Within usual dosing parameters
+          - Not diversion indicators
+        patient_factors:
+          - Treatment history known
+          - Previous controlled substance use
+          - Known allergies or conditions
+          - Age-appropriate dosing
+        red_flag_assessment:
+          - Cash payment for expensive controlled
+          - Long distance from prescriber
+          - Specific drug/dose requested
+          - Excessive quantities
+          
+      corresponding_responsibility:
+        requirement: "Pharmacist must determine Rx issued for legitimate medical purpose"
+        documentation: "Document basis for determination"
+        
+      review_outcomes:
+        approve:
+          action: "Sign off, continue to verification"
+        hold:
+          action: "Contact prescriber for clarification"
+        refuse:
+          action: "Document refusal reason, return to patient"
+          documentation: "Refusal documentation required"
+          
+      database_operations:
+        - LOG clinical_review_decision
+        - DOCUMENT review_notes
+        - SET reviewed_by_pharmacist_id
+        
+      next_step: 5 (if approved)
+
+    # Patient ID Verification
+    - step: 5
+      id: patient_id_verification
+      name: Verify Patient Identity
+      actor: pharmacy_tech
+      description: Verify patient identity before dispensing
+      
+      id_requirements:
+        acceptable_id:
+          primary:
+            - State-issued driver's license
+            - State ID card
+            - US passport
+            - Military ID
+          secondary:
+            - Credit card with photo
+            - Employee ID
+            - School ID (with photo)
+        recording:
+          - ID type
+          - ID number
+          - Expiration date
+          - State/issuer
+          
+      verification_process:
+        - Confirm name matches prescription
+        - Verify photo matches person
+        - Check ID not expired
+        - Record ID information
+        
+      agent_pickup:
+        requirements:
+          - Patient authorization on file
+          - Agent ID recorded
+          - Relationship documented
+        restrictions:
+          - Some states prohibit agent pickup for C-II
+          - Pharmacy policy may be stricter
+          
+      database_operations:
+        - LOG id_verification
+        - STORE id_type, id_number (compliant storage)
+        - DOCUMENT pickup_person if agent
+        
+      next_step: 6
+
+    # Inventory Management
+    - step: 6
+      id: inventory_management
+      name: Update Controlled Substance Inventory
+      actor: system
+      description: Perpetual inventory tracking
+      
+      perpetual_inventory:
+        schedule_II:
+          requirement: "Exact perpetual inventory required"
+          update_timing: "Before dispensing"
+          reconciliation: "Daily for high-movement items"
+        schedule_III_V:
+          requirement: "Perpetual inventory recommended"
+          update_timing: "At time of dispensing"
+          reconciliation: "Weekly or as needed"
+          
+      inventory_operations:
+        deduction:
+          - Verify quantity on hand
+          - Deduct dispensed quantity
+          - Record lot number dispensed
+          - Update perpetual log
+        verification:
+          - Compare system to physical
+          - Investigate any discrepancy
+          - Document reconciliation
+          
+      discrepancy_handling:
+        minor: "< 2 units - document and investigate"
+        significant: "> 2 units - pharmacist review required"
+        suspected_diversion: "Immediate investigation, possible DEA report"
+        
+      database_operations:
+        - UPDATE controlled_substance_inventory
+        - CREATE controlled_substance_log entry
+        - LOG dispensed_by, datetime, lot_number
+        
+      next_step: 7
+
+    # Dispensing Verification
+    - step: 7
+      id: dispensing_verification
+      name: Final Dispensing Verification
+      actor: pharmacist
+      description: Pharmacist final check before dispensing
+      
+      verification_checklist:
+        prescription:
+          - Correct drug and strength
+          - Correct quantity
+          - Label accurate
+          - DEA requirements met
+        documentation:
+          - PDMP checked and documented
+          - Patient ID verified
+          - Inventory updated
+          - All required fields complete
+        counseling_prep:
+          - Note any special counseling needs
+          - Check for drug interactions
+          - Review storage requirements
+          
+      controlled_specific_checks:
+        - Verify DEA number on label
+        - Confirm no refills for C-II
+        - Check refill count for C-III through C-V
+        - Verify prescription date compliance
+        
+      database_operations:
+        - UPDATE dispense.verified_by
+        - SET status = 'ready'
+        - LOG verification_datetime
+        
+      next_step: 8
+
+    # Patient Counseling
+    - step: 8
+      id: controlled_counseling
+      name: Controlled Substance Counseling
+      actor: pharmacist
+      description: Required counseling for controlled substances
+      
+      counseling_requirements:
+        mandatory_topics:
+          - Proper use and dosing
+          - Storage requirements (secure)
+          - Disposal of unused medication
+          - Risk of dependence/addiction
+          - Interaction warnings
+          - Driving/operating machinery warnings
+        opioid_specific:
+          - Signs of overdose
+          - Naloxone availability
+          - Risk of respiratory depression
+          - Concurrent substance warnings
+          
+      naloxone_offer:
+        when_required:
+          - High dose opioid (> 50 MME)
+          - Concurrent benzodiazepine
+          - History of overdose
+          - Patient request
+        documentation: "Document offer and acceptance/refusal"
+        
+      patient_acknowledgment:
+        - Understanding of proper use
+        - Storage and security
+        - Disposal requirements
+        - Risks explained
+        
+      database_operations:
+        - LOG counseling_provided
+        - DOCUMENT topics_covered
+        - STORE patient_acknowledgment
+        
+      next_step: 9
+
+    # Point of Sale
+    - step: 9
+      id: controlled_pos
+      name: Controlled Substance Point of Sale
+      actor: pharmacy_tech
+      description: Complete transaction with ID verification
+      
+      pos_requirements:
+        id_verification:
+          - Re-verify ID matches recorded
+          - Confirm patient or authorized agent
+        signature_collection:
+          - Electronic or paper signature
+          - Required in most states
+          - Captures date/time
+        payment:
+          - Process payment
+          - Issue receipt
+          
+      sales_limits:
+        pseudoephedrine:
+          daily: "3.6 grams"
+          monthly: "9 grams (7.5g mail order)"
+          logging: "NPLEx or state system"
+        state_specific:
+          - Some states limit opioid quantities
+          - Emergency supply limitations
+          
+      database_operations:
+        - UPDATE dispense.status = 'sold'
+        - LOG sold_datetime, sold_to
+        - STORE signature
+        - UPDATE prescription.last_fill_date
+        
+      next_step: Complete
+
+  completion:
+    status: controlled_dispensed
+    outputs:
+      - controlled_prescription_record
+      - pdmp_documentation
+      - patient_id_record
+      - controlled_substance_log
+      - dispensing_record
+      - counseling_documentation
+
+  special_procedures:
+    partial_fill:
+      schedule_II:
+        allowed: "Yes, with limitations"
+        timeline: "Must complete within 72 hours"
+        documentation: "Quantity dispensed, quantity owed"
+      schedule_III_V:
+        allowed: "Yes"
+        timeline: "Within 6 months of original date"
+        
+    emergency_dispensing:
+      schedule_II:
+        allowed: "With oral authorization"
+        quantity: "Maximum 72-hour supply"
+        follow_up: "Written Rx within 7 days"
+        
+    transfer:
+      schedule_II: "Not allowed"
+      schedule_III_V:
+        allowed: "One-time transfer only"
+        documentation: "Both pharmacies must document"
+        
+    destruction:
+      methods:
+        - Reverse distributor
+        - DEA-authorized destruction event
+        - On-site with two witnesses
+      documentation:
+        - DEA Form 41
+        - Witness signatures
+        - Inventory update
+
+  error_handling:
+    dea_validation_failed:
+      action: "Hold prescription, contact prescriber"
+      
+    pdmp_unavailable:
+      action: "Document attempt, proceed with caution, recheck later"
+      
+    inventory_discrepancy:
+      action: "Stop and reconcile before proceeding"
+      
+    patient_id_insufficient:
+      action: "Cannot dispense, require proper ID"
+      
+    suspected_diversion:
+      action: "Refuse to fill, document, report if required"
+
+  compliance:
+    dea_requirements:
+      - Maintain accurate controlled substance inventory
+      - Report theft/loss within one business day
+      - Biennial inventory
+      - Record retention (2 years minimum, state may require more)
+      
+    state_requirements:
+      - PDMP reporting (typically within 24 hours)
+      - Additional documentation requirements
+      - Prescription monitoring requirements
+      
+    internal_controls:
+      - Limited access to controlled inventory
+      - Perpetual inventory maintenance
+      - Regular audits
+      - Discrepancy investigation procedures
+
+  metrics:
+    track:
+      - pdmp_check_rate
+      - controlled_dispensing_time
+      - inventory_accuracy
+      - discrepancy_rate
+      - counseling_compliance
+      - refusal_rate
+
+  audit:
+    log_all_steps: true
+    retention_days: 2555
+    dea_compliant: true
+    hipaa_compliant: true
+    state_board_compliant: true

@@ -1,0 +1,403 @@
+name: requisition-rules
+display_name: Job Requisition Business Rules
+description: |
+  Business rules governing job requisition creation, approval, budget validation,
+  and headcount management within the recruitment process.
+
+domain: hr-management
+subdomain: recruitment
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Approval Rules
+  - id: REQ-BR-001
+    name: requisition_approval_required
+    description: All job requisitions must be approved before posting
+    category: approval
+    priority: critical
+
+    condition:
+      when: "requisition.status == 'draft' AND action == 'submit'"
+
+    validation:
+      - field: job_title
+        rule: not_empty
+        message: "Job title is required"
+
+      - field: department_id
+        rule: not_empty
+        message: "Department must be selected"
+
+      - field: hiring_manager_id
+        rule: not_empty
+        message: "Hiring manager must be assigned"
+
+      - field: salary_range_min
+        rule: positive
+        message: "Minimum salary must be positive"
+
+      - field: salary_range_max
+        rule: greater_than
+        compare_to: salary_range_min
+        message: "Maximum salary must exceed minimum"
+
+    action:
+      set_status: pending_approval
+      trigger: create_approval_request
+
+  - id: REQ-BR-002
+    name: approval_chain_by_level
+    description: Approval chain determined by position level and budget
+    category: approval
+    priority: critical
+
+    rules:
+      - level: entry
+        salary_threshold: 100000
+        approvers:
+          - hiring_manager
+          - department_head
+
+      - level: mid
+        salary_threshold: 200000
+        approvers:
+          - hiring_manager
+          - department_head
+          - hr_director
+
+      - level: senior
+        salary_threshold: 500000
+        approvers:
+          - hiring_manager
+          - department_head
+          - hr_director
+          - vp_level
+
+      - level: executive
+        salary_threshold: null  # unlimited
+        approvers:
+          - ceo
+          - board_compensation_committee
+
+  - id: REQ-BR-003
+    name: approval_timeout
+    description: Auto-escalate if approval not received within threshold
+    category: approval
+    priority: high
+
+    condition:
+      when: "approval_request.pending_duration > threshold"
+
+    thresholds:
+      first_reminder: 48h
+      second_reminder: 72h
+      escalation: 96h
+
+    actions:
+      - at: first_reminder
+        action: send_reminder
+        to: current_approver
+
+      - at: second_reminder
+        action: send_reminder
+        to: current_approver
+        cc: hr_coordinator
+
+      - at: escalation
+        action: escalate
+        to: skip_level_manager
+        notify: hr_director
+
+  # Budget Rules
+  - id: REQ-BR-010
+    name: budget_validation
+    description: Requisition must fit within department budget
+    category: budget
+    priority: critical
+
+    condition:
+      when: "requisition.submitted"
+
+    validation:
+      check: |
+        department.available_headcount_budget >=
+        requisition.estimated_annual_cost
+
+    on_failure:
+      action: reject
+      reason: "Requisition exceeds department budget"
+      suggest: "Request budget increase or adjust compensation"
+
+  - id: REQ-BR-011
+    name: salary_band_compliance
+    description: Offered compensation must fall within grade band
+    category: budget
+    priority: high
+
+    condition:
+      when: "requisition.salary_range defined"
+
+    validation:
+      - check: "salary_range_min >= job_grade.band_minimum"
+        message: "Minimum below grade band floor"
+
+      - check: "salary_range_max <= job_grade.band_maximum"
+        message: "Maximum exceeds grade band ceiling"
+
+      - check: "salary_range_max - salary_range_min <= band_width_limit"
+        message: "Salary range too wide"
+
+    exceptions:
+      - hot_skill_premium: "+20% above band"
+        requires_approval: compensation_committee
+
+      - market_adjustment: "+15% above band"
+        requires_approval: hr_director
+
+  - id: REQ-BR-012
+    name: headcount_availability
+    description: Verify headcount slot is available
+    category: budget
+    priority: critical
+
+    condition:
+      when: "requisition.type == 'new_headcount'"
+
+    validation:
+      check: "department.approved_headcount > department.filled_positions"
+
+    on_failure:
+      action: hold
+      reason: "No approved headcount available"
+      required_action: "Submit headcount request first"
+
+  # Requisition Content Rules
+  - id: REQ-BR-020
+    name: job_description_completeness
+    description: Job description must include required sections
+    category: content
+    priority: high
+
+    required_sections:
+      - section: responsibilities
+        min_items: 5
+        message: "List at least 5 key responsibilities"
+
+      - section: requirements
+        min_items: 3
+        message: "List at least 3 requirements"
+
+      - section: preferred_qualifications
+        min_items: 0  # optional
+
+      - section: benefits_summary
+        required_for: [external_posting]
+
+    validation:
+      - field: description
+        rule: min_length
+        value: 200
+        message: "Job description must be at least 200 characters"
+
+  - id: REQ-BR-021
+    name: non_discriminatory_language
+    description: Job posting must use inclusive language
+    category: compliance
+    priority: critical
+
+    prohibited_terms:
+      age_related:
+        - "young"
+        - "recent graduate"
+        - "digital native"
+        - "energetic"
+
+      gender_related:
+        - "he/she" # should use "they"
+        - "manpower"
+        - "salesman"
+        - "chairman"
+
+      ability_related:
+        - "must be able to walk"
+        - "must stand for long periods"
+        # unless bona fide occupational requirement
+
+    suggested_alternatives:
+      "young": "motivated"
+      "he/she": "they"
+      "manpower": "workforce"
+      "salesman": "sales representative"
+
+    on_violation:
+      action: flag_for_review
+      notify: hr_compliance
+
+  # Timing Rules
+  - id: REQ-BR-030
+    name: posting_duration
+    description: Internal posting requirements before external
+    category: timing
+    priority: high
+
+    rules:
+      - condition: "company_policy.internal_first == true"
+        internal_posting_period: 5 business_days
+
+      - condition: "requisition.confidential == true"
+        internal_posting_period: 0  # skip internal
+        requires_approval: hr_director
+
+      - condition: "requisition.urgent == true"
+        internal_posting_period: 2 business_days
+        requires_approval: department_head
+
+  - id: REQ-BR-031
+    name: requisition_expiration
+    description: Requisitions expire if not filled within timeframe
+    category: timing
+    priority: medium
+
+    rules:
+      - default_expiration: 90 days
+      - warning_at: 75 days
+      - extension_allowed: true
+      - max_extensions: 2
+      - extension_requires: hiring_manager_justification
+
+    on_expiration:
+      action: set_status
+      to: expired
+      notify: [hiring_manager, recruiter, hr_coordinator]
+
+  # Assignment Rules
+  - id: REQ-BR-040
+    name: recruiter_assignment
+    description: Rules for assigning recruiters to requisitions
+    category: assignment
+    priority: medium
+
+    auto_assignment_criteria:
+      - match: department_specialty
+        weight: 0.4
+
+      - match: skill_area_expertise
+        weight: 0.3
+
+      - match: current_workload
+        weight: 0.2
+        inverse: true  # lower workload = higher score
+
+      - match: past_success_rate
+        weight: 0.1
+
+    constraints:
+      - max_requisitions_per_recruiter: 15
+      - executive_search: specialized_recruiter_required
+      - technical_roles: technical_recruiter_preferred
+
+  - id: REQ-BR-041
+    name: backup_recruiter
+    description: Assign backup for critical requisitions
+    category: assignment
+    priority: low
+
+    condition:
+      when: "requisition.priority == 'critical' OR requisition.time_sensitive == true"
+
+    action:
+      assign: backup_recruiter
+      access_level: full_visibility
+      escalation_recipient: true
+
+  # Duplicate Prevention
+  - id: REQ-BR-050
+    name: duplicate_requisition_check
+    description: Prevent duplicate requisitions
+    category: validation
+    priority: medium
+
+    check:
+      - same_job_title: within_department
+        timeframe: 30 days
+        action: warn
+
+      - same_job_code: company_wide
+        timeframe: 90 days
+        action: require_justification
+
+    exceptions:
+      - multiple_openings: allow_with_count
+      - different_locations: allow
+
+  # Cancellation Rules
+  - id: REQ-BR-060
+    name: requisition_cancellation
+    description: Rules for cancelling requisitions
+    category: lifecycle
+    priority: high
+
+    allowed_reasons:
+      - budget_cut
+      - position_eliminated
+      - internal_transfer
+      - role_redefined
+      - hiring_freeze
+
+    required_actions:
+      - notify_candidates: true
+      - notify_recruiters: true
+      - log_reason: true
+
+    restrictions:
+      - cannot_cancel_if: "offer_extended AND not_rejected"
+        exception: legal_or_force_majeure
+
+    approval_required:
+      - from: hiring_manager
+      - from: hr_coordinator
+        when: "candidates_in_pipeline > 0"
+
+automation:
+  triggers:
+    - event: requisition_created
+      action: validate_all_rules
+
+    - event: requisition_submitted
+      action: initiate_approval_workflow
+
+    - event: approval_received
+      action: check_budget_and_headcount
+
+    - event: all_approvals_complete
+      action: assign_recruiter
+
+    - event: expiration_warning
+      action: notify_stakeholders
+
+integration:
+  - system: HRIS
+    sync: headcount_data
+
+  - system: Finance
+    sync: budget_data
+
+  - system: Org_Chart
+    sync: approval_hierarchy
+
+audit:
+  track:
+    - all_approvals
+    - budget_exceptions
+    - compliance_violations
+    - cancellations
+
+  retention: 7 years
+
+compliance:
+  - standard: SOX
+    requirement: Approval audit trail
+  - standard: internal_audit
+    requirement: Budget validation documentation

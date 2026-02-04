@@ -1,0 +1,290 @@
+name: Balance
+display_name: Balance / Số dư
+description: |
+  User's balance of a specific cryptocurrency asset in a wallet.
+  Tracks available, locked, and pending amounts.
+
+domain: fintech
+sub_domain: crypto
+entity_type: core
+version: "1.0"
+status: active
+
+# =============================================================================
+# ATTRIBUTES
+# =============================================================================
+attributes:
+  # Primary Key
+  id:
+    type: uuid
+    primary_key: true
+    description: Unique balance record identifier
+
+  # References
+  wallet_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Parent wallet
+    reference: wallets.id
+
+  asset_id:
+    type: uuid
+    required: true
+    indexed: true
+    description: Cryptocurrency asset
+    reference: crypto_assets.id
+
+  # Balance Amounts
+  total_balance:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Total balance including all holds
+
+  available_balance:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    calculated: true
+    description: Available for trading/withdrawal
+    formula: total_balance - locked_balance - in_order - staking_balance - pending_withdrawal
+
+  locked_balance:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Locked for various reasons (security, dispute)
+
+  in_order:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Amount locked in open orders
+
+  staking_balance:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Amount currently staked
+
+  pending_deposit:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Deposits waiting for confirmations
+
+  pending_withdrawal:
+    type: decimal
+    precision: 28
+    scale: 8
+    default: 0
+    description: Withdrawals being processed
+
+  # Calculated Values
+  value_usd:
+    type: decimal
+    precision: 18
+    scale: 2
+    calculated: true
+    description: Current value in USD
+
+  value_btc:
+    type: decimal
+    precision: 18
+    scale: 8
+    calculated: true
+    description: Current value in BTC
+
+  # Average Cost Basis
+  average_cost:
+    type: decimal
+    precision: 28
+    scale: 8
+    description: Average acquisition cost per unit
+
+  realized_pnl:
+    type: decimal
+    precision: 18
+    scale: 8
+    default: 0
+    description: Realized profit/loss
+
+  unrealized_pnl:
+    type: decimal
+    precision: 18
+    scale: 8
+    calculated: true
+    description: Unrealized profit/loss
+
+  # Timestamps
+  first_transaction_at:
+    type: timestamp
+    description: First deposit or trade
+
+  last_transaction_at:
+    type: timestamp
+    description: Most recent transaction
+
+  updated_at:
+    type: timestamp
+    auto_update: true
+    description: Last balance update
+
+# =============================================================================
+# RELATIONSHIPS
+# =============================================================================
+relationships:
+  wallet:
+    type: belongs_to
+    entity: Wallet
+    foreign_key: wallet_id
+    description: Parent wallet
+
+  asset:
+    type: belongs_to
+    entity: CryptoAsset
+    foreign_key: asset_id
+    description: The cryptocurrency asset
+
+  transactions:
+    type: has_many
+    entity: Transaction
+    foreign_key: balance_id
+    description: All transactions affecting this balance
+
+# =============================================================================
+# INDEXES
+# =============================================================================
+indexes:
+  - name: idx_balance_wallet
+    columns: [wallet_id]
+    unique: false
+
+  - name: idx_balance_wallet_asset
+    columns: [wallet_id, asset_id]
+    unique: true
+
+  - name: idx_balance_asset
+    columns: [asset_id]
+    unique: false
+
+  - name: idx_balance_nonzero
+    columns: [wallet_id]
+    condition: "total_balance > 0"
+
+# =============================================================================
+# BUSINESS RULES
+# =============================================================================
+business_rules:
+  - id: BR-BAL-001
+    name: Available Balance Calculation
+    name_vi: Tính số dư khả dụng
+    description: |
+      available = total - locked - in_order - staking - pending_withdrawal
+    enforcement: calculated_field
+
+  - id: BR-BAL-002
+    name: Non-Negative Balance
+    name_vi: Số dư không âm
+    description: Balance cannot go below zero
+    enforcement: database_constraint
+
+  - id: BR-BAL-003
+    name: Atomic Updates
+    name_vi: Cập nhật nguyên tử
+    description: All balance changes must be atomic and logged
+    enforcement: transaction_required
+
+  - id: BR-BAL-004
+    name: Balance Consistency
+    name_vi: Tính nhất quán số dư
+    description: |
+      Sum of all component balances must equal total:
+      in_order + staking + pending_withdrawal + available + locked = total
+    enforcement: application_logic
+
+# =============================================================================
+# VALIDATIONS
+# =============================================================================
+validations:
+  total_balance:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+      message: Balance cannot be negative
+
+  available_balance:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+      message: Available balance cannot be negative
+
+  in_order:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+
+  staking_balance:
+    - rule: numericality
+      greater_than_or_equal_to: 0
+
+# =============================================================================
+# BALANCE OPERATIONS
+# =============================================================================
+operations:
+  credit:
+    description: Add to balance
+    parameters:
+      - amount: decimal (required)
+      - type: [deposit, trade, transfer_in, reward, refund]
+    actions:
+      - Validate amount > 0
+      - Update total_balance += amount
+      - Create transaction record
+      - Update timestamps
+
+  debit:
+    description: Subtract from balance
+    parameters:
+      - amount: decimal (required)
+      - type: [withdrawal, trade, transfer_out, fee, penalty]
+    actions:
+      - Validate amount > 0
+      - Validate available_balance >= amount
+      - Update total_balance -= amount
+      - Create transaction record
+      - Update timestamps
+
+  lock:
+    description: Move from available to locked
+    parameters:
+      - amount: decimal (required)
+      - reason: [order, staking, withdrawal, security]
+    actions:
+      - Validate available_balance >= amount
+      - Update appropriate locked field
+      - Create lock record
+
+  unlock:
+    description: Release locked amount
+    parameters:
+      - amount: decimal (required)
+      - lock_id: uuid (required)
+    actions:
+      - Validate locked amount exists
+      - Update appropriate locked field
+      - Create unlock record
+
+# =============================================================================
+# AUDIT
+# =============================================================================
+audit:
+  enabled: true
+  log_changes: true
+  log_all_operations: true
+  sensitive_fields: []
+  retention_years: 10

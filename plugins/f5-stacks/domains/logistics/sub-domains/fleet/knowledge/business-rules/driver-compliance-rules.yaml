@@ -1,0 +1,307 @@
+name: DriverComplianceRules
+display_name: Driver Compliance Rules
+description: |
+  Business rules for driver regulatory compliance.
+  Covers licensing, HOS, medical certification, and safety requirements.
+
+domain: logistics
+subdomain: fleet
+category: business-rules
+version: "1.0.0"
+
+rules:
+  # License Validity Rules
+  - id: BR-DC-001
+    name: License Validity
+    description: Driver must have valid CDL license
+    severity: critical
+    category: licensing
+    condition: |
+      driver.license_expiry >= today() AND
+      driver.status == 'active'
+    error_message: "Driver license has expired"
+    applies_to: [trip_assignment, dispatch]
+    grace_period: 0
+
+  - id: BR-DC-002
+    name: License Class Match
+    description: Driver license class must match vehicle requirements
+    severity: critical
+    category: licensing
+    condition: |
+      CASE vehicle.vehicle_class
+        WHEN 'heavy_duty' THEN driver.license_class IN ['A']
+        WHEN 'medium_duty' THEN driver.license_class IN ['A', 'B']
+        WHEN 'light_duty' THEN driver.license_class IN ['A', 'B', 'C', 'D']
+      END
+    error_message: "Driver license class insufficient for vehicle"
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-003
+    name: License Expiry Warning
+    description: Warn if license expires within 30 days
+    severity: warning
+    category: licensing
+    condition: |
+      driver.license_expiry - today() <= 30
+    warning_message: "Driver license expires within 30 days"
+    action: notify_hr_and_driver
+    applies_to: [trip_assignment]
+
+  # Endorsement Rules
+  - id: BR-DC-004
+    name: Hazmat Endorsement Required
+    description: Hazmat loads require H endorsement
+    severity: critical
+    category: endorsements
+    condition: |
+      IF trip.is_hazmat THEN
+        'H' IN driver.endorsements AND
+        driver.hazmat_certified
+    error_message: "Hazmat load requires driver with H endorsement"
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-005
+    name: Tanker Endorsement Required
+    description: Tank vehicles require N endorsement
+    severity: critical
+    category: endorsements
+    condition: |
+      IF vehicle.vehicle_type == 'tanker' THEN
+        'N' IN driver.endorsements AND
+        driver.tanker_certified
+    error_message: "Tank vehicle requires driver with N endorsement"
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-006
+    name: Doubles/Triples Endorsement
+    description: Double/triple trailers require T endorsement
+    severity: critical
+    category: endorsements
+    condition: |
+      IF trip.trailer_count > 1 THEN 'T' IN driver.endorsements
+    error_message: "Multiple trailers require T endorsement"
+    applies_to: [trip_assignment]
+
+  # Medical Certification Rules
+  - id: BR-DC-007
+    name: Medical Certificate Validity
+    description: Driver must have valid medical certificate
+    severity: critical
+    category: medical
+    condition: |
+      driver.medical_certificate_expiry >= today()
+    error_message: "Driver medical certificate has expired"
+    applies_to: [trip_assignment, dispatch]
+    grace_period: 0
+
+  - id: BR-DC-008
+    name: Medical Certificate Warning
+    description: Warn if medical certificate expires within 30 days
+    severity: warning
+    category: medical
+    condition: |
+      driver.medical_certificate_expiry - today() <= 30
+    warning_message: "Driver medical certificate expires within 30 days"
+    action: notify_hr_and_driver
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-009
+    name: Drug Test Current
+    description: Driver must have passed recent drug test
+    severity: critical
+    category: medical
+    condition: |
+      driver.drug_test_result == 'passed' AND
+      driver.drug_test_date >= today() - 365
+    error_message: "Driver drug test not current or failed"
+    applies_to: [trip_assignment]
+
+  # Hours of Service (HOS) Rules
+  - id: BR-DC-010
+    name: 11-Hour Driving Limit
+    description: Driver cannot drive more than 11 hours after 10 consecutive hours off duty
+    severity: critical
+    category: hos
+    condition: |
+      driver.available_drive_hours > 0
+    error_message: "Driver has exceeded 11-hour driving limit"
+    applies_to: [dispatch, trip_in_progress]
+    regulation: "FMCSA 395.3(a)(3)"
+
+  - id: BR-DC-011
+    name: 14-Hour On-Duty Limit
+    description: Driver cannot drive beyond 14 consecutive hours on duty
+    severity: critical
+    category: hos
+    condition: |
+      driver.available_duty_hours > 0
+    error_message: "Driver has exceeded 14-hour on-duty limit"
+    applies_to: [dispatch, trip_in_progress]
+    regulation: "FMCSA 395.3(a)(2)"
+
+  - id: BR-DC-012
+    name: 60/70 Hour Cycle Limit
+    description: Driver cannot drive after 60/70 hours on duty in 7/8 consecutive days
+    severity: critical
+    category: hos
+    condition: |
+      driver.available_cycle_hours > 0
+    error_message: "Driver has exceeded cycle hours limit"
+    applies_to: [dispatch, trip_in_progress]
+    regulation: "FMCSA 395.3(b)"
+
+  - id: BR-DC-013
+    name: 30-Minute Break Required
+    description: Driver must take 30-minute break after 8 hours of driving
+    severity: critical
+    category: hos
+    condition: |
+      driver.consecutive_driving_minutes < 480 OR
+      (now() - driver.last_30_min_break) < 480
+    error_message: "Driver requires 30-minute break"
+    applies_to: [trip_in_progress]
+    regulation: "FMCSA 395.3(a)(3)(ii)"
+
+  - id: BR-DC-014
+    name: HOS Hours Warning
+    description: Warn when driver has less than 2 hours available
+    severity: warning
+    category: hos
+    condition: |
+      driver.available_drive_hours <= 2 OR
+      driver.available_duty_hours <= 2
+    warning_message: "Driver approaching HOS limits"
+    action: notify_dispatcher
+    applies_to: [trip_in_progress]
+
+  - id: BR-DC-015
+    name: Trip Duration vs Available Hours
+    description: Planned trip duration must not exceed available hours
+    severity: critical
+    category: hos
+    condition: |
+      trip.estimated_duration_minutes / 60 <= driver.available_drive_hours
+    error_message: "Trip duration exceeds driver's available hours"
+    applies_to: [trip_assignment]
+
+  # Safety Score Rules
+  - id: BR-DC-016
+    name: Minimum Safety Score
+    description: Driver must maintain minimum safety score
+    severity: warning
+    category: safety
+    condition: |
+      driver.safety_score >= 50
+    warning_message: "Driver safety score below acceptable threshold"
+    action: flag_for_review
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-017
+    name: Critical Safety Score
+    description: Block assignment for critically low safety score
+    severity: critical
+    category: safety
+    condition: |
+      driver.safety_score >= 30
+    error_message: "Driver safety score too low for assignment"
+    applies_to: [trip_assignment]
+    exception: supervisor_override
+
+  - id: BR-DC-018
+    name: Recent Incident Check
+    description: Review required if driver had recent major incident
+    severity: warning
+    category: safety
+    condition: |
+      NOT EXISTS incident WHERE
+        incident.driver_id == driver.id AND
+        incident.severity IN ['major', 'critical'] AND
+        incident.occurred_at >= today() - 30 AND
+        incident.status != 'closed'
+    warning_message: "Driver has unresolved recent incident"
+    action: require_supervisor_approval
+    applies_to: [trip_assignment]
+
+  # Status Rules
+  - id: BR-DC-019
+    name: Driver Active Status
+    description: Driver must be in active status
+    severity: critical
+    category: status
+    condition: |
+      driver.status == 'active'
+    error_message: "Driver is not in active status"
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-020
+    name: Driver Available
+    description: Driver must be available (not on another trip)
+    severity: critical
+    category: status
+    condition: |
+      driver.is_available AND
+      driver.current_trip_id IS NULL
+    error_message: "Driver is not available"
+    applies_to: [trip_assignment]
+
+  - id: BR-DC-021
+    name: Driver Duty Status
+    description: Driver must be on duty for trip start
+    severity: warning
+    category: status
+    condition: |
+      driver.duty_status IN ['on_duty_not_driving', 'driving']
+    warning_message: "Driver not currently on duty"
+    applies_to: [dispatch]
+
+  # Training Requirements
+  - id: BR-DC-022
+    name: Defensive Driving Certification
+    description: Recommend defensive driving certified drivers for high-value loads
+    severity: recommendation
+    category: training
+    condition: |
+      IF trip.load_value > 50000 THEN driver.defensive_driving_certified
+    recommendation: "Use defensive driving certified driver for high-value loads"
+    applies_to: [trip_assignment]
+
+validation_order:
+  - status
+  - licensing
+  - endorsements
+  - medical
+  - hos
+  - safety
+  - training
+
+hos_configuration:
+  driving_limit_hours: 11
+  duty_limit_hours: 14
+  break_required_after_hours: 8
+  break_duration_minutes: 30
+  cycles:
+    - name: "7_day_60_hour"
+      days: 7
+      max_hours: 60
+    - name: "8_day_70_hour"
+      days: 8
+      max_hours: 70
+  reset_hours: 34
+
+escalation:
+  critical_violation:
+    action: block_assignment
+    notify: [fleet_manager, safety_manager]
+  warning:
+    action: allow_with_acknowledgment
+    notify: [dispatcher]
+  recommendation:
+    action: suggest_alternative
+    notify: []
+
+audit:
+  log_hos_changes: true
+  log_violations: true
+  eld_integration: required
+  retention_days: 180

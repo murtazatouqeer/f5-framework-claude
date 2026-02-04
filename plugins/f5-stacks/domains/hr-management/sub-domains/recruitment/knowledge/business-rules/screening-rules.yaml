@@ -1,0 +1,452 @@
+name: screening-rules
+display_name: Candidate Screening Business Rules
+description: |
+  Business rules governing candidate screening, resume evaluation, knockout
+  criteria, referral prioritization, and initial qualification assessment.
+
+domain: hr-management
+subdomain: recruitment
+category: business-rules
+version: "1.0.0"
+status: active
+
+rules:
+  # Knockout Criteria Rules
+  - id: SCR-BR-001
+    name: mandatory_knockout_criteria
+    description: Automatic disqualification for failing mandatory requirements
+    category: knockout
+    priority: critical
+
+    criteria_types:
+      hard_requirements:
+        - type: work_authorization
+          check: "candidate.work_authorized == true"
+          action: auto_reject
+          message: "Position requires work authorization"
+          disposition_code: "not_authorized"
+
+        - type: minimum_education
+          check: "candidate.education_level >= requisition.min_education"
+          action: auto_reject
+          message: "Does not meet minimum education requirement"
+          disposition_code: "education_requirements"
+
+        - type: certification_required
+          check: "candidate.certifications CONTAINS requisition.required_certifications"
+          action: auto_reject
+          message: "Missing required certification"
+          disposition_code: "certification_requirements"
+
+        - type: years_experience
+          check: "candidate.total_experience_years >= requisition.min_experience"
+          action: flag_for_review  # soft knockout
+          message: "Below minimum experience threshold"
+
+      compliance_requirements:
+        - type: age_minimum
+          check: "candidate.age >= 18"  # or legal working age
+          action: auto_reject
+          disposition_code: "legal_requirements"
+
+        - type: background_eligible
+          check: "candidate.not_on_do_not_hire_list"
+          action: auto_reject
+          disposition_code: "ineligible_for_rehire"
+
+        - type: conflict_of_interest
+          check: "no_active_coi_declaration_required"
+          action: flag_for_review
+
+  - id: SCR-BR-002
+    name: knockout_question_scoring
+    description: Screening questions with pass/fail thresholds
+    category: knockout
+    priority: high
+
+    question_types:
+      yes_no_knockout:
+        - question: "Are you authorized to work in [country]?"
+          required_answer: "yes"
+          knockout_on: "no"
+
+        - question: "Are you willing to relocate to [location]?"
+          required_answer: "yes"
+          knockout_on: "no"
+          when: "requisition.requires_relocation"
+
+        - question: "Can you travel up to [X]% of the time?"
+          required_answer: "yes"
+          knockout_on: "no"
+          when: "requisition.travel_required"
+
+      scored_questions:
+        - question: "Years of experience with [technology]"
+          scoring:
+            "0-1 years": 1
+            "2-3 years": 2
+            "4-5 years": 3
+            "6+ years": 4
+          minimum_score: 2
+          knockout_below: true
+
+    overall_threshold:
+      minimum_score: 70  # percentage
+      knockout_action: auto_reject
+      disposition_code: "screening_questions"
+
+  # Resume Scoring Rules
+  - id: SCR-BR-010
+    name: resume_scoring_algorithm
+    description: Automated resume scoring criteria
+    category: scoring
+    priority: high
+
+    scoring_components:
+      skills_match:
+        weight: 0.35
+        calculation: |
+          matched_required_skills / total_required_skills * 0.7 +
+          matched_preferred_skills / total_preferred_skills * 0.3
+
+      experience_relevance:
+        weight: 0.25
+        factors:
+          - industry_match: 0.3
+          - role_similarity: 0.4
+          - company_size_match: 0.1
+          - recency: 0.2
+
+      education_fit:
+        weight: 0.15
+        scoring:
+          exact_match: 1.0
+          higher_than_required: 1.0
+          one_level_below: 0.7
+          two_levels_below: 0.4
+          no_match: 0.0
+
+      keyword_density:
+        weight: 0.15
+        keywords_from: job_description
+        bonus_for: exact_phrase_match
+        penalty_for: keyword_stuffing
+
+      presentation_quality:
+        weight: 0.10
+        factors:
+          - formatting: 0.3
+          - clarity: 0.3
+          - completeness: 0.4
+
+    score_bands:
+      excellent: 85-100
+      strong: 70-84
+      qualified: 55-69
+      marginal: 40-54
+      unqualified: 0-39
+
+    auto_actions:
+      - score_range: "85-100"
+        action: auto_advance
+        to_stage: phone_screen
+        notify: recruiter
+
+      - score_range: "70-84"
+        action: priority_review
+        sla: 24h
+
+      - score_range: "55-69"
+        action: standard_review
+        sla: 48h
+
+      - score_range: "0-54"
+        action: auto_reject
+        disposition_code: "qualifications"
+        send_rejection: true
+
+  # Referral Priority Rules
+  - id: SCR-BR-020
+    name: referral_prioritization
+    description: Employee referrals receive priority processing
+    category: prioritization
+    priority: high
+
+    referral_benefits:
+      - review_priority: high
+        sla_reduction: 50%
+
+      - bypass_screening: false  # still must meet requirements
+
+      - hiring_manager_notification: immediate
+
+      - minimum_feedback: required
+        even_if_rejected: true
+
+    scoring_bonus:
+      - referral_from_high_performer: +10 points
+      - referral_from_same_team: +5 points
+      - referral_from_hiring_manager: +5 points
+      - general_referral: +3 points
+
+    restrictions:
+      - executive_positions: standard_process
+      - hr_positions: no_referral_priority
+      - max_referrals_per_referrer_per_month: 5
+
+  - id: SCR-BR-021
+    name: source_priority
+    description: Prioritization by candidate source
+    category: prioritization
+    priority: medium
+
+    priority_order:
+      1: internal_candidate
+      2: employee_referral
+      3: talent_pool_member
+      4: previous_applicant_silver_medalist
+      5: direct_application
+      6: agency_submission
+      7: job_board
+
+    sla_by_source:
+      internal_candidate: 24h review
+      employee_referral: 48h review
+      agency_submission: 48h review  # contractual
+      job_board: 72h review
+
+  # Duplicate Detection Rules
+  - id: SCR-BR-030
+    name: duplicate_candidate_detection
+    description: Identify and handle duplicate applications
+    category: deduplication
+    priority: high
+
+    matching_criteria:
+      exact_match:
+        - email
+        - phone_number
+
+      fuzzy_match:
+        - name: similarity_threshold: 0.85
+        - linkedin_url: normalize_and_compare
+
+      cross_reference:
+        - resume_hash: check_document_similarity
+        - work_history: check_company_overlap
+
+    actions:
+      duplicate_same_requisition:
+        action: auto_merge
+        keep: most_recent
+        notify: recruiter
+
+      duplicate_different_requisition:
+        action: link_profiles
+        notify: recruiter
+        allow: parallel_consideration
+
+      duplicate_historical:
+        action: surface_history
+        display: previous_applications
+        show: interview_feedback
+
+  # Qualification Assessment Rules
+  - id: SCR-BR-040
+    name: minimum_qualification_check
+    description: Verify candidate meets minimum qualifications
+    category: qualification
+    priority: critical
+
+    checks:
+      education:
+        verification_required_at: offer_stage
+        self_reported_trusted: screening_stage
+
+      experience:
+        calculation: sum_of_relevant_roles
+        exclude_overlap: true
+        count_internships: at_half_value
+
+      skills:
+        self_reported: screening_only
+        assessment_required: for_technical_roles
+
+    equivalencies:
+      - "4 years experience" can_substitute: "bachelor's degree"
+      - "master's degree" can_substitute: "2 years experience"
+      - "relevant_certification" can_substitute: "1 year experience"
+
+  - id: SCR-BR-041
+    name: skill_assessment_requirement
+    description: When skill assessments are required
+    category: qualification
+    priority: medium
+
+    required_when:
+      - role_type: technical
+        assessment_type: coding_test
+
+      - role_type: data_analyst
+        assessment_type: analytics_test
+
+      - role_type: sales
+        assessment_type: sales_simulation
+
+      - role_type: customer_service
+        assessment_type: situational_judgment
+
+    threshold:
+      minimum_score: 70
+      advance_automatically: if_score >= 85
+      reject_automatically: if_score < 50
+
+  # Volume Management Rules
+  - id: SCR-BR-050
+    name: high_volume_screening
+    description: Rules for high-volume requisitions
+    category: volume
+    priority: medium
+
+    trigger:
+      applications_threshold: 100  # per week
+
+    actions:
+      - enable: ai_assisted_screening
+      - enable: batch_processing
+      - reduce: manual_review_to_top_25%
+      - require: random_audit_of_rejections
+
+    quality_controls:
+      - audit_sample_size: 5%
+      - human_review_of_edge_cases: true
+      - weekly_calibration: required
+
+  - id: SCR-BR-051
+    name: application_cap
+    description: Cap applications per requisition
+    category: volume
+    priority: low
+
+    rules:
+      - default_cap: 500  # applications
+      - executive_roles: 200
+      - high_demand_roles: 1000
+
+    on_cap_reached:
+      action: close_posting
+      notify: [recruiter, hiring_manager]
+      exception: referrals_always_accepted
+
+  # Diversity Screening Rules
+  - id: SCR-BR-060
+    name: diverse_slate_requirement
+    description: Ensure diverse candidate pools advance
+    category: diversity
+    priority: high
+
+    requirements:
+      interview_slate:
+        minimum_candidates: 3
+        diversity_target: at_least_one_diverse_candidate
+
+      definition:
+        diverse_candidate: |
+          Meets voluntary self-identification criteria for
+          underrepresented groups (gender, ethnicity, veteran, disability)
+
+    monitoring:
+      - track: pass_through_rates_by_demographic
+      - alert_on: significant_disparity
+      - report: quarterly_to_hr_leadership
+
+    compliance_note: |
+      This rule supports voluntary diversity goals and does not
+      use protected characteristics as decision criteria.
+
+  # Review Timeline Rules
+  - id: SCR-BR-070
+    name: screening_sla
+    description: Service level agreements for screening
+    category: timeline
+    priority: high
+
+    sla_targets:
+      initial_review:
+        target: 48 hours
+        maximum: 72 hours
+
+      knockout_processing:
+        target: immediate
+        maximum: 4 hours
+
+      scoring_completion:
+        target: 24 hours
+        maximum: 48 hours
+
+      disposition_communication:
+        target: same_day
+        maximum: 48 hours
+
+    escalation:
+      - at: 75% of maximum
+        notify: recruiter
+
+      - at: 100% of maximum
+        notify: recruiting_manager
+
+      - at: 150% of maximum
+        notify: hr_director
+
+automation:
+  triggers:
+    - event: application_received
+      action: run_knockout_checks
+
+    - event: knockout_passed
+      action: calculate_resume_score
+
+    - event: score_calculated
+      action: apply_priority_rules
+
+    - event: duplicate_detected
+      action: merge_or_link_profiles
+
+    - event: sla_approaching
+      action: send_reminder
+
+integration:
+  - system: ATS
+    function: scoring_pipeline
+
+  - system: assessment_platform
+    function: test_administration
+
+  - system: background_check_vendor
+    function: pre_screening
+
+metrics:
+  track:
+    - applications_per_requisition
+    - pass_through_rate_by_stage
+    - time_in_screening
+    - source_quality_by_score
+    - diversity_pipeline_metrics
+
+  report:
+    - weekly: recruiter_dashboard
+    - monthly: hiring_manager_summary
+    - quarterly: diversity_analytics
+
+compliance:
+  - standard: EEO
+    requirement: Non-discriminatory screening criteria
+
+  - standard: OFCCP
+    requirement: Document selection criteria
+
+  - standard: GDPR
+    requirement: Lawful basis for automated decisions
+
+  - standard: ADA
+    requirement: Reasonable accommodation in screening

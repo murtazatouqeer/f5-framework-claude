@@ -1,0 +1,286 @@
+name: job-posting
+display_name: Job Posting
+description: |
+  A published job advertisement derived from a requisition. Postings can be
+  distributed to multiple channels (career site, job boards, social media).
+
+domain: hr-management
+subdomain: recruitment
+category: entities
+version: "1.0.0"
+status: active
+
+entity:
+  name: JobPosting
+  table_name: job_postings
+  primary_key: id
+
+  attributes:
+    # Identity
+    - name: id
+      type: uuid
+      primary_key: true
+
+    - name: requisition_id
+      type: uuid
+      required: true
+      description: Parent requisition
+
+    - name: posting_id
+      type: string
+      length: 20
+      unique: true
+      format: "JOB-{YYYYMMDD}-{NNNN}"
+
+    - name: status
+      type: enum
+      values: [draft, active, paused, closed, expired]
+      default: draft
+
+    - name: posting_type
+      type: enum
+      values: [internal, external, both]
+      default: both
+      description: Visibility of posting
+
+    # Content
+    - name: title
+      type: string
+      length: 200
+      required: true
+      description: Job title as displayed
+
+    - name: description
+      type: text
+      required: true
+      description: Formatted job description
+
+    - name: short_description
+      type: string
+      length: 500
+      description: Brief summary for previews
+
+    - name: location_display
+      type: string
+      length: 200
+      description: Location text shown to candidates
+
+    - name: remote_options
+      type: enum
+      values: [on_site, hybrid, fully_remote]
+      description: Remote work option
+
+    - name: salary_display
+      type: string
+      length: 100
+      description: Salary text shown (if not hidden)
+
+    - name: hide_salary
+      type: boolean
+      default: false
+      description: Whether to hide compensation
+
+    # Channels
+    - name: career_page
+      type: boolean
+      default: true
+      description: Posted on company career page
+
+    - name: channel_postings
+      type: jsonb
+      description: Array of channel distributions
+      example: |
+        [
+          {"channel": "linkedin", "posted_at": "...", "url": "...", "status": "active"},
+          {"channel": "indeed", "posted_at": "...", "url": "...", "status": "active"}
+        ]
+
+    - name: job_boards
+      type: jsonb
+      description: Job boards to post to
+
+    - name: social_media_posts
+      type: jsonb
+      description: Social media distribution
+
+    # Application Settings
+    - name: application_url
+      type: string
+      length: 500
+      description: URL to apply
+
+    - name: application_email
+      type: string
+      length: 255
+      description: Email for applications
+
+    - name: application_deadline
+      type: timestamp
+      description: Application cutoff date
+
+    - name: easy_apply
+      type: boolean
+      default: true
+      description: Allow quick apply (e.g., LinkedIn)
+
+    # Screening Questions
+    - name: screening_questions
+      type: jsonb
+      description: Pre-application questions
+      example: |
+        [
+          {"question": "Do you have work authorization?", "type": "yes_no", "required": true, "knockout": true},
+          {"question": "Years of experience?", "type": "number", "required": true}
+        ]
+
+    - name: required_documents
+      type: jsonb
+      description: Required uploads
+      example: ["resume", "cover_letter", "portfolio"]
+
+    # Visibility
+    - name: is_confidential
+      type: boolean
+      default: false
+      description: Hide company name
+
+    - name: confidential_company_name
+      type: string
+      length: 200
+      description: Placeholder company name if confidential
+
+    # SEO & Display
+    - name: seo_title
+      type: string
+      length: 100
+      description: SEO-optimized title
+
+    - name: seo_description
+      type: string
+      length: 300
+      description: Meta description
+
+    - name: slug
+      type: string
+      length: 200
+      unique: true
+      description: URL-friendly identifier
+
+    # Dates
+    - name: published_at
+      type: timestamp
+      description: When posting went live
+
+    - name: expires_at
+      type: timestamp
+      description: Auto-expiration date
+
+    - name: closed_at
+      type: timestamp
+      description: When posting was closed
+
+    # Metrics
+    - name: views_count
+      type: integer
+      default: 0
+      description: Total views
+
+    - name: unique_views_count
+      type: integer
+      default: 0
+      description: Unique visitors
+
+    - name: applications_count
+      type: integer
+      default: 0
+      description: Applications received
+
+    - name: conversion_rate
+      type: decimal
+      precision: 5
+      scale: 2
+      computed: true
+      description: Applications / Views percentage
+
+    # Timestamps
+    - name: created_at
+      type: timestamp
+      required: true
+      default: now()
+
+    - name: updated_at
+      type: timestamp
+      required: true
+      default: now()
+
+  relationships:
+    - name: requisition
+      type: belongs_to
+      entity: JobRequisition
+      foreign_key: requisition_id
+
+    - name: applications
+      type: has_many
+      entity: Application
+      foreign_key: job_posting_id
+
+  indexes:
+    - columns: [posting_id]
+      unique: true
+    - columns: [requisition_id]
+    - columns: [status]
+    - columns: [slug]
+      unique: true
+    - columns: [published_at]
+    - columns: [expires_at]
+
+  state_machine:
+    field: status
+    initial: draft
+    transitions:
+      - from: draft
+        to: active
+        action: publish
+        triggers: [distribute_to_channels, index_for_search]
+
+      - from: active
+        to: paused
+        action: pause
+        triggers: [pause_channel_listings]
+
+      - from: paused
+        to: active
+        action: resume
+        triggers: [reactivate_channel_listings]
+
+      - from: [active, paused]
+        to: closed
+        action: close
+        triggers: [remove_from_channels, notify_pending_applicants]
+
+      - from: active
+        to: expired
+        action: expire
+        guards: [past_expiration_date]
+        triggers: [remove_from_channels]
+
+  validations:
+    - field: application_deadline
+      rule: future_date
+      when: status_is_draft
+      message: "Application deadline must be in the future"
+
+    - field: title
+      rule: max_length
+      value: 200
+      message: "Title cannot exceed 200 characters"
+
+  hooks:
+    before_publish:
+      - validate_requisition_is_open
+      - generate_slug
+      - set_default_expiration
+
+    after_publish:
+      - track_publishing_event
+      - notify_recruiter

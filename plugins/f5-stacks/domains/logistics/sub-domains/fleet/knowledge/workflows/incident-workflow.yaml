@@ -1,0 +1,529 @@
+name: IncidentWorkflow
+display_name: Incident Workflow
+description: |
+  End-to-end workflow for fleet incident management.
+  Covers reporting, investigation, resolution, and corrective actions.
+
+domain: logistics
+subdomain: fleet
+category: workflows
+version: "1.0.0"
+
+trigger:
+  events:
+    - driver.incident_reported
+    - telematics.critical_event
+    - manual.create_incident
+    - external.police_report_received
+  conditions:
+    - incident_type IS NOT NULL
+
+actors:
+  - name: Driver
+    role: reporter
+    responsibilities:
+      - Report incidents immediately
+      - Provide statement
+      - Document scene
+  - name: Dispatcher
+    role: first_responder
+    responsibilities:
+      - Receive incident reports
+      - Coordinate immediate response
+      - Manage trip continuation
+  - name: Safety Manager
+    role: investigator
+    responsibilities:
+      - Investigate incidents
+      - Determine root cause
+      - Recommend corrective actions
+  - name: Fleet Manager
+    role: approver
+    responsibilities:
+      - Review investigations
+      - Approve corrective actions
+      - Manage insurance claims
+  - name: System
+    role: automated
+    responsibilities:
+      - Detect events
+      - Track timelines
+      - Generate reports
+
+inputs:
+  - name: incident_type
+    type: enum
+    values: [accident, breakdown, theft, violation, near_miss, cargo_damage, injury]
+    required: true
+  - name: vehicle
+    type: entity
+    entity: Vehicle
+    required: true
+  - name: driver
+    type: entity
+    entity: Driver
+    required: true
+  - name: trip
+    type: entity
+    entity: Trip
+    required: false
+
+outputs:
+  - name: incident
+    type: entity
+    entity: Incident
+  - name: investigation_report
+    type: document
+  - name: corrective_actions
+    type: array
+
+steps:
+  - id: receive_report
+    name: Receive Incident Report
+    type: hybrid
+    description: Initial incident report received
+    sources:
+      - driver_mobile_app
+      - dispatcher_call
+      - telematics_alert
+      - external_report
+    actions:
+      - create Incident entity
+      - set status = 'reported'
+      - capture initial details
+      - record reported_at timestamp
+      - identify severity
+    outputs:
+      - incident_record
+    next: assess_severity
+
+  - id: assess_severity
+    name: Assess Severity
+    type: automated
+    description: Determine incident severity and response level
+    conditions:
+      - IF injuries OR fatalities: severity = 'critical'
+      - IF vehicle_not_driveable: severity = 'major'
+      - IF significant_damage: severity = 'major'
+      - IF minor_damage: severity = 'moderate'
+      - IF near_miss: severity = 'minor'
+    response_levels:
+      critical:
+        - immediate_management_notification
+        - emergency_services_verification
+        - insurance_notification
+      major:
+        - management_notification_1h
+        - tow_arrangement
+        - insurance_notification
+      moderate:
+        - supervisor_notification
+        - documentation_required
+      minor:
+        - standard_documentation
+    next:
+      critical: emergency_response
+      major: coordinate_response
+      moderate: gather_details
+      minor: gather_details
+
+  - id: emergency_response
+    name: Emergency Response
+    type: manual
+    actor: Dispatcher
+    description: Coordinate emergency response for critical incidents
+    ui_screen: emergency_incident_response
+    priority: critical
+    timeout: 15m
+    actions:
+      - verify emergency services called (911)
+      - notify safety manager immediately
+      - notify fleet manager immediately
+      - document injuries
+      - arrange for injured parties
+      - coordinate with police
+    notifications:
+      - to: [safety_manager, fleet_manager, hr_manager]
+        template: critical_incident_alert
+        channel: [sms, phone_call]
+        priority: critical
+    checklist:
+      - emergency_services_notified
+      - driver_status_confirmed
+      - other_party_info_collected
+      - scene_secured
+    business_rules:
+      - BR-SF-009  # Injury Incident Protocol
+    next: gather_details
+
+  - id: coordinate_response
+    name: Coordinate Response
+    type: manual
+    actor: Dispatcher
+    description: Coordinate response for major incidents
+    ui_screen: incident_response
+    timeout: 1h
+    actions:
+      - verify driver safety
+      - arrange tow if needed
+      - arrange replacement vehicle if possible
+      - document scene
+      - collect other party information
+    notifications:
+      - to: safety_manager
+        template: major_incident_notification
+        channel: [sms, dashboard]
+    next: gather_details
+
+  - id: gather_details
+    name: Gather Incident Details
+    type: manual
+    actor: Driver
+    description: Driver provides detailed incident information
+    ui_screen: mobile_incident_report
+    timeout: 24h
+    actions:
+      - capture incident description
+      - capture location details
+      - capture photos of scene
+      - capture photos of damage
+      - capture other party information
+      - capture witness information
+      - provide driver statement
+    required_info:
+      - incident_description
+      - location
+      - photos (minimum 4)
+      - driver_statement
+    optional_info:
+      - other_party_info
+      - witness_info
+      - dashcam_video
+      - police_report_number
+    next: validate_report
+
+  - id: validate_report
+    name: Validate Report
+    type: automated
+    description: Validate completeness of incident report
+    validations:
+      - all required fields completed
+      - photos uploaded
+      - location verified
+      - timeline consistent
+    next:
+      complete: determine_investigation
+      incomplete: request_additional_info
+
+  - id: request_additional_info
+    name: Request Additional Information
+    type: manual
+    actor: Dispatcher
+    description: Request missing information from driver
+    actions:
+      - identify missing items
+      - contact driver for additional info
+      - set deadline for response
+    timeout: 4h
+    next:
+      received: validate_report
+      timeout: escalate_to_safety_manager
+
+  - id: determine_investigation
+    name: Determine Investigation Need
+    type: decision
+    description: Determine if formal investigation needed
+    conditions:
+      - IF severity IN ['critical', 'major']: formal_investigation
+      - IF our_driver_potentially_at_fault: formal_investigation
+      - IF cost_estimate > 5000: formal_investigation
+      - IF repeat_incident: formal_investigation
+      - ELSE: document_only
+    business_rules:
+      - BR-SF-011  # Investigation Required
+    next:
+      formal_investigation: assign_investigator
+      document_only: document_resolution
+
+  - id: assign_investigator
+    name: Assign Investigator
+    type: automated
+    description: Assign safety manager to investigate
+    actions:
+      - assign safety_manager as investigator
+      - set investigation deadline
+      - update incident status
+      - notify investigator
+    notifications:
+      - to: safety_manager
+        template: investigation_assigned
+        channel: [email, dashboard]
+    next: conduct_investigation
+
+  - id: conduct_investigation
+    name: Conduct Investigation
+    type: manual
+    actor: Safety Manager
+    description: Formal investigation of incident
+    ui_screen: incident_investigation
+    timeout: 7d
+    actions:
+      - review all documentation
+      - review dashcam video if available
+      - review telematics data
+      - interview driver
+      - interview witnesses
+      - review driver history
+      - analyze contributing factors
+      - determine root cause
+      - determine fault
+      - document findings
+    investigation_checklist:
+      - documentation_reviewed
+      - video_reviewed
+      - telematics_analyzed
+      - driver_interviewed
+      - witnesses_interviewed
+      - root_cause_identified
+      - fault_determined
+      - findings_documented
+    outputs:
+      - investigation_report
+      - root_cause
+      - fault_determination
+    next: review_findings
+
+  - id: review_findings
+    name: Review Investigation Findings
+    type: manual
+    actor: Fleet Manager
+    description: Management review of investigation findings
+    ui_screen: investigation_review
+    actions:
+      - review investigation report
+      - validate root cause analysis
+      - assess driver actions
+      - consider disciplinary action
+      - determine corrective actions
+    decision_points:
+      - accept_findings: Accept investigation findings
+      - request_more_info: Request additional investigation
+      - modify_findings: Modify conclusions
+    next:
+      accept_findings: determine_actions
+      request_more_info: conduct_investigation
+      modify_findings: update_findings
+
+  - id: update_findings
+    name: Update Findings
+    type: manual
+    actor: Safety Manager
+    description: Update findings based on review
+    actions:
+      - incorporate management feedback
+      - update investigation report
+    next: review_findings
+
+  - id: determine_actions
+    name: Determine Corrective Actions
+    type: manual
+    actor: Safety Manager
+    description: Define corrective actions
+    ui_screen: corrective_action_planning
+    actions:
+      - identify immediate actions
+      - identify long-term preventive actions
+      - assign action owners
+      - set deadlines
+      - estimate costs
+    action_categories:
+      driver_actions:
+        - coaching
+        - retraining
+        - written_warning
+        - suspension
+        - termination
+      process_actions:
+        - update_procedures
+        - add_checks
+        - modify_routes
+      equipment_actions:
+        - repair_vehicle
+        - add_safety_equipment
+        - increase_inspection_frequency
+    outputs:
+      - corrective_action_plan
+    next: approve_actions
+
+  - id: approve_actions
+    name: Approve Corrective Actions
+    type: manual
+    actor: Fleet Manager
+    description: Approve corrective action plan
+    ui_screen: action_approval
+    actions:
+      - review proposed actions
+      - assess costs and impacts
+      - approve or modify
+    decision_points:
+      - approve: Approve actions
+      - modify: Request modifications
+    next:
+      approve: execute_actions
+      modify: determine_actions
+
+  - id: execute_actions
+    name: Execute Corrective Actions
+    type: parallel
+    description: Execute approved corrective actions
+    parallel_tasks:
+      - id: driver_actions
+        name: Driver Actions
+        condition: has_driver_actions
+        actions:
+          - schedule coaching/training
+          - issue warning if applicable
+          - update driver record
+          - impact safety score
+        business_rules:
+          - BR-SF-001  # Safety Score
+          - BR-SF-004  # Critical Behavior Response
+
+      - id: process_actions
+        name: Process Actions
+        condition: has_process_actions
+        actions:
+          - update procedures
+          - communicate changes
+          - train affected staff
+
+      - id: equipment_actions
+        name: Equipment Actions
+        condition: has_equipment_actions
+        actions:
+          - create maintenance work order
+          - order safety equipment
+          - schedule installation
+
+      - id: insurance_claim
+        name: Process Insurance Claim
+        condition: claim_required
+        actions:
+          - submit claim to insurance
+          - provide documentation
+          - track claim status
+    next: track_completion
+
+  - id: track_completion
+    name: Track Action Completion
+    type: automated
+    description: Monitor completion of corrective actions
+    actions:
+      - track action status
+      - send reminders for overdue items
+      - escalate if needed
+    conditions:
+      all_completed: close_incident
+      pending: continue_monitoring
+    timeout: 30d
+    next:
+      all_completed: close_incident
+      timeout: escalate_incomplete
+
+  - id: escalate_incomplete
+    name: Escalate Incomplete Actions
+    type: automated
+    description: Escalate overdue corrective actions
+    actions:
+      - notify fleet_manager of overdue items
+      - request status update
+    next: track_completion
+
+  - id: document_resolution
+    name: Document Resolution
+    type: automated
+    description: Document minor incident resolution
+    actions:
+      - summarize incident
+      - note any recommendations
+      - update records
+    next: close_incident
+
+  - id: escalate_to_safety_manager
+    name: Escalate to Safety Manager
+    type: automated
+    description: Escalate when information not received
+    actions:
+      - notify safety_manager
+      - flag for follow-up
+    next: gather_details
+
+  - id: close_incident
+    name: Close Incident
+    type: automated
+    description: Close incident record
+    actions:
+      - set status = 'closed'
+      - set resolved_at
+      - archive documentation
+      - update driver record
+      - update vehicle record
+      - calculate final costs
+    outputs:
+      - closed_incident
+    events:
+      emit: incident.closed
+    notifications:
+      - to: fleet_manager
+        template: incident_closed
+        channel: [email]
+    next: generate_report
+
+  - id: generate_report
+    name: Generate Incident Report
+    type: automated
+    description: Generate final incident report
+    actions:
+      - compile all documentation
+      - generate summary report
+      - archive for compliance
+    outputs:
+      - incident_report
+    next: complete
+
+  - id: complete
+    name: Complete Workflow
+    type: automated
+    description: Finalize workflow
+    actions:
+      - log workflow completion
+      - update metrics
+
+compliance:
+  dot_reporting:
+    required_for:
+      - fatalities
+      - injuries_requiring_treatment
+      - vehicle_towed
+    deadline: "within 24 hours"
+    regulation: "FMCSA 390.15"
+
+  record_retention:
+    incident_records: 3 years
+    investigation_reports: 3 years
+    corrective_actions: 3 years
+
+metrics:
+  - incident_rate_per_mile
+  - average_time_to_close
+  - investigation_completion_rate
+  - corrective_action_completion_rate
+  - repeat_incident_rate
+  - insurance_claim_success_rate
+
+sla:
+  initial_report: "within 1 hour"
+  critical_notification: "within 15 minutes"
+  investigation_start: "within 24 hours"
+  investigation_complete: "within 7 days"
+  corrective_actions: "within 30 days"

@@ -1,0 +1,279 @@
+name: InventoryRules
+display_name: Inventory Business Rules
+description: |
+  Business rules governing inventory management, accuracy,
+  adjustments, and cycle counting.
+
+domain: logistics
+subdomain: warehouse
+category: business-rules
+
+rules:
+  # Inventory Accuracy
+  - id: BR-INV-001
+    name: Perpetual Inventory Accuracy
+    description: |
+      System inventory must match physical inventory.
+      Target accuracy of 99%+ at location level.
+    severity: critical
+    entities: [Inventory, Location, CycleCount]
+    conditions:
+      - system_quantity == physical_quantity
+    actions:
+      - regular_cycle_counting
+      - investigate_discrepancies
+      - post_adjustments_with_approval
+    target: "99% accuracy at location level"
+
+  - id: BR-INV-002
+    name: ABC Cycle Count Frequency
+    description: |
+      A items counted monthly, B items quarterly, C items annually.
+      Based on velocity and value classification.
+    severity: high
+    entities: [Item, CycleCount]
+    conditions:
+      - A_class: count_frequency_days <= 30
+      - B_class: count_frequency_days <= 90
+      - C_class: count_frequency_days <= 365
+    actions:
+      - schedule_counts_by_classification
+      - prioritize_high_value_items
+
+  - id: BR-INV-003
+    name: Variance Investigation
+    description: |
+      Variances above threshold require investigation and documentation.
+      High-value variances require management approval.
+    severity: high
+    entities: [CycleCount, Inventory]
+    conditions:
+      - variance_percent > threshold OR
+      - variance_value > value_threshold
+    actions:
+      - require_recount
+      - document_investigation
+      - escalate_to_manager_if_high_value
+
+  # Lot Tracking
+  - id: BR-INV-004
+    name: Mandatory Lot Tracking
+    description: |
+      Lot-tracked items must have lot number at all times.
+      No movement allowed without lot identification.
+    severity: critical
+    entities: [Item, Inventory, Lot]
+    conditions:
+      - item.lot_tracking == true
+      - inventory.lot_number IS NOT NULL
+    actions:
+      - require_lot_at_receiving
+      - prevent_movement_without_lot
+      - trace_lot_through_all_transactions
+    compliance: [FDA, ISO]
+
+  - id: BR-INV-005
+    name: Expiry Date Tracking
+    description: |
+      Expiry-tracked items must have valid expiry date.
+      Expired items quarantined automatically.
+    severity: critical
+    entities: [Item, Inventory, Lot]
+    conditions:
+      - item.expiry_tracking == true
+      - lot.expiry_date IS NOT NULL
+      - lot.expiry_date > today
+    actions:
+      - require_expiry_at_receiving
+      - quarantine_expired_items
+      - alert_near_expiry_items
+    compliance: [FDA, HACCP]
+
+  - id: BR-INV-006
+    name: Shelf Life Minimum
+    description: |
+      Items cannot be shipped if remaining shelf life below minimum.
+      Minimum shelf life configurable per item/customer.
+    severity: high
+    entities: [Item, Lot, OutboundOrder]
+    conditions:
+      - days_until_expiry >= minimum_shelf_life_days
+    actions:
+      - exclude_from_allocation
+      - alert_customer_service
+      - offer_discount_or_donation
+
+  # Quantity Holds
+  - id: BR-INV-007
+    name: Quality Hold
+    description: |
+      Items pending quality inspection held from allocation.
+      Release requires QC approval.
+    severity: critical
+    entities: [Inventory, Receipt]
+    conditions:
+      - item.qc_required == true
+      - qc_status IN ('pending', 'failed')
+    actions:
+      - hold_from_allocation
+      - move_to_qa_zone
+      - release_on_qc_pass
+
+  - id: BR-INV-008
+    name: Damage Hold
+    description: |
+      Damaged items held in damage zone.
+      Disposition required: repair, return, dispose.
+    severity: high
+    entities: [Inventory, Location]
+    conditions:
+      - inventory.condition == 'damaged'
+    actions:
+      - move_to_damage_zone
+      - require_disposition_decision
+      - adjust_inventory_on_disposal
+
+  - id: BR-INV-009
+    name: Recall Hold
+    description: |
+      Recalled lots immediately quarantined.
+      No shipment allowed for recalled inventory.
+    severity: critical
+    entities: [Lot, Inventory]
+    conditions:
+      - lot.status == 'recalled'
+    actions:
+      - immediate_quarantine
+      - stop_all_shipments
+      - notify_affected_customers
+      - track_recall_disposition
+    compliance: [FDA, CPSC]
+
+  # Adjustments
+  - id: BR-INV-010
+    name: Adjustment Authorization
+    description: |
+      Inventory adjustments require authorization based on value.
+      High-value adjustments need manager approval.
+    severity: high
+    entities: [Inventory, CycleCount]
+    conditions:
+      - adjustment_value < low_threshold: supervisor_approval
+      - adjustment_value < high_threshold: manager_approval
+      - adjustment_value >= high_threshold: director_approval
+    actions:
+      - route_to_appropriate_approver
+      - document_adjustment_reason
+      - post_to_financial_system
+
+  - id: BR-INV-011
+    name: Adjustment Reason Codes
+    description: |
+      All adjustments must have valid reason code.
+      Common reasons: count variance, damage, theft, receiving error.
+    severity: medium
+    entities: [Inventory]
+    conditions:
+      - adjustment_reason_code IS NOT NULL
+      - reason_code IN approved_codes
+    actions:
+      - require_reason_selection
+      - track_adjustments_by_reason
+      - analyze_patterns_monthly
+
+  # Replenishment
+  - id: BR-INV-012
+    name: Forward Pick Replenishment
+    description: |
+      When forward pick location below minimum, trigger replenishment.
+      Maintain adequate picking inventory.
+    severity: medium
+    entities: [Location, Inventory, Item]
+    conditions:
+      - location.is_pick_location == true
+      - quantity_on_hand < reorder_point
+    actions:
+      - create_replenishment_task
+      - prioritize_by_pick_activity
+      - replenish_to_max_quantity
+
+  - id: BR-INV-013
+    name: Reserve Stock Management
+    description: |
+      Maintain reserve stock in bulk storage.
+      Reserve feeds forward pick locations.
+    severity: low
+    entities: [Location, Inventory]
+    conditions:
+      - reserve_quantity >= forward_pick_demand * lead_time_days
+    actions:
+      - alert_low_reserve_stock
+      - trigger_purchasing_if_below_safety
+
+  # Negative Inventory Prevention
+  - id: BR-INV-014
+    name: No Negative Inventory
+    description: |
+      System prevents inventory going negative.
+      All transactions validated before execution.
+    severity: critical
+    entities: [Inventory]
+    conditions:
+      - quantity_on_hand >= 0
+      - quantity_available >= 0
+    actions:
+      - reject_transaction_if_negative
+      - investigate_discrepancy
+      - require_cycle_count
+
+  - id: BR-INV-015
+    name: Allocation Limits
+    description: |
+      Cannot allocate more than available quantity.
+      Available = On Hand - Allocated - On Hold.
+    severity: critical
+    entities: [Inventory, OutboundOrder]
+    conditions:
+      - allocation_quantity <= quantity_available
+    actions:
+      - reject_over_allocation
+      - partial_allocation_allowed
+      - backorder_remaining
+
+  # Audit Trail
+  - id: BR-INV-016
+    name: Transaction Audit Trail
+    description: |
+      All inventory movements logged with full audit trail.
+      Who, what, when, where, why for every transaction.
+    severity: critical
+    entities: [Inventory]
+    conditions:
+      - all_transactions_logged
+    actions:
+      - log_user_id
+      - log_timestamp
+      - log_before_after_quantities
+      - log_reason_code
+      - log_reference_document
+    compliance: [SOX, ISO]
+
+validation_triggers:
+  - before_any_inventory_transaction
+  - before_allocation
+  - during_cycle_count
+  - on_adjustment_request
+
+metrics:
+  - name: inventory_accuracy
+    formula: (accurate_locations / total_locations) * 100
+    target: "> 99%"
+  - name: adjustment_rate
+    formula: (adjustment_value / total_inventory_value) * 100
+    target: "< 0.5%"
+  - name: days_on_hand
+    formula: inventory_value / average_daily_demand
+    target: "< 30 days"
+  - name: expired_inventory_rate
+    formula: (expired_value / total_value) * 100
+    target: "< 0.1%"

@@ -1,0 +1,243 @@
+name: Negotiation Workflow
+display_name: Negotiation Workflow / Quy trình thương lượng giá
+description: |
+  Quy trình Make an Offer - thương lượng giá trực tiếp.
+
+domain: agriculture
+version: "1.0"
+
+triggers:
+  - event: offer.created
+    source: Offer
+    condition: listing.allow_offers = true
+
+actors:
+  - name: Buyer
+    role: initiator
+    description: Người đề nghị giá
+  - name: Seller
+    role: responder
+    description: Người bán (Farm owner)
+  - name: System
+    role: automated
+
+steps:
+  - id: SUBMIT_OFFER
+    name: Submit Offer
+    actor: Buyer
+    type: interactive
+    actions:
+      - Validate price >= floor_price (if set)
+      - Validate quantity available
+      - Create offer record
+      - Set expires_at = NOW() + 24h
+      - Notify seller
+    inputs:
+      - listing_id
+      - quantity
+      - price_per_kg
+      - note
+    outputs:
+      - offer_id
+    validations:
+      - rule: BR-OFR-001
+    on_success: SELLER_REVIEW
+
+  - id: SELLER_REVIEW
+    name: Seller Review
+    actor: Seller
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Show offer details
+      - Show cost analysis (daily feeding cost)
+      - Show comparison with other offers
+      - Seller decides: accept | reject | counter
+    inputs:
+      - decision: accept | reject | counter
+      - counter_price (if counter)
+      - response_note
+    branches:
+      - condition: decision = 'accept'
+        next: ACCEPT_OFFER
+      - condition: decision = 'reject'
+        next: REJECT_OFFER
+      - condition: decision = 'counter'
+        next: COUNTER_OFFER
+    on_timeout: EXPIRE_OFFER
+
+  - id: ACCEPT_OFFER
+    name: Accept Offer
+    actor: System
+    type: automated
+    actions:
+      - Set offer.status = 'accepted'
+      - Create order from offer
+      - Notify buyer
+    outputs:
+      - order_id
+    events:
+      - offer.accepted
+    on_success: ORDER_CREATED
+
+  - id: REJECT_OFFER
+    name: Reject Offer
+    actor: System
+    type: automated
+    actions:
+      - Set offer.status = 'rejected'
+      - Notify buyer with reason
+    events:
+      - offer.rejected
+    on_success: END
+
+  - id: COUNTER_OFFER
+    name: Counter Offer
+    actor: System
+    type: automated
+    conditions:
+      - offer.counter_round < 3
+    actions:
+      - Create new offer with parent_offer_id
+      - Increment counter_round
+      - Set new expires_at
+      - Swap buyer/seller roles
+      - Notify original buyer
+    outputs:
+      - counter_offer_id
+    on_success: BUYER_REVIEW_COUNTER
+
+  - id: BUYER_REVIEW_COUNTER
+    name: Buyer Review Counter
+    actor: Buyer
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Show counter offer details
+      - Buyer decides: accept | reject | counter
+    inputs:
+      - decision
+      - counter_price (if counter and round < 3)
+    branches:
+      - condition: decision = 'accept'
+        next: ACCEPT_COUNTER
+      - condition: decision = 'reject'
+        next: REJECT_COUNTER
+      - condition: decision = 'counter' AND counter_round < 3
+        next: COUNTER_AGAIN
+      - condition: decision = 'counter' AND counter_round >= 3
+        next: MAX_ROUNDS_REACHED
+    on_timeout: EXPIRE_COUNTER
+
+  - id: COUNTER_AGAIN
+    name: Counter Again
+    actor: System
+    type: automated
+    actions:
+      - Create new counter offer
+      - Increment round
+      - Notify seller
+    on_success: SELLER_REVIEW
+
+  - id: MAX_ROUNDS_REACHED
+    name: Max Rounds Reached
+    actor: System
+    type: automated
+    actions:
+      - Notify both parties
+      - Suggest: accept current or end negotiation
+    on_success: FINAL_DECISION
+
+  - id: ACCEPT_COUNTER
+    name: Accept Counter
+    actor: System
+    type: automated
+    actions:
+      - Set offer.status = 'accepted'
+      - Create order
+      - Notify seller
+    outputs:
+      - order_id
+    on_success: ORDER_CREATED
+
+  - id: REJECT_COUNTER
+    name: Reject Counter
+    actor: System
+    type: automated
+    actions:
+      - Set offer.status = 'rejected'
+      - Notify seller
+    on_success: END
+
+  - id: EXPIRE_OFFER
+    name: Expire Offer
+    actor: System
+    type: automated
+    actions:
+      - Set offer.status = 'expired'
+      - Notify both parties
+    on_success: END
+
+  - id: EXPIRE_COUNTER
+    name: Expire Counter
+    actor: System
+    type: automated
+    actions:
+      - Set counter_offer.status = 'expired'
+      - Notify initiator
+    on_success: END
+
+  - id: ORDER_CREATED
+    name: Order Created
+    actor: System
+    type: automated
+    actions:
+      - Transition to Order workflow
+    events:
+      - order.created
+    on_success: END
+
+  - id: FINAL_DECISION
+    name: Final Decision
+    actor: Buyer
+    type: interactive
+    timeout: 24 hours
+    actions:
+      - Accept final counter or end negotiation
+    branches:
+      - condition: decision = 'accept'
+        next: ACCEPT_COUNTER
+      - condition: decision = 'reject'
+        next: END
+    on_timeout: END
+
+  - id: END
+    name: End Negotiation
+    type: terminal
+
+timeouts:
+  offer_response: 24 hours
+  counter_response: 24 hours
+
+max_counter_rounds: 3
+
+notifications:
+  - event: offer.created
+    recipients: [seller]
+    channels: [push, sms]
+
+  - event: offer.countered
+    recipients: [original_party]
+    channels: [push, sms]
+
+  - event: offer.accepted
+    recipients: [buyer, seller]
+    channels: [push, email, sms]
+
+  - event: offer.rejected
+    recipients: [buyer]
+    channels: [push]
+
+  - event: offer.expired
+    recipients: [buyer, seller]
+    channels: [push]

@@ -1,0 +1,497 @@
+# Proctoring Business Rules
+# F5 Framework v2.0 - Education/Assessment
+# Rules governing exam proctoring
+
+business_rules:
+  domain: education
+  subdomain: assessment
+  category: proctoring
+  version: "1.0.0"
+
+  rules:
+    # ==========================================
+    # Identity Verification Rules
+    # ==========================================
+    
+    - id: PRC-001
+      name: Identity Verification Required
+      name_ja: 本人確認必須
+      description: Candidate must verify identity before starting proctored exam
+      category: identity
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [start_monitoring]
+        expression: "identity_verified = true"
+        
+      action:
+        type: block
+        message: "Identity verification must be completed before starting the exam"
+        message_ja: "試験開始前に本人確認を完了してください"
+        
+    - id: PRC-002
+      name: Photo ID Required
+      name_ja: 写真付きID必須
+      description: Government-issued photo ID required for certification exams
+      category: identity
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [verify_identity]
+        expression: |
+          exam.exam_type != 'certification'
+          OR (
+            id_document_type IN ['passport', 'driver_license', 'national_id']
+            AND id_document_url IS NOT NULL
+          )
+          
+      action:
+        type: block
+        message: "Government-issued photo ID is required for certification exams"
+        
+    - id: PRC-003
+      name: Face Match Threshold
+      name_ja: 顔認証閾値
+      description: Face match score must meet minimum threshold
+      category: identity
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [verify_identity]
+        expression: |
+          verification_method != 'face_match'
+          OR verification_score >= 0.85
+          
+      action:
+        type: block
+        message: "Face verification score too low. Please try again or contact support."
+        fallback:
+          action: escalate_to_proctor
+          message: "Automated face verification failed - manual review required"
+
+    # ==========================================
+    # Environment Check Rules
+    # ==========================================
+    
+    - id: PRC-010
+      name: Environment Check Required
+      name_ja: 環境チェック必須
+      description: Environment check must be completed for proctored exams
+      category: environment
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [start_monitoring]
+        expression: "environment_check.completed = true"
+        
+      action:
+        type: block
+        message: "Please complete the environment check before starting"
+        
+    - id: PRC-011
+      name: Webcam Required
+      name_ja: ウェブカメラ必須
+      description: Working webcam required for proctored exams
+      category: environment
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [start_monitoring]
+        expression: "environment_check.webcam_working = true"
+        
+      action:
+        type: block
+        message: "A working webcam is required for this exam"
+        
+    - id: PRC-012
+      name: Room Scan Required
+      name_ja: 部屋スキャン必須
+      description: 360-degree room scan required for high-stakes exams
+      category: environment
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [start_monitoring]
+        expression: |
+          exam.exam_type NOT IN ['certification', 'final']
+          OR environment_check.room_scan_url IS NOT NULL
+          
+      action:
+        type: block
+        message: "Please complete the room scan before starting"
+
+    # ==========================================
+    # Monitoring Rules
+    # ==========================================
+    
+    - id: PRC-020
+      name: Face Detection Monitoring
+      name_ja: 顔検出監視
+      description: Flag when face is not detected for extended period
+      category: monitoring
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [monitoring_tick]
+        expression: |
+          face_not_detected_duration > 30 seconds
+          
+      action:
+        type: create_flag
+        flag:
+          type: face_not_detected
+          severity: medium
+          details: "Face not detected for {duration} seconds"
+          
+    - id: PRC-021
+      name: Multiple Face Detection
+      name_ja: 複数の顔検出
+      description: Flag when multiple faces are detected
+      category: monitoring
+      severity: critical
+      
+      condition:
+        entity: proctor_session
+        trigger: [monitoring_tick]
+        expression: "faces_detected > 1"
+        
+      action:
+        type: create_flag
+        flag:
+          type: multiple_faces
+          severity: high
+          details: "{count} faces detected"
+        capture_screenshot: true
+        notify_proctor: true
+        
+    - id: PRC-022
+      name: Tab Switch Detection
+      name_ja: タブ切り替え検出
+      description: Flag when candidate switches browser tabs
+      category: monitoring
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [browser_event]
+        expression: "event_type = 'tab_switch'"
+        
+      action:
+        type: create_flag
+        flag:
+          type: tab_switch
+          severity: low
+        increment: tab_switches
+        
+    - id: PRC-023
+      name: Excessive Tab Switches
+      name_ja: 過度なタブ切り替え
+      description: Escalate when tab switches exceed threshold
+      category: monitoring
+      severity: critical
+      
+      condition:
+        entity: proctor_session
+        trigger: [flag_created]
+        expression: "tab_switches > 5"
+        
+      action:
+        type: escalate
+        severity: high
+        notify_proctor: true
+        warning_to_candidate: "Multiple tab switches detected. This may result in exam termination."
+        
+    - id: PRC-024
+      name: Browser Unfocus Detection
+      name_ja: ブラウザフォーカス外れ検出
+      description: Track when browser window loses focus
+      category: monitoring
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [browser_event]
+        expression: "event_type = 'browser_unfocused'"
+        
+      action:
+        type: create_flag
+        flag:
+          type: browser_unfocused
+          severity: low
+        increment: browser_unfocus_count
+        start_timer: browser_unfocus_duration
+        
+    - id: PRC-025
+      name: Audio Anomaly Detection
+      name_ja: 音声異常検出
+      description: Flag suspicious audio patterns
+      category: monitoring
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [audio_analysis]
+        expression: |
+          audio_anomaly_detected = true
+          AND anomaly_type IN ['speech_detected', 'multiple_voices', 'phone_notification']
+          
+      action:
+        type: create_flag
+        flag:
+          type: audio_anomaly
+          severity: medium
+          details: "{anomaly_type}: {details}"
+        capture_audio_clip: true
+
+    # ==========================================
+    # Intervention Rules
+    # ==========================================
+    
+    - id: PRC-030
+      name: Warning Threshold
+      name_ja: 警告閾値
+      description: Issue warning when flags accumulate
+      category: intervention
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [flag_created]
+        expression: |
+          total_flags = 3
+          OR critical_flags_count = 1
+          
+      action:
+        type: issue_warning
+        warning_level: 1
+        message: "Multiple violations detected. Please follow exam guidelines."
+        message_ja: "複数の違反が検出されました。試験規則に従ってください。"
+        
+    - id: PRC-031
+      name: Final Warning
+      name_ja: 最終警告
+      description: Issue final warning before termination
+      category: intervention
+      severity: critical
+      
+      condition:
+        entity: proctor_session
+        trigger: [flag_created]
+        expression: |
+          total_flags >= 5
+          OR critical_flags_count >= 2
+          
+      action:
+        type: issue_warning
+        warning_level: 2
+        message: "FINAL WARNING: Further violations will result in exam termination."
+        message_ja: "最終警告：これ以上の違反は試験の終了につながります。"
+        notify_proctor: true
+        
+    - id: PRC-032
+      name: Auto Termination
+      name_ja: 自動終了
+      description: Automatically terminate for severe violations
+      category: intervention
+      severity: critical
+      
+      condition:
+        entity: proctor_session
+        trigger: [flag_created]
+        expression: |
+          total_flags >= 8
+          OR critical_flags_count >= 3
+          OR flags.any(f => f.type = 'phone_detected')
+          
+      action:
+        type: terminate_session
+        reason: policy_violation
+        void_attempt: true
+        message: "Exam terminated due to policy violations"
+        require_review: true
+        
+    - id: PRC-033
+      name: Proctor Override
+      name_ja: 監督者上書き
+      description: Proctor can override automated decisions
+      category: intervention
+      severity: info
+      
+      condition:
+        entity: proctor_session
+        trigger: [proctor_action]
+        expression: "action_type IN ['dismiss_flag', 'restore_session', 'extend_time']"
+        
+      action:
+        type: log_action
+        require_reason: true
+        audit: true
+
+    # ==========================================
+    # Recording Rules
+    # ==========================================
+    
+    - id: PRC-040
+      name: Recording Required
+      name_ja: 録画必須
+      description: Session recording required for proctored exams
+      category: recording
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [start_monitoring]
+        expression: |
+          proctoring_type = 'live'
+          OR video_recording_url IS NOT NULL
+          
+      action:
+        type: block
+        message: "Recording must be active before starting the exam"
+        
+    - id: PRC-041
+      name: Recording Retention
+      name_ja: 録画保持
+      description: Recordings must be retained for appeal period
+      category: recording
+      severity: info
+      
+      condition:
+        entity: proctor_session
+        trigger: [complete]
+        expression: "true"
+        
+      action:
+        type: set_retention
+        retention_days: 90
+        delete_after: true
+        exception_status: [flagged, under_appeal]
+
+    # ==========================================
+    # Live Proctor Rules
+    # ==========================================
+    
+    - id: PRC-050
+      name: Proctor Response Time
+      name_ja: 監督者応答時間
+      description: Live proctors must respond within time limit
+      category: live_proctoring
+      severity: warning
+      
+      condition:
+        entity: proctor_session
+        trigger: [critical_flag_created]
+        expression: "proctoring_type = 'live'"
+        
+      action:
+        type: start_timer
+        timeout_minutes: 5
+        escalation_action: notify_supervisor
+        
+    - id: PRC-051
+      name: Proctor Assignment Limit
+      name_ja: 監督者割り当て制限
+      description: Limit number of concurrent sessions per proctor
+      category: live_proctoring
+      severity: error
+      
+      condition:
+        entity: proctor_session
+        trigger: [assign_proctor]
+        expression: |
+          COUNT(proctor_sessions WHERE proctor_id = :proctor_id AND status = 'active') < 10
+          
+      action:
+        type: block
+        message: "Proctor has reached maximum concurrent session limit"
+
+    # ==========================================
+    # Accommodation Rules
+    # ==========================================
+    
+    - id: PRC-060
+      name: Accommodation Adjustments
+      name_ja: 配慮措置調整
+      description: Apply proctoring accommodations
+      category: accommodations
+      severity: info
+      
+      condition:
+        entity: proctor_session
+        trigger: [setup]
+        expression: "attempt.accommodation_id IS NOT NULL"
+        
+      action:
+        type: apply_accommodations
+        adjustments:
+          - if: accommodation.proctoring_modifications.disable_face_detection
+            then: disable_rule(PRC-020)
+          - if: accommodation.proctoring_modifications.allow_assistive_device
+            then: whitelist_device_type(accommodation.assistive_technology_allowed)
+          - if: accommodation.extra_time_percentage
+            then: extend_session_time(accommodation.extra_time_percentage)
+
+  rule_groups:
+    identity_verification:
+      rules: [PRC-001, PRC-002, PRC-003]
+      description: Identity verification rules
+      
+    environment_check:
+      rules: [PRC-010, PRC-011, PRC-012]
+      description: Environment check rules
+      
+    monitoring:
+      rules: [PRC-020, PRC-021, PRC-022, PRC-023, PRC-024, PRC-025]
+      description: Real-time monitoring rules
+      
+    intervention:
+      rules: [PRC-030, PRC-031, PRC-032, PRC-033]
+      description: Intervention and termination rules
+      
+    recording:
+      rules: [PRC-040, PRC-041]
+      description: Recording and retention rules
+      
+    live_proctoring:
+      rules: [PRC-050, PRC-051]
+      description: Live proctoring specific rules
+      
+    accommodations:
+      rules: [PRC-060]
+      description: Accommodation handling rules
+
+  severity_escalation:
+    flag_counts:
+      - flags: 3
+        action: warning_1
+      - flags: 5
+        action: warning_2
+      - flags: 8
+        action: terminate
+        
+    critical_counts:
+      - flags: 1
+        action: warning_1
+      - flags: 2
+        action: warning_2
+      - flags: 3
+        action: terminate
+
+  exceptions:
+    - role: proctor
+      bypasses: [PRC-032]
+      conditions:
+        - documented_technical_issue
+      requires_justification: true
+      
+    - role: admin
+      bypasses: [PRC-032, PRC-040]
+      requires_justification: true
+      audit_required: true

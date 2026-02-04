@@ -1,0 +1,331 @@
+name: itinerary
+display_name: Itinerary
+display_name_vi: Lịch trình
+version: "1.0"
+domain: travel-hospitality
+subdomain: booking
+
+description: |
+  Compiled travel itinerary document containing all booking
+  components in chronological order.
+
+attributes:
+  # Identification
+  - name: id
+    type: uuid
+    primary_key: true
+
+  - name: booking_id
+    type: uuid
+    foreign_key: booking.id
+    required: true
+
+  - name: itinerary_number
+    type: string
+    unique: true
+
+  # Travelers
+  - name: lead_traveler_name
+    type: string
+
+  - name: travelers
+    type: array
+    items:
+      type: object
+      properties:
+        name:
+          type: string
+        type:
+          type: string
+
+  - name: traveler_count
+    type: integer
+
+  # Trip Overview
+  - name: trip_name
+    type: string
+    nullable: true
+    description: User-defined trip name
+
+  - name: trip_start_date
+    type: date
+
+  - name: trip_end_date
+    type: date
+
+  - name: total_days
+    type: integer
+
+  - name: destinations
+    type: array
+    items:
+      type: string
+    description: List of destination cities
+
+  # Itinerary Items
+  - name: items
+    type: array
+    items:
+      type: object
+      properties:
+        sequence:
+          type: integer
+        type:
+          type: enum
+          values: [flight, hotel, car, activity, transfer, note]
+        date:
+          type: date
+        time:
+          type: time
+        title:
+          type: string
+        subtitle:
+          type: string
+        details:
+          type: object
+        confirmation_number:
+          type: string
+        status:
+          type: string
+        location:
+          type: object
+
+  # Flight Summary
+  - name: flights
+    type: array
+    items:
+      type: object
+      properties:
+        flight_number:
+          type: string
+        airline:
+          type: string
+        origin:
+          type: string
+        destination:
+          type: string
+        departure:
+          type: datetime
+        arrival:
+          type: datetime
+        class:
+          type: string
+        status:
+          type: string
+
+  # Hotel Summary
+  - name: hotels
+    type: array
+    items:
+      type: object
+      properties:
+        hotel_name:
+          type: string
+        address:
+          type: string
+        check_in:
+          type: date
+        check_out:
+          type: date
+        room_type:
+          type: string
+        confirmation:
+          type: string
+
+  # Other Services
+  - name: car_rentals
+    type: array
+    nullable: true
+
+  - name: activities
+    type: array
+    nullable: true
+
+  - name: transfers
+    type: array
+    nullable: true
+
+  # Pricing Summary
+  - name: total_cost
+    type: decimal
+    precision: 12
+    scale: 2
+
+  - name: currency
+    type: string
+    length: 3
+
+  - name: payment_status
+    type: string
+
+  # Contact Information
+  - name: emergency_contacts
+    type: array
+    items:
+      type: object
+      properties:
+        name:
+          type: string
+        phone:
+          type: string
+        relationship:
+          type: string
+
+  - name: agency_contact
+    type: object
+    properties:
+      company:
+        type: string
+      phone:
+        type: string
+      email:
+        type: string
+      hours:
+        type: string
+
+  # Important Information
+  - name: important_notes
+    type: array
+    items:
+      type: string
+
+  - name: travel_advisories
+    type: array
+    nullable: true
+    items:
+      type: object
+      properties:
+        destination:
+          type: string
+        advisory_level:
+          type: string
+        message:
+          type: string
+
+  # Document Links
+  - name: pdf_url
+    type: string
+    nullable: true
+
+  - name: mobile_url
+    type: string
+    nullable: true
+    description: Deep link for mobile app
+
+  - name: calendar_url
+    type: string
+    nullable: true
+    description: ICS calendar file
+
+  # Sharing
+  - name: share_token
+    type: string
+    nullable: true
+    description: Token for sharing itinerary
+
+  - name: share_expiry
+    type: datetime
+    nullable: true
+
+  # Timestamps
+  - name: generated_at
+    type: timestamp
+
+  - name: last_sent_at
+    type: timestamp
+    nullable: true
+
+  - name: updated_at
+    type: timestamp
+    auto_update: true
+
+validations:
+  - rule: trip_end_date >= trip_start_date
+    message: End date must be on or after start date
+
+  - rule: items.length > 0
+    message: Itinerary must have at least one item
+
+relationships:
+  - name: booking
+    type: belongs_to
+    entity: booking
+    foreign_key: booking_id
+
+indexes:
+  - name: idx_itinerary_booking
+    columns: [booking_id]
+    unique: true
+
+  - name: idx_itinerary_number
+    columns: [itinerary_number]
+    unique: true
+
+  - name: idx_itinerary_share
+    columns: [share_token]
+
+computed_fields:
+  - name: total_days
+    formula: DATEDIFF(trip_end_date, trip_start_date) + 1
+
+  - name: total_flights
+    formula: LENGTH(flights)
+
+  - name: total_hotels
+    formula: LENGTH(hotels)
+
+  - name: is_shareable
+    formula: share_token IS NOT NULL AND share_expiry > NOW()
+
+  - name: destination_summary
+    formula: |
+      CASE
+        WHEN LENGTH(destinations) = 1 THEN destinations[0]
+        WHEN LENGTH(destinations) = 2 THEN CONCAT(destinations[0], ' & ', destinations[1])
+        ELSE CONCAT(destinations[0], ' + ', LENGTH(destinations) - 1, ' more')
+      END
+
+business_rules:
+  - id: BR-ITN-001
+    name: Itinerary Generation
+    rule: |
+      Generate itinerary automatically when:
+      - Booking confirmed
+      - Any component modified
+      - New documents issued
+
+  - id: BR-ITN-002
+    name: Chronological Order
+    rule: Items must be sorted by date/time
+
+  - id: BR-ITN-003
+    name: Share Link Expiry
+    rule: Share links expire after 30 days for security
+
+  - id: BR-ITN-004
+    name: PDF Requirements
+    rule: |
+      PDF itinerary must include:
+      - All confirmation numbers
+      - Full flight/hotel details
+      - Contact information
+      - Important notes
+
+events:
+  - name: itinerary.generated
+    payload:
+      - id
+      - booking_id
+      - pdf_url
+
+  - name: itinerary.sent
+    payload:
+      - id
+      - booking_id
+      - recipient_email
+
+  - name: itinerary.shared
+    payload:
+      - id
+      - share_token
+      - share_expiry

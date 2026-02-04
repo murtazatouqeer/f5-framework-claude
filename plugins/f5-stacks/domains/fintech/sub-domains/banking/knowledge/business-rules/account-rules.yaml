@@ -1,0 +1,577 @@
+name: Account Rules
+display_name: Account Business Rules / Quy tắc nghiệp vụ tài khoản
+description: |
+  Business rules governing bank account operations including balance
+  management, dormancy handling, freeze conditions, and account
+  closure requirements.
+
+domain: fintech
+sub_domain: banking
+version: "1.0"
+status: active
+
+# =============================================================================
+# BALANCE RULES
+# =============================================================================
+balance_rules:
+  # ---------------------------------------------------------------------------
+  # BR-ACC-001: Available Balance Calculation
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-001
+    name: Available Balance Calculation
+    name_vi: Tính số dư khả dụng
+    priority: critical
+    category: balance
+
+    description: |
+      Calculate available balance considering holds, minimum balance,
+      and approved overdraft limit.
+
+    formula: |
+      available_balance = balance - hold_amount - minimum_balance + overdraft_limit
+
+    implementation:
+      trigger: on_balance_change
+      computed_field: available_balance
+      dependencies:
+        - balance
+        - hold_amount
+        - minimum_balance
+        - overdraft_limit
+
+    examples:
+      - scenario: "Normal account"
+        inputs:
+          balance: 10000000
+          hold_amount: 500000
+          minimum_balance: 1000000
+          overdraft_limit: 0
+        result:
+          available_balance: 8500000
+
+      - scenario: "With overdraft"
+        inputs:
+          balance: 2000000
+          hold_amount: 1000000
+          minimum_balance: 500000
+          overdraft_limit: 5000000
+        result:
+          available_balance: 5500000
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-002: No Negative Available Balance
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-002
+    name: Non-Negative Available Balance
+    name_vi: Số dư khả dụng không âm
+    priority: critical
+    category: balance
+
+    description: |
+      Available balance cannot go negative unless overdraft is approved
+      and amount is within overdraft limit.
+
+    rule: |
+      IF requested_debit > available_balance
+      AND overdraft_limit = 0
+      THEN decline_transaction('INSUFFICIENT_FUNDS')
+
+      IF requested_debit > available_balance
+      AND requested_debit - available_balance > overdraft_limit
+      THEN decline_transaction('OVERDRAFT_LIMIT_EXCEEDED')
+
+    exception_flows:
+      bank_fees:
+        description: "Bank fees may cause negative balance"
+        action: "Allow fee deduction, trigger overdraft interest"
+
+      direct_debit:
+        description: "Pre-authorized direct debits"
+        action: "Allow if within overdraft, otherwise return unpaid"
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-003: Minimum Balance Maintenance
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-003
+    name: Minimum Balance Maintenance
+    name_vi: Duy trì số dư tối thiểu
+    priority: high
+    category: balance
+
+    description: |
+      Accounts must maintain minimum balance as per account type.
+      Falling below triggers fee and/or restrictions.
+
+    minimum_balance_by_type:
+      checking:
+        standard: 500000
+        gold: 1000000
+        platinum: 5000000
+      savings:
+        standard: 100000
+        term_deposit: 1000000
+
+    violations:
+      action: charge_maintenance_fee
+      fee_amount: 25000
+      frequency: monthly
+      grace_period_days: 3
+
+    implementation:
+      check_frequency: daily
+      notification: "Balance below minimum"
+
+# =============================================================================
+# DORMANCY RULES
+# =============================================================================
+dormancy_rules:
+  # ---------------------------------------------------------------------------
+  # BR-ACC-010: Dormancy Detection
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-010
+    name: Dormancy Detection
+    name_vi: Phát hiện tài khoản không hoạt động
+    priority: high
+    category: dormancy
+
+    description: |
+      Account becomes dormant after 12 months of no customer-initiated
+      transactions.
+
+    rule: |
+      IF last_transaction_at < NOW() - INTERVAL '12 months'
+      AND status = 'active'
+      AND last_transaction_type IN ('customer_initiated')
+      THEN mark_dormant()
+
+    excluded_transactions:
+      - bank_fees
+      - interest_payments
+      - automated_transfers
+      - account_maintenance
+
+    pre_dormancy_warnings:
+      - days_before: 60
+        action: send_notification
+        message: "Your account will become dormant in 60 days"
+      - days_before: 30
+        action: send_notification
+        message: "Your account will become dormant in 30 days"
+      - days_before: 7
+        action: send_notification
+        message: "Your account will become dormant in 7 days"
+
+    implementation:
+      batch_job: daily_dormancy_check
+      run_time: "02:00"
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-011: Dormancy Effects
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-011
+    name: Dormancy Effects
+    name_vi: Hiệu lực tài khoản không hoạt động
+    priority: high
+    category: dormancy
+
+    description: |
+      Restrictions applied when account becomes dormant.
+
+    restrictions:
+      - type: debit_blocked
+        description: "No outgoing transfers or withdrawals"
+      - type: card_blocked
+        description: "All cards blocked"
+      - type: standing_orders_paused
+        description: "Standing orders paused"
+      - type: direct_debits_returned
+        description: "Direct debits returned unpaid"
+
+    allowed_operations:
+      - credits: "Incoming transfers allowed"
+      - view: "View balance and statements"
+      - reactivate: "Customer can request reactivation"
+
+    reactivation:
+      triggers:
+        - "Any customer-initiated transaction"
+        - "Customer visit to branch"
+        - "Customer call to contact center"
+      process:
+        - verify_identity
+        - update_kyc_if_expired
+        - restore_full_access
+        - notify_customer
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-012: Dormancy Fee
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-012
+    name: Dormancy Maintenance Fee
+    name_vi: Phí duy trì tài khoản không hoạt động
+    priority: medium
+    category: dormancy
+
+    description: |
+      Monthly maintenance fee for dormant accounts.
+
+    fee_structure:
+      checking: 50000
+      savings: 25000
+      fee_frequency: monthly
+      start_after: 3_months_dormant
+
+    exemptions:
+      - balance_above: 50000000
+      - account_type: term_deposit
+      - customer_segment: [affluent, high_net_worth]
+
+    stop_conditions:
+      - balance_reaches_zero: true
+      - account_closed: true
+      - account_reactivated: true
+
+# =============================================================================
+# FREEZE RULES
+# =============================================================================
+freeze_rules:
+  # ---------------------------------------------------------------------------
+  # BR-ACC-020: Freeze Triggers
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-020
+    name: Account Freeze Triggers
+    name_vi: Điều kiện khóa tài khoản
+    priority: critical
+    category: freeze
+
+    description: |
+      Conditions that trigger account freeze.
+
+    triggers:
+      court_order:
+        source: legal
+        description: "Court order received"
+        action: immediate_freeze
+        notification: legal_team
+
+      fraud_suspected:
+        source: fraud_detection
+        description: "Fraud patterns detected"
+        action: immediate_freeze
+        notification: fraud_team
+
+      aml_alert:
+        source: aml_screening
+        description: "AML screening triggered"
+        action: immediate_freeze
+        notification: compliance_team
+
+      customer_request:
+        source: customer
+        description: "Customer reports compromise"
+        action: immediate_freeze
+        verification: basic_identity
+
+      sanctions_match:
+        source: sanctions_screening
+        description: "Sanctions list match"
+        action: immediate_freeze
+        notification: compliance_team
+
+      death_notification:
+        source: external
+        description: "Account holder deceased"
+        action: freeze_pending_succession
+        notification: operations_team
+
+    implementation:
+      action: set_status_frozen
+      block_all_operations: true
+      notify_stakeholders: true
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-021: Freeze Effects
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-021
+    name: Account Freeze Effects
+    name_vi: Hiệu lực khóa tài khoản
+    priority: critical
+    category: freeze
+
+    description: |
+      All operations blocked when account is frozen.
+
+    blocked_operations:
+      - debits: "All outgoing transfers"
+      - credits: "All incoming transfers"
+      - card_transactions: "All card usage"
+      - standing_orders: "All recurring payments"
+      - direct_debits: "All direct debits"
+      - interest_accrual: "Paused for term deposits"
+
+    allowed_operations:
+      - view_balance: "Customer can view balance"
+      - view_statements: "Historical statements"
+      - contact_bank: "Customer service access"
+
+    pending_transactions:
+      action: decline_or_return
+      reason_code: "ACCOUNT_FROZEN"
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-022: Unfreeze Process
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-022
+    name: Account Unfreeze Process
+    name_vi: Quy trình mở khóa tài khoản
+    priority: high
+    category: freeze
+
+    description: |
+      Requirements and process to unfreeze account.
+
+    requirements_by_trigger:
+      court_order:
+        required: "Court order lifting freeze"
+        approver: legal_team
+
+      fraud_suspected:
+        required: "Fraud investigation clearance"
+        approver: fraud_team
+
+      aml_alert:
+        required: "AML clearance certificate"
+        approver: compliance_officer
+
+      customer_request:
+        required: "Customer identity verification"
+        approver: branch_manager
+
+      sanctions_match:
+        required: "False positive confirmation"
+        approver: chief_compliance_officer
+
+    process:
+      1: "Receive unfreeze request/document"
+      2: "Verify authenticity of documents"
+      3: "Obtain appropriate approval"
+      4: "Remove freeze from system"
+      5: "Notify customer"
+      6: "Log unfreeze action"
+
+# =============================================================================
+# CLOSURE RULES
+# =============================================================================
+closure_rules:
+  # ---------------------------------------------------------------------------
+  # BR-ACC-030: Closure Requirements
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-030
+    name: Account Closure Requirements
+    name_vi: Yêu cầu đóng tài khoản
+    priority: high
+    category: closure
+
+    description: |
+      Pre-conditions that must be met before account closure.
+
+    requirements:
+      balance_zero:
+        condition: "balance = 0"
+        action: "Transfer remaining balance"
+
+      no_pending_transactions:
+        condition: "pending_transactions = 0"
+        action: "Wait for settlement"
+
+      no_active_cards:
+        condition: "active_cards = 0"
+        action: "Cancel all cards"
+
+      no_standing_orders:
+        condition: "active_standing_orders = 0"
+        action: "Cancel standing orders"
+
+      no_direct_debits:
+        condition: "active_direct_debits = 0"
+        action: "Cancel direct debit mandates"
+
+      no_pending_loans:
+        condition: "linked_loan_balance = 0"
+        action: "Settle outstanding loans"
+
+    exception:
+      force_close_by_bank:
+        allowed_by: senior_operations
+        reason: "Regulatory requirement or prolonged inactivity"
+        process:
+          - transfer_to_suspense_account
+          - notify_customer
+          - hold_for_reclaim
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-031: Closure Process
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-031
+    name: Account Closure Process
+    name_vi: Quy trình đóng tài khoản
+    priority: high
+    category: closure
+
+    description: |
+      Steps to close an account.
+
+    process:
+      1:
+        step: verify_identity
+        description: "Verify account holder identity"
+
+      2:
+        step: check_closure_requirements
+        description: "Validate all requirements met"
+
+      3:
+        step: cancel_linked_services
+        description: "Cancel cards, standing orders, direct debits"
+
+      4:
+        step: transfer_remaining_balance
+        description: "Transfer any remaining balance"
+
+      5:
+        step: generate_final_statement
+        description: "Create closure statement"
+
+      6:
+        step: archive_records
+        description: "Archive for regulatory retention"
+
+      7:
+        step: close_account
+        description: "Set status to closed"
+
+      8:
+        step: send_confirmation
+        description: "Send closure confirmation"
+
+    record_retention:
+      period: 10_years
+      includes:
+        - account_details
+        - transaction_history
+        - statements
+        - closure_documents
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-032: Account Number Recycling
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-032
+    name: Account Number Non-Recycling
+    name_vi: Không tái sử dụng số tài khoản
+    priority: high
+    category: closure
+
+    description: |
+      Closed account numbers are never reused.
+
+    rule: |
+      WHEN account closed
+      THEN account_number remains permanently reserved
+      AND cannot be assigned to new account
+
+    rationale:
+      - "Prevent confusion with historical records"
+      - "Regulatory compliance"
+      - "Audit trail integrity"
+
+# =============================================================================
+# LIMIT RESET RULES
+# =============================================================================
+limit_reset_rules:
+  # ---------------------------------------------------------------------------
+  # BR-ACC-040: Daily Limit Reset
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-040
+    name: Daily Limit Reset
+    name_vi: Reset hạn mức hàng ngày
+    priority: high
+    category: limits
+
+    description: |
+      Reset daily transfer limits at midnight local time.
+
+    rule: |
+      AT 00:00 (Asia/Ho_Chi_Minh timezone) daily:
+        daily_transfer_used = 0
+
+    implementation:
+      batch_job: daily_limit_reset
+      run_time: "00:00"
+      timezone: "Asia/Ho_Chi_Minh"
+
+  # ---------------------------------------------------------------------------
+  # BR-ACC-041: Monthly Limit Reset
+  # ---------------------------------------------------------------------------
+  - id: BR-ACC-041
+    name: Monthly Limit Reset
+    name_vi: Reset hạn mức hàng tháng
+    priority: high
+    category: limits
+
+    description: |
+      Reset monthly transfer limits on the 1st of each month.
+
+    rule: |
+      AT 00:00 on day 1 of month:
+        monthly_transfer_used = 0
+
+    implementation:
+      batch_job: monthly_limit_reset
+      run_time: "00:00"
+      run_day: 1
+
+# =============================================================================
+# IMPLEMENTATION CHECKLIST
+# =============================================================================
+implementation_checklist:
+  database:
+    - "Implement computed column for available_balance"
+    - "Add triggers for dormancy detection"
+    - "Create indexes for dormancy queries"
+
+  batch_jobs:
+    - "Daily dormancy check job"
+    - "Daily limit reset job"
+    - "Monthly limit reset job"
+    - "Dormancy fee charging job"
+
+  notifications:
+    - "Pre-dormancy warning notifications"
+    - "Dormancy activation notification"
+    - "Freeze/unfreeze notifications"
+    - "Closure confirmation"
+
+  audit:
+    - "Log all status changes"
+    - "Log all freeze/unfreeze actions"
+    - "Log closure with reason"
+
+# =============================================================================
+# TESTING REQUIREMENTS
+# =============================================================================
+testing_requirements:
+  unit_tests:
+    - "Available balance calculation"
+    - "Dormancy detection logic"
+    - "Freeze trigger validation"
+    - "Closure requirement checks"
+
+  integration_tests:
+    - "End-to-end dormancy flow"
+    - "Freeze and unfreeze flow"
+    - "Account closure flow"
+
+  compliance_tests:
+    - "Court order freeze handling"
+    - "AML alert freeze handling"
+    - "Record retention verification"

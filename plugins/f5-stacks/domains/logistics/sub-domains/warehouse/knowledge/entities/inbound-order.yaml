@@ -1,0 +1,260 @@
+name: InboundOrder
+display_name: Inbound Order / ASN
+description: |
+  Purchase orders, ASNs, transfers, and returns coming into the warehouse.
+  Tracks expected vs actual received quantities.
+
+domain: logistics
+subdomain: warehouse
+category: core
+
+attributes:
+  - name: id
+    type: uuid
+    required: true
+
+  - name: order_number
+    type: string
+    required: true
+    validation:
+      pattern: "^(PO|ASN|TRN|RMA)-[0-9]{8}$"
+    example: "PO-20241201"
+
+  - name: warehouse_id
+    type: uuid
+    required: true
+
+  - name: supplier_id
+    type: uuid
+    required: false
+
+  - name: source_warehouse_id
+    type: uuid
+    required: false
+    description: For transfers
+
+  - name: order_type
+    type: enum
+    required: true
+    validation:
+      values: [purchase_order, asn, transfer, return, cross_dock]
+
+  - name: status
+    type: enum
+    required: true
+    validation:
+      values: [draft, confirmed, in_transit, arrived, receiving, received, closed, cancelled]
+    default: draft
+
+  - name: priority
+    type: enum
+    required: true
+    validation:
+      values: [low, medium, high, urgent]
+    default: medium
+
+  # Scheduling
+  - name: expected_date
+    type: date
+    required: true
+
+  - name: expected_time_window
+    type: string
+    required: false
+    example: "08:00-12:00"
+
+  - name: actual_arrival_date
+    type: timestamp
+    required: false
+
+  - name: dock_door_assigned
+    type: string
+    required: false
+
+  # Line Items
+  - name: line_items
+    type: array
+    required: true
+    description: Order line details
+    example:
+      - item_id: "uuid"
+        sku: "SKU-001"
+        quantity_expected: 100
+        quantity_received: 95
+        unit_of_measure: "each"
+        lot_number: "LOT-001"
+        expiry_date: "2025-12-31"
+        unit_cost: 10.50
+
+  - name: total_lines
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_units_expected
+    type: integer
+    required: true
+    default: 0
+
+  - name: total_units_received
+    type: integer
+    required: true
+    default: 0
+
+  # Carrier
+  - name: carrier_id
+    type: uuid
+    required: false
+
+  - name: carrier_name
+    type: string
+    required: false
+
+  - name: tracking_number
+    type: string
+    required: false
+
+  - name: pro_number
+    type: string
+    required: false
+    description: Progressive/PRO number for freight
+
+  - name: trailer_number
+    type: string
+    required: false
+
+  - name: seal_number
+    type: string
+    required: false
+
+  # Documents
+  - name: packing_slip_number
+    type: string
+    required: false
+
+  - name: bill_of_lading
+    type: string
+    required: false
+
+  - name: customs_entry_number
+    type: string
+    required: false
+
+  # Notes
+  - name: notes
+    type: text
+    required: false
+
+  - name: special_instructions
+    type: text
+    required: false
+
+  # Timestamps
+  - name: confirmed_at
+    type: timestamp
+    required: false
+
+  - name: receiving_started_at
+    type: timestamp
+    required: false
+
+  - name: receiving_completed_at
+    type: timestamp
+    required: false
+
+  - name: created_at
+    type: timestamp
+    required: true
+
+  - name: updated_at
+    type: timestamp
+    required: true
+
+relationships:
+  - name: warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: true
+
+  - name: supplier
+    type: belongs_to
+    entity: Supplier
+    required: false
+
+  - name: source_warehouse
+    type: belongs_to
+    entity: Warehouse
+    required: false
+
+  - name: receipts
+    type: has_many
+    entity: Receipt
+
+  - name: putaway_tasks
+    type: has_many
+    entity: PutawayTask
+
+indexes:
+  - [order_number]
+  - [warehouse_id, status]
+  - [expected_date]
+  - [supplier_id]
+  - [tracking_number]
+
+state_machine:
+  initial: draft
+  states:
+    - name: draft
+      description: Order created but not confirmed
+    - name: confirmed
+      description: Order confirmed, awaiting shipment
+    - name: in_transit
+      description: Shipment on the way
+    - name: arrived
+      description: Truck at dock, not yet unloaded
+    - name: receiving
+      description: Currently being received
+    - name: received
+      description: Fully received
+    - name: closed
+      description: Receiving closed, putaway complete
+    - name: cancelled
+      description: Order cancelled
+  transitions:
+    - from: draft
+      to: confirmed
+      trigger: confirm
+    - from: confirmed
+      to: in_transit
+      trigger: ship
+    - from: in_transit
+      to: arrived
+      trigger: arrive
+    - from: arrived
+      to: receiving
+      trigger: start_receiving
+    - from: receiving
+      to: received
+      trigger: complete_receiving
+    - from: received
+      to: closed
+      trigger: close
+    - from: [draft, confirmed]
+      to: cancelled
+      trigger: cancel
+
+business_rules:
+  - BR-IBO-001: Cannot receive more than expected quantity + tolerance
+  - BR-IBO-002: Expired products rejected at receiving
+  - BR-IBO-003: Cross-dock items bypass putaway
+  - BR-IBO-004: ASN must match actual contents within tolerance
+
+events:
+  - name: inbound.confirmed
+    payload: [id, order_number, expected_date]
+  - name: inbound.arrived
+    payload: [id, actual_arrival_date, dock_door]
+  - name: inbound.received
+    payload: [id, total_units_received, variance]
+  - name: inbound.closed
+    payload: [id]

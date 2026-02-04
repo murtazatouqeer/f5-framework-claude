@@ -1,0 +1,136 @@
+name: Quality Control Rules
+display_name: Quality Control Rules / Quy tắc kiểm soát chất lượng
+description: |
+  Quy tắc đảm bảo chất lượng trong chuỗi cung ứng.
+
+domain: agriculture
+category: quality_control
+
+rules:
+  - id: BR-QC-001
+    name: Photo Evidence Required
+    description: Mỗi checkpoint phải có ảnh chứng minh
+    priority: critical
+    condition: |
+      quality_check.photos IS NOT NULL AND
+      COUNT(quality_check.photos) >= 1
+    action: reject_if_violated
+    message: "Vui lòng chụp ít nhất 1 ảnh"
+    applies_to: [QualityCheck]
+
+  - id: BR-QC-002
+    name: Weight Recording
+    description: Ghi nhận cân nặng tại mỗi checkpoint quan trọng
+    priority: high
+    condition: |
+      quality_check.checkpoint IN ('farm', 'slaughterhouse', 'shipper_pickup', 'shipper_delivery', 'buyer_receive') AND
+      quality_check.weight_kg IS NOT NULL
+    action: reject_if_violated
+    message: "Vui lòng nhập cân nặng"
+    applies_to: [QualityCheck]
+
+  - id: BR-QC-003
+    name: Temperature Check for Cold Chain
+    description: Kiểm tra nhiệt độ cho hàng đông lạnh
+    priority: high
+    condition: |
+      order.requires_cold_chain = true AND
+      quality_check.temperature_celsius IS NOT NULL AND
+      quality_check.temperature_celsius <= config.max_temperature
+    action: |
+      IF temperature > max_temperature THEN
+        CREATE alert(type = 'temperature_breach')
+      END IF
+    applies_to: [QualityCheck]
+    config:
+      max_temperature_fresh: 4
+      max_temperature_frozen: -18
+
+  - id: BR-QC-004
+    name: Seal Application
+    description: Áp dụng seal niêm phong từ Farm/Slaughterhouse
+    priority: high
+    condition: |
+      quality_check.checkpoint IN ('farm', 'slaughterhouse') AND
+      seal_applied = true
+    action: |
+      generate_seal_code()
+      record_seal_application()
+    applies_to: [QualityCheck]
+
+  - id: BR-QC-005
+    name: GPS Location Required for Shipper
+    description: Shipper phải có GPS khi check
+    priority: medium
+    condition: |
+      quality_check.checked_by_role = 'shipper' AND
+      quality_check.location IS NOT NULL
+    action: reject_if_violated
+    message: "Vui lòng bật GPS"
+    applies_to: [QualityCheck]
+
+  - id: BR-QC-006
+    name: Veterinary Certificate Required
+    description: Giấy kiểm dịch bắt buộc
+    priority: critical
+    condition: |
+      listing.veterinary_cert IS NOT NULL OR
+      order.veterinary_cert IS NOT NULL
+    action: reject_if_violated
+    message: "Cần có giấy kiểm dịch"
+    applies_to: [Listing, Order]
+
+  - id: BR-QC-007
+    name: Buyer Report Window
+    description: Buyer có 2h sau delivery để report vấn đề
+    priority: high
+    condition: |
+      NOW() - order.delivered_at <= INTERVAL '2 hours'
+    action: allow_quality_report
+    applies_to: [Order, QualityCheck]
+    config:
+      report_window_hours: 2
+
+  - id: BR-QC-008
+    name: Auto Complete Order
+    description: Tự động hoàn thành đơn sau 48h nếu không có vấn đề
+    priority: medium
+    condition: |
+      order.status = 'delivered' AND
+      NOW() - order.delivered_at > INTERVAL '48 hours' AND
+      NOT EXISTS(open_disputes)
+    action: |
+      order.status = 'completed'
+      release_payment_to_seller()
+    applies_to: [Order]
+    config:
+      auto_complete_hours: 48
+
+checkpoints:
+  farm:
+    required_fields: [photos, weight_kg, quantity, visual_condition]
+    optional_fields: [notes, veterinary_cert]
+
+  slaughterhouse:
+    required_fields: [photos, weight_kg, carcass_ratio, visual_condition]
+    optional_fields: [temperature_celsius, notes]
+
+  shipper_pickup:
+    required_fields: [photos, weight_kg, seal_status, location]
+    optional_fields: [temperature_celsius, notes]
+
+  hub_receive:
+    required_fields: [photos, seal_status, temperature_celsius]
+    optional_fields: [weight_kg, notes]
+
+  hub_release:
+    required_fields: [photos, seal_status]
+    optional_fields: [notes]
+
+  shipper_delivery:
+    required_fields: [photos, weight_kg, seal_status, location]
+    optional_fields: [temperature_celsius, notes]
+
+  buyer_receive:
+    required_fields: [photos, visual_condition]
+    optional_fields: [weight_kg, seal_status, notes, issues_found]

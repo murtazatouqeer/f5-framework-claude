@@ -1,0 +1,661 @@
+# Payment Entity - Core payment transaction record
+# Domain: fintech/payment
+# PCI-DSS Compliant
+
+name: Payment
+display_name: Payment
+description: |
+  Core payment transaction entity representing a single payment attempt.
+  Tracks the full lifecycle from initiation through settlement or failure.
+  Supports multiple payment methods including cards, bank transfers, and e-wallets.
+
+  Vietnamese: Giao dịch thanh toán chính - đại diện cho một lần thanh toán
+  từ khi khởi tạo đến khi hoàn tất hoặc thất bại.
+
+domain: fintech
+sub_domain: payment
+category: core
+
+attributes:
+  # Identifiers
+  - name: id
+    type: uuid
+    required: true
+    description: Unique identifier in the system (Mã định danh duy nhất)
+
+  - name: payment_id
+    type: string
+    required: true
+    description: External payment ID for API reference (PAY-XXXXXXXX)
+    validation:
+      pattern: "^PAY-[A-Z0-9]{8}$"
+
+  - name: payment_intent_id
+    type: uuid
+    required: false
+    description: Reference to the payment intent that initiated this payment
+
+  - name: idempotency_key
+    type: string
+    required: false
+    description: Client-provided key for idempotent requests
+    validation:
+      max: 255
+
+  # Parties
+  - name: merchant_id
+    type: uuid
+    required: true
+    description: Merchant receiving the payment (Merchant nhận thanh toán)
+
+  - name: customer_id
+    type: uuid
+    required: false
+    description: Customer making the payment (Khách hàng thanh toán)
+
+  # Amount
+  - name: amount
+    type: decimal
+    required: true
+    description: Payment amount in smallest currency unit (Số tiền thanh toán)
+    validation:
+      min: 1
+
+  - name: currency
+    type: string
+    required: true
+    description: Three-letter ISO currency code
+    validation:
+      pattern: "^[A-Z]{3}$"
+    default: "VND"
+
+  - name: amount_received
+    type: decimal
+    required: true
+    description: Amount actually received after fees
+    validation:
+      min: 0
+    default: 0
+
+  # Payment Method
+  - name: payment_method_type
+    type: enum
+    required: true
+    description: Type of payment method used (Loại phương thức thanh toán)
+    validation:
+      values: [card, bank_transfer, e_wallet, qr_code, cash, crypto]
+
+  - name: payment_method_id
+    type: uuid
+    required: false
+    description: Reference to saved payment method
+
+  - name: payment_method_details
+    type: json
+    required: false
+    description: |
+      Specific details of payment method used
+      - Card: last4, brand, exp_month, exp_year, funding
+      - Bank: bank_code, account_last4
+      - E-wallet: wallet_type, phone_last4
+
+  # Status
+  - name: status
+    type: enum
+    required: true
+    description: Current payment status (Trạng thái thanh toán)
+    validation:
+      values: [pending, processing, requires_action, requires_capture, succeeded, failed, cancelled, refunded, partially_refunded]
+
+  - name: capture_method
+    type: enum
+    required: true
+    description: How to capture the payment (Phương thức capture)
+    validation:
+      values: [automatic, manual]
+    default: automatic
+
+  - name: captured_amount
+    type: decimal
+    required: true
+    description: Amount that has been captured
+    validation:
+      min: 0
+    default: 0
+
+  - name: refunded_amount
+    type: decimal
+    required: true
+    description: Total amount refunded (Tổng số tiền đã hoàn)
+    validation:
+      min: 0
+    default: 0
+
+  # Fees
+  - name: fee_amount
+    type: decimal
+    required: true
+    description: Total fees deducted (Phí giao dịch)
+    validation:
+      min: 0
+    default: 0
+
+  - name: net_amount
+    type: decimal
+    required: true
+    description: Net amount after fees (amount - fee_amount)
+    validation:
+      min: 0
+    default: 0
+
+  # Failure Info
+  - name: failure_code
+    type: string
+    required: false
+    description: Error code if payment failed (Mã lỗi)
+    validation:
+      max: 100
+
+  - name: failure_message
+    type: string
+    required: false
+    description: Human-readable failure reason (Lý do thất bại)
+    validation:
+      max: 500
+
+  - name: decline_code
+    type: string
+    required: false
+    description: Card network decline code
+    validation:
+      max: 50
+
+  # Risk & Fraud
+  - name: risk_score
+    type: integer
+    required: false
+    description: Fraud risk score (0-100)
+    validation:
+      min: 0
+      max: 100
+
+  - name: risk_level
+    type: enum
+    required: false
+    description: Risk classification level (Mức độ rủi ro)
+    validation:
+      values: [low, medium, high, very_high]
+
+  - name: risk_factors
+    type: json
+    required: false
+    description: Array of identified risk factors
+
+  # Device & Location
+  - name: ip_address
+    type: string
+    required: false
+    description: Customer's IP address (for fraud detection)
+    validation:
+      pattern: "^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}$|^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$"
+
+  - name: user_agent
+    type: string
+    required: false
+    description: Browser/app user agent string
+    validation:
+      max: 500
+
+  - name: device_fingerprint
+    type: string
+    required: false
+    description: Device fingerprint for fraud detection
+    validation:
+      max: 255
+
+  - name: country
+    type: string
+    required: false
+    description: Detected country from IP
+    validation:
+      pattern: "^[A-Z]{2}$"
+
+  # Customer Info
+  - name: billing_address
+    type: json
+    required: false
+    description: |
+      Billing address object:
+      - line1, line2, city, state, postal_code, country
+
+  - name: shipping_address
+    type: json
+    required: false
+    description: Shipping address object (same structure as billing)
+
+  - name: receipt_email
+    type: string
+    required: false
+    description: Email for receipt delivery
+    validation:
+      pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+
+  # Receipt & Statement
+  - name: receipt_url
+    type: string
+    required: false
+    description: URL to hosted payment receipt
+    validation:
+      max: 500
+
+  - name: statement_descriptor
+    type: string
+    required: false
+    description: Text appearing on customer's bank statement
+    validation:
+      max: 22
+
+  - name: statement_descriptor_suffix
+    type: string
+    required: false
+    description: Suffix appended to statement descriptor
+    validation:
+      max: 22
+
+  # Metadata
+  - name: description
+    type: string
+    required: false
+    description: Internal payment description
+    validation:
+      max: 1000
+
+  - name: metadata
+    type: json
+    required: false
+    description: |
+      Custom key-value metadata (max 50 keys, 500 chars per value)
+      Example: {"order_id": "ORD-123", "customer_note": "Gift"}
+
+  # Processing Details
+  - name: processor_id
+    type: string
+    required: false
+    description: Payment processor that handled the transaction
+
+  - name: processor_response
+    type: json
+    required: false
+    description: Raw response from payment processor
+
+  - name: authorization_code
+    type: string
+    required: false
+    description: Authorization code from card network
+    validation:
+      max: 20
+
+  - name: network_transaction_id
+    type: string
+    required: false
+    description: Transaction ID from card network
+    validation:
+      max: 100
+
+  # 3D Secure
+  - name: three_d_secure_status
+    type: enum
+    required: false
+    description: 3D Secure authentication status
+    validation:
+      values: [not_required, required, attempted, succeeded, failed, challenge]
+
+  - name: three_d_secure_version
+    type: string
+    required: false
+    description: "3DS version used (1.0, 2.0, 2.1, 2.2)"
+    validation:
+      pattern: "^[0-9]\\.[0-9]$"
+
+  # Settlement
+  - name: settlement_id
+    type: uuid
+    required: false
+    description: Reference to settlement batch
+
+  - name: settled
+    type: boolean
+    required: true
+    description: Whether payment has been settled
+    default: false
+
+  - name: settled_at
+    type: timestamp
+    required: false
+    description: When payment was settled
+
+  # Timestamps
+  - name: created_at
+    type: timestamp
+    required: true
+    description: Payment creation time
+
+  - name: updated_at
+    type: timestamp
+    required: true
+    description: Last update time
+
+  - name: authorized_at
+    type: timestamp
+    required: false
+    description: When payment was authorized
+
+  - name: captured_at
+    type: timestamp
+    required: false
+    description: When payment was captured
+
+  - name: cancelled_at
+    type: timestamp
+    required: false
+    description: When payment was cancelled
+
+  - name: expires_at
+    type: timestamp
+    required: false
+    description: Authorization expiry time (manual capture)
+
+  # Versioning
+  - name: version
+    type: integer
+    required: true
+    description: Optimistic locking version
+    default: 1
+
+relationships:
+  - name: payment_intent
+    type: belongs_to
+    entity: PaymentIntent
+    required: false
+    description: Original payment intent
+
+  - name: merchant
+    type: belongs_to
+    entity: Merchant
+    required: true
+    description: Merchant receiving payment
+
+  - name: customer
+    type: belongs_to
+    entity: Customer
+    required: false
+    description: Customer making payment
+
+  - name: payment_method
+    type: belongs_to
+    entity: PaymentMethod
+    required: false
+    description: Saved payment method used
+
+  - name: refunds
+    type: has_many
+    entity: Refund
+    required: false
+    description: Associated refunds
+
+  - name: disputes
+    type: has_many
+    entity: Dispute
+    required: false
+    description: Associated disputes/chargebacks
+
+  - name: settlement
+    type: belongs_to
+    entity: Settlement
+    required: false
+    description: Settlement batch
+
+  - name: fees
+    type: has_many
+    entity: Fee
+    required: false
+    description: Fee breakdown records
+
+state_machine:
+  initial: pending
+  states:
+    - name: pending
+      description: Payment created, awaiting processing (Chờ xử lý)
+    - name: processing
+      description: Payment is being processed (Đang xử lý)
+    - name: requires_action
+      description: Customer action required (e.g., 3DS) (Cần hành động từ KH)
+    - name: requires_capture
+      description: Authorized, awaiting capture (Chờ capture)
+    - name: succeeded
+      description: Payment completed successfully (Thành công)
+    - name: failed
+      description: Payment failed (Thất bại)
+    - name: cancelled
+      description: Payment cancelled (Đã hủy)
+    - name: refunded
+      description: Fully refunded (Đã hoàn tiền)
+    - name: partially_refunded
+      description: Partially refunded (Hoàn tiền một phần)
+
+  transitions:
+    - from: pending
+      to: processing
+      trigger: process
+      description: Start processing payment
+
+    - from: pending
+      to: cancelled
+      trigger: cancel
+      description: Cancel before processing
+
+    - from: processing
+      to: requires_action
+      trigger: require_action
+      description: Requires customer authentication
+
+    - from: processing
+      to: requires_capture
+      trigger: authorize
+      description: Authorization successful (manual capture)
+
+    - from: processing
+      to: succeeded
+      trigger: capture
+      description: Payment captured successfully
+
+    - from: processing
+      to: failed
+      trigger: fail
+      description: Payment processing failed
+
+    - from: requires_action
+      to: processing
+      trigger: complete_action
+      description: Customer completed action
+
+    - from: requires_action
+      to: failed
+      trigger: action_failed
+      description: Customer action failed/expired
+
+    - from: requires_action
+      to: cancelled
+      trigger: cancel
+      description: Cancel during action
+
+    - from: requires_capture
+      to: succeeded
+      trigger: capture
+      description: Capture authorized payment
+
+    - from: requires_capture
+      to: cancelled
+      trigger: void
+      description: Void authorization
+
+    - from: requires_capture
+      to: failed
+      trigger: expire
+      description: Authorization expired
+
+    - from: succeeded
+      to: partially_refunded
+      trigger: partial_refund
+      description: Partial refund issued
+
+    - from: succeeded
+      to: refunded
+      trigger: full_refund
+      description: Full refund issued
+
+    - from: partially_refunded
+      to: refunded
+      trigger: full_refund
+      description: Complete remaining refund
+
+indexes:
+  - [payment_id]
+  - [merchant_id, created_at]
+  - [customer_id, created_at]
+  - [status, merchant_id]
+  - [settlement_id]
+  - [idempotency_key]
+  - [created_at]
+  - [payment_intent_id]
+
+events:
+  - name: payment.created
+    description: Payment record created
+    payload: [id, payment_id, merchant_id, amount, currency, status]
+
+  - name: payment.processing
+    description: Payment processing started
+    payload: [id, payment_id, payment_method_type]
+
+  - name: payment.requires_action
+    description: Customer action required
+    payload: [id, payment_id, action_type, redirect_url]
+
+  - name: payment.authorized
+    description: Payment authorized (manual capture)
+    payload: [id, payment_id, amount, authorization_code]
+
+  - name: payment.succeeded
+    description: Payment completed successfully
+    payload: [id, payment_id, amount, net_amount, fee_amount]
+
+  - name: payment.failed
+    description: Payment failed
+    payload: [id, payment_id, failure_code, failure_message]
+
+  - name: payment.cancelled
+    description: Payment cancelled
+    payload: [id, payment_id, cancelled_at]
+
+  - name: payment.refunded
+    description: Payment refunded (partial or full)
+    payload: [id, payment_id, refunded_amount, refund_id]
+
+  - name: payment.disputed
+    description: Payment disputed by customer
+    payload: [id, payment_id, dispute_id, reason]
+
+  - name: payment.settled
+    description: Payment included in settlement
+    payload: [id, payment_id, settlement_id, net_amount]
+
+business_rules:
+  - id: BR-PAY-001
+    description: Amount must be positive and not exceed maximum limit
+    rule: amount > 0 AND amount <= max_transaction_limit
+    vietnamese: Số tiền phải dương và không vượt quá giới hạn
+
+  - id: BR-PAY-002
+    description: Currency must be supported by merchant
+    rule: currency IN merchant.supported_currencies
+    vietnamese: Đơn vị tiền tệ phải được merchant hỗ trợ
+
+  - id: BR-PAY-003
+    description: Cannot refund more than captured amount
+    rule: refunded_amount <= captured_amount
+    vietnamese: Không thể hoàn tiền nhiều hơn số đã capture
+
+  - id: BR-PAY-004
+    description: Manual capture authorization expires in 7 days
+    rule: |
+      IF capture_method = 'manual'
+      THEN expires_at = authorized_at + 7 days
+    vietnamese: Authorization chỉ có hiệu lực 7 ngày
+
+  - id: BR-PAY-005
+    description: High risk payments require additional verification
+    rule: |
+      IF risk_level IN ['high', 'very_high']
+      THEN require_additional_verification = true
+    vietnamese: Giao dịch rủi ro cao cần xác minh thêm
+
+  - id: BR-PAY-006
+    description: Idempotency key must return same result within 24 hours
+    rule: |
+      IF idempotency_key EXISTS AND age < 24h
+      THEN return cached_response
+    vietnamese: Idempotency key trả về kết quả giống nhau trong 24h
+
+  - id: BR-PAY-007
+    description: Net amount equals amount minus fees
+    rule: net_amount = captured_amount - fee_amount
+    vietnamese: Số tiền thực nhận = số capture - phí
+
+  - id: BR-PAY-008
+    description: Card payments require CVV for first-time use
+    rule: |
+      IF payment_method_type = 'card' AND payment_method.first_use = true
+      THEN cvv_required = true
+    vietnamese: Thanh toán thẻ lần đầu cần CVV
+
+api_endpoints:
+  - method: POST
+    path: /v1/payments
+    description: Create a new payment
+
+  - method: GET
+    path: /v1/payments/{id}
+    description: Retrieve payment details
+
+  - method: POST
+    path: /v1/payments/{id}/capture
+    description: Capture an authorized payment
+
+  - method: POST
+    path: /v1/payments/{id}/cancel
+    description: Cancel a payment
+
+  - method: GET
+    path: /v1/payments
+    description: List payments with filters
+
+validation_examples:
+  valid_payment:
+    payment_id: "PAY-A1B2C3D4"
+    merchant_id: "mer_123"
+    amount: 1000000
+    currency: "VND"
+    payment_method_type: "card"
+    status: "succeeded"
+
+  invalid_payment:
+    amount: -100
+    error: "BR-PAY-001: Amount must be positive"
+
+security_considerations:
+  - Card data (PAN, CVV) must never be stored - use tokenization
+  - PCI-DSS compliance required for card processing
+  - All sensitive data encrypted at rest and in transit
+  - Access logs maintained for 7 years
+  - IP and device fingerprinting for fraud detection

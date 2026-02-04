@@ -1,0 +1,462 @@
+name: stock-transfer-workflow
+display_name: Stock Transfer Workflow
+display_name_vi: Quy trình chuyển kho
+version: "1.0"
+domain: manufacturing
+subdomain: inventory
+
+description: |
+  Workflow for transferring inventory between locations, warehouses,
+  or plants. Supports single-step and two-step transfers with
+  in-transit tracking.
+
+workflow_type: sequential
+triggers:
+  - Replenishment request
+  - Production requirement
+  - Warehouse optimization
+  - Plant consolidation
+  - Manual transfer request
+
+participants:
+  - role: requester
+    description: User requesting transfer
+  - role: source_warehouse
+    description: Sending warehouse team
+  - role: destination_warehouse
+    description: Receiving warehouse team
+  - role: approver
+    description: Transfer approver
+  - role: carrier
+    description: Transport provider (inter-plant)
+
+stages:
+  # ============================================
+  # STAGE 1: REQUEST
+  # ============================================
+  - id: request
+    name: Transfer Request
+    name_vi: Yêu cầu chuyển kho
+    sequence: 1
+    description: Create and submit transfer request
+
+    steps:
+      - id: create_transfer
+        name: Create Transfer Order
+        actor: requester
+        description: Create stock transfer request
+        inputs:
+          - Source plant/warehouse
+          - Destination plant/warehouse
+          - Material and quantity
+          - Required date
+          - Priority
+          - Reason/justification
+        validations:
+          - Source has sufficient available stock
+          - Material active in both locations
+          - Transfer between locations allowed
+        auto_determination:
+          - Transfer type (intra/inter warehouse/plant)
+          - Lead time
+          - Two-step requirement
+        outputs:
+          - Draft transfer order
+
+      - id: validate_availability
+        name: Validate Availability
+        actor: system
+        description: Confirm source availability
+        checks:
+          - On-hand quantity
+          - Available quantity (not allocated)
+          - Batch/serial availability (if specified)
+          - Location availability
+        outcomes:
+          sufficient: Proceed
+          insufficient: Request adjustment or reject
+        outputs:
+          - Availability confirmation
+
+      - id: submit_for_approval
+        name: Submit for Approval
+        actor: requester
+        description: Submit transfer for approval
+        conditions:
+          - Validation passed
+          - Required fields complete
+        routing:
+          intra_warehouse: Auto-approve if < threshold
+          inter_warehouse: Warehouse manager
+          inter_plant: Plant manager
+        outputs:
+          - Submitted transfer
+
+  # ============================================
+  # STAGE 2: APPROVAL
+  # ============================================
+  - id: approval
+    name: Transfer Approval
+    name_vi: Phê duyệt chuyển kho
+    sequence: 2
+    description: Approve transfer request
+    conditional: approval_required = true
+
+    steps:
+      - id: review_transfer
+        name: Review Transfer
+        actor: approver
+        description: Review transfer request
+        considerations:
+          - Business need justified
+          - Stock balance impact
+          - Cost implications
+          - Timing appropriate
+        decisions:
+          approve: Release for processing
+          reject: Return with reason
+          modify: Adjust quantity/date
+        outputs:
+          - Approval decision
+
+      - id: allocate_stock
+        name: Allocate Stock
+        actor: system
+        description: Reserve stock for transfer
+        actions:
+          - Create hard allocation
+          - Update available quantity
+          - Mark source inventory
+        allocation_rules:
+          - Follow FIFO/FEFO
+          - Respect batch requirements
+          - Consider pick face first
+        outputs:
+          - Allocated inventory
+
+  # ============================================
+  # STAGE 3: PICKING (SOURCE)
+  # ============================================
+  - id: source_picking
+    name: Source Picking
+    name_vi: Lấy hàng tại kho nguồn
+    sequence: 3
+    description: Pick materials at source location
+
+    steps:
+      - id: generate_pick_list
+        name: Generate Pick List
+        actor: system
+        description: Create picking work order
+        details:
+          - Source locations
+          - Materials and quantities
+          - Batch/serial numbers
+          - Pick sequence
+        outputs:
+          - Pick list / task
+
+      - id: execute_picking
+        name: Execute Picking
+        actor: source_warehouse
+        description: Physically pick materials
+        actions:
+          - Navigate to locations
+          - Pick allocated quantities
+          - Confirm batch/serial
+          - Move to staging
+        confirmations:
+          - Scan location
+          - Scan material
+          - Confirm quantity
+          - Note exceptions
+        outputs:
+          - Picked materials
+          - Pick confirmation
+
+      - id: verify_pick
+        name: Verify Pick
+        actor: source_warehouse
+        description: Verify picked quantities
+        checks:
+          - Quantity matches allocation
+          - Correct batch/serial
+          - Condition acceptable
+        variances:
+          under_pick: Adjust transfer or find alternate
+          wrong_batch: Correct or adjust
+          damaged: Replace or reduce quantity
+        outputs:
+          - Verified pick
+
+  # ============================================
+  # STAGE 4: TRANSFER EXECUTION
+  # ============================================
+  - id: transfer_execution
+    name: Transfer Execution
+    name_vi: Thực hiện chuyển kho
+    sequence: 4
+    description: Execute the physical transfer
+
+    # Single-step transfer (same warehouse)
+    substage_single_step:
+      - id: move_direct
+        name: Direct Movement
+        actor: source_warehouse
+        description: Move directly to destination
+        applicable: transfer_type = 'intra_warehouse'
+        actions:
+          - Transport to destination bin
+          - Confirm putaway
+        transaction:
+          - Single movement posting
+          - From location → To location
+        outputs:
+          - Completed transfer
+
+    # Two-step transfer (inter-warehouse/plant)
+    substage_two_step:
+      - id: pack_for_shipment
+        name: Pack for Shipment
+        actor: source_warehouse
+        description: Prepare for shipping
+        applicable: transfer_type IN ('inter_warehouse', 'inter_plant')
+        actions:
+          - Pack materials
+          - Create packing list
+          - Label containers
+          - Arrange shipping
+        documentation:
+          - Packing slip
+          - Shipping labels
+          - Transfer document
+        outputs:
+          - Packed shipment
+
+      - id: post_goods_issue
+        name: Post Goods Issue
+        actor: source_warehouse
+        description: Issue from source inventory
+        transaction:
+          type: goods_issue_transfer
+          movement_type: "351"
+        accounting:
+          - Debit: In-transit inventory
+          - Credit: Source plant inventory
+        inventory_effect:
+          source: Reduce on-hand
+          transit: Create in-transit stock
+        outputs:
+          - Goods issue document
+          - In-transit inventory
+
+      - id: ship_transfer
+        name: Ship Transfer
+        actor: source_warehouse
+        description: Hand off to carrier
+        actions:
+          - Load shipment
+          - Provide documentation
+          - Record tracking info
+        for_inter_plant:
+          - Carrier selection
+          - Bill of lading
+          - Customs (if international)
+        outputs:
+          - Shipment dispatched
+          - Tracking number
+
+      - id: track_in_transit
+        name: Track In Transit
+        actor: system
+        description: Monitor shipment progress
+        tracking:
+          - Carrier updates
+          - Expected arrival
+          - Exception alerts
+        visibility:
+          - Real-time location (if available)
+          - Milestone updates
+        outputs:
+          - Tracking updates
+
+  # ============================================
+  # STAGE 5: RECEIPT (DESTINATION)
+  # ============================================
+  - id: destination_receipt
+    name: Destination Receipt
+    name_vi: Nhận hàng tại kho đích
+    sequence: 5
+    description: Receive at destination location
+
+    steps:
+      - id: receive_shipment
+        name: Receive Shipment
+        actor: destination_warehouse
+        description: Accept incoming transfer
+        checks:
+          - Transfer document matches
+          - Quantity verification
+          - Condition check
+          - Batch/serial verification
+        outcomes:
+          match: Proceed to receipt
+          variance: Document discrepancy
+        outputs:
+          - Receipt verification
+
+      - id: post_goods_receipt
+        name: Post Goods Receipt
+        actor: destination_warehouse
+        description: Receipt into destination inventory
+        transaction:
+          type: goods_receipt_transfer
+          movement_type: "101" (from transfer)
+        accounting:
+          - Debit: Destination plant inventory
+          - Credit: In-transit inventory
+        inventory_effect:
+          transit: Clear in-transit
+          destination: Increase on-hand
+        outputs:
+          - Goods receipt document
+
+      - id: putaway_destination
+        name: Putaway at Destination
+        actor: destination_warehouse
+        description: Store in destination location
+        actions:
+          - Assign storage bin
+          - Physical putaway
+          - Confirm location
+        considerations:
+          - Material restrictions
+          - Capacity
+          - Picking efficiency
+        outputs:
+          - Inventory in final location
+
+  # ============================================
+  # STAGE 6: COMPLETION
+  # ============================================
+  - id: completion
+    name: Transfer Completion
+    name_vi: Hoàn tất chuyển kho
+    sequence: 6
+    description: Complete and close transfer
+
+    steps:
+      - id: verify_completion
+        name: Verify Completion
+        actor: system
+        description: Confirm all steps complete
+        checks:
+          - All quantity received
+          - Discrepancies resolved
+          - Documents complete
+          - Accounting balanced
+        outputs:
+          - Completion verification
+
+      - id: handle_discrepancy
+        name: Handle Discrepancy
+        actor: destination_warehouse
+        description: Resolve any transfer discrepancies
+        conditional: discrepancy exists
+        discrepancy_types:
+          short: Less received than shipped
+          over: More received than shipped
+          damaged: Damaged in transit
+          wrong: Wrong material/batch
+        resolution:
+          investigation: Determine cause
+          adjustment: Book variance
+          claim: File carrier claim if applicable
+        outputs:
+          - Discrepancy resolution
+
+      - id: close_transfer
+        name: Close Transfer
+        actor: system
+        description: Complete transfer order
+        actions:
+          - Set status to completed
+          - Clear any remaining allocations
+          - Archive documents
+        notifications:
+          - Requester (completion)
+          - Finance (if cost involved)
+        outputs:
+          - Closed transfer order
+
+process_metrics:
+  - name: Transfer Cycle Time
+    formula: AVG(Close_Date - Request_Date)
+    target: |
+      Intra-warehouse: < 4 hours
+      Inter-warehouse: < 24 hours
+      Inter-plant: < 72 hours
+
+  - name: Transfer Accuracy
+    formula: (No_Discrepancy_Transfers / Total_Transfers) × 100
+    target: "> 99%"
+
+  - name: On-Time Transfer Rate
+    formula: (On_Time_Transfers / Total_Transfers) × 100
+    target: "> 95%"
+
+  - name: In-Transit Inventory Days
+    formula: AVG(Receipt_Date - Issue_Date)
+    target: "< 2 days (domestic)"
+
+transfer_types:
+  intra_warehouse:
+    description: Same warehouse, different location
+    steps: single_step
+    lead_time: Same day
+    approval: Auto (< threshold)
+
+  inter_warehouse:
+    description: Same plant, different warehouse
+    steps: two_step
+    lead_time: 1-2 days
+    approval: Warehouse manager
+
+  inter_plant:
+    description: Different plants
+    steps: two_step
+    lead_time: 2-5 days
+    approval: Plant manager
+    accounting: Inter-company if different entities
+
+exceptions:
+  - name: Source Shortage
+    trigger: Available quantity < requested
+    options:
+      - Reduce quantity
+      - Find alternate source
+      - Wait for receipt
+      - Cancel transfer
+
+  - name: Destination Blocked
+    trigger: Destination location unavailable
+    options:
+      - Assign alternate location
+      - Wait for location
+      - Cancel transfer
+
+  - name: Transit Damage
+    trigger: Damage discovered at receipt
+    actions:
+      - Document with photos
+      - File carrier claim
+      - Book variance or scrap
+      - Notify source
+
+integrations:
+  - system: WMS
+    integration_points: [pick_list, putaway, location_management]
+  - system: TMS
+    integration_points: [carrier_booking, tracking, freight_cost]
+  - system: ERP
+    integration_points: [inventory_posting, accounting]

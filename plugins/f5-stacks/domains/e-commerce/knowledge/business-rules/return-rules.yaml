@@ -1,0 +1,397 @@
+name: Return Rules
+display_name: Return Rules / Quy tắc đổi trả
+description: |
+  Business rules governing product returns, refunds, and exchanges.
+  Includes eligibility, processing, and refund calculation rules.
+
+domain: e-commerce
+category: returns
+
+rules:
+  # Return Eligibility Rules
+  - id: BR-RET-001
+    name: Return Window Validation
+    description: Returns must be within allowed window
+    priority: critical
+    condition: |
+      NOW() - order.delivered_at <= config.return_window_days
+    action: reject_if_violated
+    message: "Return window has expired"
+    applies_to: [Return, Order]
+    config:
+      return_window_days: 30
+
+  - id: BR-RET-002
+    name: Order Status Check
+    description: Returns only for delivered orders
+    priority: critical
+    condition: order.status IN ('delivered', 'completed')
+    action: reject_if_violated
+    message: "Order must be delivered before return request"
+    applies_to: [Return, Order]
+
+  - id: BR-RET-003
+    name: Non-Returnable Products
+    description: Some products cannot be returned
+    priority: high
+    condition: |
+      product.is_returnable = true AND
+      product.category NOT IN config.non_returnable_categories
+    action: reject_if_violated
+    message: "This product cannot be returned"
+    applies_to: [Return, Product]
+    config:
+      non_returnable_categories:
+        - "underwear"
+        - "swimwear"
+        - "earrings"
+        - "food"
+        - "personal_care"
+        - "digital_downloads"
+
+  - id: BR-RET-004
+    name: Opened Product Return
+    description: Opened products may have restocking fee
+    priority: medium
+    condition: return_item.is_opened = true
+    action: |
+      IF product.opened_return_allowed THEN
+        apply_restocking_fee(config.restocking_fee_percentage)
+      ELSE
+        reject_return()
+    applies_to: [Return, ReturnItem]
+    config:
+      restocking_fee_percentage: 15
+
+  - id: BR-RET-005
+    name: Used Product Return
+    description: Used/worn products cannot be returned
+    priority: high
+    condition: return_item.condition IN ('new', 'unopened', 'like_new')
+    action: reject_if_violated
+    message: "Used products cannot be returned"
+    applies_to: [ReturnItem]
+
+  - id: BR-RET-006
+    name: Original Packaging Required
+    description: Products must be in original packaging
+    priority: medium
+    condition: |
+      product.packaging_required = false OR
+      return_item.has_original_packaging = true
+    action: |
+      IF NOT has_original_packaging THEN
+        apply_packaging_fee(config.packaging_fee)
+    applies_to: [ReturnItem]
+    config:
+      packaging_fee: 50000
+
+  # Return Request Rules
+  - id: BR-RET-010
+    name: Return Reason Required
+    description: Return must have a valid reason
+    priority: high
+    condition: return.reason IS NOT NULL
+    action: reject_if_violated
+    message: "Please provide a return reason"
+    applies_to: [Return]
+
+  - id: BR-RET-011
+    name: Valid Return Reasons
+    description: Return reason must be from valid list
+    priority: medium
+    condition: |
+      return.reason IN (
+        'defective',
+        'wrong_item',
+        'not_as_described',
+        'changed_mind',
+        'damaged_in_shipping',
+        'wrong_size',
+        'arrived_late',
+        'other'
+      )
+    action: reject_if_violated
+    message: "Invalid return reason"
+    applies_to: [Return]
+
+  - id: BR-RET-012
+    name: Photo Evidence for Defects
+    description: Defective items require photo evidence
+    priority: high
+    condition: |
+      return.reason NOT IN ('defective', 'damaged_in_shipping', 'wrong_item') OR
+      return.evidence_photos IS NOT NULL
+    action: reject_if_violated
+    message: "Please provide photos of the defect/damage"
+    applies_to: [Return]
+
+  - id: BR-RET-013
+    name: Return Quantity Validation
+    description: Cannot return more than ordered
+    priority: critical
+    condition: |
+      return_item.quantity <= order_item.quantity - order_item.previously_returned_quantity
+    action: reject_if_violated
+    message: "Return quantity exceeds ordered quantity"
+    applies_to: [ReturnItem, OrderItem]
+
+  # Return Processing Rules
+  - id: BR-RET-020
+    name: Return Authorization
+    description: Generate return authorization number
+    priority: high
+    condition: return.approved = true
+    action: |
+      return.rma_number = 'RMA-' + FORMAT(NOW(), 'YYYYMMDD') + '-' + RANDOM(4)
+      return.return_by_date = NOW() + config.return_ship_window
+    applies_to: [Return]
+    config:
+      return_ship_window: "14 days"
+
+  - id: BR-RET-021
+    name: Return Shipping Label
+    description: Generate return shipping label
+    priority: medium
+    condition: |
+      return.approved = true AND
+      config.prepaid_return_label = true
+    action: |
+      generate_return_label(return)
+      return.shipping_label_url = label.url
+    applies_to: [Return]
+    config:
+      prepaid_return_label: true
+
+  - id: BR-RET-022
+    name: Return Shipping Cost
+    description: Determine who pays return shipping
+    priority: high
+    condition: return.approved = true
+    action: |
+      IF return.reason IN ('defective', 'wrong_item', 'damaged_in_shipping', 'not_as_described') THEN
+        return.shipping_paid_by = 'seller'
+      ELSE
+        return.shipping_paid_by = 'customer'
+        return.shipping_cost = calculate_return_shipping()
+    applies_to: [Return]
+
+  - id: BR-RET-023
+    name: Return Receipt Inspection
+    description: Inspect returned items upon receipt
+    priority: high
+    condition: return.status = 'received'
+    action: |
+      FOR each return_item:
+        inspect_condition()
+        verify_quantity()
+        update_condition_status()
+      IF all_items_acceptable THEN
+        return.inspection_status = 'passed'
+      ELSE
+        return.inspection_status = 'failed'
+        notify_customer()
+    applies_to: [Return, ReturnItem]
+
+  # Refund Calculation Rules
+  - id: BR-RET-030
+    name: Full Refund Calculation
+    description: Calculate full refund amount
+    priority: high
+    condition: return_item.condition IN ('new', 'unopened')
+    action: |
+      refund_amount = order_item.unit_price * return_item.quantity
+      refund_amount -= order_item.item_discount_share
+      refund_amount += order_item.tax_share
+    applies_to: [Return, ReturnItem, Refund]
+
+  - id: BR-RET-031
+    name: Partial Refund for Opened Items
+    description: Apply restocking fee for opened items
+    priority: medium
+    condition: return_item.condition = 'opened'
+    action: |
+      base_refund = order_item.unit_price * return_item.quantity
+      restocking_fee = base_refund * config.restocking_fee_percentage
+      refund_amount = base_refund - restocking_fee
+    applies_to: [Return, ReturnItem, Refund]
+
+  - id: BR-RET-032
+    name: No Refund for Damaged Returns
+    description: No refund if customer damaged product
+    priority: high
+    condition: return_item.condition = 'customer_damaged'
+    action: |
+      refund_amount = 0
+      notify_customer('Return rejected - item damaged by customer')
+    applies_to: [ReturnItem, Refund]
+
+  - id: BR-RET-033
+    name: Shipping Refund
+    description: Refund shipping for seller-fault returns
+    priority: medium
+    condition: |
+      return.reason IN ('defective', 'wrong_item', 'not_as_described', 'damaged_in_shipping') AND
+      return.is_full_order_return = true
+    action: |
+      refund_amount += order.shipping_amount
+    applies_to: [Return, Refund]
+
+  - id: BR-RET-034
+    name: Coupon Adjustment
+    description: Adjust refund for order-level coupons
+    priority: medium
+    condition: |
+      return.is_partial = true AND
+      order.discount_amount > 0
+    action: |
+      remaining_subtotal = order.subtotal - return.items_subtotal
+      IF remaining_subtotal < coupon.minimum_order_amount THEN
+        refund_amount -= coupon_discount_share
+    applies_to: [Return, Refund, Order]
+
+  # Refund Processing Rules
+  - id: BR-RET-040
+    name: Refund Method
+    description: Refund to original payment method
+    priority: high
+    condition: return.inspection_status = 'passed'
+    action: |
+      refund.payment_method = order.payment_method
+      refund.payment_id = order.payment.id
+    applies_to: [Return, Refund]
+
+  - id: BR-RET-041
+    name: COD Refund
+    description: COD orders refund via bank transfer
+    priority: high
+    condition: order.payment_method = 'cod'
+    action: |
+      refund.payment_method = 'bank_transfer'
+      require_customer_bank_details()
+    applies_to: [Return, Refund, Order]
+
+  - id: BR-RET-042
+    name: Store Credit Option
+    description: Offer store credit for faster refund
+    priority: low
+    condition: config.offer_store_credit = true
+    action: |
+      offer_store_credit_with_bonus(config.store_credit_bonus_percentage)
+    applies_to: [Return, Refund]
+    config:
+      offer_store_credit: true
+      store_credit_bonus_percentage: 5
+
+  - id: BR-RET-043
+    name: Refund Processing Time
+    description: Process refund within SLA
+    priority: high
+    condition: refund.created = true
+    action: |
+      refund.expected_by = NOW() + config.refund_processing_days
+      SCHEDULE refund_processing()
+    applies_to: [Refund]
+    config:
+      refund_processing_days: 7
+
+  # Exchange Rules
+  - id: BR-RET-050
+    name: Exchange Eligibility
+    description: Allow exchange for same product different variant
+    priority: medium
+    condition: |
+      return.type = 'exchange' AND
+      exchange_product.id = original_product.id
+    action: |
+      create_exchange_order()
+    applies_to: [Return, Exchange]
+
+  - id: BR-RET-051
+    name: Exchange Price Difference
+    description: Handle price difference in exchanges
+    priority: medium
+    condition: |
+      return.type = 'exchange' AND
+      exchange_item.price != original_item.price
+    action: |
+      price_difference = exchange_item.price - original_item.price
+      IF price_difference > 0 THEN
+        charge_customer(price_difference)
+      ELSE
+        refund_difference(ABS(price_difference))
+    applies_to: [Return, Exchange]
+
+  - id: BR-RET-052
+    name: Exchange Stock Check
+    description: Verify exchange item is in stock
+    priority: high
+    condition: |
+      return.type = 'exchange' AND
+      exchange_product.available_quantity >= exchange_quantity
+    action: reject_if_violated
+    message: "Exchange item is out of stock"
+    applies_to: [Return, Exchange, Inventory]
+
+  # Inventory Rules
+  - id: BR-RET-060
+    name: Resellable Inventory Return
+    description: Add resellable returns back to inventory
+    priority: high
+    condition: |
+      return_item.inspection_passed = true AND
+      return_item.condition IN ('new', 'unopened', 'like_new')
+    action: |
+      inventory.quantity += return_item.quantity
+    applies_to: [ReturnItem, Inventory]
+
+  - id: BR-RET-061
+    name: Damaged Inventory
+    description: Add damaged returns to damaged inventory
+    priority: high
+    condition: |
+      return_item.condition IN ('damaged', 'defective')
+    action: |
+      inventory.damaged_quantity += return_item.quantity
+    applies_to: [ReturnItem, Inventory]
+
+  - id: BR-RET-062
+    name: Warranty Claim
+    description: Handle warranty claims separately
+    priority: medium
+    condition: |
+      return.reason = 'defective' AND
+      product.warranty_period > 0 AND
+      NOW() - order.delivered_at <= product.warranty_period
+    action: |
+      create_warranty_claim()
+      route_to_manufacturer_if_applicable()
+    applies_to: [Return, Product]
+
+validation_order:
+  - BR-RET-001  # Return window
+  - BR-RET-002  # Order status
+  - BR-RET-003  # Non-returnable check
+  - BR-RET-013  # Quantity validation
+  - BR-RET-010  # Reason required
+  - BR-RET-012  # Photo evidence
+  - BR-RET-030  # Refund calculation
+  - BR-RET-060  # Inventory return
+
+exceptions:
+  - name: ExtendedReturnWindow
+    description: Extended return window for holidays
+    return_window_days: 45
+    period: "November 15 - January 15"
+
+  - name: VIPReturnPolicy
+    description: VIP customers get extended returns
+    requires: platinum_or_diamond_tier
+    return_window_days: 60
+    free_return_shipping: true
+
+  - name: DefectiveNoQuestions
+    description: Immediate refund for defective items
+    condition: return.reason = 'defective'
+    requires_inspection: false
+    refund_immediately: true

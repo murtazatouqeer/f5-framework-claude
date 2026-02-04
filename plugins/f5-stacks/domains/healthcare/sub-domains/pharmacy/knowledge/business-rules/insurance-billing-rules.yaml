@@ -1,0 +1,433 @@
+# Insurance Billing Rules
+# F5 Framework v2.0 - Healthcare/Pharmacy
+# Pharmacy insurance billing and adjudication rules
+
+business_rules:
+  id: insurance-billing-rules
+  name: Insurance Billing Rules
+  name_ja: 保険請求ルール
+  description: Rules for pharmacy insurance claim submission and adjudication
+  domain: healthcare
+  subdomain: pharmacy
+  version: "1.0.0"
+
+  standards_references:
+    - NCPDP Telecommunication Standard
+    - NCPDP D.0 Implementation Guide
+    - CMS Part D Requirements
+    - HIPAA Transaction Standards
+
+  categories:
+    - id: eligibility
+      name: Eligibility Verification
+      description: Patient insurance eligibility rules
+      
+    - id: claim_submission
+      name: Claim Submission
+      description: Claim creation and submission rules
+      
+    - id: adjudication
+      name: Claim Adjudication
+      description: Adjudication response handling
+      
+    - id: rejection_handling
+      name: Rejection Handling
+      description: Claim rejection resolution
+      
+    - id: cob
+      name: Coordination of Benefits
+      description: Multiple insurance handling
+      
+    - id: pricing
+      name: Pricing Rules
+      description: Claim pricing requirements
+
+  rules:
+    # Eligibility
+    - id: BR-BIL-001
+      name: Real-Time Eligibility Check
+      category: eligibility
+      severity: high
+      
+      description: Verify patient eligibility before claim submission
+      
+      eligibility_check:
+        timing: "Before or at point of sale"
+        methods:
+          - E1 transaction (real-time)
+          - Web portal lookup
+          - Phone verification
+          
+      verification_elements:
+        - Coverage active
+        - Plan benefits
+        - Copay amounts
+        - Prior authorization requirements
+        - Preferred pharmacy status
+        
+      condition: |
+        eligibility_verified == true AND
+        coverage_active == true
+        
+      action: |
+        IF not eligible:
+          DISPLAY coverage status
+          OFFER cash price
+          CHECK for other coverage
+          
+    - id: BR-BIL-002
+      name: Cardholder ID Validation
+      category: eligibility
+      severity: high
+      
+      description: Validate insurance card information
+      
+      required_elements:
+        - BIN (Bank Identification Number)
+        - PCN (Processor Control Number)
+        - Group ID
+        - Member ID
+        - Person Code
+        
+      condition: |
+        bin IS 6 digits AND
+        member_id IS NOT empty
+        
+      action: |
+        IF validation fails:
+          REQUEST correct card information
+          TRY common BIN corrections
+
+    # Claim Submission
+    - id: BR-BIL-003
+      name: Required Claim Fields
+      category: claim_submission
+      severity: critical
+      
+      description: Ensure all required claim fields are populated
+      
+      required_segments:
+        patient:
+          - Cardholder ID
+          - Date of birth
+          - Patient gender
+          - Patient location
+        prescriber:
+          - Prescriber ID (NPI)
+          - Prescriber ID qualifier
+        claim:
+          - Prescription reference number
+          - Product/service ID (NDC)
+          - Quantity dispensed
+          - Days supply
+          - Date of service
+          - Ingredient cost submitted
+          - Dispensing fee submitted
+          - Gross amount due
+          - DAW code
+          
+      action: |
+        VALIDATE all required fields
+        IF missing:
+          PREVENT submission
+          PROMPT for missing data
+          
+    - id: BR-BIL-004
+      name: NDC Billing Requirements
+      category: claim_submission
+      severity: high
+      
+      description: Submit correct NDC for billing
+      
+      ndc_rules:
+        - Bill NDC actually dispensed
+        - Use 11-digit format (5-4-2)
+        - Include leading zeros
+        
+      condition: |
+        billed_ndc == dispensed_ndc AND
+        ndc_format == "11_digit"
+        
+      action: |
+        VERIFY NDC matches dispensed product
+        FORMAT correctly for submission
+        
+    - id: BR-BIL-005
+      name: DAW Code Accuracy
+      category: claim_submission
+      severity: medium
+      
+      description: Submit accurate DAW code
+      
+      daw_codes:
+        "0": "No product selection indicated"
+        "1": "Substitution not allowed by prescriber"
+        "2": "Substitution allowed - patient requested brand"
+        "3": "Substitution allowed - pharmacist selected brand"
+        "4": "Substitution allowed - generic not in stock"
+        "5": "Substitution allowed - brand dispensed as generic"
+        "6": "Override"
+        "7": "Substitution not allowed - brand mandated by law"
+        "8": "Substitution allowed - generic not available"
+        "9": "Other"
+        
+      condition: |
+        daw_code REFLECTS actual_substitution_status
+        
+      action: |
+        SELECT appropriate DAW code
+        DOCUMENT reason for DAW 1
+
+    # Adjudication Response
+    - id: BR-BIL-006
+      name: Paid Claim Processing
+      category: adjudication
+      severity: high
+      
+      description: Process paid claim response
+      
+      paid_claim_handling:
+        - Record authorization number
+        - Update patient responsibility
+        - Apply returned pricing
+        - Store DUR messages
+        
+      condition: |
+        response_status == 'Paid' OR
+        response_status == 'Captured'
+        
+      action: |
+        RECORD paid amounts
+        CALCULATE patient pay
+        STORE for reconciliation
+        
+    - id: BR-BIL-007
+      name: Claim Rejection Handling
+      category: adjudication
+      severity: high
+      
+      description: Handle rejected claims appropriately
+      
+      rejection_categories:
+        patient_eligibility:
+          codes: [25, 26, 27, 70]
+          action: "Verify coverage, update information"
+        coverage_limits:
+          codes: [75, 76, 77, 78, 79]
+          action: "Check quantity limits, PA requirements"
+        drug_coverage:
+          codes: [70, 71, 72, 73, 74]
+          action: "Check formulary, step therapy"
+        pricing:
+          codes: [14, 15, 16, 17]
+          action: "Verify pricing, U&C"
+        refill:
+          codes: [79, 88]
+          action: "Check refill timing, authorization"
+          
+      action: |
+        PARSE rejection codes
+        DISPLAY actionable message
+        SUGGEST resolution steps
+
+    # Rejection Resolution
+    - id: BR-BIL-008
+      name: Refill Too Soon Resolution
+      category: rejection_handling
+      severity: medium
+      
+      description: Handle refill too soon rejections
+      
+      common_codes: [79, 88, "REFILL TOO SOON"]
+      
+      resolution_options:
+        - Wait until fill date
+        - Request vacation override
+        - Submit with valid override code
+        - Contact plan for override
+        
+      override_codes:
+        "03": "Vacation supply"
+        "04": "Lost prescription"
+        "05": "Therapy change"
+        "07": "Starter dose"
+        
+      action: |
+        DISPLAY next fill date
+        OFFER override options if applicable
+        DOCUMENT override reason
+        
+    - id: BR-BIL-009
+      name: Prior Authorization Required
+      category: rejection_handling
+      severity: high
+      
+      description: Handle PA required rejections
+      
+      common_codes: [75, 76, "PA REQUIRED"]
+      
+      resolution_steps:
+        1: Check if PA already on file
+        2: Verify PA number if exists
+        3: Initiate PA request if needed
+        4: Offer cash price alternative
+        5: Check for therapeutic alternatives
+        
+      action: |
+        CHECK existing PA
+        IF no PA:
+          INITIATE PA workflow
+          NOTIFY patient of timeline
+          
+    - id: BR-BIL-010
+      name: Non-Formulary Drug
+      category: rejection_handling
+      severity: medium
+      
+      description: Handle non-formulary rejections
+      
+      common_codes: [70, 71, 72, "NON-FORMULARY"]
+      
+      resolution_options:
+        - Therapeutic interchange
+        - Step therapy drugs
+        - Request formulary exception
+        - Cash price
+        
+      action: |
+        DISPLAY preferred alternatives
+        OFFER interchange if protocol exists
+        CONTACT prescriber for change
+
+    # Coordination of Benefits
+    - id: BR-BIL-011
+      name: COB Claim Sequence
+      category: cob
+      severity: high
+      
+      description: Submit claims in correct COB order
+      
+      cob_rules:
+        primary_first: "Always bill primary plan first"
+        secondary_after: "Bill secondary with primary response"
+        other_coverage_code: "Include in secondary claim"
+        
+      primary_determination:
+        - Birthday rule for dependents
+        - Active/inactive coverage rule
+        - Medicare secondary payer rules
+        
+      condition: |
+        IF multiple_coverage:
+          primary_billed_first == true
+          
+      action: |
+        DETERMINE primary payer
+        BILL primary first
+        APPLY primary response to secondary
+        
+    - id: BR-BIL-012
+      name: Secondary Claim Submission
+      category: cob
+      severity: medium
+      
+      description: Submit secondary claims with proper information
+      
+      required_elements:
+        - Other coverage code
+        - Other payer patient responsibility
+        - Other payer amount paid
+        - Other payer reject codes (if applicable)
+        
+      action: |
+        INCLUDE primary payer response
+        SUBMIT to secondary
+        CALCULATE final patient responsibility
+
+    # Pricing Rules
+    - id: BR-BIL-013
+      name: Usual and Customary Pricing
+      category: pricing
+      severity: high
+      
+      description: Submit accurate U&C price
+      
+      uc_definition: |
+        Price charged to cash-paying customers
+        for the same drug and quantity
+        
+      condition: |
+        submitted_uc <= cash_price AND
+        submitted_uc IS current
+        
+      action: |
+        SUBMIT current U&C
+        UPDATE U&C when cash price changes
+        
+    - id: BR-BIL-014
+      name: Ingredient Cost Accuracy
+      category: pricing
+      severity: high
+      
+      description: Submit accurate ingredient cost
+      
+      cost_basis_options:
+        AWP: "Average Wholesale Price"
+        WAC: "Wholesale Acquisition Cost"
+        AAC: "Actual Acquisition Cost"
+        
+      condition: |
+        ingredient_cost REFLECTS actual_cost
+        
+      action: |
+        USE accurate acquisition cost
+        UPDATE pricing regularly
+        
+    - id: BR-BIL-015
+      name: Patient Pay Accuracy
+      category: pricing
+      severity: critical
+      
+      description: Collect correct patient responsibility
+      
+      patient_pay_components:
+        - Copay
+        - Coinsurance
+        - Deductible
+        - Non-covered amounts
+        
+      condition: |
+        collected_amount >= patient_pay_returned
+        
+      action: |
+        COLLECT as adjudicated
+        DO NOT collect more than adjudicated
+        REFUND overpayments
+
+  rejection_code_reference:
+    eligibility:
+      25: "Missing/Invalid Cardholder ID"
+      26: "Missing/Invalid Patient Relationship"
+      27: "Missing/Invalid Cardholder ID Number"
+      65: "Patient Not Covered"
+    coverage:
+      70: "Product/Service Not Covered"
+      75: "Prior Authorization Required"
+      76: "Plan Limitations Exceeded"
+      77: "Discontinued Product/Service"
+    refill:
+      79: "Refill Too Soon"
+      88: "DUR Reject Error"
+    pricing:
+      14: "M/I Usual and Customary Charge"
+      15: "M/I Ingredient Cost"
+      16: "Insufficient Quantity"
+
+  audit:
+    log_all_claims: true
+    retention_days: 2555
+    required_documentation:
+      - All claim submissions
+      - Rejection reasons
+      - Resolution actions
+      - Patient responsibility collected
